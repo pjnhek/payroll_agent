@@ -74,6 +74,7 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 - **Tax-compliant production accuracy** — this is an explicitly educational model; the README says so plainly.
 - **Auth on the dashboard** — it's a demo.
 - **Spreadsheet-attachment parsing** — noted as a "later" stretch in the source plan; deferred from v1.
+- **OBBBA tax provisions** — qualified-tips/overtime above-the-line deductions and the expanded 15-line W-4 Step-4(b) worksheet (new in the 2026 Pub 15-T) are explicitly disclaimed in the README; the engine implements the standard percentage method only. (Surfaced by research; resolved.)
 
 ## Context
 
@@ -86,6 +87,9 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 - **Model tiering:** extraction = stronger model; name reconcile = strong/mid; decision = mid (gated); email drafting = cheap. One OpenAI-compatible client, base URL/model/key swapped per task.
 - **Fixture-first development:** the whole pipeline is built and demoable by POSTing JSON fixtures to the webhook; the real email provider (n8n or a hosted inbound-parse service) is wired **last**, and the "send test email" button is both a demo feature and a live-email fallback. (Open decision #4, resolved.)
 - **Render free realities to design around:** web service sleeps after 15 min, cold-starts under a minute, ephemeral filesystem, only inbound HTTP keeps it awake — so the webhook model fits and a polling loop would not.
+- **The `status` column IS the orchestration engine** (surfaced by research): `payroll_runs.status` is simultaneously workflow position, durable checkpoint, the HITL gate, and the crash-recovery anchor — this is what cleanly replaces LangGraph. There are **two pause states** (still one *human* gate): `awaiting_reply` (machine pause on the client, resumes at stage 2) and `awaiting_approval` (the single operator gate, resumes at stage 8).
+- **The DRY seam (load-bearing):** the four judgment stages are pure importable functions (data in, data out — never `extract(run_id)`); the hard gates live **inside `decide.py`** computing a code-owned `final_action`; the eval imports and scores those exact same functions. This is what makes the eval credible and tests the core thesis. Established early, not refactored to later.
+- **Architecture additions** (surfaced by research, both adopted): an explicit `app/pipeline/orchestrator.py` state-machine driver, and a stuck-run/error recovery path (dashboard-visible `error` state + idempotent re-trigger) since an in-process `BackgroundTask` on a sleeping dyno can strand a run mid-stage.
 
 ## Constraints
 
@@ -111,6 +115,9 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 | Name-reconciliation auto-clarify threshold starts at 0.8 | Conservative default; below it, code forces clarify/block; tuned against the eval | — Pending |
 | Eval = all 4 metrics over ~15–25 fixtures, one summary chart | Covers the full "judgment" narrative for a recruiter audience while staying achievable; the chart is the proof, not the demo | — Pending |
 | Plain Python workflow over LangGraph/agent loop | Path is fixed and controlled; Postgres is the checkpoint for the HITL pause | — Pending |
+| Tax basis: 2026 Pub 15-T standard percentage method, disclaim OBBBA | Current-year credibility ($184,500 wage base, 2026 brackets) without OBBBA complexity; engine + eval ground truth share one assumption | — Pending |
+| Add explicit `orchestrator.py` + stuck-run/error recovery | Keeps transition logic auditable in one place; a sleeping dyno can strand a run, so recovery is a first-class state, not an afterthought | — Pending |
+| Hard gates live inside `decide.py` (not the orchestrator), computing `final_action` | The one placement that lets the eval test the same gated path as production — makes the eval credible and the thesis verifiable | — Pending |
 
 ## Evolution
 
@@ -130,4 +137,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-20 after initialization*
+*Last updated: 2026-06-20 after initialization + research (tax-year/OBBBA, orchestrator, and DRY-seam decisions folded in)*
