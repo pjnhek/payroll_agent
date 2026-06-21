@@ -145,13 +145,35 @@ def test_run_status_values() -> None:
 
 
 def test_decimal_json_serialization() -> None:
-    """gross_pay serializes to the string '1234.56', not the float 1234.56 (D-06)."""
-    item = PaystubLineItem(**_paystub_kwargs(gross_pay=Decimal("1234.56")))
+    """gross_pay serializes to the string '1234.56', not the float 1234.56 (D-06).
+
+    This is the behavioral guard for WR-04: with the hand-rolled
+    @field_serializer machinery removed, Pydantic v2's default Decimal -> str
+    JSON serialization must still hold across all monetary fields, including a
+    nullable one (state_withholding) which the old serializer special-cased.
+    """
+    item = PaystubLineItem(
+        **_paystub_kwargs(gross_pay=Decimal("1234.56"), state_withholding=None)
+    )
     dumped = item.model_dump(mode="json")
     assert isinstance(dumped["gross_pay"], str), (
         f"expected str, got {type(dumped['gross_pay'])}"
     )
     assert dumped["gross_pay"] == "1234.56"
+    # A nullable Decimal still round-trips to JSON null (default behavior).
+    assert dumped["state_withholding"] is None
+    # Decision.confidence also serializes to string via the same default.
+    decision = Decision(
+        model_action="process",
+        gate_triggered=False,
+        gate_reasons=[],
+        final_action="process",
+        unresolved_names=[],
+        missing_fields=[],
+        confidence=Decimal("0.95"),
+        reasons=["ok"],
+    )
+    assert decision.model_dump(mode="json")["confidence"] == "0.95"
 
 
 # ---------------------------------------------------------------------------

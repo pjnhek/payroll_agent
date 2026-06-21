@@ -14,19 +14,12 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field
 
-
-class _DecimalModel(BaseModel):
-    """Base model that serializes Decimal fields to strings in JSON mode (D-06)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    @field_serializer("*", when_used="json")
-    def _serialize_decimal(self, v: object) -> object:
-        if isinstance(v, Decimal):
-            return str(v)
-        return v
+# D-06: Pydantic v2 already serializes Decimal -> JSON string in
+# model_dump(mode="json") by default, so no per-field @field_serializer is
+# needed.  test_decimal_json_serialization is the behavioral guard that locks
+# this default (WR-04).
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +112,6 @@ class Decision(BaseModel):
     confidence: Decimal = Field(ge=0, le=1)  # 0.0–1.0; <0.8 fires the gate (WR-01)
     reasons: list[str]
 
-    @field_serializer("confidence", when_used="json")
-    def _serialize_confidence(self, v: Decimal) -> str:
-        return str(v)
-
 
 # ---------------------------------------------------------------------------
 # PaystubLineItem — computed output after the calc engine runs
@@ -158,24 +147,3 @@ class PaystubLineItem(BaseModel):
     state_withholding: Decimal | None
     net_pay: Decimal
     created_at: datetime
-
-    @field_serializer(
-        "match_confidence",
-        "hours_regular",
-        "hours_overtime",
-        "hours_vacation",
-        "hours_sick",
-        "hours_holiday",
-        "gross_pay",
-        "pretax_401k",
-        "fica_ss",
-        "fica_medicare",
-        "federal_withholding",
-        "state_withholding",
-        "net_pay",
-        when_used="json",
-    )
-    def _serialize_decimal(self, v: Decimal | None) -> str | None:
-        if v is None:
-            return None
-        return str(v)
