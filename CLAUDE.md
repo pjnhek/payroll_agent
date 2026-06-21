@@ -1,4 +1,15 @@
 <!-- GSD:project-start source:PROJECT.md -->
+## ⚙️ Tooling Rule (ALWAYS)
+
+**This project uses [uv](https://docs.astral.sh/uv/) for the Python environment and dependencies — never `pip`, `python -m venv`, `poetry`, or a `requirements.txt`.** The source of truth is `pyproject.toml` + the committed `uv.lock`; Python is pinned to 3.12 (`.python-version`).
+
+- Run anything in the env: `uv run <cmd>` (e.g. `uv run pytest -q`) — do NOT call `.venv/bin/python` or activate manually unless you have a specific reason.
+- Add deps: `uv add <pkg>` (runtime) / `uv add --dev <pkg>` (dev/eval-only). This updates `pyproject.toml` + `uv.lock` together.
+- Set up / refresh the env: `uv sync` (all groups) or `uv sync --no-dev` (runtime only).
+- NEVER reintroduce `requirements.txt` as a hand-maintained file. For Docker, GENERATE it from the lock (see Installation §).
+
+See the **Installation** section below for the full command reference and the Phase 6 Docker export.
+
 ## Project
 
 **Payroll Agent**

@@ -138,6 +138,29 @@ Plans:
   2. The FastAPI app is containerized in one Dockerfile (binds `0.0.0.0:$PORT`) and deploys as a single Render free web service against Supabase Postgres via the pooler, with a GitHub Actions keep-alive pinging Supabase so the free project does not pause (OPS-01, OPS-03).
   3. A README documents the system, states the educational/not-tax-compliant disclaimer (including the OBBBA exclusion and the unmodeled Additional Medicare 0.9% over $200k YTD), and includes an architecture diagram; a 60-90s demo recording exists (OPS-04).
 
+**Build Notes (uv + Docker):**
+
+The project uses **uv** (not pip/requirements.txt) — see `CLAUDE.md` Tooling Rule. For the `python:3.12-slim` image, do NOT hand-write a `requirements.txt`; generate a pinned, hash-free runtime-only list from the committed `uv.lock` at build time, or use uv directly in the Dockerfile. Two viable approaches:
+
+- **Export then pip install (simplest, smallest base):**
+  ```dockerfile
+  # On the build host (or a builder stage), regenerate the pinned list from the lock:
+  #   uv export --no-dev --no-emit-project --no-hashes -o requirements.txt
+  COPY requirements.txt .
+  RUN pip install --no-cache-dir -r requirements.txt
+  ```
+  Treat the exported `requirements.txt` as a build artifact (gitignore it or generate in CI) — never a tracked source file.
+
+- **uv in the image (reproducible, uses the lock directly):**
+  ```dockerfile
+  COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+  COPY pyproject.toml uv.lock ./
+  RUN uv sync --frozen --no-dev   # installs runtime deps only, exactly from the lock
+  # then run via: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+  ```
+
+`--no-dev` keeps pytest/ruff out of the runtime image. Bind `0.0.0.0:$PORT` (Render injects `$PORT`, default 10000) per the Render gotcha in CLAUDE.md.
+
 **Plans**: TBD
 
 ## Progress
