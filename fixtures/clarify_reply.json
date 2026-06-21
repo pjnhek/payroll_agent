@@ -1,0 +1,11 @@
+{
+  "id": "a0000003-0000-0000-0000-000000000003",
+  "message_id": "<clarify-reply-001@metrodeli.example>",
+  "in_reply_to": "__CLARIFICATION_MESSAGE_ID__",
+  "references_header": "<gate-block-hero-001@metrodeli.example> __CLARIFICATION_MESSAGE_ID__",
+  "subject": "Re: Quick question about your payroll submission",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nGood catch — that should be David Reyes (I mistyped the surname). Everything else is correct, please go ahead.\n\nThanks!\nPat\n\n-- \nPat Lawson\nHR, Metro Deli Group\n",
+  "created_at": "2026-06-15T14:05:00Z"
+}

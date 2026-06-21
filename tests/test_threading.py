@@ -39,6 +39,12 @@ _METRO_DELI_CONTACT = "hr@metrodeli.example"
 _GATE_BLOCK_FIXTURE = (
     pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "gate_block_hero.json"
 )
+_CLARIFY_REPLY_FIXTURE = (
+    pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "clarify_reply.json"
+)
+# The documented placeholder token in clarify_reply.json that the test substitutes
+# with the actual sent clarification Message-ID at runtime (PATTERNS §fixtures).
+_CLARIFICATION_PLACEHOLDER = "__CLARIFICATION_MESSAGE_ID__"
 
 
 @pytest.fixture
@@ -413,6 +419,98 @@ def test_webhook_uses_both_header_lookups():
     src = inspect.getsource(main_mod)
     assert "find_awaiting_reply_for_header" in src
     assert "find_any_run_for_header" in src
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — the reply fixture completes the clarify→reply→resume loop (EMAIL-01)
+# ---------------------------------------------------------------------------
+
+
+def test_clarify_reply_fixture_validates_as_inbound_email():
+    """The committed reply fixture validates as a canonical InboundEmail, carries an
+    in_reply_to slot, and its from_addr equals the gate-block run's business contact
+    (so it passes the FIX-5 sender revalidation)."""
+    from app.db.seed import seed
+
+    payload = json.loads(_CLARIFY_REPLY_FIXTURE.read_text())
+    email = InboundEmail.model_validate(payload)
+    assert email.in_reply_to is not None, "the reply must carry an in_reply_to slot"
+    assert _CLARIFICATION_PLACEHOLDER in email.in_reply_to, (
+        "the fixture must carry the substitutable placeholder token"
+    )
+    seeded_emails = {b["contact_email"] for b in seed(dry_run=True).businesses}
+    assert email.from_addr in seeded_emails
+    assert email.from_addr == _METRO_DELI_CONTACT, (
+        "from_addr must equal the gate-block run's business (FIX-5 revalidation)"
+    )
+    # Answer-only: the reply corrects the name but does NOT restate the hours
+    # (so the resume exercises the FIX-4 partial-reply-preserves-hours path).
+    assert "David Reyes" in email.body_text
+    assert "38" not in email.body_text, "the reply must NOT restate hours (partial reply)"
+
+
+def test_clarify_reply_fixture_completes_full_loop(client, fake_repo, mock_llm):
+    """The full clarify→reply→resume loop with ZERO real email (EMAIL-01, CLAR-03):
+
+    gate-block fixture → awaiting_reply → read back the clarification Message-ID via
+    the FIX-3 email_messages anchor → substitute it into the reply payload → ASSERT
+    the substitution took (the placeholder is gone) BEFORE the POST so a broken
+    substitution fails LOUDLY here instead of silently routing to the no-match branch
+    (WARNING 8) → POST the reply → the run resumes at extraction over (original
+    cleaned body + reply body) and advances, retaining the original hours.
+    """
+    # 1. Drive the gate-block fixture to awaiting_reply.
+    run_id, clarification_msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    # 2. Substitute the captured clarification Message-ID into the reply payload.
+    raw = _CLARIFY_REPLY_FIXTURE.read_text()
+    assert _CLARIFICATION_PLACEHOLDER in raw, "fixture must carry the placeholder"
+    substituted = raw.replace(_CLARIFICATION_PLACEHOLDER, clarification_msg_id)
+    reply_payload = json.loads(substituted)
+
+    # 3. ASSERT the substitution took BEFORE the POST (WARNING 8 — fail loudly, not
+    #    via the no-match branch). The reply's in_reply_to now equals the captured
+    #    clarification Message-ID and the placeholder token is gone.
+    assert _CLARIFICATION_PLACEHOLDER not in json.dumps(reply_payload), (
+        "the placeholder must be fully substituted before POSTing"
+    )
+    assert reply_payload["in_reply_to"] == clarification_msg_id, (
+        "the reply's in_reply_to must equal the captured clarification Message-ID"
+    )
+
+    # 4. Script the resume pass (corrected name resolves cleanly → process) and POST.
+    _script_resume_resolved(mock_llm)
+    r = client.post("/webhook/inbound", json=reply_payload)
+    assert r.status_code == 200
+    assert r.json()["status"] == "resumed", "the reply must route to resume, not a new run"
+
+    # 5. The run resumed at extraction and advanced (retaining original hours via the
+    #    combined-context re-extraction — the loop is exercisable with zero real email).
+    run = fake_repo.load_run(run_id)
+    assert run["status"] in ("awaiting_approval", "computed"), (
+        "the resumed run must advance past awaiting_reply"
+    )
+    # A line item was computed for the now-resolved David Reyes (hours survived).
+    items = fake_repo.line_items.get(run_id, [])
+    assert len(items) == 1, "the resumed run computes a paystub for the resolved employee"
+
+
+def test_reply_with_no_matching_outbound_handled_gracefully(client, fake_repo, mock_llm):
+    """A reply whose in_reply_to matches no outbound Message-ID is handled gracefully
+    (logged, no wrong-run resume). This is NOT how the resume test passes — the
+    pre-POST substitution assertion guarantees the resume path is the one exercised."""
+    # No run was ever driven to awaiting_reply, so there is no outbound anchor.
+    reply = _reply_payload(
+        in_reply_to="<nonexistent-clarification@payroll-agent.local>",
+        from_addr=_METRO_DELI_CONTACT,
+        body="A reply that threads onto nothing.",
+    )
+    r = client.post("/webhook/inbound", json=reply)
+    assert r.status_code == 200
+    # No header match → falls through to ordinary first ingest (a NEW run is opened,
+    # never a wrong-run resume). The reply's sender is a seeded business, so the
+    # ordinary path accepts it.
+    assert r.json()["status"] == "accepted", "no header match → ordinary inbound, no resume"
 
 
 # ---------------------------------------------------------------------------
