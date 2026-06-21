@@ -212,6 +212,35 @@ def load_source_email(run_id: uuid.UUID, conn=None) -> str | None:
     return row[0] if row else None
 
 
+# Explicit column list for rebuilding an InboundEmail from the source email row
+# (no SELECT * — InboundEmail is extra="forbid"). The stored body_text is already
+# cleaned (FIX C), so the rebuilt InboundEmail carries the cleaned body unchanged.
+_INBOUND_COLS = (
+    "id, message_id, in_reply_to, references_header, subject, from_addr,"
+    " to_addr, body_text, created_at"
+)
+
+
+def load_inbound_email(run_id: uuid.UUID, conn=None):
+    """Rebuild the run's source InboundEmail (cleaned body) for the extract stage.
+
+    Returns an InboundEmail or None if the run has no linked source email. The
+    body_text is the cleaned body persisted at ingest — NOT re-cleaned (FIX C).
+    """
+    from app.models.contracts import InboundEmail
+
+    sql = (
+        "SELECT " + _INBOUND_COLS + " FROM email_messages em"
+        " JOIN payroll_runs pr ON pr.source_email_id = em.id"
+        " WHERE pr.id = %s"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(run_id),))
+            row = cur.fetchone()
+    return InboundEmail(**row) if row else None
+
+
 # ---------------------------------------------------------------------------
 # Status / persistence
 # ---------------------------------------------------------------------------
