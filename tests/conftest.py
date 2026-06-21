@@ -298,6 +298,33 @@ class InMemoryRepo:
         rows = self.outbound.get(str(run_id))
         return rows[-1]["message_id"] if rows else None
 
+    # --- header-chain reply routing (CLAR-02/03, Plan 04) ---
+    def _header_matches(self, in_reply_to, references_header, row):
+        """Mirror the repo SQL: outbound Message-ID == in_reply_to OR ∈ references."""
+        mid = row["message_id"]
+        if in_reply_to is not None and mid == in_reply_to:
+            return True
+        return bool(references_header) and mid in references_header
+
+    def find_awaiting_reply_for_header(self, *, in_reply_to, references_header, conn=None):
+        """Header match restricted to status='awaiting_reply' (resume lookup)."""
+        for run_id, rows in self.outbound.items():
+            run = self.runs.get(run_id)
+            if not run or run["status"] != "awaiting_reply":
+                continue
+            for row in rows:
+                if self._header_matches(in_reply_to, references_header, row):
+                    return uuid.UUID(run_id)
+        return None
+
+    def find_any_run_for_header(self, *, in_reply_to, references_header, conn=None):
+        """The SAME header match across ANY status (late-reply observability, FIX 10)."""
+        for run_id, rows in self.outbound.items():
+            for row in rows:
+                if self._header_matches(in_reply_to, references_header, row):
+                    return uuid.UUID(run_id)
+        return None
+
 
 @pytest.fixture
 def fake_repo(monkeypatch) -> InMemoryRepo:
@@ -321,6 +348,8 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "replace_line_items",
         "insert_email_message",
         "get_outbound_message_id",
+        "find_awaiting_reply_for_header",
+        "find_any_run_for_header",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)

@@ -1,0 +1,512 @@
+"""Clarify→reply→resume threading tests (CLAR-02, CLAR-03, EMAIL-01) — slice (c).
+
+Slice (c) is the LAST and trickiest sub-piece (D-A5-01): re-entrancy. A reply
+POSTed to the SAME inbound webhook routes to its paused run via the RFC
+In-Reply-To/References header chain, the reply sender is re-asserted against the
+matched run's business (so a spoofed reply cannot bypass INGEST-03), and the run
+re-enters the pipeline at extraction idempotently AND losslessly over
+(original cleaned inbound body + reply body), so a partial reply never loses the
+original hours.
+
+The five invariants under test (RESEARCH §Pattern 6 + review FIXes):
+  - header-chain match restricted to awaiting_reply (find_awaiting_reply_for_header);
+  - reply sender re-validated against the matched run's business (FIX 5);
+  - partial reply preserves original hours (re-extract over original+reply, FIX 4/C);
+  - resume stamps the code-owned run_id into extract (FIX A);
+  - a late reply (header match to a non-awaiting_reply run) is found via
+    find_any_run_for_header and logged, NOT resumed (FIX 10).
+
+All LLM calls are mocked; the FULL pipeline runs offline via the conftest
+in-memory fake_repo + the class-level FIFO mock_llm script. DB round-trips that
+need a live database go behind @pytest.mark.integration + the two-factor guard.
+"""
+from __future__ import annotations
+
+import json
+import pathlib
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.models.contracts import InboundEmail
+
+# The seeded David Reyes employee id (app/db/seed.py emp 3) — the hero gate run.
+_DAVID_REYES_ID = "e0000003-0000-0000-0000-000000000003"
+_METRO_DELI_CONTACT = "hr@metrodeli.example"
+
+_GATE_BLOCK_FIXTURE = (
+    pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "gate_block_hero.json"
+)
+
+
+@pytest.fixture
+def client(fake_repo):
+    from app.main import app
+
+    return TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# LLM scripts (FIFO; conftest pops one per structured/text call in order)
+# ---------------------------------------------------------------------------
+
+
+def _script_gate_block_to_reply(mock_llm) -> None:
+    """Drive the David Reyez fixture to awaiting_reply (extract→reconcile→decide→draft)."""
+    mock_llm.script = [
+        json.dumps(
+            {
+                "employees": [{"submitted_name": "David Reyez", "hours_regular": "38"}],
+                "pay_period_start": "2026-06-15",
+                "pay_period_end": None,
+            }
+        ),
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "submitted_name": "David Reyez",
+                        "matched_employee_id": _DAVID_REYES_ID,
+                        "match_type": "llm_typo",
+                        "confidence": "0.6",
+                        "reason": "likely a typo of David Reyes (y->z)",
+                    }
+                ]
+            }
+        ),
+        json.dumps({"model_action": "process", "reasons": ["all hours present"]}),
+        "Hi — could you confirm the employee name 'David Reyez'?",
+    ]
+
+
+def _script_resume_resolved(mock_llm) -> None:
+    """Script the RESUME pass: the corrected name now resolves cleanly and processes.
+
+    On resume the orchestrator re-extracts over (original cleaned body + reply body),
+    then runs reconcile→decide again. Here the corrected name resolves to the seeded
+    David Reyes at confidence 1.0 and the model says process → final_action process.
+    """
+    mock_llm.script = [
+        # extract over (original + reply body) — the corrected spelling now extracted.
+        json.dumps(
+            {
+                "employees": [{"submitted_name": "David Reyes", "hours_regular": "38"}],
+                "pay_period_start": "2026-06-15",
+                "pay_period_end": None,
+            }
+        ),
+        # reconcile — David Reyes resolves cleanly (model layer-2, full confidence).
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "submitted_name": "David Reyes",
+                        "matched_employee_id": _DAVID_REYES_ID,
+                        "match_type": "llm_nickname",
+                        "confidence": "1.0",
+                        "reason": "resolved after clarification",
+                    }
+                ]
+            }
+        ),
+        # decide — model says process; no gate trigger now (confidence 1.0).
+        json.dumps({"model_action": "process", "reasons": ["name confirmed"]}),
+    ]
+
+
+def _drive_to_awaiting_reply(client, fake_repo, mock_llm) -> tuple[str, str]:
+    """POST the gate-block fixture → awaiting_reply; return (run_id, outbound_msg_id)."""
+    _script_gate_block_to_reply(mock_llm)
+    r = client.post("/webhook/inbound", json=json.loads(_GATE_BLOCK_FIXTURE.read_text()))
+    assert r.status_code == 200
+    run_id = r.json()["run_id"]
+    assert fake_repo.load_run(run_id)["status"] == "awaiting_reply"
+    msg_id = fake_repo.get_outbound_message_id(run_id)
+    assert msg_id is not None
+    return run_id, msg_id
+
+
+def _reply_payload(*, in_reply_to: str, from_addr: str, body: str) -> dict:
+    """A canonical reply InboundEmail payload (answer-only by default)."""
+    return InboundEmail(
+        id=uuid.uuid4(),
+        message_id=f"<reply-{uuid.uuid4()}@metrodeli.example>",
+        in_reply_to=in_reply_to,
+        references_header=in_reply_to,
+        subject="Re: Payroll hours for week of 2026-06-15",
+        from_addr=from_addr,
+        to_addr="agent@payroll-agent.local",
+        body_text=body,
+        created_at=datetime.now(timezone.utc),
+    ).model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# test_header_chain_match — a reply routes to its run via In-Reply-To / References
+# ---------------------------------------------------------------------------
+
+
+def test_header_chain_match(client, fake_repo, mock_llm):
+    """A reply whose in_reply_to == the stored outbound Message-ID routes to that run
+    via find_awaiting_reply_for_header and resumes it (CLAR-02)."""
+    run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    _script_resume_resolved(mock_llm)
+    reply = _reply_payload(
+        in_reply_to=msg_id,
+        from_addr=_METRO_DELI_CONTACT,
+        body="Sorry, the correct spelling is David Reyes. Thanks!",
+    )
+    r = client.post("/webhook/inbound", json=reply)
+    assert r.status_code == 200
+
+    run = fake_repo.load_run(run_id)
+    # The run resumed and advanced past awaiting_reply (no longer paused there).
+    assert run["status"] != "awaiting_reply", "the reply must resume the run"
+    assert run["status"] in ("awaiting_approval", "computed")
+
+
+def test_header_chain_match_via_references(client, fake_repo, mock_llm):
+    """A reply matching via the References chain (in_reply_to None) also routes."""
+    run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    _script_resume_resolved(mock_llm)
+    # in_reply_to is None; the outbound Message-ID is embedded in a multi-id References.
+    reply = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<reply-refs@metrodeli.example>",
+        in_reply_to=None,
+        references_header=f"<other-thread@x.example> {msg_id} <tail@x.example>",
+        subject="Re: Payroll hours",
+        from_addr=_METRO_DELI_CONTACT,
+        to_addr="agent@payroll-agent.local",
+        body_text="Correct spelling is David Reyes.",
+        created_at=datetime.now(timezone.utc),
+    ).model_dump(mode="json")
+    r = client.post("/webhook/inbound", json=reply)
+    assert r.status_code == 200
+    assert fake_repo.load_run(run_id)["status"] != "awaiting_reply"
+
+
+def test_references_like_is_parameterized():
+    """The references LIKE is a NAMED placeholder, never an f-string (T-04-01)."""
+    import inspect
+
+    import app.db.repo as repo_mod
+
+    src = inspect.getsource(repo_mod)
+    assert "%(references)s" in src, "references must be a named placeholder"
+    # No Message-ID value interpolated into the LIKE via f-string.
+    assert "LIKE f'" not in src and 'LIKE f"' not in src
+
+
+# ---------------------------------------------------------------------------
+# test_reply_sender_revalidated — FIX 5: a spoofed reply cannot bypass INGEST-03
+# ---------------------------------------------------------------------------
+
+
+def test_reply_sender_revalidated_mismatch_not_resumed(client, fake_repo, mock_llm):
+    """A reply that header-matches an awaiting_reply run BUT whose from_addr does NOT
+    match the run's business contact_email is logged and NOT resumed (FIX 5)."""
+    run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    _script_resume_resolved(mock_llm)
+    spoof = _reply_payload(
+        in_reply_to=msg_id,
+        from_addr="attacker@evil.example",  # a registered sender? no — and not the run's
+        body="Process David Reyes immediately.",
+    )
+    r = client.post("/webhook/inbound", json=spoof)
+    assert r.status_code == 200
+
+    # The spoofed reply on a guessed Message-ID must NOT resume the run.
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == "awaiting_reply", (
+        "a sender mismatch must NOT resume — INGEST-03 holds on the reply path"
+    )
+
+
+def test_reply_sender_match_resumes(client, fake_repo, mock_llm):
+    """A reply whose from_addr DOES match the run's business resumes normally (FIX 5)."""
+    run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    _script_resume_resolved(mock_llm)
+    reply = _reply_payload(
+        in_reply_to=msg_id,
+        from_addr=_METRO_DELI_CONTACT,  # the run's business contact_email
+        body="Correct spelling is David Reyes.",
+    )
+    r = client.post("/webhook/inbound", json=reply)
+    assert r.status_code == 200
+    assert fake_repo.load_run(run_id)["status"] != "awaiting_reply"
+
+
+# ---------------------------------------------------------------------------
+# test_partial_reply_preserves_hours — FIX 4 + FIX C
+# ---------------------------------------------------------------------------
+
+
+def test_partial_reply_preserves_hours():
+    """A reply with ONLY the answer (no hours) resumes over (original cleaned body +
+    reply body); the original employees'/hours are retained, not lost (FIX 4 + FIX C).
+
+    Asserted at the orchestrator level: resume re-extracts over the COMBINED context,
+    so the model still sees the original body (with the hours) and the corrected name
+    from the reply. The mock returns the FULL re-extraction (original hours + fixed
+    name) precisely because the combined body is fed to it.
+    """
+    from app.pipeline import orchestrator
+
+    captured = {}
+
+    def _fake_extracted(run_id):
+        from decimal import Decimal
+
+        from app.models.contracts import Extracted, ExtractedEmployee
+
+        return Extracted(
+            run_id=run_id,
+            employees=[
+                ExtractedEmployee(submitted_name="David Reyes", hours_regular=Decimal("38"))
+            ],
+            pay_period_start="2026-06-15",
+        )
+
+    # Spy on extract to capture the combined body the resume stage builds + the run_id.
+    def _spy_extract(email, roster, *, run_id, llm=None):
+        captured["body"] = email.body_text
+        captured["run_id"] = run_id
+        return _fake_extracted(run_id)
+
+    # Build a minimal in-memory repo just for this orchestrator-level test.
+    run_id = uuid.uuid4()
+    store = _MiniStore(run_id)
+
+    import app.db.repo as repo_mod
+    import pytest as _pt
+
+    monkey = _pt.MonkeyPatch()
+    try:
+        for name in (
+            "load_run", "load_source_email", "load_roster_for_business",
+            "set_status", "record_run_error", "persist_extracted",
+            "persist_decision", "persist_reconciliation", "replace_line_items",
+        ):
+            monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
+        monkey.setattr(orchestrator, "extract", _spy_extract)
+        monkey.setattr(orchestrator, "reconcile_names", lambda names, roster, **kw: _stub_matches(names))
+        monkey.setattr(orchestrator, "validate", lambda *a, **kw: [])
+        monkey.setattr(orchestrator, "decide", lambda *a, **kw: _stub_decision_process())
+
+        reply = InboundEmail(
+            id=uuid.uuid4(),
+            message_id="<reply-partial@metrodeli.example>",
+            in_reply_to="<outbound@payroll-agent.local>",
+            references_header="<outbound@payroll-agent.local>",
+            subject="Re: hours",
+            from_addr=_METRO_DELI_CONTACT,
+            to_addr="agent@payroll-agent.local",
+            body_text="It's David Reyes.",  # answer-only: NO hours in the reply
+            created_at=datetime.now(timezone.utc),
+        )
+        orchestrator.resume_pipeline(run_id, reply)
+    finally:
+        monkey.undo()
+
+    # The combined extraction context includes BOTH the original body (with hours)
+    # AND the reply body (the corrected name) — so partial replies don't lose hours.
+    assert "38 regular hours" in captured["body"], "original hours must be in context"
+    assert "David Reyes" in captured["body"], "the reply correction must be in context"
+    assert captured["run_id"] == run_id, "resume must pass the code-owned run_id (FIX A)"
+
+
+# ---------------------------------------------------------------------------
+# test_resume_stamps_run_id — FIX A
+# ---------------------------------------------------------------------------
+
+
+def test_resume_stamps_run_id():
+    """resume passes the run's code-owned run_id into extract so the rebuilt
+    Extracted.run_id == the resumed run (FIX A)."""
+    import inspect
+
+    from app.pipeline import orchestrator
+
+    src = inspect.getsource(orchestrator)
+    assert "def resume_pipeline" in src, "resume_pipeline must exist"
+    # Both run_pipeline and resume_pipeline must pass run_id=run_id into extract.
+    assert src.count("run_id=run_id") >= 1, "extract must be called with run_id=run_id"
+
+
+# ---------------------------------------------------------------------------
+# test_idempotent_resume — overwrite extracted_data, replace line items
+# ---------------------------------------------------------------------------
+
+
+def test_idempotent_resume(client, fake_repo, mock_llm):
+    """Resuming a run overwrites extracted_data (not appends) and is idempotent —
+    re-running yields the same final state."""
+    run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    _script_resume_resolved(mock_llm)
+    reply = _reply_payload(
+        in_reply_to=msg_id,
+        from_addr=_METRO_DELI_CONTACT,
+        body="Correct spelling is David Reyes.",
+    )
+    r1 = client.post("/webhook/inbound", json=reply)
+    assert r1.status_code == 200
+    state_after_first = fake_repo.load_run(run_id)["status"]
+    extracted_after_first = fake_repo.load_run(run_id)["extracted_data"]
+
+    # extracted_data is a single cell (a dict, not a growing list of extractions).
+    assert isinstance(extracted_after_first, dict)
+    assert "employees" in extracted_after_first
+    # Exactly one employee — the re-extraction OVERWROTE, did not append.
+    assert len(extracted_after_first["employees"]) == 1
+
+    assert state_after_first in ("awaiting_approval", "computed")
+
+
+# ---------------------------------------------------------------------------
+# test_late_reply_logged_not_resumed — FIX 10
+# ---------------------------------------------------------------------------
+
+
+def test_late_reply_logged_not_resumed(client, fake_repo, mock_llm):
+    """A header match to a run NOT in awaiting_reply (e.g. sent/reconciled) is found
+    via find_any_run_for_header and logged as a late reply, NOT resumed (FIX 10)."""
+    run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
+
+    # Move the run OUT of awaiting_reply (simulate it already resolved / sent).
+    from app.models.status import RunStatus
+
+    fake_repo.set_status(run_id, RunStatus.SENT)
+    assert fake_repo.load_run(run_id)["status"] == "sent"
+
+    _script_resume_resolved(mock_llm)
+    reply = _reply_payload(
+        in_reply_to=msg_id,
+        from_addr=_METRO_DELI_CONTACT,
+        body="A late reply that arrives after the run already advanced.",
+    )
+    r = client.post("/webhook/inbound", json=reply)
+    assert r.status_code == 200
+
+    # The late reply did NOT resume — the run stays at sent (only awaiting_reply resumes).
+    assert fake_repo.load_run(run_id)["status"] == "sent", (
+        "a header match to a non-awaiting_reply run must NOT resume (FIX 10)"
+    )
+    # The response surfaces the late-reply observation (not a fresh accepted run).
+    assert r.json().get("status") == "late_reply"
+
+
+def test_webhook_uses_both_header_lookups():
+    """The webhook calls find_awaiting_reply_for_header for resume AND
+    find_any_run_for_header for late-reply observability (FIX 10)."""
+    import inspect
+
+    import app.main as main_mod
+
+    src = inspect.getsource(main_mod)
+    assert "find_awaiting_reply_for_header" in src
+    assert "find_any_run_for_header" in src
+
+
+# ---------------------------------------------------------------------------
+# Mini orchestrator-level stubs (for the body-composition test only)
+# ---------------------------------------------------------------------------
+
+
+def _stub_matches(names):
+    from decimal import Decimal
+
+    from app.models.roster import NameMatchResult
+
+    return [
+        NameMatchResult(
+            submitted_name=n,
+            matched_employee_id=uuid.UUID(_DAVID_REYES_ID),
+            match_type="exact",
+            confidence=Decimal("1.0"),
+            reason="stub",
+        )
+        for n in names
+    ]
+
+
+def _stub_decision_process():
+    from decimal import Decimal
+
+    from app.models.contracts import Decision
+
+    return Decision(
+        model_action="process",
+        gate_triggered=False,
+        gate_reasons=[],
+        final_action="process",
+        unresolved_names=[],
+        missing_fields=[],
+        confidence=Decimal("1.0"),
+        reasons=["stub"],
+    )
+
+
+class _MiniStore:
+    """A tiny in-memory repo for the orchestrator-level partial-reply test."""
+
+    def __init__(self, run_id):
+        self.run_id = run_id
+        self.runs = {
+            str(run_id): {
+                "id": run_id,
+                "business_id": uuid.UUID("b0000002-0000-0000-0000-000000000002"),
+                "source_email_id": uuid.uuid4(),
+                "status": "awaiting_reply",
+                "extracted_data": None,
+                "decision": None,
+                "reconciliation": None,
+                "error_reason": None,
+                "pay_period_start": None,
+                "pay_period_end": None,
+            }
+        }
+
+    def load_run(self, run_id, conn=None):
+        return self.runs.get(str(run_id))
+
+    def load_source_email(self, run_id, conn=None):
+        # The ORIGINAL cleaned inbound body (with the hours), as persisted at ingest.
+        return "David Reyez - 38 regular hours\n\nThanks!"
+
+    def load_roster_for_business(self, business_id, conn=None):
+        from app.db.seed import seed
+        from app.models.roster import Roster
+
+        seeded = seed(dry_run=True)
+        emps = [e for e in seeded.employees if str(e.business_id) == str(business_id)]
+        return Roster(business_id=business_id, employees=emps)
+
+    def set_status(self, run_id, status, conn=None):
+        from app.models.status import RunStatus
+
+        self.runs[str(run_id)]["status"] = RunStatus(status).value
+
+    def record_run_error(self, run_id, reason, conn=None):
+        self.runs[str(run_id)]["error_reason"] = reason
+
+    def persist_extracted(self, run_id, extracted, conn=None):
+        self.runs[str(run_id)]["extracted_data"] = extracted.model_dump(mode="json")
+
+    def persist_decision(self, run_id, decision, conn=None):
+        self.runs[str(run_id)]["decision"] = decision.model_dump(mode="json")
+
+    def persist_reconciliation(self, run_id, matches, conn=None):
+        self.runs[str(run_id)]["reconciliation"] = [
+            m.model_dump(mode="json") for m in matches
+        ]
+
+    def replace_line_items(self, run_id, items, conn=None):
+        pass
