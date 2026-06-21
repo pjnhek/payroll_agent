@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # Drives the bracket tables in the Pub 15-T engine. Default 2026.
     tax_year: int = 2026
 
+    # ── Live-LLM opt-in (D-A2-01) ─────────────────────────────────────────────
+    # Two-factor guard mirroring the live-DB ALLOW_DB_RESET pattern: the live_llm
+    # test suite hits the REAL DeepSeek/Kimi APIs only when this flag is truthy
+    # AND the per-tier API keys are present. Default False so CI stays green/free.
+    allow_live_llm: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

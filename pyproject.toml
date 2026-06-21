@@ -13,4 +13,5 @@ include = ["app*"]
 # Register custom markers so pytest doesn't warn about unknown marks.
 markers = [
     "integration: marks tests as requiring a live database (deselect with -m 'not integration')",
+    "live_llm: marks tests as hitting real DeepSeek/Kimi APIs (deselect with -m 'not live_llm')",
 ]

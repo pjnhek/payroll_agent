@@ -78,11 +78,23 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
                                 )),
     extracted_data  JSONB,      -- D-06: persisted from Extracted.model_dump(mode="json")
     decision        JSONB,      -- D-06: persisted from Decision.model_dump(mode="json")
+    reconciliation  JSONB,      -- D-A3-05: list[NameMatchResult].model_dump(mode="json") per run
+    error_reason    TEXT,       -- D-A1-03 / FIX 7: orchestrator's persisted ERROR reason
     pay_period_start DATE,
     pay_period_end   DATE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ── Idempotent column adds for payroll_runs (Plan 02-01) ──────────────────────
+-- CREATE TABLE IF NOT EXISTS above is a no-op on an existing (Phase 1) table, so
+-- these ALTER ... ADD COLUMN IF NOT EXISTS blocks are what actually add the two
+-- new columns when re-applying schema.sql via the non-destructive bootstrap path.
+-- Both are no-ops on a fresh CREATE (the columns are already declared inline) and
+-- on re-runs (IF NOT EXISTS). A new JSONB/TEXT column is invisible to the
+-- status-drift guard, which parses only CHECK (col IN (...)) value sets.
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reconciliation JSONB;  -- D-A3-05
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_reason   TEXT;   -- D-A1-03
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
