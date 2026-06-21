@@ -36,10 +36,13 @@ CREATE TABLE IF NOT EXISTS employees (
     retirement_contribution_pct NUMERIC(5,4)  NOT NULL DEFAULT 0,
     filing_status               TEXT        NOT NULL CHECK (filing_status IN ('single','married_jointly','married_separately')),
     step_2_checkbox             BOOLEAN     NOT NULL DEFAULT FALSE,
-    step_3_dependents           NUMERIC(12,2) NOT NULL DEFAULT 0,
-    step_4a_other_income        NUMERIC(12,2) NOT NULL DEFAULT 0,
-    step_4b_deductions          NUMERIC(12,2) NOT NULL DEFAULT 0,
-    ytd_ss_wages                NUMERIC(14,2) NOT NULL DEFAULT 0,
+    -- WR-08: ge=0 in the Employee model is mirrored here as a runtime backstop
+    -- (project "reconciliation check as backstop" philosophy). A negative W-4
+    -- dollar amount or YTD wage silently corrupts the Pub 15-T worksheet / SS cap.
+    step_3_dependents           NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (step_3_dependents >= 0),
+    step_4a_other_income        NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (step_4a_other_income >= 0),
+    step_4b_deductions          NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (step_4b_deductions >= 0),
+    ytd_ss_wages                NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (ytd_ss_wages >= 0),
     pay_periods_per_year        INTEGER     NOT NULL CHECK (pay_periods_per_year IN (12,24,26,52)),
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),

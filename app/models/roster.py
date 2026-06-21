@@ -50,15 +50,20 @@ class Employee(BaseModel):
     # Retirement
     retirement_contribution_pct: Decimal = Field(ge=0, le=1)  # e.g. 0.03 for 3%
 
-    # W-4 fields (2020+ form)
+    # W-4 fields (2020+ form). All four are dollar amounts the Pub 15-T worksheet
+    # adds/subtracts, so a negative silently inflates or deflates withholding
+    # (step_3_dependents is *subtracted*). ge=0 closes the validation gate so a
+    # bad value never reaches the calc engine. (WR-08)
     filing_status: Literal["single", "married_jointly", "married_separately"]
     step_2_checkbox: bool
-    step_3_dependents: Decimal   # dollar amount, often 0
-    step_4a_other_income: Decimal  # other income, often 0
-    step_4b_deductions: Decimal   # extra deductions, often 0
+    step_3_dependents: Decimal = Field(ge=0)      # dollar amount, often 0
+    step_4a_other_income: Decimal = Field(ge=0)   # other income, often 0
+    step_4b_deductions: Decimal = Field(ge=0)     # extra deductions, often 0
 
-    # YTD Social Security wages before this run (for the $184,500 wage-base cap)
-    ytd_ss_wages: Decimal
+    # YTD Social Security wages before this run (for the $184,500 wage-base cap).
+    # A negative makes remaining_cap = 184500 - ytd_ss_wages exceed the wage base,
+    # breaking the SS-cap straddle logic. (WR-08)
+    ytd_ss_wages: Decimal = Field(ge=0)
 
     # Pay schedule — mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52))
     # so an eval fixture / LLM-produced value can't drift past the contract (WR-02).

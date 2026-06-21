@@ -454,6 +454,66 @@ def test_decision_rejects_confidence_out_of_range() -> None:
 
 
 # ---------------------------------------------------------------------------
+# PaystubLineItem.match_confidence bound (WR-01-incomplete)
+# ---------------------------------------------------------------------------
+
+
+def test_paystub_line_item_rejects_confidence_above_one() -> None:
+    """PaystubLineItem.match_confidence > 1 raises ValidationError (WR-01-incomplete).
+
+    Mirrors test_name_match_result_rejects_confidence_above_one for the one
+    confidence field that maps to the DB (paystub_line_items.match_confidence
+    NUMERIC(4,3)). Unbounded, 42.0 would crash the INSERT and 1.5 would silently
+    corrupt the audit record.
+    """
+    with pytest.raises(ValidationError):
+        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("42.0")))
+
+
+def test_paystub_line_item_rejects_negative_confidence() -> None:
+    """PaystubLineItem.match_confidence < 0 raises ValidationError (WR-01-incomplete)."""
+    with pytest.raises(ValidationError):
+        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("-0.01")))
+
+
+# ---------------------------------------------------------------------------
+# W-4 / YTD dollar-field non-negativity (WR-08)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_rejects_negative_ytd_ss_wages() -> None:
+    """A negative ytd_ss_wages raises ValidationError (WR-08).
+
+    A negative YTD makes remaining_cap = 184500 - ytd_ss_wages exceed the wage
+    base, breaking the SS-cap straddle logic.
+    """
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(ytd_ss_wages=Decimal("-99999")))
+
+
+def test_employee_rejects_negative_step_3_dependents() -> None:
+    """A negative step_3_dependents raises ValidationError (WR-08).
+
+    step_3_dependents is *subtracted* in the Pub 15-T worksheet; a negative
+    value nonsensically inflates withholding.
+    """
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(step_3_dependents=Decimal("-5000")))
+
+
+def test_employee_rejects_negative_step_4a_other_income() -> None:
+    """A negative step_4a_other_income raises ValidationError (WR-08)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(step_4a_other_income=Decimal("-1")))
+
+
+def test_employee_rejects_negative_step_4b_deductions() -> None:
+    """A negative step_4b_deductions raises ValidationError (WR-08)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(step_4b_deductions=Decimal("-1")))
+
+
+# ---------------------------------------------------------------------------
 # pay_periods_per_year drift guard (WR-02)
 # ---------------------------------------------------------------------------
 

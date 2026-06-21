@@ -133,7 +133,11 @@ class PaystubLineItem(BaseModel):
     run_id: UUID
     employee_id: UUID | None  # None if name never resolved
     submitted_name: str
-    match_confidence: Decimal
+    # Same 0–1 semantic as Decision.confidence / NameMatchResult.confidence, and
+    # the one confidence field that reaches the DB (maps to NUMERIC(4,3), max
+    # 9.999). Unbounded, a value >9.999 crashes the INSERT and a value in (1,9.999]
+    # silently corrupts the audit record. (WR-01-incomplete)
+    match_confidence: Decimal = Field(ge=0, le=1)
     hours_regular: Decimal
     hours_overtime: Decimal
     hours_vacation: Decimal
