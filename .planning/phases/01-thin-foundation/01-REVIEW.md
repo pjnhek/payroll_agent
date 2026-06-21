@@ -1,307 +1,258 @@
 ---
 phase: 01-thin-foundation
-reviewed: 2026-06-21T06:24:17Z
-depth: standard
-files_reviewed: 13
+reviewed: 2026-06-20T00:00:00Z
+depth: deep
+files_reviewed: 14
 files_reviewed_list:
   - app/config.py
   - app/db/bootstrap.py
   - app/db/schema.sql
   - app/db/seed.py
   - app/db/supabase.py
+  - app/models/__init__.py
   - app/models/contracts.py
   - app/models/roster.py
   - app/models/status.py
   - pyproject.toml
   - requirements.txt
+  - tests/test_bootstrap_safe_url.py
   - tests/test_models_contracts.py
   - tests/test_seed_roundtrip.py
   - tests/test_status_drift.py
 findings:
   critical: 0
-  warning: 7
-  info: 5
-  total: 12
+  warning: 4
+  info: 4
+  total: 8
 status: issues_found
 ---
 
-# Phase 1: Code Review Report
+# Phase 1: Code Review Report (DEEP re-review)
 
-**Reviewed:** 2026-06-21T06:24:17Z
-**Depth:** standard
-**Files Reviewed:** 13
+**Reviewed:** 2026-06-20
+**Depth:** deep (cross-file: model ↔ schema ↔ seed ↔ tests)
+**Files Reviewed:** 14
 **Status:** issues_found
 
 ## Summary
 
-Phase 1 (Thin Foundation) delivers the shared Pydantic v2 contracts, the Postgres
-schema + idempotent bootstrap, and a fixed-UUID seed loader. The core mechanics
-are sound: parameterized SQL is used everywhere user-shaped data flows
-(no injection surface — the only f-string DDL uses a hardcoded allow-list of
-table names), `prepare_threshold=None` is correctly set on both the pool and the
-bootstrap connection per the Supavisor gotcha, and the status-drift guard's regex
-was verified to extract exactly the 11 `payroll_runs.status` values without being
-fooled by the sibling `pay_period`/`pay_periods_per_year` CHECK constraints. No
-hardcoded secrets; `.env` is gitignored and untracked.
+The prior-review fixes (WR-01 through WR-07, IN-01/IN-02) all hold up under
+empirical re-test. Test baseline reproduced locally: **53 passed, 8 skipped, 0
+failed** (no live Postgres in env). Security surface is clean: no hardcoded
+secrets, no `eval/exec/os.system`, all seed SQL is parameterized, and the only
+f-string-into-SQL interpolation in `bootstrap.py` is the hardcoded `_DROP_ORDER`
+constant list (no injection vector). `_safe_db_url` was stress-tested against
+`@`/`:`/percent-encoded passwords and never leaks. Module imports are correctly
+lazy (no `DATABASE_URL` needed for the CI/dry-run path). Employee
+model ↔ seed ↔ schema column sets are in exact agreement. The status-drift guard
+regex was mutation-tested and correctly anchors on `status` (not `substatus`).
 
-There are no BLOCKERs, but there are seven WARNINGs that matter for a system whose
-stated thesis is "a low-confidence match can never reach a real payroll
-calculation." The two most important: **(1) the Pydantic contracts accept clearly
-invalid payroll data** — negative pay rates, negative hours, `retirement_pct=50`
-(5000%), and `confidence` outside `[0,1]` despite docstrings and the 0.8 gate
-depending on that range; and **(2) two of the live-DB integration tests reference
-`psycopg` without importing it and will raise `NameError` the moment they run**,
-giving false confidence in the round-trip layer. There is also a notable
-dead-code / DRY problem: the `_DecimalModel` base class and all three
-`field_serializer` decorators are redundant — Pydantic v2 already serializes
-`Decimal` to a JSON string by default (verified empirically), so the D-06 guard is
-load-bearing in intent only.
+**No BLOCKERS.** The fix pass was substantially correct. However, deep cross-file
+analysis surfaces one **incomplete WR-01 fix** and three other defects that a
+per-file pass misses — all at integration seams between the model layer, the SQL
+schema, and the seed/test invariants. The unifying theme: **the bounds/CHECK
+discipline that was applied to *some* fields was not applied uniformly across the
+layers that share the same semantic value.**
 
 ## Warnings
 
-### WR-01: Pydantic contracts accept invalid payroll values (no numeric bounds)
+### WR-01 (incomplete): `PaystubLineItem.match_confidence` has no bound — WR-01 fix missed the one confidence field that reaches the DB
 
-**File:** `app/models/roster.py:43-60`, `app/models/contracts.py:78-83,120`
-**Issue:** Across the contracts there are zero numeric constraints. All of the
-following were confirmed to construct successfully:
-- `Employee(hourly_rate=Decimal("-50.00"))` — negative wage rate accepted.
-- `Employee(retirement_contribution_pct=Decimal("50"))` — 5000% 401k accepted.
-- `ExtractedEmployee(hours_regular=Decimal("-10"))` — negative hours accepted.
-- `NameMatchResult(confidence=Decimal("5.0"))` and `Decision(confidence=Decimal("-1"))`
-  — confidence outside `[0,1]` accepted, even though both docstrings state
-  "0.0–1.0" and the entire design gates on `confidence < 0.8`.
+**File:** `app/models/contracts.py:136`
+**Issue:** WR-01 added `Field(ge=0, le=1)` to `Decision.confidence`
+(`contracts.py:112`) and `NameMatchResult.confidence` (`roster.py:141`). But
+`PaystubLineItem.match_confidence` — the **same 0–1 semantic** and the field that
+actually maps to the `paystub_line_items.match_confidence NUMERIC(4,3)` column —
+was left as bare `Decimal` with **no bound**. Empirically verified: the model
+accepts `match_confidence=Decimal("42.0")`. Two concrete failures follow:
 
-For a payroll engine whose core value is a code-gated confidence threshold, these
-are exactly the inputs the contracts should reject at construction. Garbage that
-parses here flows straight into the calc/gate stages in Phase 2/3.
-**Fix:** Add Pydantic field constraints. Example:
+- A value `> 9.999` (e.g. `42.0`) passes the contract, then **crashes the INSERT
+  with a numeric-overflow error** at the DB boundary (`NUMERIC(4,3)` max is
+  `9.999`) — a runtime failure deep in the pipeline rather than at construction.
+- A value in `(1, 9.999]` (e.g. a buggy `1.5` confidence) passes both the model
+  *and* the DB and **silently corrupts the audit record** that the gate decision
+  is supposed to make legible.
+
+This is the exact class of bug WR-01 set out to close; it was simply applied to 2
+of the 3 confidence fields and missed the one touching the DB.
+**Fix:**
 ```python
-from pydantic import Field
-
-# roster.py — Employee
-hourly_rate: Decimal | None = Field(default=None, ge=0)
-annual_salary: Decimal | None = Field(default=None, ge=0)
-retirement_contribution_pct: Decimal = Field(ge=0, le=1)
-confidence: Decimal = Field(ge=0, le=1)   # NameMatchResult
-
-# contracts.py — ExtractedEmployee hours
-hours_regular: Decimal | None = Field(default=None, ge=0)
-# ... same ge=0 on the other four hours fields
-confidence: Decimal = Field(ge=0, le=1)   # Decision
+# app/models/contracts.py — PaystubLineItem
+match_confidence: Decimal = Field(ge=0, le=1)
 ```
+Then add a contract test mirroring `test_name_match_result_rejects_confidence_above_one`
+for `PaystubLineItem`.
 
-### WR-02: `pay_periods_per_year` is unconstrained at the model layer — silent model/SQL drift
+### WR-08: W-4 / YTD dollar fields accept negatives in both the model and the schema — corrupts the SS cap and the Pub 15-T worksheet
 
-**File:** `app/models/roster.py:60`
-**Issue:** `pay_periods_per_year: int` accepts any integer (`13`, `0`, `-1` all
-construct), but `schema.sql:43` constrains it to `CHECK (pay_periods_per_year IN
-(12,24,26,52))`. The model is meant to be a pure value usable by the eval with
-"zero DB access" (D-14), so an eval fixture or LLM-produced value of `13` passes
-the contract and only blows up at the DB boundary — or never, if it never reaches
-the DB. This is the same drift class the project explicitly guards for `status`
-(via `test_status_drift.py`) but leaves unguarded here.
-**Fix:** Mirror the SQL CHECK in the type:
+**File:** `app/models/roster.py:56-61`, `app/db/schema.sql:39-42`
+**Issue:** WR-01 added `ge=0` to *rates and hours* but not to the W-4/YTD dollar
+fields. Empirically verified: `Employee(... step_3_dependents=Decimal("-5000"),
+step_4a_other_income=Decimal("-1"), step_4b_deductions=Decimal("-1"),
+ytd_ss_wages=Decimal("-99999"))` constructs successfully, and the schema columns
+(`step_3_dependents/4a/4b NUMERIC(12,2)`, `ytd_ss_wages NUMERIC(14,2)`) carry
+**no CHECK**, so the bad value writes cleanly. Concrete harm in later phases:
+
+- A negative `ytd_ss_wages` makes `remaining_cap = 184500 - ytd_ss_wages` exceed
+  the wage base, **breaking the exact SS-cap straddle logic** the Thomas Bergmann
+  fixture and `test_seed_high_earner_ss_cap_straddle` are built to exercise.
+- `step_3_dependents` is *subtracted* in the Pub 15-T worksheet; a negative value
+  **inflates** withholding nonsensically — a silently-wrong paystub, which
+  CLAUDE.md flags as the highest-bug-risk failure mode.
+
+The project gates the calc engine behind validation precisely so a bad input
+"never reaches the calc engine mid-demo" — these four fields are an unvalidated
+hole in that gate.
+**Fix:**
 ```python
-from typing import Literal
-pay_periods_per_year: Literal[12, 24, 26, 52]
+# app/models/roster.py
+step_3_dependents:    Decimal = Field(ge=0)
+step_4a_other_income: Decimal = Field(ge=0)
+step_4b_deductions:   Decimal = Field(ge=0)
+ytd_ss_wages:         Decimal = Field(ge=0)
 ```
-Or, if a CI guard is preferred over a Literal, add a `test_pay_periods_drift`
-analogous to the existing status-drift test.
+Optionally mirror with `CHECK (... >= 0)` in `schema.sql` as the runtime backstop
+(consistent with the project's "reconciliation check as backstop" philosophy).
 
-### WR-03: Live-DB tests reference `psycopg` without importing it — guaranteed `NameError`
+### WR-09: Dual-source enum constraints (`pay_type`, `filing_status`, `pay_periods_per_year`) have NO drift guard — only `status` is protected
 
-**File:** `tests/test_seed_roundtrip.py:298,339`
-**Issue:** `test_high_earner_fields` and `test_employee_roundtrip` both call
-`conn.cursor(row_factory=psycopg.rows.dict_row)` but `psycopg` is **not imported**
-at module level (module imports are only `os`, `Decimal`, `pytest`) and is **not**
-imported locally inside those two functions — only `test_alias_exists` imports it
-locally (lines 412-413). The `# noqa: F821` annotations suppress the linter's
-"undefined name" warning but do not fix the runtime: both tests will raise
-`NameError: name 'psycopg' is not defined` the moment they execute against a live
-DB. They are skipped in CI (no `DATABASE_URL`), so the defect is latent and
-surfaces precisely when the integration round-trip is being trusted. This violates
-the project's "well-tested is non-negotiable" rule — these tests cannot pass.
-**Fix:** Add the import at module level (also lets you drop the three `# noqa: F821`):
+**File:** `app/models/roster.py:42,54,65` vs `app/db/schema.sql:33,37,43`
+(test gap: `tests/test_status_drift.py`)
+**Issue:** `test_status_drift.py` exists *because* a value enumerated in both
+Python and SQL is a known drift risk — it set-equality-checks the `status` CHECK
+against `RunStatus` and fails CI on divergence. But three other fields are
+enumerated in **both** the Pydantic `Literal` and a SQL `CHECK` with **no
+equivalent guard**:
+
+- `pay_type`: `Literal["hourly","salary"]` vs `CHECK (pay_type IN ('hourly','salary'))`
+- `filing_status`: `Literal["single","married_jointly","married_separately"]` vs the matching CHECK
+- `pay_periods_per_year`: `Literal[12,24,26,52]` vs `CHECK (... IN (12,24,26,52))`
+
+`test_employee_rejects_invalid_pay_periods` only tests the *model* side; if the
+schema CHECK and the Literal drift apart (someone adds `24` to one but not the
+other, or relaxes a CHECK), nothing fails. This is a coverage gap at the model↔schema
+seam and directly contradicts CLAUDE.md's "well-tested is non-negotiable" + the
+DRY principle the status guard already embodies.
+**Fix:** Generalize the status-drift test into a parameterized
+`test_enum_check_drift` that, for each `(column, python_value_set)` pair, parses
+the column's CHECK list out of `schema.sql` and asserts set-equality — the same
+mechanism already proven for `status`.
+
+### WR-10: `business.pay_period` ↔ `employee.pay_periods_per_year` consistency is enforced only by a hand-maintained comment, and tested for only 1 of 3 businesses
+
+**File:** `app/db/seed.py:223-226` (CADENCE VERIFICATION comment),
+`tests/test_seed_roundtrip.py:195-213`
+**Issue:** The relationship "a `weekly` business ⇒ its employees are `52`;
+`biweekly` ⇒ `26`" is a genuine cross-table invariant with **no enforcement**:
+no FK-level CHECK, no model holding both sides, only the static comment block at
+`seed.py:223-226` doing the mapping by hand. The only test
+(`test_business3_employees_have_biweekly_cadence`) checks Business 3 and
+**hardcodes `26`**; Businesses 1 and 2 (`weekly` ⇒ `52`) have their cadence
+consistency **unproven**. I verified the seed data is currently consistent across
+all 6 employees — but nothing locks it, so a future edit (the same class of bug
+"FIX B" already corrected once for Sandra Kim) would pass CI. An invariant a
+comment claims but no test proves is exactly the gap to close here.
+**Fix:** Add a data-driven test that maps each `pay_period` →
+expected `pay_periods_per_year` and asserts every seed employee matches its own
+business — covering all three businesses, not one:
 ```python
-import psycopg
-import psycopg.rows
-```
-Then change `psycopg.rows.dict_row  # noqa: F821` to `psycopg.rows.dict_row`.
-
-### WR-04: Redundant Decimal serialization machinery — `_DecimalModel` is dead, serializers are no-ops
-
-**File:** `app/models/contracts.py:21-31,123-125,163-182`
-**Issue:** `_DecimalModel` (lines 21-31) defines a universal
-`@field_serializer("*")` to turn `Decimal` into a string for D-06, but **no model
-in the codebase inherits from it** (`grep` confirms the only reference is its own
-definition; every model subclasses `BaseModel` directly). Separately,
-`Decision._serialize_confidence` (123-125) and `PaystubLineItem._serialize_decimal`
-(163-182) hand-roll the same conversion per field. All of this is redundant:
-Pydantic v2 already serializes `Decimal` to a JSON string in `model_dump(mode="json")`
-by default — verified empirically that `ExtractedEmployee` (which has *no*
-serializer at all) still emits `"40.25"`, and a plain `BaseModel` with a bare
-`Decimal` field emits `"1234.56"`. So `_DecimalModel` is pure dead code and the two
-explicit serializers add maintenance surface and reader confusion for zero behavior
-change. CLAUDE.md: "DRY is critical. Flag repetition aggressively."
-**Fix:** Delete `_DecimalModel` (21-31), delete `Decision._serialize_confidence`
-(123-125), delete `PaystubLineItem._serialize_decimal` (163-182), and drop the now-
-unused `field_serializer` import. Keep a single test (you already have
-`test_decimal_json_serialization`) as the behavioral guard that Pydantic's default
-holds — that test is the right place to lock the contract, not three copies of a
-serializer.
-
-### WR-05: `_safe_db_url` reports valid password-less URLs as `<unparseable url>`
-
-**File:** `app/db/bootstrap.py:45-61`
-**Issue:** The function only returns a reconstructed URL inside the `if
-parsed.password:` branch. For a perfectly valid URL with no password
-(e.g. `postgresql://user@host:6543/db`, or any URL where psycopg auth comes from
-`PGPASSWORD`/`.pgpass`/IAM), `parsed.password` is `None`, the `if` is skipped, and
-control falls through to `return "<unparseable url>"`. Confirmed: input
-`postgresql://user@host:6543/db` returns `<unparseable url>`. The bootstrap then
-prints a misleading "Bootstrap target: <unparseable url>" for a URL that is fully
-parseable and safe. Empty string also yields `<unparseable url>`, conflating "no
-URL" with "has-secret-stripped". This is a diagnostic-quality bug, not a leak (it
-fails closed), but it will mislead an operator during exactly the kind of
-connection-troubleshooting this redaction exists to support.
-**Fix:** Return the reconstructed URL in all parseable cases; reserve the fallback
-for genuine parse failures:
-```python
-try:
-    parsed = urllib.parse.urlparse(raw_url)
-    if not parsed.scheme:           # genuinely not a URL
-        return "<unparseable url>"
-    if parsed.password:
-        safe_netloc = parsed.netloc.replace(f":{parsed.password}@", ":***@", 1)
-        parsed = parsed._replace(netloc=safe_netloc)
-    return urllib.parse.urlunparse(parsed)
-except Exception:
-    return "<unparseable url>"
-```
-
-### WR-06: Business upsert can desync `id` from the fixed seed literal → FK failure on re-seed
-
-**File:** `app/db/seed.py:275-291` (and the employee FK at `schema.sql:30`)
-**Issue:** Businesses upsert on the natural key `ON CONFLICT (contact_email)` but
-the seed also carries fixed `id` literals (`b0000001-…`) that employees reference
-via `business_id`. If a `businesses` row already exists with a matching
-`contact_email` but a **different** `id` (an older seed run with different UUIDs, a
-manual insert, a restored backup), the `ON CONFLICT ... DO UPDATE` clause does not
-touch `id`, so the row keeps its old id. The subsequent employee inserts then use
-`business_id = b0000001-…`, which no longer exists, and the FK
-(`employees.business_id REFERENCES businesses(id)`) aborts the entire transaction.
-`test_idempotent_reseed` only covers the clean case where seed itself inserted the
-ids, so this path is untested. For a demo seed with stable conventions this is
-unlikely day-to-day, but it makes "idempotent" a conditional claim.
-**Fix:** Either upsert businesses on the primary key `id` (the truly stable
-identity) and treat `contact_email` as a plain updatable column with its own UNIQUE
-constraint, or explicitly document that seed assumes a clean/owned `businesses`
-table. Recommended:
-```sql
-INSERT INTO businesses (id, name, contact_email, pay_period)
-VALUES (%s, %s, %s, %s)
-ON CONFLICT (id) DO UPDATE
-  SET name = EXCLUDED.name,
-      contact_email = EXCLUDED.contact_email,
-      pay_period = EXCLUDED.pay_period,
-      updated_at = now()
-```
-
-### WR-07: `Employee` compensation invariant checks presence but not mutual exclusivity
-
-**File:** `app/models/roster.py:65-82`
-**Issue:** The docstring (lines 41-44) and class comment state the compensation
-fields are "mutually exclusive per pay_type," but `_require_compensation_field`
-only validates *presence* of the matching field. An hourly employee with both
-`hourly_rate` and a stray `annual_salary` validates cleanly (confirmed:
-`pay_type="hourly", hourly_rate=18.50, annual_salary=99999` is accepted). The
-unused/contradictory comp field then sits in the row and could be silently picked
-up by a future calc path or confuse the eval. The contract claims an invariant it
-does not enforce.
-**Fix:** Enforce exclusivity in the same validator:
-```python
-if self.pay_type == "hourly":
-    if self.hourly_rate is None:
-        raise ValueError("hourly_rate is required when pay_type is 'hourly'")
-    if self.annual_salary is not None:
-        raise ValueError("annual_salary must be None when pay_type is 'hourly'")
-if self.pay_type == "salary":
-    if self.annual_salary is None:
-        raise ValueError("annual_salary is required when pay_type is 'salary'")
-    if self.hourly_rate is not None:
-        raise ValueError("hourly_rate must be None when pay_type is 'salary'")
+EXPECT = {"weekly":52, "biweekly":26, "semi_monthly":24, "monthly":12}
+biz = {str(b["id"]): b["pay_period"] for b in result.businesses}
+for e in result.employees:
+    assert e.pay_periods_per_year == EXPECT[biz[str(e.business_id)]]
 ```
 
 ## Info
 
-### IN-01: Unused `import enum` in contracts.py
+### IN-06: `PaystubLineItem` computed-output fields (hours, gross_pay, net_pay) are unbounded
 
-**File:** `app/models/contracts.py:12`
-**Issue:** `import enum` is never referenced (`enum` has 0 name-uses and 0
-attribute-uses in the module — confirmed via AST). Leftover from an earlier draft;
-the `RunStatus` enum lives in `status.py`.
-**Fix:** Delete line 12. (`ruff` is in the dev stack and would flag this as `F401`.)
+**File:** `app/models/contracts.py:137-149`
+**Issue:** Verified the model accepts `hours_regular=Decimal("-40")` and
+`gross_pay=Decimal("-1")`. These are the *computed* outputs, so a negative is a
+calc-engine bug rather than bad input — but a `ge=0` floor would catch such a bug
+at the contract boundary instead of letting a negative net-pay paystub render.
+Lower priority than WR-01/WR-08 because nothing untrusted populates these in
+Phase 1. **Fix:** Add `Field(ge=0)` to the non-nullable money/hours fields when
+the calc engine lands in Phase 3.
 
-### IN-02: Tautological assertion provides no coverage
+### IN-07: `InboundEmail` marks `subject/from_addr/to_addr/body_text` non-nullable, but the `email_messages` schema columns are nullable
 
-**File:** `tests/test_status_drift.py:89`
-**Issue:** `assert "psycopg" not in sys.modules or True` is `True` unconditionally
-(`X or True` is always `True`), so it asserts nothing. The meaningful assertion is
-the next one (line 91, `app.db.supabase` not imported). The dead line reads as if
-it guards something.
-**Fix:** Remove line 89, or replace with the intended guard
-`assert "app.db.supabase" not in sys.modules` (already present at 91) — i.e. just
-delete the no-op.
+**File:** `app/models/contracts.py:44-47` vs `app/db/schema.sql:116-119`
+**Issue:** `InboundEmail.subject/from_addr/to_addr/body_text` are required
+non-Optional, while the matching `email_messages` columns have no `NOT NULL`.
+Reading a row with a NULL `subject` back into `InboundEmail(**row)` would raise
+`ValidationError`. Defensible under D-07 (these contracts are *parsed-input*
+shapes, not 1:1 DB mirrors) and no read path exists yet in Phase 1, so this is
+informational. **Fix:** When the ingest read path is built, either add `NOT NULL
+DEFAULT ''` to those schema columns or make the model fields `str | None` to match.
 
-### IN-03: `NameMatchResult.matched_employee_id` not constrained against `match_type`
+### IN-08: Misleading comment in `seed.py` — claims `model_dump(mode="json")` is used, but it isn't
 
-**File:** `app/models/roster.py:108-122`
-**Issue:** The docstring says `matched_employee_id` is "None when match_type ==
-'unknown'", but nothing enforces the relationship: an `unknown` match can carry a
-non-None id, and an `exact` match can carry `None`. This is a softer cousin of
-WR-07 — a documented invariant the type does not hold. Lower severity because this
-type is produced by code in a later phase, not by external input.
-**Fix:** Add a `@model_validator(mode="after")` tying `matched_employee_id is None`
-to `match_type == "unknown"`, or downgrade the docstring to a non-binding note.
+**File:** `app/db/seed.py:306`
+**Issue:** The comment "model_dump(mode="json") produces JSON-safe values (D-06
+pattern)" precedes code that passes **Pydantic-native** values (`emp.hourly_rate`
+as `Decimal`, `emp.known_aliases` as `list`) directly to psycopg — `model_dump`
+is never called here. The values adapt correctly (verified: `Decimal` → numeric,
+`list[str]` → `TEXT[]`, including the empty-list case), so behavior is correct;
+only the comment is wrong and could mislead a maintainer into thinking JSON
+coercion happens. **Fix:** Delete or correct the comment to "psycopg adapts
+Pydantic-native Decimal/list/bool values directly."
 
-### IN-04: `get_pool()` singleton is never closed
+### IN-09: Dev environment runs Python 3.13.5; CLAUDE.md pins 3.12 and `pyproject` allows `>=3.12`
 
-**File:** `app/db/supabase.py:24-46`
-**Issue:** The module-level pool is created lazily and never `.close()`d. For the
-long-lived Render web service this is acceptable (process lifetime == pool
-lifetime). It is noted only because the test suite imports the same module and the
-pool persists across the pytest process; if a future fixture opens it, nothing
-tears it down. Not a leak in the deployed app.
-**Fix:** Optional — expose a `close_pool()` for test teardown / graceful shutdown
-and call it from a FastAPI `lifespan` shutdown handler when the app is wired up.
-
-### IN-05: `--reset` commits drops before applying schema (non-atomic window)
-
-**File:** `app/db/bootstrap.py:84-98`
-**Issue:** Under `--reset`, the drop loop runs then `conn.commit()` (line 93)
-*before* `schema_sql` is applied and committed (97-98). If `schema.sql` application
-fails, the database is left with all tables dropped and not recreated — a
-half-applied state. The module docstring frames reset as "drops … then recreates";
-the intermediate commit means a failure between the two steps is not recoverable by
-re-running without manual intervention. Low severity: `--reset` is opt-in and
-operator-driven, and the dropped state is itself re-runnable. Worth a one-line
-docstring note or folding both steps into a single committed unit.
-**Fix:** Drop the early `conn.commit()` (line 93) so the DROPs and the CREATE
-DDL commit together as one unit:
-```python
-if reset:
-    for table in _DROP_ORDER:
-        conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
-# fall through to schema apply; single commit at the end
-schema_sql = _SCHEMA_SQL.read_text()
-conn.execute(schema_sql)
-conn.commit()
-```
-(Note: the schema's `DO $$…$$` block and `CREATE EXTENSION` are fine inside the
-same transaction in Postgres.)
+**File:** `pyproject.toml:4`
+**Issue:** The `.venv` interpreter is 3.13.5, but CLAUDE.md mandates a `python:3.12-slim`
+runtime pin "to avoid 3.13/3.14 wheel-availability edge cases for native deps."
+The test suite therefore validates on a *different* interpreter than the target
+runtime. No code defect — and no Dockerfile exists yet (out of Phase 1 scope) —
+but worth flagging so the Docker pin lands on 3.12 and a 3.12 dev venv is used to
+keep dev/prod parity. **Fix:** Recreate the dev venv on 3.12, and pin
+`requires-python = ">=3.12,<3.13"` if 3.13 parity is not intended.
 
 ---
 
-_Reviewed: 2026-06-21T06:24:17Z_
+## Re-verification of prior findings (all confirmed fixed, no regressions)
+
+Empirically re-checked; each holds:
+
+- **WR-01** (numeric bounds) — enforced under `from __future__ import annotations`
+  (verified `ExtractedEmployee` `ge=0` and `Decision`/`NameMatchResult` `le=1`
+  all fire). **Incomplete only** for `PaystubLineItem.match_confidence` (see
+  WR-01-incomplete) and the W-4/YTD fields (see WR-08).
+- **WR-02** (`pay_periods_per_year` Literal) — `Literal[12,24,26,52]` rejects
+  `0,-1,13,1`; accepts all four legal values. (Drift-guard gap only — see WR-09.)
+- **WR-03** (module-level psycopg import in seed test) — present at
+  `test_seed_roundtrip.py:18-20`.
+- **WR-04** (`_DecimalModel`/per-field serializers removed) — gone; default
+  Pydantic v2 Decimal→string serialization verified for `gross_pay`,
+  `state_withholding=None`, and `Decision.confidence`.
+- **WR-05** (`_safe_db_url` password-less) — verified for password-less URLs and
+  stress-tested against `@`/`:`/percent-encoded passwords; no leak in any case.
+- **WR-06** (businesses `ON CONFLICT (id)`) — present at `seed.py:285`, with a
+  correct rationale comment for not conflicting on `contact_email`.
+- **WR-07** (mutual exclusivity) — `_require_compensation_field` rejects a stray
+  off-type comp field; both directions tested.
+- **IN-01/IN-02** — no unused `enum` import in roster; no tautological assert.
+
+Deferred-by-design items reconfirmed as low-harm in this phase:
+
+- **IN-04** (pool never closed) — acceptable for a long-lived process; no leak in
+  the test path (dry-run never opens the pool).
+- **IN-05** (`--reset` non-atomic window: drops commit at `bootstrap.py:97`
+  before the create commits at `:102`) — mitigated by `DROP ... IF EXISTS` +
+  `CREATE ... IF NOT EXISTS` making a re-run self-healing; acceptable for a dev
+  admin tool. No re-raise.
+
+Confirmed clean (no finding): SQL parameterization in `seed.py`; `_DROP_ORDER`
+interpolation safety; lazy config (imports work without `DATABASE_URL`);
+multi-statement `schema.sql` apply (psycopg3 simple-query protocol runs it; the
+deferred-FK `DO $$` block is idempotent); status-drift regex anchoring; seed
+atomicity (`conn.transaction()` on a non-autocommit pooled connection); Employee
+model↔seed↔schema column-set agreement; seed values fit all `NUMERIC(p,s)`
+precisions.
+
+---
+
+_Reviewed: 2026-06-20_
 _Reviewer: Claude (gsd-code-reviewer)_
-_Depth: standard_
+_Depth: deep_
