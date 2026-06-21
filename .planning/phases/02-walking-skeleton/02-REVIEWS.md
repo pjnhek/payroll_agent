@@ -146,3 +146,34 @@ Single external reviewer (Codex/gpt-5.5 at xhigh). The plans are assessed as pha
 
 ### Divergent Views
 - Single reviewer — no inter-reviewer divergence to report.
+
+---
+
+## Codex Review — ROUND 2 (re-review after round-1 fixes, gpt-5.5 xhigh)
+
+**Prior Findings**
+
+1. **CONFIRMED-FIXED** — `non_numeric` is now extraction `ValidationError` → one retry → `ERROR`, and `validate.py` asserts typed `Extracted` never yields `non_numeric`. See `02-02 Task 2`.
+2. **CONFIRMED-FIXED** — pre-federal net is a `PRE_FEDERAL_NET_LABEL`/README/display concern, not a `PaystubLineItem` field. See `02-02 Tasks 3-4`.
+3. **CONFIRMED-FIXED** — outbound clarification Message-ID anchor is `email_messages(direction='outbound', run_id)`, with no `payroll_runs` column. See `02-01 Task 3`, `02-03 Task 2`.
+4. **CONFIRMED-FIXED** — resume re-extracts over original cleaned inbound body plus reply body; partial-reply preservation is tested. See `02-04 Task 1`.
+5. **CONFIRMED-FIXED** — reply sender is revalidated against the matched run’s business before resume. See `02-04 Task 1`.
+6. **CONFIRMED-FIXED** — layer-2 reconcile uses `NameReconciliationResponse(BaseModel){matches: ...}`. See `02-03 Task 1`.
+7. **CONFIRMED-FIXED** — `payroll_runs.error_reason` plus `repo.record_run_error` are planned and consumed by orchestrator error handling. See `02-01 Tasks 1/3`, `02-02 Task 3`.
+8. **CONFIRMED-FIXED** — hero mock is now `llm_typo`, David Reyes employee id, confidence `0.6`, decision `model_action="process"`. See `02-03 Task 3`.
+9. **CONFIRMED-FIXED** — 02-01 now commits the full repo helper surface. See `02-01 Task 3`.
+10. **CONFIRMED-FIXED** — late-reply observability uses separate awaiting-only and any-status header lookups. See `02-01 Task 3`, `02-04 Task 1`.
+11. **CONFIRMED-FIXED** — `requirements.txt` is removed from 02-01 `files_modified`; plan installs only. See `02-01 Task 1`.
+12. **PARTIALLY-FIXED** — the marker is correctly specified as `source="live"/"mock"` structured logging outside `Decision`. Remaining gap: the concrete implementation point/source derivation is still vague in `02-04 Task 3`.
+
+**New Concerns**
+
+- **HIGH — 02-02 Task 2:** `extract(email, roster, *, llm) -> Extracted` forbids `run_id`, but the authoritative `Extracted` contract requires `run_id`. This either forces the LLM to invent/echo a trusted run id or makes validation fail. Fix by passing `run_id` as code-owned input and constructing/overwriting `Extracted.run_id`, or use an LLM payload model without `run_id`.
+
+- **MEDIUM — 02-01 Task 3:** `persist_decision(run_id, Decision, final_status)` conflicts with “`set_status` is the only status writer.” Either remove `final_status` from `persist_decision`, or define `record_run_error`/status writes as explicit wrappers over `set_status`.
+
+- **LOW — 02-04 Task 1:** Plan depends on `repo.load_source_email` returning the original *cleaned* body, but 02-02 is not fully explicit that the cleaned body is what gets persisted. Pin this: either persist cleaned `body_text` or have `load_source_email` apply `clean_body`.
+
+**Overall Verdict**
+
+**NOT READY** — blocking item is the `Extracted.run_id` contradiction in `02-02 Task 2`. That needs to be resolved before execution; otherwise the pure extraction stage cannot safely produce the Phase 1 contract.
