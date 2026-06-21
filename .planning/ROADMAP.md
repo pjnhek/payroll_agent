@@ -39,7 +39,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Project scaffold + all shared Pydantic v2 contracts (RunStatus, InboundEmail, Extracted, Decision, PaystubLineItem, Roster, Employee, NameMatchResult, ValidationIssue)
+- [x] 01-01-PLAN.md — Project scaffold + all shared Pydantic v2 contracts (RunStatus, InboundEmail, Extracted, Decision, PaystubLineItem, Roster, Employee, NameMatchResult, ValidationIssue)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thin Foundation | 0/3 | Not started | - |
+| 1. Thin Foundation | 1/3 | In Progress|  |
 | 2. Walking Skeleton | 0/TBD | Not started | - |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
