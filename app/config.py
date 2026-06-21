@@ -1,0 +1,54 @@
+"""Application configuration via pydantic-settings.
+
+All sensitive values (DATABASE_URL, API keys) are loaded from environment variables
+or a .env file. A missing DATABASE_URL fails fast at startup rather than mid-pipeline.
+
+Usage:
+    from app.config import get_settings
+    settings = get_settings()
+    url = settings.database_url
+"""
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Env-driven config for the payroll agent.
+
+    D-04: database_url has no default — a missing env var raises a ValidationError
+    at import time so the problem is visible immediately, not buried in a later
+    connection attempt.
+    """
+
+    # ── Database ──────────────────────────────────────────────────────────────
+    # Must point to the Supavisor pooler host (transaction mode, port 6543) —
+    # NOT the direct db.<ref>.supabase.co host (IPv6-only; Render/local mismatch).
+    database_url: str  # no default — fails fast if unset
+
+    # ── Extraction tier (stronger model) ─────────────────────────────────────
+    extraction_model: str = "deepseek-v4-flash"
+    extraction_base_url: str = "https://api.deepseek.com"
+    extraction_api_key: str = ""
+
+    # ── Decision tier (mid model) ─────────────────────────────────────────────
+    decision_model: str = "moonshot-v1-8k"
+    decision_base_url: str = "https://api.moonshot.ai/v1"
+    decision_api_key: str = ""
+
+    # ── Drafting tier (cheap model) ───────────────────────────────────────────
+    draft_model: str = "moonshot-v1-8k"
+    draft_base_url: str = "https://api.moonshot.ai/v1"
+    draft_api_key: str = ""
+
+    # ── Tax year ──────────────────────────────────────────────────────────────
+    # Drives the bracket tables in the Pub 15-T engine. Default 2026.
+    tax_year: int = 2026
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Return a cached Settings instance (reads env / .env once)."""
+    return Settings()
