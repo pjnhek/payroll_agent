@@ -329,6 +329,88 @@ def test_partial_reply_preserves_hours():
 
 
 # ---------------------------------------------------------------------------
+# test_resume_precondition — CR-02: a resume on a non-awaiting_reply run is a no-op
+# ---------------------------------------------------------------------------
+
+
+def test_resume_on_non_awaiting_reply_run_does_not_mutate():
+    """CR-02 — resume_pipeline must re-assert the run is still awaiting_reply BEFORE
+    mutating. A late/duplicate reply that lands after the run advanced (approved /
+    computed / sent / etc.) must be DROPPED: no EXTRACTING flip, no gate re-run, no
+    line-item replacement, and crucially NOT routed to ERROR (a late reply is not a
+    failure). This protects a human-approved run from being clobbered on a status
+    race between the webhook check and the BackgroundTask.
+    """
+    from app.pipeline import orchestrator
+
+    run_id = uuid.uuid4()
+    store = _MiniStore(run_id)
+    # The run already advanced past awaiting_reply (operator approved the first result).
+    store.runs[str(run_id)]["status"] = "approved"
+
+    extract_called = {"n": 0}
+
+    def _spy_extract(email, roster, *, run_id, llm=None):
+        extract_called["n"] += 1
+        return _fake_extracted_unused(run_id)
+
+    import app.db.repo as repo_mod
+    import pytest as _pt
+
+    monkey = _pt.MonkeyPatch()
+    try:
+        for name in (
+            "load_run", "load_source_email", "load_roster_for_business",
+            "set_status", "record_run_error", "persist_extracted",
+            "persist_decision", "persist_reconciliation", "replace_line_items",
+        ):
+            monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
+        # If the precondition fails to short-circuit, these spies prove the mutation.
+        monkey.setattr(orchestrator, "extract", _spy_extract)
+
+        reply = InboundEmail(
+            id=uuid.uuid4(),
+            message_id="<late-reply@metrodeli.example>",
+            in_reply_to="<outbound@payroll-agent.local>",
+            references_header="<outbound@payroll-agent.local>",
+            subject="Re: hours",
+            from_addr=_METRO_DELI_CONTACT,
+            to_addr="agent@payroll-agent.local",
+            body_text="A late reply after the run was already approved.",
+            created_at=datetime.now(timezone.utc),
+        )
+        orchestrator.resume_pipeline(run_id, reply)
+    finally:
+        monkey.undo()
+
+    run = store.runs[str(run_id)]
+    # The run was NOT touched: still approved (no EXTRACTING / awaiting_approval flip).
+    assert run["status"] == "approved", (
+        "a resume on a non-awaiting_reply run must NOT mutate its status (CR-02)"
+    )
+    # And it was NOT clobbered to ERROR — a late reply is dropped, not an error.
+    assert run["error_reason"] is None, "a late/duplicate reply must NOT route to ERROR"
+    # The gate path never ran (no re-extraction over the approved run).
+    assert extract_called["n"] == 0, "resume must short-circuit before re-running stages"
+    # No extracted_data / decision were overwritten on the terminal run.
+    assert run["extracted_data"] is None
+    assert run["decision"] is None
+
+
+def _fake_extracted_unused(run_id):
+    """An Extracted only used to prove extract() was NOT called (CR-02 short-circuit)."""
+    from decimal import Decimal
+
+    from app.models.contracts import Extracted, ExtractedEmployee
+
+    return Extracted(
+        run_id=run_id,
+        employees=[ExtractedEmployee(submitted_name="X", hours_regular=Decimal("1"))],
+        pay_period_start="2026-06-15",
+    )
+
+
+# ---------------------------------------------------------------------------
 # test_resume_stamps_run_id — FIX A
 # ---------------------------------------------------------------------------
 

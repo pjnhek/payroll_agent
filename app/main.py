@@ -155,8 +155,14 @@ def _route_reply(
                 content={"status": "sender_mismatch", "run_id": str(run_id)},
             )
 
-        # Sender revalidated → resume at extraction (idempotent + lossless, FIX 4).
-        repo.set_status(run_id, RunStatus.EXTRACTING)  # sole status writer (FIX B)
+        # Sender revalidated → schedule the resume (idempotent + lossless, FIX 4).
+        # CR-02: do NOT flip EXTRACTING here. The orchestrator owns that transition
+        # (resume_pipeline, after re-asserting the run is still awaiting_reply under
+        # the same code path that mutates it). Setting EXTRACTING in the webhook —
+        # a DIFFERENT context from the BackgroundTask that does the work — is the
+        # exact seam the status race lived in: it would also defeat resume_pipeline's
+        # new precondition (the run would already be EXTRACTING, never awaiting_reply).
+        # The run stays awaiting_reply until the background resume claims it.
         reply_for_resume = email.model_copy(update={"body_text": cleaned})
         background_tasks.add_task(_resume_pipeline, run_id, reply_for_resume)
         return JSONResponse(
