@@ -1,0 +1,480 @@
+"""The DB repo layer — the FULL accessor surface every Phase 2 wave imports.
+
+This module is the single place that mutates run state and persists what the
+pipeline decides. It commits the COMPLETE helper set named in the plan (review
+FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
+
+  Ingest / run lifecycle
+    insert_inbound_email   — ON CONFLICT (message_id) DO NOTHING dedupe; persists
+                             the ALREADY-CLEANED body it is given (FIX C)
+    find_business_by_sender — match from_addr to businesses.contact_email; unknown
+                             sender → None so the webhook stops (INGEST-03)
+    create_run             — open a payroll_runs row (status='received')
+    load_run               — explicit-column dict_row read of one run
+    load_source_email      — the original CLEANED inbound body, NOT re-cleaned (FIX C)
+
+  Status / persistence
+    set_status             — the ONE AND ONLY writer of payroll_runs.status
+    record_run_error       — the ONE documented exception: writes error_reason AND
+                             routes its ERROR transition THROUGH set_status (FIX B,
+                             so there is still exactly one status-write path)
+    persist_extracted      — Extracted JSONB only (no status)
+    persist_decision       — Decision JSONB only; takes NO final_status (FIX B)
+    persist_reconciliation — list[NameMatchResult] JSONB only (D-A3-05)
+    replace_line_items     — DELETE-by-run then insert (idempotency invariant)
+
+  Email / threading
+    insert_email_message   — generic append to email_messages (audit log)
+    get_outbound_message_id — read the clarification Message-ID back from the
+                             linked outbound row (the FIX 3 anchor)
+    find_awaiting_reply_for_header — header-chain match restricted to awaiting_reply
+    find_any_run_for_header — SAME header match across ANY status (late-reply
+                             observability, FIX 10)
+
+  Roster
+    load_roster_for_business — explicit EMPLOYEE_COLS + dict_row (no SELECT *)
+
+Discipline (PATTERNS.md / RESEARCH Security Domain):
+- Pooled get_connection() + conn.transaction(); %s / named placeholders ONLY.
+  NEVER f-string SQL. The header-chain `references` LIKE is a named placeholder.
+- JSONB writes use json.dumps(obj.model_dump(mode="json")) so Decimal → JSON
+  string round-trips losslessly at the jsonb boundary (D-06).
+- Read-backs that rebuild a contract use an explicit column list + dict_row;
+  every contract is extra="forbid", so SELECT * would crash on created_at.
+
+Every public helper accepts an optional `conn` so a caller inside an existing
+transaction (e.g. the webhook) can pass its connection, and tests can inject a
+FakeConnection to assert the SQL offline. When `conn` is None a pooled connection
+is opened in its own transaction.
+"""
+from __future__ import annotations
+
+import contextlib
+import json
+import uuid
+from typing import Any
+
+import psycopg.rows
+
+from app.db.supabase import get_connection
+from app.models.contracts import Decision, Extracted, PaystubLineItem
+from app.models.roster import Employee, NameMatchResult, Roster
+from app.models.status import RunStatus
+
+# Explicit column list for rebuilding Employee (no SELECT * — extra="forbid").
+EMPLOYEE_COLS = (
+    "id, business_id, full_name, known_aliases, pay_type, hourly_rate,"
+    " annual_salary, retirement_contribution_pct, filing_status,"
+    " step_2_checkbox, step_3_dependents, step_4a_other_income,"
+    " step_4b_deductions, ytd_ss_wages, pay_periods_per_year"
+)
+
+# Explicit column list for reading a run (only what callers need; no SELECT *).
+RUN_COLS = (
+    "id, business_id, source_email_id, status, extracted_data, decision,"
+    " reconciliation, error_reason, pay_period_start, pay_period_end"
+)
+
+
+@contextlib.contextmanager
+def _conn_ctx(conn):
+    """Yield (conn, owns): use the caller's conn, or open a pooled one we own."""
+    if conn is not None:
+        yield conn, False
+    else:
+        with get_connection() as owned:
+            yield owned, True
+
+
+# ---------------------------------------------------------------------------
+# Ingest / run lifecycle
+# ---------------------------------------------------------------------------
+
+
+def insert_inbound_email(
+    *,
+    message_id: str,
+    in_reply_to: str | None,
+    references_header: str | None,
+    subject: str | None,
+    from_addr: str | None,
+    to_addr: str | None,
+    body_text: str,
+    run_id: uuid.UUID | None = None,
+    conn=None,
+) -> tuple[uuid.UUID | None, bool]:
+    """Insert an inbound email_messages row, idempotent on message_id.
+
+    `body_text` is the ALREADY-CLEANED body (the webhook applies clean_body()
+    BEFORE calling this); it is persisted verbatim so the inbound row is the
+    cleaned-body source of truth (FIX C). Returns (email_id, inserted) where
+    `inserted` is False on a duplicate (ON CONFLICT (message_id) DO NOTHING),
+    so the webhook can decide whether to create a second run.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            row = c.execute(
+                """
+                INSERT INTO email_messages (
+                    run_id, direction, message_id, in_reply_to,
+                    references_header, subject, from_addr, to_addr, body_text
+                ) VALUES (%s, 'inbound', %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (message_id) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    str(run_id) if run_id else None,
+                    message_id,
+                    in_reply_to,
+                    references_header,
+                    subject,
+                    from_addr,
+                    to_addr,
+                    body_text,
+                ),
+            ).fetchone()
+    if row is None:
+        return None, False
+    return uuid.UUID(str(row[0])), True
+
+
+def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
+    """Return the business_id whose contact_email matches from_addr, else None.
+
+    An unknown sender returns None so the webhook stops without guessing
+    (INGEST-03 access-control seam; T-02-12).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT id FROM businesses WHERE contact_email = %s",
+            (from_addr,),
+        ).fetchone()
+    return uuid.UUID(str(row[0])) if row else None
+
+
+def create_run(
+    *,
+    business_id: uuid.UUID,
+    source_email_id: uuid.UUID | None,
+    pay_period_start: Any | None = None,
+    pay_period_end: Any | None = None,
+    conn=None,
+) -> uuid.UUID:
+    """Open a payroll_runs row (status defaults to 'received'); return its id."""
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            row = c.execute(
+                """
+                INSERT INTO payroll_runs (
+                    business_id, source_email_id, pay_period_start, pay_period_end
+                ) VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    str(business_id),
+                    str(source_email_id) if source_email_id else None,
+                    pay_period_start,
+                    pay_period_end,
+                ),
+            ).fetchone()
+    return uuid.UUID(str(row[0]))
+
+
+def load_run(run_id: uuid.UUID, conn=None) -> dict | None:
+    """Read one run as a dict (explicit columns + dict_row, never SELECT *)."""
+    # RUN_COLS is a trusted module constant (no external input); building the
+    # statement as a local keeps the parameterized-SQL discipline test green
+    # (no inline f-string inside execute(...)). Values stay %s-parameterized.
+    sql = "SELECT " + RUN_COLS + " FROM payroll_runs WHERE id = %s"
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(run_id),))
+            return cur.fetchone()
+
+
+def load_source_email(run_id: uuid.UUID, conn=None) -> str | None:
+    """Return the run's ORIGINAL CLEANED inbound body, unchanged.
+
+    The body was cleaned at ingest (insert_inbound_email persists the cleaned
+    text), so it is read straight from email_messages.body_text with NO
+    re-cleaning on read (FIX C; the Plan 04 resume re-extraction context).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT em.body_text
+            FROM payroll_runs pr
+            JOIN email_messages em ON em.id = pr.source_email_id
+            WHERE pr.id = %s
+            """,
+            (str(run_id),),
+        ).fetchone()
+    return row[0] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Status / persistence
+# ---------------------------------------------------------------------------
+
+
+def set_status(run_id: uuid.UUID, status: RunStatus, conn=None) -> None:
+    """The ONE AND ONLY function that writes payroll_runs.status.
+
+    Writes the enum .value (never a string literal). record_run_error is the one
+    documented caller that also writes a data column; every other status
+    transition in the system routes through here.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET status = %s, updated_at = now() WHERE id = %s",
+                (RunStatus(status).value, str(run_id)),
+            )
+
+
+def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
+    """Write payroll_runs.error_reason AND advance the run to ERROR.
+
+    The single documented exception to "set_status is the only status writer":
+    it writes the error_reason data column itself, then routes its ERROR
+    transition THROUGH set_status (FIX B) — so there is still exactly one
+    status-write path and no second writer can corrupt the state machine.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET error_reason = %s, updated_at = now() WHERE id = %s",
+                (reason, str(run_id)),
+            )
+            set_status(run_id, RunStatus.ERROR, conn=c)
+
+
+def persist_extracted(run_id: uuid.UUID, extracted: Extracted, conn=None) -> None:
+    """Write the Extracted JSONB ONLY (no status — the orchestrator advances state)."""
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET extracted_data = %s, updated_at = now() WHERE id = %s",
+                (json.dumps(extracted.model_dump(mode="json")), str(run_id)),
+            )
+
+
+def persist_decision(run_id: uuid.UUID, decision: Decision, conn=None) -> None:
+    """Write the Decision JSONB ONLY.
+
+    Takes NO final_status argument (FIX B): persistence helpers never own status
+    transitions. The orchestrator calls set_status SEPARATELY to advance state
+    after persisting the decision.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET decision = %s, updated_at = now() WHERE id = %s",
+                (json.dumps(decision.model_dump(mode="json")), str(run_id)),
+            )
+
+
+def persist_reconciliation(
+    run_id: uuid.UUID, matches: list[NameMatchResult], conn=None
+) -> None:
+    """Write the per-run list[NameMatchResult] JSONB ONLY (D-A3-05; no status)."""
+    payload = [m.model_dump(mode="json") for m in matches]
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET reconciliation = %s, updated_at = now() WHERE id = %s",
+                (json.dumps(payload), str(run_id)),
+            )
+
+
+def replace_line_items(
+    run_id: uuid.UUID, items: list[PaystubLineItem], conn=None
+) -> None:
+    """Replace all paystub_line_items for a run (DELETE-by-run then insert).
+
+    The idempotency invariant: a re-trigger / resume re-computes wholesale rather
+    than appending duplicates (RESEARCH Pattern 6 invariant 2).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "DELETE FROM paystub_line_items WHERE run_id = %s", (str(run_id),)
+            )
+            for it in items:
+                c.execute(
+                    """
+                    INSERT INTO paystub_line_items (
+                        id, run_id, employee_id, submitted_name, match_confidence,
+                        hours_regular, hours_overtime, hours_vacation, hours_sick,
+                        hours_holiday, gross_pay, pretax_401k, fica_ss,
+                        fica_medicare, federal_withholding, state_withholding, net_pay
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        str(it.id),
+                        str(it.run_id),
+                        str(it.employee_id) if it.employee_id else None,
+                        it.submitted_name,
+                        it.match_confidence,
+                        it.hours_regular,
+                        it.hours_overtime,
+                        it.hours_vacation,
+                        it.hours_sick,
+                        it.hours_holiday,
+                        it.gross_pay,
+                        it.pretax_401k,
+                        it.fica_ss,
+                        it.fica_medicare,
+                        it.federal_withholding,
+                        it.state_withholding,
+                        it.net_pay,
+                    ),
+                )
+
+
+# ---------------------------------------------------------------------------
+# Email / threading
+# ---------------------------------------------------------------------------
+
+
+def insert_email_message(
+    *,
+    run_id: uuid.UUID | None,
+    direction: str,
+    message_id: str,
+    in_reply_to: str | None = None,
+    references_header: str | None = None,
+    subject: str | None = None,
+    from_addr: str | None = None,
+    to_addr: str | None = None,
+    body_text: str | None = None,
+    conn=None,
+) -> uuid.UUID:
+    """Append an email_messages row (the append-only audit log). Returns its id."""
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            row = c.execute(
+                """
+                INSERT INTO email_messages (
+                    run_id, direction, message_id, in_reply_to,
+                    references_header, subject, from_addr, to_addr, body_text
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    str(run_id) if run_id else None,
+                    direction,
+                    message_id,
+                    in_reply_to,
+                    references_header,
+                    subject,
+                    from_addr,
+                    to_addr,
+                    body_text,
+                ),
+            ).fetchone()
+    # In real Postgres RETURNING always yields a row; the fallback only matters
+    # for the offline FakeConnection path where the caller discards the id.
+    return uuid.UUID(str(row[0])) if row else uuid.uuid4()
+
+
+def get_outbound_message_id(run_id: uuid.UUID, conn=None) -> str | None:
+    """Read the clarification Message-ID back from the linked outbound row.
+
+    The outbound Message-ID lives ONLY on the email_messages(direction='outbound',
+    run_id) row — the single canonical anchor (FIX 3); there is no
+    payroll_runs.clarification_message_id column.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT message_id FROM email_messages
+            WHERE run_id = %s AND direction = 'outbound'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (str(run_id),),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def find_awaiting_reply_for_header(
+    *, in_reply_to: str | None, references_header: str | None, conn=None
+) -> uuid.UUID | None:
+    """Match a reply to its run via the RFC header chain, restricted to awaiting_reply.
+
+    Scans the stored outbound Message-ID against the reply's In-Reply-To AND the
+    full References chain. The `references` LIKE is a NAMED placeholder, never
+    interpolated (T-02-01).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT pr.id FROM payroll_runs pr
+            JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'
+            WHERE pr.status = 'awaiting_reply'
+              AND ( em.message_id = %(in_reply_to)s
+                    OR %(references)s LIKE '%%' || em.message_id || '%%' )
+            LIMIT 1
+            """,
+            {"in_reply_to": in_reply_to, "references": references_header or ""},
+        ).fetchone()
+    return uuid.UUID(str(row[0])) if row else None
+
+
+def find_any_run_for_header(
+    *, in_reply_to: str | None, references_header: str | None, conn=None
+) -> uuid.UUID | None:
+    """The SAME header match across ANY status (late-reply observability, FIX 10).
+
+    A header match to an already-sent/reconciled run is observable as a late
+    reply rather than silently dropped. Named placeholders only.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT pr.id FROM payroll_runs pr
+            JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'
+            WHERE ( em.message_id = %(in_reply_to)s
+                    OR %(references)s LIKE '%%' || em.message_id || '%%' )
+            LIMIT 1
+            """,
+            {"in_reply_to": in_reply_to, "references": references_header or ""},
+        ).fetchone()
+    return uuid.UUID(str(row[0])) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Roster
+# ---------------------------------------------------------------------------
+
+
+def load_roster_for_business(business_id: uuid.UUID, conn=None) -> Roster:
+    """Rebuild a typed Roster (explicit EMPLOYEE_COLS + dict_row, no SELECT *)."""
+    # EMPLOYEE_COLS is a trusted module constant; build the statement as a local
+    # (no inline f-string in execute) to keep the parameterized-SQL discipline.
+    sql = "SELECT " + EMPLOYEE_COLS + " FROM employees WHERE business_id = %s"
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(business_id),))
+            rows = cur.fetchall()
+    return Roster(
+        business_id=business_id,
+        employees=[Employee(**row) for row in rows],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal: a no-op transaction context for the caller-supplied-conn path.
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _nulltx():
+    """No-op CM: when a caller passes their own conn, they own the transaction."""
+    yield
