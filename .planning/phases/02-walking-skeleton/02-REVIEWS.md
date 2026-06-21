@@ -177,3 +177,26 @@ Single external reviewer (Codex/gpt-5.5 at xhigh). The plans are assessed as pha
 **Overall Verdict**
 
 **NOT READY** — blocking item is the `Extracted.run_id` contradiction in `02-02 Task 2`. That needs to be resolved before execution; otherwise the pure extraction stage cannot safely produce the Phase 1 contract.
+
+---
+
+## Codex Review — ROUND 3 (final, gpt-5.5 xhigh)
+
+**Round-2 Findings**
+
+- **HIGH Extracted.run_id contradiction: CONFIRMED-FIXED.**  
+  `02-02 Task 2` adds `ExtractionPayload` with no `run_id`; `extract(..., run_id=run_id, llm=...) -> Extracted` stamps the code-owned ID. `02-02 Task 3` and `02-04 Task 1` explicitly pass `run_id` on initial and resume extraction. `02-03 Task 1` correctly states `decide()` returns `Decision` directly because `Decision` has no `run_id`. Purity is consistently redefined as no DB I/O.
+
+- **MEDIUM persist_decision/status writer split: CONFIRMED-FIXED.**  
+  `02-01 Task 3` defines `persist_decision(run_id, decision)` as data-only with no `final_status`; `set_status` is the sole status writer, with `record_run_error` as the documented wrapper routing through `set_status`. `02-02 Task 3/4`, `02-03 Task 2`, and `02-04 Task 1` preserve that split.
+
+- **LOW cleaned inbound body persistence: CONFIRMED-FIXED.**  
+  `02-01 Task 3` defines `insert_inbound_email` as storing the already-cleaned body and `load_source_email` as returning it unchanged. `02-02 Task 1` applies `clean_body()` before insert. `02-04 Task 1` correctly resumes from `load_source_email` plus reply body.
+
+**New Concerns**
+
+- **LOW:** `02-04 Task 1` mentions subject/provider-thread fallback behavior, but the concrete action path only specifies header-chain lookup plus late-reply detection. If subject fallback is intended for Phase 2 tests, add the explicit helper/action; otherwise remove the fallback claim. Not blocking because the required RFC header-chain path is fully specified.
+
+**Verdict: READY FOR EXECUTION.**
+
+**Resolution:** All 3 round-2 findings CONFIRMED-FIXED. The single round-3 LOW (subject-fallback claim in 02-04) was resolved by clarifying that subject fallback is deliberately NOT a Phase 2 code path (CLAR-02: header chain is primary/only; subject fallback deferred to P6) — no over-building. **Verdict: READY FOR EXECUTION.** Review loop converged in 3 rounds.
