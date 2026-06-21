@@ -166,6 +166,57 @@ def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
     assert fake_repo.get_outbound_message_id(run_id) is not None
 
 
+def test_process_run_missing_roster_employee_raises(fake_repo, mock_llm):
+    """WR-01 — a process run whose resolved match points at an employee_id NOT in the
+    loaded roster is an INVARIANT VIOLATION; _compute_line_items must raise (→ ERROR
+    via the D-A1-03 wrap), never silently drop the employee and ship a short payroll.
+
+    Driven through run_pipeline: extract a name that does NOT deterministically match
+    the seed roster (so it reaches the layer-2 model), reconcile it to a HIGH-
+    confidence match whose matched_employee_id is a random UUID absent from the seed
+    roster, and let the model say process. The gate passes (confidence 1.0, resolved)
+    so the run reaches the process branch — where the missing roster row must blow up
+    loudly instead of silently dropping the employee.
+    """
+    ghost_employee_id = str(uuid.uuid4())  # high-confidence id NOT in the seed roster
+    mock_llm.script = [
+        json.dumps(
+            {
+                # A name absent from the Coastal roster → residual → layer-2 model.
+                "employees": [{"submitted_name": "Mariana Sandoval", "hours_regular": "40"}],
+                "pay_period_start": "2026-06-15",
+                "pay_period_end": None,
+            }
+        ),
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "submitted_name": "Mariana Sandoval",
+                        "matched_employee_id": ghost_employee_id,
+                        "match_type": "llm_typo",
+                        "confidence": "1.0",
+                        "reason": "high confidence but points at a non-roster id",
+                    }
+                ]
+            }
+        ),
+        json.dumps({"model_action": "process", "reasons": ["resolved, full confidence"]}),
+    ]
+    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+
+    run_pipeline(run_id)
+
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == "error", (
+        "a process run with a match pointing outside the roster must route to ERROR "
+        "(WR-01), not silently drop the employee"
+    )
+    assert run["error_reason"] and "integrity" in run["error_reason"].lower()
+    # No partial/short payroll was persisted for the run.
+    assert str(run_id) not in fake_repo.line_items
+
+
 def test_orchestrator_source_never_reads_model_action():
     """Source-level: the orchestrator never references model_action."""
     import pathlib

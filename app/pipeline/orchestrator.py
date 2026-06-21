@@ -232,7 +232,17 @@ def _compute_line_items(run_id, extracted, matches, roster):
             continue  # unresolved names never reach a process run (gate blocks them)
         employee = emp_by_id.get(m.matched_employee_id)
         if employee is None:
-            continue
+            # WR-01: on a PROCESS run the gate guarantees every name is resolved to a
+            # roster employee. A matched_employee_id with no roster row (e.g. a stale
+            # reconciliation persisted against a since-changed roster, or a roster
+            # loaded for the wrong business) is an INVARIANT VIOLATION, not an expected
+            # skip — silently omitting the employee would ship an incomplete payroll the
+            # operator is told is clean. Fail LOUD: raise so the run routes to ERROR
+            # (D-A1-03 error-wrap) instead of computing a degraded paystub.
+            raise ValueError(
+                f"process-run integrity: matched employee {m.matched_employee_id} "
+                f"for {ee.submitted_name!r} is not in the loaded roster"
+            )
         resolved_hours = {
             "hours_regular": ee.hours_regular,
             "hours_overtime": ee.hours_overtime,
