@@ -13,7 +13,7 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Thin Foundation** - Contracts, minimal schema for the slice, and seed data for one happy-path + one name-mismatch case
+- [x] **Phase 1: Thin Foundation** - Contracts, minimal schema for the slice, and seed data for one happy-path + one name-mismatch case (completed 2026-06-21)
 - [ ] **Phase 2: Walking Skeleton** - First end-to-end proof: messy fixture flows through the four gated judgment stages to a code-gated decision (calc thin, net pre-federal)
 - [ ] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny
 - [ ] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart
@@ -47,7 +47,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md — seed.py (Pydantic-validated upsert, fixed UUIDs, coverage-driven 3 businesses/6 employees), test_seed_roundtrip.py (live-DB round-trip)
+- [x] 01-03-PLAN.md — seed.py (Pydantic-validated upsert, fixed UUIDs, coverage-driven 3 businesses/6 employees), test_seed_roundtrip.py (live-DB round-trip)
 
 ### Phase 2: Walking Skeleton
 
@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thin Foundation | 2/3 | In Progress|  |
+| 1. Thin Foundation | 3/3 | Complete   | 2026-06-21 |
 | 2. Walking Skeleton | 0/TBD | Not started | - |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |

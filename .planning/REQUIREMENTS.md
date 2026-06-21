@@ -13,8 +13,8 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [x] **FOUND-02**: `email_messages.message_id` has a unique index so duplicate webhook deliveries cannot create a second run (idempotency)
 - [x] **FOUND-03**: Pydantic v2 contract models exist and are shared by the pipeline and the eval (InboundEmail, Extracted, Decision, PaystubLineItem)
 - [ ] **FOUND-04**: A typed DB access layer (psycopg3, pooler connection) performs atomic status transitions and uses `SELECT ... FOR UPDATE` to prevent double-approval
-- [ ] **FOUND-05**: Seed data loads 3+ businesses and their employees (mixed hourly/salary, known aliases, filing statuses) sufficient to exercise every calc path and name-match case
-- [ ] **FOUND-06**: Each seeded employee carries the full set of calc inputs — pay frequency / pay periods, wage type + rate or annual salary, W-4 filing status, Step-2 checkbox flag, assumed Step-3/Step-4 values, and a static year-to-date Social Security wages figure (so the SS wage-base cap in CALC-04 is testable and honest)
+- [x] **FOUND-05**: Seed data loads 3+ businesses and their employees (mixed hourly/salary, known aliases, filing statuses) sufficient to exercise every calc path and name-match case
+- [x] **FOUND-06**: Each seeded employee carries the full set of calc inputs — pay frequency / pay periods, wage type + rate or annual salary, W-4 filing status, Step-2 checkbox flag, assumed Step-3/Step-4 values, and a static year-to-date Social Security wages figure (so the SS wage-base cap in CALC-04 is testable and honest)
 
 ### Payroll Calculation
 
@@ -128,8 +128,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | FOUND-01 | Phase 1 | Complete |
 | FOUND-02 | Phase 1 | Complete |
 | FOUND-03 | Phase 1 | Complete |
-| FOUND-05 | Phase 1 | Pending |
-| FOUND-06 | Phase 1 | Pending |
+| FOUND-05 | Phase 1 | Complete |
+| FOUND-06 | Phase 1 | Complete |
 | INGEST-01 | Phase 2 | Pending |
 | INGEST-02 | Phase 2 | Pending |
 | INGEST-03 | Phase 2 | Pending |
