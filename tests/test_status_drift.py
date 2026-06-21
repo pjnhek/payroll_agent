@@ -18,6 +18,7 @@ Runs on every push with:
     pytest tests/test_status_drift.py -v
 """
 
+import ast
 import pathlib
 import re
 import typing
@@ -130,11 +131,33 @@ class TestEnumCheckDrift:
         )
 
     def test_no_db_connection_needed(self) -> None:
-        """Confirm the test imports no DB module (pure static file test)."""
-        # This test is self-documenting: if we got here, no DB was required.
-        # The test file must NOT import app.db.supabase or psycopg.
-        import sys
-        # Key assertion: this module only depends on pathlib+re+typing+app.models
-        assert "app.db.supabase" not in sys.modules, (
-            "test_status_drift.py must not import the DB layer"
+        """Confirm the test file imports no DB module (pure static file test).
+
+        Uses AST inspection of this file's own source to confirm no DB import
+        exists.  Process-global sys.modules is NOT used (it would reflect other
+        tests in the run, making the assertion order-dependent).
+        """
+        source = pathlib.Path(__file__).read_text()
+        tree = ast.parse(source, filename=__file__)
+
+        _FORBIDDEN = {"app.db.supabase", "psycopg", "psycopg_pool"}
+
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in _FORBIDDEN:
+                        offenders.append(
+                            f"line {node.lineno}: import {alias.name}"
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module in _FORBIDDEN or module.startswith("app.db.supabase"):
+                    offenders.append(
+                        f"line {node.lineno}: from {module} import ..."
+                    )
+
+        assert not offenders, (
+            "test_status_drift.py must not import the DB layer.\n"
+            "Forbidden import(s) found:\n  " + "\n  ".join(offenders)
         )
