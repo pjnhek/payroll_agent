@@ -51,8 +51,18 @@ The narrative for the writeup: the manual payroll process from the builder's acc
 | **pytest** | latest | The Pub 15-T engine MUST be the most-tested unit in the repo | The calculation is the highest-bug-risk component and is explicitly guarded by the reconciliation check. Table-driven tests with IRS-published example figures per filing status. |
 | **ruff** | latest | Lint + format | One tool, fast, no config debate. |
 ## Installation
-# Core (requirements.txt)
-# Dev / eval only (not in the runtime image)
+
+**Environment + dependencies are managed with [uv](https://docs.astral.sh/uv/).** Source of truth: `pyproject.toml` (`[project.dependencies]` for runtime, `[dependency-groups].dev` for pytest/ruff) + the committed `uv.lock`. Python is pinned to 3.12 via `.python-version` (matches the `python:3.12-slim` Docker target). There is no `requirements.txt`.
+
+```bash
+uv sync            # create/refresh .venv (3.12), install runtime + dev, honor uv.lock
+uv sync --no-dev   # runtime deps only (what the Docker image installs)
+uv run pytest -q   # run the suite inside the managed venv
+uv add <pkg>       # add a runtime dep (updates pyproject + uv.lock)
+uv add --dev <pkg> # add a dev/eval-only dep
+```
+
+**Docker (Phase 6):** export a pinned, hash-free requirements file from the lock at build time — `uv export --no-dev --no-emit-project --no-hashes -o requirements.txt` — or use uv directly in the Dockerfile. Do NOT hand-maintain a requirements.txt; the lock is authoritative.
 ## Prescriptive Usage Patterns (the load-bearing part)
 ### 1. FastAPI + Pydantic v2 — webhook + structured output
 ### 2. OpenAI-compatible client against Kimi + DeepSeek — JSON mode + retry
