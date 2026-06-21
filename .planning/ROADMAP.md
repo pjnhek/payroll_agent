@@ -43,7 +43,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — schema.sql (6 tables, CHECK, UNIQUE), config.py, supabase.py (prepare_threshold=None), bootstrap.py (--reset), test_status_drift.py (CI drift guard)
+- [x] 01-02-PLAN.md — schema.sql (6 tables, CHECK, UNIQUE), config.py, supabase.py (prepare_threshold=None), bootstrap.py (--reset), test_status_drift.py (CI drift guard)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thin Foundation | 1/3 | In Progress|  |
+| 1. Thin Foundation | 2/3 | In Progress|  |
 | 2. Walking Skeleton | 0/TBD | Not started | - |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |

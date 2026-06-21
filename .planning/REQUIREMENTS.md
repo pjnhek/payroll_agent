@@ -9,8 +9,8 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 
 ### Foundations
 
-- [ ] **FOUND-01**: Postgres schema exists for all 6 tables (businesses, employees, payroll_runs, paystub_line_items, email_messages, eval_results) with the 11-value `payroll_runs.status` enum
-- [ ] **FOUND-02**: `email_messages.message_id` has a unique index so duplicate webhook deliveries cannot create a second run (idempotency)
+- [x] **FOUND-01**: Postgres schema exists for all 6 tables (businesses, employees, payroll_runs, paystub_line_items, email_messages, eval_results) with the 11-value `payroll_runs.status` enum
+- [x] **FOUND-02**: `email_messages.message_id` has a unique index so duplicate webhook deliveries cannot create a second run (idempotency)
 - [x] **FOUND-03**: Pydantic v2 contract models exist and are shared by the pipeline and the eval (InboundEmail, Extracted, Decision, PaystubLineItem)
 - [ ] **FOUND-04**: A typed DB access layer (psycopg3, pooler connection) performs atomic status transitions and uses `SELECT ... FOR UPDATE` to prevent double-approval
 - [ ] **FOUND-05**: Seed data loads 3+ businesses and their employees (mixed hourly/salary, known aliases, filing statuses) sufficient to exercise every calc path and name-match case
@@ -125,8 +125,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Pending |
-| FOUND-02 | Phase 1 | Pending |
+| FOUND-01 | Phase 1 | Complete |
+| FOUND-02 | Phase 1 | Complete |
 | FOUND-03 | Phase 1 | Complete |
 | FOUND-05 | Phase 1 | Pending |
 | FOUND-06 | Phase 1 | Pending |
