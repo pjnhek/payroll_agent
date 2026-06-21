@@ -192,24 +192,53 @@ def test_seed_high_earner_ss_cap_straddle() -> None:
     )
 
 
-def test_business3_employees_have_biweekly_cadence() -> None:
-    """All Business 3 (Summit Tech) employees have pay_periods_per_year=26 (biweekly).
+# Cross-table invariant: a business's pay_period dictates its employees'
+# pay_periods_per_year.  Only a comment in seed.py enforces this by hand
+# (no FK-level CHECK, no model holding both sides), so the test is the lock.
+_PERIODS_PER_YEAR = {
+    "weekly": 52,
+    "biweekly": 26,
+    "semi_monthly": 24,
+    "monthly": 12,
+}
 
-    FIX B: Sandra Kim was erroneously set to 52 in an earlier draft; must be 26.
+
+def test_every_employee_cadence_matches_its_business() -> None:
+    """Every seed employee's pay_periods_per_year matches its business's pay_period.
+
+    WR-10: generalizes the old single-business (Business 3, hardcoded 26) check to
+    all three businesses.  The relationship "weekly business ⇒ employees are 52,
+    biweekly ⇒ 26" has no DB-level enforcement — only the static CADENCE
+    VERIFICATION comment in seed.py — so this data-driven test is the only thing
+    that locks it.  A future edit reintroducing the FIX B class of bug (Sandra Kim
+    set to 52 under a biweekly business) would fail here.
     """
     from app.db.seed import seed
 
     result = seed(dry_run=True)
-    # Business 3 id is stable: b0000003-0000-0000-0000-000000000003
-    b3_id_str = "b0000003-0000-0000-0000-000000000003"
-    b3_employees = [
-        e for e in result.employees if str(e.business_id) == b3_id_str
-    ]
-    assert len(b3_employees) >= 1, "No employees found for Business 3"
-    for emp in b3_employees:
-        assert emp.pay_periods_per_year == 26, (
-            f"{emp.full_name} (Business 3/biweekly) has"
-            f" pay_periods_per_year={emp.pay_periods_per_year}, expected 26"
+
+    business_period = {
+        str(b["id"]): b["pay_period"] for b in result.businesses
+    }
+    # Guard: every business pay_period must be one we know how to map.
+    for biz_id, period in business_period.items():
+        assert period in _PERIODS_PER_YEAR, (
+            f"Business {biz_id} has unmapped pay_period {period!r}"
+        )
+
+    # Guard: every employee's business must be present (no orphan business_id).
+    assert len(result.employees) == 6, (
+        f"Expected 6 employees, got {len(result.employees)}"
+    )
+    for emp in result.employees:
+        biz_id = str(emp.business_id)
+        assert biz_id in business_period, (
+            f"{emp.full_name} references unknown business_id {biz_id}"
+        )
+        expected = _PERIODS_PER_YEAR[business_period[biz_id]]
+        assert emp.pay_periods_per_year == expected, (
+            f"{emp.full_name} (business {business_period[biz_id]}) has"
+            f" pay_periods_per_year={emp.pay_periods_per_year}, expected {expected}"
         )
 
 
