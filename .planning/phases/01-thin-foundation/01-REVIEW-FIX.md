@@ -123,4 +123,81 @@ meaningful `assert "app.db.supabase" not in sys.modules` guard remains.
 
 ---
 
+## Deep Re-Review Fixes (round 2)
+
+Second fix pass against the DEEP re-review (`01-REVIEW.md`). Applied all 4
+warnings plus the two trivial info items the user selected. IN-06 and IN-07 were
+explicitly deferred (Phase 3 / ingest-read path) and left untouched.
+
+**Source review:** `.planning/phases/01-thin-foundation/01-REVIEW.md` (deep)
+
+### WR-01-incomplete: `PaystubLineItem.match_confidence` had no bound
+**Files:** `app/models/contracts.py`, `tests/test_models_contracts.py`
+**Commit:** `dab8627`
+Added `Field(ge=0, le=1)` to `PaystubLineItem.match_confidence` — the one
+confidence field that maps to the DB (`paystub_line_items.match_confidence
+NUMERIC(4,3)`). Unbounded, a value >9.999 crashed the INSERT and a value in
+(1, 9.999] silently corrupted the audit record. Added two tests mirroring
+`test_name_match_result_rejects_confidence_above_one` (rejects >1 and <0).
+
+### WR-08: W-4 / YTD dollar fields accepted negatives in both model and schema
+**Files:** `app/models/roster.py`, `app/db/schema.sql`, `tests/test_models_contracts.py`
+**Commit:** `dab8627`
+Added `Field(ge=0)` to `Employee.step_3_dependents`, `step_4a_other_income`,
+`step_4b_deductions`, and `ytd_ss_wages`, and mirrored each with a
+`CHECK (col >= 0)` in `schema.sql` (runtime backstop, per the project's
+reconciliation-check philosophy). A negative `step_3_dependents` (subtracted in
+the Pub 15-T worksheet) inflates withholding; a negative `ytd_ss_wages` breaks
+the SS-cap straddle. Added 4 tests (negative `ytd_ss_wages` + each of the three
+W-4 dollar fields). Confirmed all 6 seed employees use non-negative values via
+`seed(dry_run=True)` import — seed still validates.
+
+### WR-09: only `status` had a dual-source enum drift guard
+**File:** `tests/test_status_drift.py`
+**Commit:** `c581933`
+Refactored the status-only guard into a parameterized
+`test_check_values_match_python` covering all four dual-sourced enums:
+`payroll_runs.status` ↔ `RunStatus`, and `employees.pay_type` /
+`filing_status` / `pay_periods_per_year` ↔ their `Employee` `Literal`
+annotations. The CHECK parser is now column-anchored with `re.escape` so a
+sibling constraint such as the new `CHECK (step_3_dependents >= 0)` cannot be
+matched by accident; the Python side is read live via `typing.get_args` so a
+`Literal` change with no matching CHECK edit fails CI. Status count sanity check
+retained — status coverage was not weakened.
+
+### WR-10: cadence invariant tested for only 1 of 3 businesses
+**File:** `tests/test_seed_roundtrip.py`
+**Commit:** `c581933`
+Replaced `test_business3_employees_have_biweekly_cadence` (single business,
+hardcoded `26`) with `test_every_employee_cadence_matches_its_business`, a
+data-driven check that maps each business `pay_period` → expected
+`pay_periods_per_year` (`{weekly:52, biweekly:26, semi_monthly:24, monthly:12}`)
+and asserts every seed employee matches its own business across all three
+businesses. Locks the cross-table invariant that only a `seed.py` comment
+enforced. Confirmed the current seed satisfies it.
+
+### IN-08: misleading `model_dump(mode="json")` comment in `seed.py`
+**File:** `app/db/seed.py`
+**Commit:** `c8769a2`
+Corrected the employee-loop comment — the code passes Pydantic-native
+`Decimal`/`list`/`bool` values directly to psycopg; `model_dump` is never called
+here. Comment now reads "psycopg adapts Pydantic-native Decimal/list/bool values
+directly." No behavior change.
+
+### IN-09: python pin looser than CLAUDE.md's 3.12 mandate
+**File:** `pyproject.toml`
+**Commit:** `c8769a2`
+Tightened `requires-python` from `">=3.12"` to `">=3.12,<3.13"` with a comment
+noting the `python:3.12-slim` runtime target. Forward guidance only; the dev
+venv (3.13.5) was left untouched and the suite still runs on it.
+
+### Round-2 test result
+
+`.venv/bin/python -m pytest -q` → **62 passed, 8 skipped, 0 failed**
+(baseline was 53 passed / 8 skipped; +9 from the new bound, drift, and cadence
+tests). The 8 skips remain the live-DB integration tests (no `DATABASE_URL` /
+`ALLOW_DB_RESET` in this env) — still skipped, never failed.
+
+---
+
 _Fixer: Claude (gsd-code-fixer)_
