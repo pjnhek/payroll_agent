@@ -432,26 +432,59 @@ def get_outbound_message_id(run_id: uuid.UUID, conn=None) -> str | None:
     return row[0] if row else None
 
 
+def _pad_references(references_header: str | None) -> str:
+    """Normalize a References header to a single-space-delimited, space-PADDED string.
+
+    WR-02: the header-chain match must compare WHOLE angle-bracketed Message-ID
+    tokens, not bare substrings. A References header is RFC-5322 whitespace-separated
+    `<id>` tokens; we collapse any run of whitespace (spaces/tabs/folded CRLF) to one
+    space and pad both ends with a space, so the SQL can match ` <id> ` as a
+    whitespace-bounded token. This stops a stored Message-ID that is a substring of
+    another (or of arbitrary attacker-supplied References text) from false-matching:
+    ` <a@x> ` cannot appear inside ` <a@xtra> `. Stored synthetic IDs are
+    `<uuid4@payroll-agent.local>` so they are angle-bracketed whole tokens. Returns
+    " " for an absent/empty header (matches nothing — never the empty-substring trap).
+    """
+    if not references_header:
+        return " "
+    return " " + " ".join(references_header.split()) + " "
+
+
+# The shared, anchored header-chain predicate (WR-02). Both finders use the SAME
+# SQL so the resume lookup and the late-reply observability lookup match identically.
+# `em.message_id` already carries its surrounding `<...>`; padding the references
+# string with spaces (via _pad_references) and the pattern with ` `/` ` makes the
+# match a whitespace-bounded WHOLE-token comparison, not an unanchored substring.
+# Both placeholders stay NAMED — never interpolated (T-02-01).
+_HEADER_MATCH_PREDICATE = (
+    "( em.message_id = %(in_reply_to)s"
+    " OR %(references)s LIKE '%% ' || em.message_id || ' %%' )"
+)
+
+
 def find_awaiting_reply_for_header(
     *, in_reply_to: str | None, references_header: str | None, conn=None
 ) -> uuid.UUID | None:
     """Match a reply to its run via the RFC header chain, restricted to awaiting_reply.
 
     Scans the stored outbound Message-ID against the reply's In-Reply-To AND the
-    full References chain. The `references` LIKE is a NAMED placeholder, never
-    interpolated (T-02-01).
+    full References chain. The `references` match is a NAMED placeholder, never
+    interpolated (T-02-01), and is anchored on whole tokens (WR-02).
     """
+    sql = (
+        "SELECT pr.id FROM payroll_runs pr"
+        " JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'"
+        " WHERE pr.status = 'awaiting_reply'"
+        "   AND " + _HEADER_MATCH_PREDICATE +
+        " LIMIT 1"
+    )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
-            """
-            SELECT pr.id FROM payroll_runs pr
-            JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'
-            WHERE pr.status = 'awaiting_reply'
-              AND ( em.message_id = %(in_reply_to)s
-                    OR %(references)s LIKE '%%' || em.message_id || '%%' )
-            LIMIT 1
-            """,
-            {"in_reply_to": in_reply_to, "references": references_header or ""},
+            sql,
+            {
+                "in_reply_to": in_reply_to,
+                "references": _pad_references(references_header),
+            },
         ).fetchone()
     return uuid.UUID(str(row[0])) if row else None
 
@@ -462,18 +495,22 @@ def find_any_run_for_header(
     """The SAME header match across ANY status (late-reply observability, FIX 10).
 
     A header match to an already-sent/reconciled run is observable as a late
-    reply rather than silently dropped. Named placeholders only.
+    reply rather than silently dropped. Named placeholders only; whole-token
+    anchored (WR-02).
     """
+    sql = (
+        "SELECT pr.id FROM payroll_runs pr"
+        " JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'"
+        " WHERE " + _HEADER_MATCH_PREDICATE +
+        " LIMIT 1"
+    )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
-            """
-            SELECT pr.id FROM payroll_runs pr
-            JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'
-            WHERE ( em.message_id = %(in_reply_to)s
-                    OR %(references)s LIKE '%%' || em.message_id || '%%' )
-            LIMIT 1
-            """,
-            {"in_reply_to": in_reply_to, "references": references_header or ""},
+            sql,
+            {
+                "in_reply_to": in_reply_to,
+                "references": _pad_references(references_header),
+            },
         ).fetchone()
     return uuid.UUID(str(row[0])) if row else None
 

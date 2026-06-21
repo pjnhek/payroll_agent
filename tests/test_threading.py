@@ -208,6 +208,33 @@ def test_references_like_is_parameterized():
     assert "LIKE f'" not in src and 'LIKE f"' not in src
 
 
+def test_pad_references_anchors_whole_tokens():
+    """WR-02 — the References match is anchored on whole whitespace-bounded tokens,
+    so a stored Message-ID that is a SUBSTRING of another References token does NOT
+    false-match. _pad_references normalizes whitespace and pads both ends, and the
+    SQL pattern (' <id> ') requires the stored id to be a complete token."""
+    from app.db.repo import _pad_references
+
+    mid = "<abc@payroll-agent.local>"
+    # The padded references contains the WHOLE token (real match) ...
+    padded_real = _pad_references(f"<other@x.example> {mid} <tail@x.example>")
+    assert f" {mid} " in padded_real, "a whole-token id must be matchable"
+
+    # ... but a SUPERSTRING token that merely CONTAINS the id as a substring must NOT
+    # produce the ' <id> ' whitespace-bounded sequence (the old substring LIKE would
+    # have false-matched here).
+    padded_superstring = _pad_references(f"<other@x.example> X{mid} <tail@x.example>")
+    assert f" {mid} " not in padded_superstring, (
+        "a stored id must NOT match when it is only a substring of another token (WR-02)"
+    )
+
+    # Folded/tabbed whitespace is normalized to single spaces, and an empty header
+    # collapses to a single space that matches nothing.
+    assert _pad_references(f"\t{mid}\n") == f" {mid} "
+    assert _pad_references(None) == " "
+    assert _pad_references("") == " "
+
+
 # ---------------------------------------------------------------------------
 # test_reply_sender_revalidated — FIX 5: a spoofed reply cannot bypass INGEST-03
 # ---------------------------------------------------------------------------

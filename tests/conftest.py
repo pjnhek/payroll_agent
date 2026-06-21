@@ -300,11 +300,16 @@ class InMemoryRepo:
 
     # --- header-chain reply routing (CLAR-02/03, Plan 04) ---
     def _header_matches(self, in_reply_to, references_header, row):
-        """Mirror the repo SQL: outbound Message-ID == in_reply_to OR ∈ references."""
+        """Mirror the repo SQL: outbound Message-ID == in_reply_to OR is a WHOLE
+        whitespace-bounded token in References (WR-02 anchoring — not a bare
+        substring, so `<a@x>` never matches inside `<a@xtra>`)."""
         mid = row["message_id"]
         if in_reply_to is not None and mid == in_reply_to:
             return True
-        return bool(references_header) and mid in references_header
+        if not references_header:
+            return False
+        # Whole-token match: mid must appear as a whitespace-separated token.
+        return mid in references_header.split()
 
     def find_awaiting_reply_for_header(self, *, in_reply_to, references_header, conn=None):
         """Header match restricted to status='awaiting_reply' (resume lookup)."""
