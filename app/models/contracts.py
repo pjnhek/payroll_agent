@@ -1,0 +1,182 @@
+"""Pipeline I/O contracts — the DRY seam between every stage, the eval, and the DB.
+
+D-05: all monetary / rate / hours fields are Decimal, never float.
+D-06: Decimal serializes to JSON strings via model_dump(mode='json') — protects
+      precision at the DB jsonb boundary and in committed eval fixtures.
+D-07: these are pipeline data-passing types, NOT 1:1 DB row mirrors.
+D-08: Decision carries model_action AND final_action as structurally separate fields —
+      code owns final_action; the two can differ when the gate fires.
+"""
+from __future__ import annotations
+
+import enum
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, field_serializer
+
+
+class _DecimalModel(BaseModel):
+    """Base model that serializes Decimal fields to strings in JSON mode (D-06)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_serializer("*", when_used="json")
+    def _serialize_decimal(self, v: object) -> object:
+        if isinstance(v, Decimal):
+            return str(v)
+        return v
+
+
+# ---------------------------------------------------------------------------
+# InboundEmail — what the extraction stage receives as input
+# ---------------------------------------------------------------------------
+
+
+class InboundEmail(BaseModel):
+    """Parsed, cleaned inbound email.
+
+    body_text is the cleaned body after stripping quoted history and signatures
+    (per INGEST-02 forward contract).  Threading is anchored on message_id.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    message_id: str
+    in_reply_to: str | None
+    references_header: str | None
+    subject: str
+    from_addr: str
+    to_addr: str
+    body_text: str
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Extracted — structured output of the extraction stage
+# ---------------------------------------------------------------------------
+
+
+class ExtractedEmployee(BaseModel):
+    """Per-employee record returned by the extraction LLM.
+
+    Hours fields are Decimal | None (Finding #3 / D-05):
+    - Decimal  keeps money/hours typed correctly (not float).
+    - | None   lets the extraction LLM signal a missing field so decide()
+               can populate missing_fields and gate the run to clarification
+               instead of crashing at parse time on a non-nullable field.
+    contribution_401k_override is None when the client did not specify a
+    change for this run; the pipeline falls back to the stored employee default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    submitted_name: str
+    hours_regular: Decimal | None = None
+    hours_overtime: Decimal | None = None
+    hours_vacation: Decimal | None = None
+    hours_sick: Decimal | None = None
+    hours_holiday: Decimal | None = None
+    contribution_401k_override: Decimal | None = None
+
+
+class Extracted(BaseModel):
+    """Full extraction output for one payroll run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    employees: list[ExtractedEmployee]
+    pay_period_start: date
+    pay_period_end: date | None = None
+
+
+# ---------------------------------------------------------------------------
+# Decision — the gated decision object (D-08 / LLM-08)
+# ---------------------------------------------------------------------------
+
+
+class Decision(BaseModel):
+    """Gated decision object — the core thesis of the design.
+
+    model_action: what the LLM proposed.
+    final_action: what code enforces (the sole branch source, per LLM-07).
+
+    When gate_triggered=True, final_action overrides model_action.
+    The structurally-separate fields make the override visible and auditable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_action: Literal["process", "request_clarification"]
+    gate_triggered: bool
+    gate_reasons: list[str]
+    final_action: Literal["process", "request_clarification"]
+    unresolved_names: list[str]
+    missing_fields: list[str]
+    confidence: Decimal
+    reasons: list[str]
+
+    @field_serializer("confidence", when_used="json")
+    def _serialize_confidence(self, v: Decimal) -> str:
+        return str(v)
+
+
+# ---------------------------------------------------------------------------
+# PaystubLineItem — computed output after the calc engine runs
+# ---------------------------------------------------------------------------
+
+
+class PaystubLineItem(BaseModel):
+    """Computed paystub for one employee on one run.
+
+    All dollar amounts are Decimal (D-05).  Hours are non-nullable here because
+    PaystubLineItem is the *computed* output — by definition all hours are
+    resolved before the calc engine runs (unlike ExtractedEmployee where hours
+    may be absent from the client email).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    run_id: UUID
+    employee_id: UUID | None  # None if name never resolved
+    submitted_name: str
+    match_confidence: Decimal
+    hours_regular: Decimal
+    hours_overtime: Decimal
+    hours_vacation: Decimal
+    hours_sick: Decimal
+    hours_holiday: Decimal
+    gross_pay: Decimal
+    pretax_401k: Decimal
+    fica_ss: Decimal
+    fica_medicare: Decimal
+    federal_withholding: Decimal
+    state_withholding: Decimal | None
+    net_pay: Decimal
+    created_at: datetime
+
+    @field_serializer(
+        "match_confidence",
+        "hours_regular",
+        "hours_overtime",
+        "hours_vacation",
+        "hours_sick",
+        "hours_holiday",
+        "gross_pay",
+        "pretax_401k",
+        "fica_ss",
+        "fica_medicare",
+        "federal_withholding",
+        "state_withholding",
+        "net_pay",
+        when_used="json",
+    )
+    def _serialize_decimal(self, v: Decimal | None) -> str | None:
+        if v is None:
+            return None
+        return str(v)
