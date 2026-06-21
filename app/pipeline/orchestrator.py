@@ -26,8 +26,10 @@ import logging
 import uuid
 
 from app.db import repo
+from app.email import gateway
 from app.models.status import RunStatus
 from app.pipeline.calculate import calculate
+from app.pipeline.compose_email import clarification_subject, compose_clarification
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
 from app.pipeline.reconcile_names import reconcile_names
@@ -89,8 +91,36 @@ def _run(run_id: uuid.UUID, *, llm) -> None:
         repo.replace_line_items(run_id, line_items)
         repo.set_status(run_id, RunStatus.COMPUTED)
         repo.set_status(run_id, RunStatus.AWAITING_APPROVAL)  # HITL-01 pause
-    else:  # request_clarification — the draft+send lands in Plan 03
-        repo.set_status(run_id, RunStatus.NEEDS_CLARIFICATION)
+    else:  # request_clarification — draft + stub-send, pause at AWAITING_REPLY
+        _clarify(run_id, email, decision, llm=llm)
+
+
+def _clarify(run_id, email, decision, *, llm) -> None:
+    """Draft a clarification, stub-send it, and pause the run at AWAITING_REPLY.
+
+    The cheap DRAFT_* tier drafts the body (templated fallback on empty content so
+    a draft failure never strands the run, CLAR-01). gateway.send_outbound mints a
+    synthetic Message-ID and records it on the linked
+    email_messages(direction='outbound', run_id) row — the SINGLE canonical anchor
+    Plan 04 reads back via the header chain (FIX 3); there is NO payroll_runs
+    Message-ID column. Status advances via repo.set_status (the sole writer, FIX B).
+    The clarification threads off the client's inbound message_id (In-Reply-To +
+    References) so the reply chain resolves in Plan 04.
+    """
+    compose_kwargs = {}
+    if llm is not None:
+        compose_kwargs["llm"] = llm
+    body = compose_clarification(decision, **compose_kwargs)
+
+    gateway.send_outbound(
+        run_id=run_id,
+        to_addr=email.from_addr,
+        subject=clarification_subject(decision),
+        body=body,
+        in_reply_to=email.message_id,
+        references_header=email.message_id,
+    )
+    repo.set_status(run_id, RunStatus.AWAITING_REPLY)  # CLAR-01 pause
 
 
 def _compute_line_items(run_id, extracted, matches, roster):

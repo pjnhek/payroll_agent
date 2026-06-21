@@ -180,6 +180,8 @@ class InMemoryRepo:
         self.email_by_id: dict[str, dict] = {}  # email_id -> email row
         self.runs: dict[str, dict] = {}  # run_id -> run row
         self.line_items: dict[str, list] = {}  # run_id -> list[PaystubLineItem]
+        # Outbound email_messages rows (the FIX 3 anchor): run_id -> list of rows.
+        self.outbound: dict[str, list] = {}
         # Seed businesses for sender matching.
         from app.db.seed import seed
 
@@ -285,6 +287,17 @@ class InMemoryRepo:
     def replace_line_items(self, run_id, items, conn=None):
         self.line_items[str(run_id)] = list(items)
 
+    # --- email / threading (the FIX 3 outbound Message-ID anchor) ---
+    def insert_email_message(self, *, run_id, direction, message_id, conn=None, **kw):
+        row = {"run_id": run_id, "direction": direction, "message_id": message_id, **kw}
+        if direction == "outbound" and run_id is not None:
+            self.outbound.setdefault(str(run_id), []).append(row)
+        return uuid.uuid4()
+
+    def get_outbound_message_id(self, run_id, conn=None):
+        rows = self.outbound.get(str(run_id))
+        return rows[-1]["message_id"] if rows else None
+
 
 @pytest.fixture
 def fake_repo(monkeypatch) -> InMemoryRepo:
@@ -306,6 +319,8 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "persist_decision",
         "persist_reconciliation",
         "replace_line_items",
+        "insert_email_message",
+        "get_outbound_message_id",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)

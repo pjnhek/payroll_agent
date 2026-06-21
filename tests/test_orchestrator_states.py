@@ -119,12 +119,13 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
 
 def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
     """Feed an unresolved name: the model says 'process' but the gate forces
-    clarify, and the orchestrator follows final_action (→ needs_clarification),
-    proving it never branches on model_action.
+    clarify, and the orchestrator follows final_action (→ awaiting_reply via the
+    draft+send clarify branch), proving it never branches on model_action.
 
     The residual name triggers the layer-2 reconcile call (extract → reconcile →
-    decide), so the FIFO script carries THREE responses: the reconcile wrapper
-    returns an `unknown` (no roster match) so the gate blocks regardless."""
+    decide → draft), so the FIFO script carries FOUR responses: the reconcile
+    wrapper returns an `unknown` (no roster match) so the gate blocks regardless,
+    then a free-text clarification body."""
     mock_llm.script = [
         json.dumps(
             {
@@ -147,6 +148,7 @@ def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
             }
         ),
         json.dumps({"model_action": "process", "reasons": ["model is willing"]}),
+        "Hi — we need to confirm one employee name before running payroll.",
     ]
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
 
@@ -155,11 +157,13 @@ def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
     run = fake_repo.load_run(run_id)
     assert run["decision"]["model_action"] == "process"
     assert run["decision"]["final_action"] == "request_clarification"
-    assert run["status"] == "needs_clarification", (
-        "orchestrator must follow final_action, not model_action"
+    assert run["status"] == "awaiting_reply", (
+        "orchestrator must follow final_action (gated → draft+send → awaiting_reply)"
     )
     # Reconciliation is persisted even on the clarify branch (D-A3-05).
     assert run["reconciliation"] is not None
+    # The clarification was stub-sent and its Message-ID anchored on the outbound row.
+    assert fake_repo.get_outbound_message_id(run_id) is not None
 
 
 def test_orchestrator_source_never_reads_model_action():
