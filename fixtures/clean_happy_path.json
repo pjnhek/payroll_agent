@@ -1,0 +1,11 @@
+{
+  "id": "a0000001-0000-0000-0000-000000000001",
+  "message_id": "<clean-happy-001@coastalcleaning.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll hours for week of 2026-06-15",
+  "from_addr": "payroll@coastalcleaning.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi team,\n\nHere are this week's hours for the period starting 2026-06-15:\n\nMaria Chen - 40 regular hours\nJames Okafor - salaried, no changes this week\n\nThanks!\nDana\n\n-- \nDana Whitfield\nOffice Manager, Coastal Cleaning Co.\n\nOn Mon, Jun 8, 2026 at 9:14 AM Dana Whitfield <payroll@coastalcleaning.example> wrote:\n> Last week's hours were Maria 38, James salaried.\n> Let me know if you need anything else.\n",
+  "created_at": "2026-06-15T09:30:00Z"
+}

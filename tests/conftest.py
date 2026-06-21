@@ -158,3 +158,220 @@ def roster_from_seed() -> Roster:
     business_id = result.employees[0].business_id
     employees = [e for e in result.employees if e.business_id == business_id]
     return Roster(business_id=business_id, employees=employees)
+
+
+# ---------------------------------------------------------------------------
+# 4. fake_repo — an in-memory repo store so the FULL pipeline runs offline
+# ---------------------------------------------------------------------------
+#
+# The webhook + orchestrator both call app.db.repo helpers. To assert the
+# end-to-end flow (POST → BackgroundTask → stages → awaiting_approval) with no
+# live DB, this fixture monkeypatches the repo helpers the webhook/orchestrator
+# touch onto an in-memory store that mirrors their real semantics: inbound dedupe
+# on message_id, sender→business lookup over the seed, run-row lifecycle, JSONB
+# persistence, the sole set_status writer, and record_run_error routing.
+
+
+class InMemoryRepo:
+    """Mirror of the repo surface the webhook + orchestrator exercise, in RAM."""
+
+    def __init__(self) -> None:
+        self.emails: dict[str, dict] = {}  # message_id -> email row
+        self.email_by_id: dict[str, dict] = {}  # email_id -> email row
+        self.runs: dict[str, dict] = {}  # run_id -> run row
+        self.line_items: dict[str, list] = {}  # run_id -> list[PaystubLineItem]
+        # Seed businesses for sender matching.
+        from app.db.seed import seed
+
+        seeded = seed(dry_run=True)
+        self.contact_to_business = {
+            b["contact_email"]: b["id"] for b in seeded.businesses
+        }
+        self.business_employees: dict[str, list] = {}
+        for emp in seeded.employees:
+            self.business_employees.setdefault(str(emp.business_id), []).append(emp)
+
+    # --- ingest / lifecycle ---
+    def insert_inbound_email(self, **kw):
+        mid = kw["message_id"]
+        if mid in self.emails:
+            return None, False
+        eid = uuid.uuid4()
+        row = {"id": eid, **kw}
+        self.emails[mid] = row
+        self.email_by_id[str(eid)] = row
+        return eid, True
+
+    def find_business_by_sender(self, from_addr, conn=None):
+        return self.contact_to_business.get(from_addr)
+
+    def create_run(self, *, business_id, source_email_id, pay_period_start=None,
+                   pay_period_end=None, conn=None):
+        rid = uuid.uuid4()
+        self.runs[str(rid)] = {
+            "id": rid,
+            "business_id": business_id,
+            "source_email_id": source_email_id,
+            "status": "received",
+            "extracted_data": None,
+            "decision": None,
+            "reconciliation": None,
+            "error_reason": None,
+            "pay_period_start": pay_period_start,
+            "pay_period_end": pay_period_end,
+        }
+        return rid
+
+    def load_run(self, run_id, conn=None):
+        return self.runs.get(str(run_id))
+
+    def load_source_email(self, run_id, conn=None):
+        run = self.runs.get(str(run_id))
+        if not run or not run["source_email_id"]:
+            return None
+        row = self.email_by_id.get(str(run["source_email_id"]))
+        return row["body_text"] if row else None
+
+    def load_inbound_email(self, run_id, conn=None):
+        from app.models.contracts import InboundEmail
+
+        run = self.runs.get(str(run_id))
+        if not run or not run["source_email_id"]:
+            return None
+        row = self.email_by_id.get(str(run["source_email_id"]))
+        if not row:
+            return None
+        return InboundEmail(
+            id=row["id"],
+            message_id=row["message_id"],
+            in_reply_to=row.get("in_reply_to"),
+            references_header=row.get("references_header"),
+            subject=row.get("subject") or "",
+            from_addr=row.get("from_addr") or "",
+            to_addr=row.get("to_addr") or "",
+            body_text=row["body_text"],
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def load_roster_for_business(self, business_id, conn=None):
+        return Roster(
+            business_id=business_id,
+            employees=list(self.business_employees.get(str(business_id), [])),
+        )
+
+    # --- status / persistence ---
+    def set_status(self, run_id, status, conn=None):
+        from app.models.status import RunStatus
+
+        self.runs[str(run_id)]["status"] = RunStatus(status).value
+
+    def record_run_error(self, run_id, reason, conn=None):
+        from app.models.status import RunStatus
+
+        self.runs[str(run_id)]["error_reason"] = reason
+        self.set_status(run_id, RunStatus.ERROR)
+
+    def persist_extracted(self, run_id, extracted, conn=None):
+        self.runs[str(run_id)]["extracted_data"] = extracted.model_dump(mode="json")
+
+    def persist_decision(self, run_id, decision, conn=None):
+        self.runs[str(run_id)]["decision"] = decision.model_dump(mode="json")
+
+    def persist_reconciliation(self, run_id, matches, conn=None):
+        self.runs[str(run_id)]["reconciliation"] = [
+            m.model_dump(mode="json") for m in matches
+        ]
+
+    def replace_line_items(self, run_id, items, conn=None):
+        self.line_items[str(run_id)] = list(items)
+
+
+@pytest.fixture
+def fake_repo(monkeypatch) -> InMemoryRepo:
+    """Patch app.db.repo helpers onto an in-memory store (webhook + orchestrator)."""
+    store = InMemoryRepo()
+    import app.db.repo as repo_mod
+
+    for name in (
+        "insert_inbound_email",
+        "find_business_by_sender",
+        "create_run",
+        "load_run",
+        "load_source_email",
+        "load_inbound_email",
+        "load_roster_for_business",
+        "set_status",
+        "record_run_error",
+        "persist_extracted",
+        "persist_decision",
+        "persist_reconciliation",
+        "replace_line_items",
+    ):
+        if hasattr(store, name):
+            monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
+    return store
+
+
+# ---------------------------------------------------------------------------
+# 5. mock_llm — script the OpenAI client so stages run with no network
+# ---------------------------------------------------------------------------
+
+
+class _MockMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _MockChoice:
+    def __init__(self, content):
+        self.message = _MockMessage(content)
+
+
+class _MockResponse:
+    def __init__(self, content):
+        self.choices = [_MockChoice(content)]
+
+
+class _MockCompletions:
+    def __init__(self, parent):
+        self._parent = parent
+
+    def create(self, **kwargs):
+        self._parent.calls.append(kwargs)
+        content = self._parent.script.pop(0) if self._parent.script else "{}"
+        return _MockResponse(content)
+
+
+class _MockChat:
+    def __init__(self, parent):
+        self.completions = _MockCompletions(parent)
+
+
+class MockOpenAI:
+    """A scriptable OpenAI stand-in shared across all client instances.
+
+    Because app.llm.client constructs a fresh OpenAI() per call, the script is a
+    class-level FIFO queue so sequential stage calls (extract → decide) each pop
+    the next scripted JSON string in order.
+    """
+
+    script: list = []
+    calls: list = []
+
+    def __init__(self, *, base_url=None, api_key=None, **_):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.chat = _MockChat(MockOpenAI)
+
+
+@pytest.fixture
+def mock_llm(monkeypatch):
+    """Patch app.llm.client.OpenAI with a class-level FIFO script.
+
+    Returns the MockOpenAI class; set `mock_llm.script = [json1, json2, ...]` to
+    enqueue the structured responses sequential stage calls will consume.
+    """
+    MockOpenAI.script = []
+    MockOpenAI.calls = []
+    monkeypatch.setattr("app.llm.client.OpenAI", MockOpenAI)
+    return MockOpenAI
