@@ -6,3 +6,9 @@ requires-python = ">=3.12"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+# Register custom markers so pytest doesn't warn about unknown marks.
+markers = [
+    "integration: marks tests as requiring a live database (deselect with -m 'not integration')",
+]
