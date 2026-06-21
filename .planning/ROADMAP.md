@@ -70,7 +70,7 @@ Plans:
 - [x] 02-01-PLAN.md — substrate: deps + LLM client wrapper (per-tier, JSON mode, reflective retry, DeepSeek non-thinking) + stub email gateway + DB repo + reconciliation JSONB column + live_llm marker
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 02-02-PLAN.md — slice (a) clean happy path E2E: webhook+BackgroundTasks, four pure stages + the code gate (decide.py), thin gross+FICA (net pre-federal), orchestrator state machine, awaiting_approval pause + crude approve/reject, README disclaimer stub
+- [x] 02-02-PLAN.md — slice (a) clean happy path E2E: webhook+BackgroundTasks, four pure stages + the code gate (decide.py), thin gross+FICA (net pre-federal), orchestrator state machine, awaiting_approval pause + crude approve/reject, README disclaimer stub
 **Wave 3** *(blocked on Wave 2)*
 
 - [ ] 02-03-PLAN.md — slice (b) gate-block: layer-2 LLM reconcile, one-to-one mapping enforcement (LLM-09), clarify draft+send -> awaiting_reply, David Reyez hero fixture (mock proves the gate)
@@ -148,7 +148,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
-| 2. Walking Skeleton | 1/4 | In Progress|  |
+| 2. Walking Skeleton | 2/4 | In Progress|  |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |

@@ -29,22 +29,22 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 
 ### Ingest & Orchestration
 
-- [ ] **INGEST-01**: A FastAPI webhook accepts an inbound-email payload, returns 200 quickly, and schedules pipeline work as a background task
-- [ ] **INGEST-02**: The inbound payload is stored in `email_messages` with Message-ID, In-Reply-To, and References headers; reply quoted-history/signatures are stripped before extraction
-- [ ] **INGEST-03**: The sender address is matched to `businesses.contact_email`; an unknown sender is logged and stopped, never guessed
-- [ ] **INGEST-04**: An explicit `orchestrator.py` drives the run state machine — it owns the legal `status` transitions and the two pause points (`awaiting_reply`, `awaiting_approval`)
+- [x] **INGEST-01**: A FastAPI webhook accepts an inbound-email payload, returns 200 quickly, and schedules pipeline work as a background task
+- [x] **INGEST-02**: The inbound payload is stored in `email_messages` with Message-ID, In-Reply-To, and References headers; reply quoted-history/signatures are stripped before extraction
+- [x] **INGEST-03**: The sender address is matched to `businesses.contact_email`; an unknown sender is logged and stopped, never guessed
+- [x] **INGEST-04**: An explicit `orchestrator.py` drives the run state machine — it owns the legal `status` transitions and the two pause points (`awaiting_reply`, `awaiting_approval`)
 - [ ] **INGEST-05**: A stuck/errored run surfaces an `error` status on the dashboard and can be re-triggered idempotently **from the start of the run** (the demo requirement is "nothing silently hangs," not mid-pipeline resume; full resume-from-arbitrary-status is deferred to v2). Drop-if-tight.
 
 ### LLM Judgment (the gated decisioning core)
 
 - [x] **LLM-01**: One OpenAI-compatible client wrapper routes per task tier (strong/mid/cheap) by swapping base_url/model/key from config; model IDs are versioned env placeholders recorded for reproducibility
 - [x] **LLM-02**: Structured LLM calls use `response_format={"type":"json_object"}` + Pydantic validation with one reflective retry on a parse failure; temperature 0
-- [ ] **LLM-03**: Extraction returns structured per-employee entries (name as written, regular/OT/vacation/sick/holiday hours, and an optional current-run-only 401k contribution override) as a pure importable function — the 401k override applies to this run only and never mutates the employee's stored default
-- [ ] **LLM-04**: Deterministic name matching resolves exact / case / whitespace / known-alias hits with no model call; only residual ambiguous names go to the model
+- [x] **LLM-03**: Extraction returns structured per-employee entries (name as written, regular/OT/vacation/sick/holiday hours, and an optional current-run-only 401k contribution override) as a pure importable function — the 401k override applies to this run only and never mutates the employee's stored default
+- [x] **LLM-04**: Deterministic name matching resolves exact / case / whitespace / known-alias hits with no model call; only residual ambiguous names go to the model
 - [ ] **LLM-05**: LLM name reconciliation classifies each residual name (typo of a roster employee, nickname, or genuinely-different/unknown person) and returns a match + confidence + short reason; it never re-decides a clean deterministic match
-- [ ] **LLM-06**: Deterministic field validation produces a per-field issues list (presence, sanity bounds, numeric)
-- [ ] **LLM-07**: The LLM proposes `process` or `request_clarification` with issues, but `decide.py` computes a code-owned `final_action` that hard-blocks on any missing required field or any name unresolved below the 0.8 confidence threshold — even when the model said process. `final_action` is the SOLE branch source consumed downstream; the orchestrator, dashboard, and eval never branch on `model_action`
-- [ ] **LLM-08**: The decision object (`model_action`, `gate_triggered`, `gate_reasons`, `final_action`, `unresolved_names`, `missing_fields`, confidence, reasons) is persisted on the run for audit and the eval
+- [x] **LLM-06**: Deterministic field validation produces a per-field issues list (presence, sanity bounds, numeric)
+- [x] **LLM-07**: The LLM proposes `process` or `request_clarification` with issues, but `decide.py` computes a code-owned `final_action` that hard-blocks on any missing required field or any name unresolved below the 0.8 confidence threshold — even when the model said process. `final_action` is the SOLE branch source consumed downstream; the orchestrator, dashboard, and eval never branch on `model_action`
+- [x] **LLM-08**: The decision object (`model_action`, `gate_triggered`, `gate_reasons`, `final_action`, `unresolved_names`, `missing_fields`, confidence, reasons) is persisted on the run for audit and the eval
 - [ ] **LLM-09**: Reconciliation enforces a one-to-one roster mapping — a duplicate submitted name, two submitted names resolving to the same employee, or a name resolving to no roster employee gates the run to clarification (a name cannot silently collapse onto another employee)
 
 ### Clarification & Resume
@@ -57,7 +57,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 
 ### Human-in-the-Loop & Delivery
 
-- [ ] **HITL-01**: A computed run pauses at `awaiting_approval`; the operator approves or rejects from the dashboard
+- [x] **HITL-01**: A computed run pauses at `awaiting_approval`; the operator approves or rejects from the dashboard
 - [ ] **HITL-02**: On approval, a confirmation email (LLM-drafted) is sent to the client with paystub PDFs generated on demand; status advances through `approved` → `sent` → `reconciled`
 - [ ] **HITL-03**: Paystub PDFs generate on demand from run data in memory (reportlab, BytesIO) — nothing is persisted to disk or a storage bucket
 
@@ -76,7 +76,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [ ] **EVAL-03**: `run_eval.py` imports and runs the SAME production pipeline functions over the fixtures and scores the code-owned `final_action` (not the model's raw action)
 - [ ] **EVAL-04**: Scoring computes four metrics — extraction field accuracy, name-reconciliation accuracy, decision accuracy (the three core thesis metrics, front-and-center in the chart) — and a **secondary** LLM-as-judge email-quality score scored against a **one-line rubric with 2–3 calibration anchors** (so it's defensible, not a vanity number), all broken out per category. The judge metric is lowest-priority and first to drop if time is short.
 - [ ] **EVAL-05**: Eval results (including the pinned model IDs used) write to `eval_results` and render on the dashboard chart; local eval is authoritative, and CI runs the scorers against cached/committed fixture outputs (no live LLM calls on push) with a manual-dispatch live eval
-- [ ] **DEMO-01**: Two canonical demo fixtures are committed and replayable from DASH-05 — one clean happy path (run completes to operator approval) and one code-gated clarify path (the model says process but the gate blocks and forces clarification) — so the 60–90s demo is deterministic and the gate is visible on camera
+- [x] **DEMO-01**: Two canonical demo fixtures are committed and replayable from DASH-05 — one clean happy path (run completes to operator approval) and one code-gated clarify path (the model says process but the gate blocks and forces clarification) — so the 60–90s demo is deterministic and the gate is visible on camera
 
 ### Hosting & Ops
 
@@ -130,25 +130,25 @@ Which phases cover which requirements. Populated during roadmap creation.
 | FOUND-03 | Phase 1 | Complete |
 | FOUND-05 | Phase 1 | Complete |
 | FOUND-06 | Phase 1 | Complete |
-| INGEST-01 | Phase 2 | Pending |
-| INGEST-02 | Phase 2 | Pending |
-| INGEST-03 | Phase 2 | Pending |
-| INGEST-04 | Phase 2 | Pending |
+| INGEST-01 | Phase 2 | Complete |
+| INGEST-02 | Phase 2 | Complete |
+| INGEST-03 | Phase 2 | Complete |
+| INGEST-04 | Phase 2 | Complete |
 | EMAIL-01 | Phase 2 | Complete |
 | LLM-01 | Phase 2 | Complete |
 | LLM-02 | Phase 2 | Complete |
-| LLM-03 | Phase 2 | Pending |
-| LLM-04 | Phase 2 | Pending |
+| LLM-03 | Phase 2 | Complete |
+| LLM-04 | Phase 2 | Complete |
 | LLM-05 | Phase 2 | Pending |
-| LLM-06 | Phase 2 | Pending |
-| LLM-07 | Phase 2 | Pending |
-| LLM-08 | Phase 2 | Pending |
+| LLM-06 | Phase 2 | Complete |
+| LLM-07 | Phase 2 | Complete |
+| LLM-08 | Phase 2 | Complete |
 | LLM-09 | Phase 2 | Pending |
-| HITL-01 | Phase 2 | Pending |
+| HITL-01 | Phase 2 | Complete |
 | CLAR-01 | Phase 2 | Pending |
 | CLAR-02 | Phase 2 | Pending |
 | CLAR-03 | Phase 2 | Pending |
-| DEMO-01 | Phase 2 | Pending |
+| DEMO-01 | Phase 2 | Complete |
 | CALC-01 | Phase 3 | Pending |
 | CALC-02 | Phase 3 | Pending |
 | CALC-03 | Phase 3 | Pending |
