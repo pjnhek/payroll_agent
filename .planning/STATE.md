@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 Phase: 2
 Plan: Not started
 Status: Phase 01 shipped — PR #1
-Last activity: 2026-06-21
+Last activity: 2026-06-21 - Completed quick task 260621-11x: fix order-dependent test + close_pool() (IN-04)
 
 Progress: [██████████] 100%
 
@@ -81,6 +81,12 @@ None yet.
 - [Phase 3]: Confirm 2026 Pub 15-T bracket tables + Step-1 standard amounts against the live IRS PDF before coding — any number from memory is stale (research flag; LOW confidence on the numbers until transcribed).
 - [Phase 2]: Confirm exact non-reasoning model IDs against the consoles (DeepSeek/Kimi) and pin versioned IDs for reproducibility (research flag).
 - [Phase 6]: Real gateway payload shape, signing-secret verification, and reply-only field are unknown until the provider is picked (research flag).
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260621-11x | Fix order-dependent test test_no_db_connection_needed + add close_pool() for clean pool shutdown (IN-04) | 2026-06-21 | dc7ce86 | [260621-11x-fix-order-dependent-test-test-no-db-conn](./quick/260621-11x-fix-order-dependent-test-test-no-db-conn/) |
 
 ### Build-time guidance (author review at roadmap lock — pull these forward, do not let them sit in the last phase)
 
