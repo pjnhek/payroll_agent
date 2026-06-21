@@ -16,6 +16,9 @@ NO run_id field, so decide() returns a Decision directly (no run_id stamping —
 that pattern applies only to extract()/Extracted, FIX A).
 
 Gate rules (code, no model) — force final_action="request_clarification" if ANY:
+  0. No extractable employees: extracted.employees == [] (CR-01). The other rules
+     are reason-additive (they iterate matches/issues), so a zero-employee run would
+     otherwise leave the gate empty and collapse final_action to model_action.
   1. Sub-threshold confidence: any NameMatchResult.confidence < Decimal("0.8").
      Evaluated PER NAME (D-A3-03a) — NOT against the collapsed scalar, so one 0.6
      name cannot hide behind three 1.0s.
@@ -135,6 +138,18 @@ def decide(
 
     gate_reasons: list[str] = []
     unresolved: list[str] = []
+
+    # Rule 0 — a run with NO extractable employees is never auto-processable (CR-01).
+    # Every other rule is reason-ADDITIVE: it fires only by iterating over `matches`
+    # / `issues`. A degenerate run with zero extracted employees (an empty/junk/
+    # prompt-injected email yielding "employees": []) therefore leaves gate_reasons
+    # empty, collapses final_action = model_action, and lets a "process" advisory
+    # reach an EMPTY payroll the operator is told is clean. This explicit rule fails
+    # the gate CLOSED on that case. It does NOT touch the per-name confidence test
+    # below: that still evaluates EACH NameMatchResult.confidence against
+    # Decimal("0.8"), never the collapsed scalar.
+    if not extracted.employees:
+        gate_reasons.append("no employees could be extracted from the email")
 
     # Rule 1 — per-name sub-0.8 confidence (EACH name, not the collapsed scalar).
     for m in matches:

@@ -111,6 +111,27 @@ def test_check_one_to_one_stub_shape():
     assert called["n"] == 1, "decide() must call check_one_to_one"
 
 
+def test_empty_extraction_blocks_process():
+    """CR-01 — a run that extracts ZERO employees must NOT auto-process even when the
+    model says 'process'. With no matches/issues the reason-additive gate rules never
+    fire, so an explicit Rule 0 is what fails the gate closed on the degenerate run.
+    Without it, final_action collapses to model_action and an empty payroll reaches
+    awaiting_approval as if clean.
+    """
+    llm = _StubLLM(model_action="process")
+    # Zero extracted employees, zero matches, zero issues — the degenerate run.
+    decision = decide(_extracted(), [], [], llm=llm)
+
+    assert decision.model_action == "process"
+    assert decision.final_action == "request_clarification", (
+        "a zero-employee run must gate to clarify even when the model says process"
+    )
+    assert decision.gate_triggered is True
+    assert any("no employees" in r.lower() for r in decision.gate_reasons), (
+        "the empty-extraction gate must record a legible gate_reason"
+    )
+
+
 def test_clean_run_collapses_to_one_and_processes():
     """A clean run with no LLM-layer names: confidence collapses to 1.0 via min()
     and final_action == model_action == 'process'."""
