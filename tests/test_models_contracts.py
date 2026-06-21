@@ -1,0 +1,536 @@
+"""Persistent contract tests — CI gate with no DB connection required.
+
+Finding #6: these tests run in CI on every push.  They are the living proof that:
+- All 10 public types import from app.models
+- RunStatus has exactly 11 members with the right values (mirrors Plan 02 CHECK)
+- Decimal serializes to JSON strings (D-06 guard at the DB jsonb boundary)
+- Decision carries structurally-separate model_action + final_action (D-08)
+- ExtractedEmployee hours are nullable so missing-hours cases don't parse-crash (Finding #3)
+- Employee enforces the pay_type compensation invariant at construction (D-10/FOUND-06)
+"""
+import uuid
+from decimal import Decimal
+
+import pytest
+from pydantic import ValidationError
+
+from app.models import (
+    Decision,
+    Employee,
+    Extracted,
+    ExtractedEmployee,
+    InboundEmail,
+    NameMatchResult,
+    PaystubLineItem,
+    Roster,
+    RunStatus,
+    ValidationIssue,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_NOW = "2026-06-20T12:00:00Z"
+_TODAY = "2026-06-16"
+
+
+def _employee_kwargs(**overrides) -> dict:
+    """Return a minimal valid Employee field dict."""
+    base = dict(
+        id=uuid.uuid4(),
+        business_id=uuid.uuid4(),
+        full_name="Alice Smith",
+        known_aliases=[],
+        pay_type="hourly",
+        hourly_rate=Decimal("25.00"),
+        annual_salary=None,
+        retirement_contribution_pct=Decimal("0.03"),
+        filing_status="single",
+        step_2_checkbox=False,
+        step_3_dependents=Decimal("0"),
+        step_4a_other_income=Decimal("0"),
+        step_4b_deductions=Decimal("0"),
+        ytd_ss_wages=Decimal("0"),
+        pay_periods_per_year=52,
+    )
+    base.update(overrides)
+    return base
+
+
+def _paystub_kwargs(**overrides) -> dict:
+    """Return a minimal valid PaystubLineItem field dict."""
+    import datetime
+
+    base = dict(
+        id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        employee_id=uuid.uuid4(),
+        submitted_name="Alice Smith",
+        match_confidence=Decimal("0.99"),
+        hours_regular=Decimal("40"),
+        hours_overtime=Decimal("0"),
+        hours_vacation=Decimal("0"),
+        hours_sick=Decimal("0"),
+        hours_holiday=Decimal("0"),
+        gross_pay=Decimal("1234.56"),
+        pretax_401k=Decimal("37.04"),
+        fica_ss=Decimal("76.54"),
+        fica_medicare=Decimal("17.90"),
+        federal_withholding=Decimal("123.45"),
+        state_withholding=None,
+        net_pay=Decimal("979.63"),
+        created_at=datetime.datetime(2026, 6, 20, 12, 0, 0),
+    )
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# test_imports
+# ---------------------------------------------------------------------------
+
+
+def test_imports() -> None:
+    """All 10 public names import from app.models without error (Finding #6)."""
+    # The import at the top of this file already exercises this; an explicit
+    # assertion makes the intent clear in the test output.
+    for name in (
+        RunStatus,
+        InboundEmail,
+        Extracted,
+        ExtractedEmployee,
+        Decision,
+        PaystubLineItem,
+        Roster,
+        Employee,
+        NameMatchResult,
+        ValidationIssue,
+    ):
+        assert name is not None
+
+
+# ---------------------------------------------------------------------------
+# RunStatus
+# ---------------------------------------------------------------------------
+
+
+def test_run_status_count() -> None:
+    """RunStatus has exactly 11 members (D-02 / D-03)."""
+    assert len(RunStatus) == 11
+
+
+def test_run_status_values() -> None:
+    """RunStatus values match the 11-value set verbatim (mirrors Plan 02 CHECK)."""
+    expected = {
+        "received",
+        "extracting",
+        "needs_clarification",
+        "awaiting_reply",
+        "computed",
+        "awaiting_approval",
+        "approved",
+        "sent",
+        "reconciled",
+        "rejected",
+        "error",
+    }
+    assert {s.value for s in RunStatus} == expected
+
+
+# ---------------------------------------------------------------------------
+# Decimal JSON serialization (D-06)
+# ---------------------------------------------------------------------------
+
+
+def test_decimal_json_serialization() -> None:
+    """gross_pay serializes to the string '1234.56', not the float 1234.56 (D-06).
+
+    This is the behavioral guard for WR-04: with the hand-rolled
+    @field_serializer machinery removed, Pydantic v2's default Decimal -> str
+    JSON serialization must still hold across all monetary fields, including a
+    nullable one (state_withholding) which the old serializer special-cased.
+    """
+    item = PaystubLineItem(
+        **_paystub_kwargs(gross_pay=Decimal("1234.56"), state_withholding=None)
+    )
+    dumped = item.model_dump(mode="json")
+    assert isinstance(dumped["gross_pay"], str), (
+        f"expected str, got {type(dumped['gross_pay'])}"
+    )
+    assert dumped["gross_pay"] == "1234.56"
+    # A nullable Decimal still round-trips to JSON null (default behavior).
+    assert dumped["state_withholding"] is None
+    # Decision.confidence also serializes to string via the same default.
+    decision = Decision(
+        model_action="process",
+        gate_triggered=False,
+        gate_reasons=[],
+        final_action="process",
+        unresolved_names=[],
+        missing_fields=[],
+        confidence=Decimal("0.95"),
+        reasons=["ok"],
+    )
+    assert decision.model_dump(mode="json")["confidence"] == "0.95"
+
+
+# ---------------------------------------------------------------------------
+# Decision gate shape (D-08)
+# ---------------------------------------------------------------------------
+
+
+def test_decision_gate_shape() -> None:
+    """model_action and final_action can differ when gate fires (D-08)."""
+    d = Decision(
+        model_action="process",
+        gate_triggered=True,
+        gate_reasons=["confidence below 0.8"],
+        final_action="request_clarification",
+        unresolved_names=["Reyez"],
+        missing_fields=[],
+        confidence=Decimal("0.72"),
+        reasons=["name confidence 0.72 below threshold 0.80"],
+    )
+    assert d.model_action != d.final_action
+    assert d.gate_triggered is True
+    assert d.unresolved_names == ["Reyez"]
+
+
+def test_decision_pass_through() -> None:
+    """Decision with model_action == final_action validates (happy path, no gate)."""
+    d = Decision(
+        model_action="process",
+        gate_triggered=False,
+        gate_reasons=[],
+        final_action="process",
+        unresolved_names=[],
+        missing_fields=[],
+        confidence=Decimal("0.95"),
+        reasons=["all names matched cleanly"],
+    )
+    assert d.model_action == d.final_action == "process"
+    assert d.gate_triggered is False
+
+
+# ---------------------------------------------------------------------------
+# ExtractedEmployee nullable hours (Finding #3)
+# ---------------------------------------------------------------------------
+
+
+def test_extracted_employee_nullable_hours() -> None:
+    """ExtractedEmployee with all hours=None validates without error (Finding #3).
+
+    If hours were non-nullable, a client email with missing hours would raise
+    ValidationError before decide() can inspect missing_fields and gate the run.
+    """
+    e = ExtractedEmployee(
+        submitted_name="Bob",
+        hours_regular=None,
+        hours_overtime=None,
+        hours_vacation=None,
+        hours_sick=None,
+        hours_holiday=None,
+        contribution_401k_override=None,
+    )
+    assert e.submitted_name == "Bob"
+    assert e.hours_regular is None
+
+
+def test_extracted_employee_fully_supplied() -> None:
+    """ExtractedEmployee with all hours supplied also validates."""
+    e = ExtractedEmployee(
+        submitted_name="Alice",
+        hours_regular=Decimal("40"),
+        hours_overtime=Decimal("0"),
+        hours_vacation=Decimal("0"),
+        hours_sick=Decimal("0"),
+        hours_holiday=Decimal("0"),
+        contribution_401k_override=None,
+    )
+    assert e.hours_regular == Decimal("40")
+
+
+# ---------------------------------------------------------------------------
+# Roster shapes
+# ---------------------------------------------------------------------------
+
+
+def test_employee_valid() -> None:
+    """A fully-specified hourly Employee validates without error."""
+    e = Employee(**_employee_kwargs())
+    assert e.pay_type == "hourly"
+    assert e.hourly_rate == Decimal("25.00")
+
+
+def test_roster_valid() -> None:
+    """Roster with one employee validates without error."""
+    employee = Employee(**_employee_kwargs())
+    roster = Roster(business_id=uuid.uuid4(), employees=[employee])
+    assert len(roster.employees) == 1
+
+
+# ---------------------------------------------------------------------------
+# NameMatchResult
+# ---------------------------------------------------------------------------
+
+
+def test_name_match_result() -> None:
+    """NameMatchResult with llm_typo match validates."""
+    result = NameMatchResult(
+        submitted_name="Reyez",
+        matched_employee_id=uuid.uuid4(),
+        match_type="llm_typo",
+        confidence=Decimal("0.72"),
+        reason="likely typo of Reyes",
+    )
+    assert result.match_type == "llm_typo"
+    assert result.confidence == Decimal("0.72")
+
+
+# ---------------------------------------------------------------------------
+# ValidationIssue
+# ---------------------------------------------------------------------------
+
+
+def test_validation_issue() -> None:
+    """ValidationIssue with missing issue_type validates."""
+    issue = ValidationIssue(
+        field="hours_regular",
+        issue_type="missing",
+        message="hours_regular not present",
+    )
+    assert issue.issue_type == "missing"
+
+
+# ---------------------------------------------------------------------------
+# Employee compensation invariant (FIX A — D-10/FOUND-06)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_hourly_requires_hourly_rate() -> None:
+    """An hourly Employee without hourly_rate raises ValidationError (D-10)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(pay_type="hourly", hourly_rate=None))
+
+
+def test_employee_salary_requires_annual_salary() -> None:
+    """A salaried Employee without annual_salary raises ValidationError (D-10)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(pay_type="salary", hourly_rate=None, annual_salary=None)
+        )
+
+
+def test_employee_salary_valid() -> None:
+    """A salaried Employee with annual_salary validates without error."""
+    e = Employee(
+        **_employee_kwargs(
+            pay_type="salary",
+            hourly_rate=None,
+            annual_salary=Decimal("60000"),
+        )
+    )
+    assert e.annual_salary == Decimal("60000")
+    assert e.hourly_rate is None
+
+
+# ---------------------------------------------------------------------------
+# Employee compensation mutual exclusivity (WR-07)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_hourly_rejects_stray_annual_salary() -> None:
+    """An hourly Employee carrying a stray annual_salary raises ValidationError (WR-07)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(
+                pay_type="hourly",
+                hourly_rate=Decimal("18.50"),
+                annual_salary=Decimal("99999"),
+            )
+        )
+
+
+def test_employee_salary_rejects_stray_hourly_rate() -> None:
+    """A salaried Employee carrying a stray hourly_rate raises ValidationError (WR-07)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(
+                pay_type="salary",
+                hourly_rate=Decimal("18.50"),
+                annual_salary=Decimal("60000"),
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Numeric field bounds (WR-01)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_rejects_negative_hourly_rate() -> None:
+    """A negative hourly_rate raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(hourly_rate=Decimal("-50.00")))
+
+
+def test_employee_rejects_negative_annual_salary() -> None:
+    """A negative annual_salary raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(
+                pay_type="salary",
+                hourly_rate=None,
+                annual_salary=Decimal("-60000"),
+            )
+        )
+
+
+def test_employee_rejects_retirement_pct_above_one() -> None:
+    """retirement_contribution_pct > 1 (e.g. 50 == 5000%) raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("50")))
+
+
+def test_employee_rejects_negative_retirement_pct() -> None:
+    """A negative retirement_contribution_pct raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("-0.01")))
+
+
+def test_employee_accepts_retirement_pct_bounds() -> None:
+    """retirement_contribution_pct of exactly 0 and 1 are accepted (inclusive bounds)."""
+    e0 = Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("0")))
+    e1 = Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("1")))
+    assert e0.retirement_contribution_pct == Decimal("0")
+    assert e1.retirement_contribution_pct == Decimal("1")
+
+
+def test_name_match_result_rejects_confidence_above_one() -> None:
+    """NameMatchResult.confidence > 1 raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Reyez",
+            matched_employee_id=uuid.uuid4(),
+            match_type="llm_typo",
+            confidence=Decimal("5.0"),
+            reason="out of range",
+        )
+
+
+def test_name_match_result_rejects_negative_confidence() -> None:
+    """NameMatchResult.confidence < 0 raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Reyez",
+            matched_employee_id=None,
+            match_type="unknown",
+            confidence=Decimal("-1"),
+            reason="out of range",
+        )
+
+
+def test_extracted_employee_rejects_negative_hours() -> None:
+    """ExtractedEmployee with negative hours raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        ExtractedEmployee(submitted_name="Bob", hours_regular=Decimal("-10"))
+
+
+def test_decision_rejects_confidence_out_of_range() -> None:
+    """Decision.confidence outside [0,1] raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Decision(
+            model_action="process",
+            gate_triggered=False,
+            gate_reasons=[],
+            final_action="process",
+            unresolved_names=[],
+            missing_fields=[],
+            confidence=Decimal("-1"),
+            reasons=["out of range"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# PaystubLineItem.match_confidence bound (WR-01-incomplete)
+# ---------------------------------------------------------------------------
+
+
+def test_paystub_line_item_rejects_confidence_above_one() -> None:
+    """PaystubLineItem.match_confidence > 1 raises ValidationError (WR-01-incomplete).
+
+    Mirrors test_name_match_result_rejects_confidence_above_one for the one
+    confidence field that maps to the DB (paystub_line_items.match_confidence
+    NUMERIC(4,3)). Unbounded, 42.0 would crash the INSERT and 1.5 would silently
+    corrupt the audit record.
+    """
+    with pytest.raises(ValidationError):
+        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("42.0")))
+
+
+def test_paystub_line_item_rejects_negative_confidence() -> None:
+    """PaystubLineItem.match_confidence < 0 raises ValidationError (WR-01-incomplete)."""
+    with pytest.raises(ValidationError):
+        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("-0.01")))
+
+
+# ---------------------------------------------------------------------------
+# W-4 / YTD dollar-field non-negativity (WR-08)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_rejects_negative_ytd_ss_wages() -> None:
+    """A negative ytd_ss_wages raises ValidationError (WR-08).
+
+    A negative YTD makes remaining_cap = 184500 - ytd_ss_wages exceed the wage
+    base, breaking the SS-cap straddle logic.
+    """
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(ytd_ss_wages=Decimal("-99999")))
+
+
+def test_employee_rejects_negative_step_3_dependents() -> None:
+    """A negative step_3_dependents raises ValidationError (WR-08).
+
+    step_3_dependents is *subtracted* in the Pub 15-T worksheet; a negative
+    value nonsensically inflates withholding.
+    """
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(step_3_dependents=Decimal("-5000")))
+
+
+def test_employee_rejects_negative_step_4a_other_income() -> None:
+    """A negative step_4a_other_income raises ValidationError (WR-08)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(step_4a_other_income=Decimal("-1")))
+
+
+def test_employee_rejects_negative_step_4b_deductions() -> None:
+    """A negative step_4b_deductions raises ValidationError (WR-08)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(step_4b_deductions=Decimal("-1")))
+
+
+# ---------------------------------------------------------------------------
+# pay_periods_per_year drift guard (WR-02)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_rejects_invalid_pay_periods() -> None:
+    """A pay_periods_per_year not in {12,24,26,52} raises ValidationError (WR-02).
+
+    Mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52)) so a value
+    like 13 cannot pass the contract and silently drift toward the DB boundary.
+    """
+    for bad in (0, -1, 13, 1):
+        with pytest.raises(ValidationError):
+            Employee(**_employee_kwargs(pay_periods_per_year=bad))
+
+
+def test_employee_accepts_all_legal_pay_periods() -> None:
+    """All four legal pay_periods_per_year values construct (WR-02)."""
+    for good in (12, 24, 26, 52):
+        e = Employee(**_employee_kwargs(pay_periods_per_year=good))
+        assert e.pay_periods_per_year == good
