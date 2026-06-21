@@ -37,8 +37,8 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 
 ### LLM Judgment (the gated decisioning core)
 
-- [ ] **LLM-01**: One OpenAI-compatible client wrapper routes per task tier (strong/mid/cheap) by swapping base_url/model/key from config; model IDs are versioned env placeholders recorded for reproducibility
-- [ ] **LLM-02**: Structured LLM calls use `response_format={"type":"json_object"}` + Pydantic validation with one reflective retry on a parse failure; temperature 0
+- [x] **LLM-01**: One OpenAI-compatible client wrapper routes per task tier (strong/mid/cheap) by swapping base_url/model/key from config; model IDs are versioned env placeholders recorded for reproducibility
+- [x] **LLM-02**: Structured LLM calls use `response_format={"type":"json_object"}` + Pydantic validation with one reflective retry on a parse failure; temperature 0
 - [ ] **LLM-03**: Extraction returns structured per-employee entries (name as written, regular/OT/vacation/sick/holiday hours, and an optional current-run-only 401k contribution override) as a pure importable function — the 401k override applies to this run only and never mutates the employee's stored default
 - [ ] **LLM-04**: Deterministic name matching resolves exact / case / whitespace / known-alias hits with no model call; only residual ambiguous names go to the model
 - [ ] **LLM-05**: LLM name reconciliation classifies each residual name (typo of a roster employee, nickname, or genuinely-different/unknown person) and returns a match + confidence + short reason; it never re-decides a clean deterministic match
@@ -53,7 +53,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [ ] **CLAR-02**: A client reply is routed to its run via the RFC In-Reply-To/References header chain (subject/provider-thread are only fallbacks)
 - [ ] **CLAR-03**: A matched reply re-enters the pipeline at extraction and resumes the run, with idempotent re-entrancy (overwrite `extracted_data`, replace line items by run, match only runs in `awaiting_reply`; a header match to a sent/reconciled run is logged as a late reply, not resumed)
 - [ ] **CLAR-04**: Outbound sends are idempotent — retrying an approval or re-triggering an errored run (INGEST-05) never sends a duplicate clarification or confirmation email (guard on already-sent state per run)
-- [ ] **EMAIL-01**: The stub email gateway records every outbound clarification/confirmation with a synthetic Message-ID in `email_messages` and supports injecting a fixture reply, so the full clarify → reply → resume loop and DEMO-01 are exercisable with zero real email
+- [x] **EMAIL-01**: The stub email gateway records every outbound clarification/confirmation with a synthetic Message-ID in `email_messages` and supports injecting a fixture reply, so the full clarify → reply → resume loop and DEMO-01 are exercisable with zero real email
 
 ### Human-in-the-Loop & Delivery
 
@@ -134,9 +134,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 | INGEST-02 | Phase 2 | Pending |
 | INGEST-03 | Phase 2 | Pending |
 | INGEST-04 | Phase 2 | Pending |
-| EMAIL-01 | Phase 2 | Pending |
-| LLM-01 | Phase 2 | Pending |
-| LLM-02 | Phase 2 | Pending |
+| EMAIL-01 | Phase 2 | Complete |
+| LLM-01 | Phase 2 | Complete |
+| LLM-02 | Phase 2 | Complete |
 | LLM-03 | Phase 2 | Pending |
 | LLM-04 | Phase 2 | Pending |
 | LLM-05 | Phase 2 | Pending |
