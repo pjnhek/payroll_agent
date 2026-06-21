@@ -63,7 +63,20 @@ Plans:
   4. The orchestrator drives the run state machine through both pause states — a clarify run reaches `awaiting_reply`, an injected fixture reply (zero real email) routes back via the RFC In-Reply-To/References chain, resumes at extraction idempotently, and a computed run pauses at `awaiting_approval` where a crude approve/reject proves the gate pauses and resumes.
   5. Computed paystubs show gross and FICA with net labeled "pre-federal" — no fabricated federal figure appears anywhere.
 
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — substrate: deps + LLM client wrapper (per-tier, JSON mode, reflective retry, DeepSeek non-thinking) + stub email gateway + DB repo + reconciliation JSONB column + live_llm marker
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 02-02-PLAN.md — slice (a) clean happy path E2E: webhook+BackgroundTasks, four pure stages + the code gate (decide.py), thin gross+FICA (net pre-federal), orchestrator state machine, awaiting_approval pause + crude approve/reject, README disclaimer stub
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 02-03-PLAN.md — slice (b) gate-block: layer-2 LLM reconcile, one-to-one mapping enforcement (LLM-09), clarify draft+send -> awaiting_reply, David Reyez hero fixture (mock proves the gate)
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 02-04-PLAN.md — slice (c) clarify->reply->resume loop: header-chain routing (CLAR-02), idempotent re-entry (CLAR-03), reply-fixture injection (EMAIL-01) + the LIVE hero-run exit gate (D-A4-01a, manual)
 
 ### Phase 3: Harden the Calc
 
