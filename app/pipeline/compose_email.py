@@ -16,9 +16,13 @@ send + status transition.
 """
 from __future__ import annotations
 
+import logging
+
 from app.llm import client as llm_client
 from app.llm.prompts import clarify as clarify_prompt
 from app.models.contracts import Decision
+
+logger = logging.getLogger("payroll_agent.compose_email")
 
 _SUBJECT = "Quick question before we run your payroll"
 
@@ -68,8 +72,28 @@ def compose_clarification(decision: Decision, *, llm=llm_client) -> str:
     string the orchestrator hands to gateway.send_outbound.
     """
     messages = clarify_prompt.build_messages(decision)
-    body = llm.call_text("draft", messages, temperature=0.3)
+    # WR-03: the "draft failure never strands the run" guarantee must cover BOTH
+    # empty content AND an API error (auth/rate-limit/etc.). call_text returns None
+    # on empty content but RAISES on an API error — unwrapped, that exception would
+    # propagate out through _clarify and route the run to ERROR instead of falling
+    # back to the template. Wrap it so an API error also degrades to the templated
+    # body, and LOG every fallback so a misconfigured draft tier (wrong key/model)
+    # is VISIBLE rather than silently templating every clarification.
+    api_error = False
+    try:
+        body = llm.call_text("draft", messages, temperature=0.3)
+    except Exception:  # noqa: BLE001 — a draft failure must never strand the run (CLAR-01)
+        logger.warning(
+            "draft call failed — falling back to templated clarification body",
+            exc_info=True,
+        )
+        body = None
+        api_error = True
     if not body or not body.strip():
+        # An API error was already logged above; log the empty-content case here so a
+        # silently-templating draft tier is still visible (but don't double-log errors).
+        if not api_error:
+            logger.warning("draft returned empty content — using templated clarification body")
         return _template_body(decision)
     return body
 

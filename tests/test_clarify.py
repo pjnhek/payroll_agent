@@ -75,6 +75,50 @@ def test_compose_falls_back_to_template_on_empty_content():
     assert "David Reyez" in body, "the fallback template surfaces the gate detail"
 
 
+class _RaisingDraftLLM:
+    """A call_text stand-in that RAISES (an API error: auth, rate limit, bad model)."""
+
+    def __init__(self, exc=None):
+        self._exc = exc or RuntimeError("simulated draft API error (401/429/bad model)")
+        self.calls = 0
+
+    def call_text(self, tier, messages, temperature=0.7):
+        self.calls += 1
+        raise self._exc
+
+
+def test_compose_falls_back_to_template_on_api_error(caplog):
+    """WR-03 — an API error in the draft call must ALSO fall back to the templated
+    body (not raise), so a misconfigured draft tier degrades the email rather than
+    ERRORing the run. The fallback is logged so the failure is visible."""
+    import logging
+
+    llm = _RaisingDraftLLM()
+    with caplog.at_level(logging.WARNING):
+        body = compose_clarification(_gated_decision(), llm=llm)
+
+    assert llm.calls == 1, "the draft call was attempted"
+    assert body, "an API error must fall back to a non-empty templated body, not raise"
+    assert "David Reyez" in body, "the fallback template surfaces the gate detail"
+    assert any("draft call failed" in r.message for r in caplog.records), (
+        "the API-error fallback must be logged so a dead draft tier is visible (WR-03)"
+    )
+
+
+def test_compose_logs_empty_content_fallback(caplog):
+    """WR-03 — an empty-content fallback is also logged, so a silently-templating
+    draft tier is visible during a demo."""
+    import logging
+
+    llm = _DraftLLM(None)  # empty content
+    with caplog.at_level(logging.WARNING):
+        compose_clarification(_gated_decision(), llm=llm)
+
+    assert any("empty content" in r.message for r in caplog.records), (
+        "the empty-content fallback must be logged (WR-03)"
+    )
+
+
 def test_compose_source_not_json_mode():
     """Source-level: compose_email uses call_text (free text), never call_structured
     / json_object."""
