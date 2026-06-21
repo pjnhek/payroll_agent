@@ -119,6 +119,22 @@ def test_compose_logs_empty_content_fallback(caplog):
     )
 
 
+def test_clarification_subject_takes_no_args():
+    """WR-05 — clarification_subject() takes NO arguments (the dead `decision` param
+    was dropped). Calling it with an argument is now a TypeError, and it returns the
+    constant subject."""
+    import inspect
+
+    from app.pipeline.compose_email import clarification_subject
+
+    assert inspect.signature(clarification_subject).parameters == {}, (
+        "clarification_subject must take no parameters (WR-05)"
+    )
+    assert isinstance(clarification_subject(), str) and clarification_subject()
+    with pytest.raises(TypeError):
+        clarification_subject(_gated_decision())  # type: ignore[call-arg]
+
+
 def test_compose_source_not_json_mode():
     """Source-level: compose_email uses call_text (free text), never call_structured
     / json_object."""

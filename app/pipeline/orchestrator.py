@@ -212,7 +212,7 @@ def _clarify(run_id, email, decision, *, llm) -> None:
     gateway.send_outbound(
         run_id=run_id,
         to_addr=email.from_addr,
-        subject=clarification_subject(decision),
+        subject=clarification_subject(),
         body=body,
         in_reply_to=email.message_id,
         references_header=email.message_id,

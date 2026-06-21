@@ -98,6 +98,12 @@ def compose_clarification(decision: Decision, *, llm=llm_client) -> str:
     return body
 
 
-def clarification_subject(decision: Decision) -> str:
-    """The clarification email subject (kept here so the orchestrator stays thin)."""
+def clarification_subject() -> str:
+    """The clarification email subject (kept here so the orchestrator stays thin).
+
+    WR-05: takes NO arguments. It previously accepted a `decision` it ignored
+    entirely — a misleading signature implying the subject reflected the decision.
+    The subject is a constant in Phase 2; a real provider's subject-based threading
+    fallback is a deferred P6 concern. Drop the dead parameter (the honest minimum).
+    """
     return _SUBJECT
