@@ -75,6 +75,26 @@ class ExtractedEmployee(BaseModel):
     contribution_401k_override: Decimal | None = Field(default=None, ge=0)
 
 
+class ExtractionPayload(BaseModel):
+    """The LLM structured-output schema for extraction (review FIX A).
+
+    Identical to Extracted's JUDGMENT fields MINUS the required run_id. The model
+    returns only this payload (employees + pay_period); extract() stamps the
+    code-owned run_id to build the full Extracted. This exists because
+    Extracted.run_id is REQUIRED and run_id is trusted, code-owned plumbing the
+    orchestrator already knows — the model must never invent or echo a trusted
+    run_id. extra="forbid" means a run_id key in the model output raises a
+    ValidationError (T-02-15), so a trusted run identity can never originate from
+    model output.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employees: list[ExtractedEmployee]
+    pay_period_start: date
+    pay_period_end: date | None = None
+
+
 class Extracted(BaseModel):
     """Full extraction output for one payroll run."""
 

@@ -1,0 +1,138 @@
+"""Stage 4 — the DECISION stage + THE CODE GATE (LLM-07/08/09). THE THESIS.
+
+The model proposes; code disposes. decide() does TWO structurally-separate things:
+  (a) ask the LLM for an advisory model_action ("process"|"request_clarification")
+      + reasons — the ONLY LLM call here; and
+  (b) compute the code-owned final_action that hard-blocks regardless of what the
+      model said.
+
+final_action is the SOLE branch source for the orchestrator, dashboard, and eval —
+nothing downstream EVER reads model_action. A model talked into "process" by a
+prompt-injected email is still code-blocked on a sub-0.8 / missing-field name
+(T-02-08).
+
+A PURE function: typed values in, Decision out. NO DB, NO connection. Decision has
+NO run_id field, so decide() returns a Decision directly (no run_id stamping —
+that pattern applies only to extract()/Extracted, FIX A).
+
+Gate rules (code, no model) — force final_action="request_clarification" if ANY:
+  1. Sub-threshold confidence: any NameMatchResult.confidence < Decimal("0.8").
+     Evaluated PER NAME (D-A3-03a) — NOT against the collapsed scalar, so one 0.6
+     name cannot hide behind three 1.0s.
+  2. Unresolved name: match_type == "unknown" or matched_employee_id is None.
+  3. Missing required field: any ValidationIssue(issue_type="missing").
+  4. One-to-one mapping violations (LLM-09) via check_one_to_one() — a real,
+     called function returning gate_reasons; the three collision rules land in
+     Plan 03 by extending it.
+"""
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from app.llm import client as llm_client
+from app.llm.prompts import decide as decide_prompt
+from app.models.contracts import Decision, Extracted
+from app.models.roster import NameMatchResult, ValidationIssue
+
+
+class _ModelAdvice(BaseModel):
+    """The model's advisory output: action + reasons. The code gate owns the rest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_action: Literal["process", "request_clarification"]
+    reasons: list[str] = []
+
+# The locked confidence threshold (CLAUDE.md / D-A4-01). Decimal, never float —
+# the all-Decimal contract convention, and a float 0.8 has no exact binary form.
+_THRESHOLD = Decimal("0.8")
+
+
+def check_one_to_one(
+    matches: list[NameMatchResult],
+    extracted: Extracted,
+) -> list[str]:
+    """Validate the submitted-name → employee one-to-one mapping (LLM-09, D-A3-02).
+
+    Returns a list of gate_reasons (one per collision). This is a REAL function
+    with the FINAL signature, genuinely called inside decide() and unioned into
+    the gate now — it simply detects no collisions YET. Plan 03 EXTENDS this same
+    function with the three collision rules (duplicate name / two names → one
+    employee / name → no employee). Returning [] (empty-but-real) gives Plan 03 a
+    concrete artifact to extend and a stub-shape test to pin it.
+    """
+    return []
+
+
+def _ask_model(
+    extracted: Extracted,
+    matches: list[NameMatchResult],
+    issues: list[ValidationIssue],
+    *,
+    llm,
+) -> tuple[str, list[str]]:
+    """Advisory-only LLM call → (model_action, reasons). Never binding."""
+    messages = decide_prompt.build_messages(extracted, matches, issues)
+    payload = llm.call_structured("decision", messages, _ModelAdvice)
+    return payload.model_action, list(payload.reasons)
+
+
+def decide(
+    extracted: Extracted,
+    matches: list[NameMatchResult],
+    issues: list[ValidationIssue],
+    *,
+    llm=llm_client,
+) -> Decision:
+    """Compute the gated Decision. final_action is code-owned and binding."""
+    model_action, reasons = _ask_model(extracted, matches, issues, llm=llm)
+
+    gate_reasons: list[str] = []
+    unresolved: list[str] = []
+
+    # Rule 1 — per-name sub-0.8 confidence (EACH name, not the collapsed scalar).
+    for m in matches:
+        if m.confidence < _THRESHOLD:
+            if m.submitted_name not in unresolved:
+                unresolved.append(m.submitted_name)
+            gate_reasons.append(
+                f"{m.submitted_name}: confidence {m.confidence} < {_THRESHOLD}"
+            )
+
+    # Rule 2 — unresolved name (no roster match).
+    for m in matches:
+        if m.match_type == "unknown" or m.matched_employee_id is None:
+            if m.submitted_name not in unresolved:
+                unresolved.append(m.submitted_name)
+            gate_reasons.append(f"{m.submitted_name}: unresolved (no roster match)")
+
+    # Rule 3 — missing required field.
+    missing = [i.field for i in issues if i.issue_type == "missing"]
+    gate_reasons += [f"missing required field: {f}" for f in missing]
+
+    # Rule 4 — one-to-one mapping (pure code; empty-but-real in this plan).
+    gate_reasons += check_one_to_one(matches, extracted)
+
+    gate_fired = bool(gate_reasons)
+    final_action = "request_clarification" if gate_fired else model_action
+
+    # Confidence collapse = min() over all names (weakest link); 1.0 for a clean
+    # run with no LLM-layer names (D-A3-03a). Audit/eval scalar ONLY — the gate
+    # above evaluates EACH name, never this scalar.
+    confidence = min(
+        (m.confidence for m in matches), default=Decimal("1.0")
+    )
+
+    return Decision(
+        model_action=model_action,
+        gate_triggered=(final_action != model_action) or gate_fired,
+        gate_reasons=gate_reasons,
+        final_action=final_action,
+        unresolved_names=unresolved,
+        missing_fields=missing,
+        confidence=confidence,
+        reasons=reasons,
+    )
