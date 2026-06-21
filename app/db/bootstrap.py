@@ -46,19 +46,23 @@ def _safe_db_url(raw_url: str) -> str:
     """Return DATABASE_URL with the password replaced by '***'.
 
     Uses urllib.parse so the reconstruction is correct for all URL schemes.
+    The reconstructed URL is returned in ALL parseable cases — including a
+    perfectly valid password-less URL (e.g. postgresql://user@host:6543/db,
+    where auth comes from PGPASSWORD/.pgpass/IAM).  '<unparseable url>' is
+    reserved for genuine parse failures and empty/scheme-less input (WR-05).
     """
     try:
         parsed = urllib.parse.urlparse(raw_url)
-        # netloc without password: user@host:port
+        if not parsed.scheme:  # empty string or not a URL at all
+            return "<unparseable url>"
         if parsed.password:
             safe_netloc = parsed.netloc.replace(
                 f":{parsed.password}@", ":***@", 1
             )
-            safe = parsed._replace(netloc=safe_netloc)
-            return urllib.parse.urlunparse(safe)
+            parsed = parsed._replace(netloc=safe_netloc)
+        return urllib.parse.urlunparse(parsed)
     except Exception:
-        pass
-    return "<unparseable url>"
+        return "<unparseable url>"
 
 
 def bootstrap(reset: bool = False) -> None:
