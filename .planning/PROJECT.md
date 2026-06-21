@@ -14,7 +14,7 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 ### Validated
 
-(None yet — ship to validate)
+- **Phase 1 (Thin Foundation), 2026-06-21:** The shared contract substrate exists and is proven by tests — the Postgres schema (6 tables, 11-value `payroll_runs.status` enum, `email_messages.message_id` idempotency UNIQUE), the shared `app/models/` Pydantic v2 contracts imported by both pipeline and eval, and seed data covering 3 businesses / 6 employees across every calc path and name-match case (happy-path + name-mismatch). FOUND-01, FOUND-02, FOUND-03, FOUND-05, FOUND-06. (Live-DB round-trip tests are written and skip-guarded pending Supabase credentials.)
 
 ### Active
 
@@ -139,4 +139,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-20 after initialization + research + dual cross-AI scope review (Codex + the build-plan-author Claude); scope locked at 51 v1 requirements*
+*Last updated: 2026-06-21 after Phase 1 (Thin Foundation) complete — contract substrate, schema, and seed data validated by tests. Initialization + research + dual cross-AI scope review (Codex + the build-plan-author Claude); scope locked at 51 v1 requirements.*
