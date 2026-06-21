@@ -268,19 +268,25 @@ def seed(dry_run: bool = False) -> SeedResult:
         # orphaned rows on partial failure)
         with conn.transaction():
             # ----------------------------------------------------------------
-            # 1. Upsert businesses via (contact_email) natural key (D-11)
-            #    ON CONFLICT updates name + pay_period + updated_at so a
-            #    re-run reflects any name/schedule corrections.
+            # 1. Upsert businesses on the PRIMARY KEY id (WR-06).
+            #    The fixed b0000001-… literals are the stable identity that
+            #    employees.business_id references, so conflicting on id keeps
+            #    that FK intact on re-seed.  contact_email is treated as a
+            #    plain updatable column (it has its own UNIQUE constraint in
+            #    schema.sql).  Conflicting on contact_email instead would let a
+            #    pre-existing row with the same email but a different id keep
+            #    its old id, breaking the subsequent employee FK insert.
             # ----------------------------------------------------------------
             for biz in _BUSINESSES:
                 conn.execute(
                     """
                     INSERT INTO businesses (id, name, contact_email, pay_period)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (contact_email) DO UPDATE
-                      SET name        = EXCLUDED.name,
-                          pay_period  = EXCLUDED.pay_period,
-                          updated_at  = now()
+                    ON CONFLICT (id) DO UPDATE
+                      SET name          = EXCLUDED.name,
+                          contact_email = EXCLUDED.contact_email,
+                          pay_period    = EXCLUDED.pay_period,
+                          updated_at    = now()
                     """,
                     (
                         str(biz["id"]),
