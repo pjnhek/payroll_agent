@@ -41,15 +41,15 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [x] **LLM-02**: Structured LLM calls use `response_format={"type":"json_object"}` + Pydantic validation with one reflective retry on a parse failure; temperature 0
 - [x] **LLM-03**: Extraction returns structured per-employee entries (name as written, regular/OT/vacation/sick/holiday hours, and an optional current-run-only 401k contribution override) as a pure importable function — the 401k override applies to this run only and never mutates the employee's stored default
 - [x] **LLM-04**: Deterministic name matching resolves exact / case / whitespace / known-alias hits with no model call; only residual ambiguous names go to the model
-- [ ] **LLM-05**: LLM name reconciliation classifies each residual name (typo of a roster employee, nickname, or genuinely-different/unknown person) and returns a match + confidence + short reason; it never re-decides a clean deterministic match
+- [x] **LLM-05**: LLM name reconciliation classifies each residual name (typo of a roster employee, nickname, or genuinely-different/unknown person) and returns a match + confidence + short reason; it never re-decides a clean deterministic match
 - [x] **LLM-06**: Deterministic field validation produces a per-field issues list (presence, sanity bounds, numeric)
 - [x] **LLM-07**: The LLM proposes `process` or `request_clarification` with issues, but `decide.py` computes a code-owned `final_action` that hard-blocks on any missing required field or any name unresolved below the 0.8 confidence threshold — even when the model said process. `final_action` is the SOLE branch source consumed downstream; the orchestrator, dashboard, and eval never branch on `model_action`
 - [x] **LLM-08**: The decision object (`model_action`, `gate_triggered`, `gate_reasons`, `final_action`, `unresolved_names`, `missing_fields`, confidence, reasons) is persisted on the run for audit and the eval
-- [ ] **LLM-09**: Reconciliation enforces a one-to-one roster mapping — a duplicate submitted name, two submitted names resolving to the same employee, or a name resolving to no roster employee gates the run to clarification (a name cannot silently collapse onto another employee)
+- [x] **LLM-09**: Reconciliation enforces a one-to-one roster mapping — a duplicate submitted name, two submitted names resolving to the same employee, or a name resolving to no roster employee gates the run to clarification (a name cannot silently collapse onto another employee)
 
 ### Clarification & Resume
 
-- [ ] **CLAR-01**: When `final_action` is request_clarification, the LLM drafts a clarification email (cheap model) and the system auto-sends it; the outbound Message-ID is stored on the run and status moves to `awaiting_reply`
+- [x] **CLAR-01**: When `final_action` is request_clarification, the LLM drafts a clarification email (cheap model) and the system auto-sends it; the outbound Message-ID is stored on the run and status moves to `awaiting_reply`
 - [ ] **CLAR-02**: A client reply is routed to its run via the RFC In-Reply-To/References header chain (subject/provider-thread are only fallbacks)
 - [ ] **CLAR-03**: A matched reply re-enters the pipeline at extraction and resumes the run, with idempotent re-entrancy (overwrite `extracted_data`, replace line items by run, match only runs in `awaiting_reply`; a header match to a sent/reconciled run is logged as a late reply, not resumed)
 - [ ] **CLAR-04**: Outbound sends are idempotent — retrying an approval or re-triggering an errored run (INGEST-05) never sends a duplicate clarification or confirmation email (guard on already-sent state per run)
@@ -139,13 +139,13 @@ Which phases cover which requirements. Populated during roadmap creation.
 | LLM-02 | Phase 2 | Complete |
 | LLM-03 | Phase 2 | Complete |
 | LLM-04 | Phase 2 | Complete |
-| LLM-05 | Phase 2 | Pending |
+| LLM-05 | Phase 2 | Complete |
 | LLM-06 | Phase 2 | Complete |
 | LLM-07 | Phase 2 | Complete |
 | LLM-08 | Phase 2 | Complete |
-| LLM-09 | Phase 2 | Pending |
+| LLM-09 | Phase 2 | Complete |
 | HITL-01 | Phase 2 | Complete |
-| CLAR-01 | Phase 2 | Pending |
+| CLAR-01 | Phase 2 | Complete |
 | CLAR-02 | Phase 2 | Pending |
 | CLAR-03 | Phase 2 | Pending |
 | DEMO-01 | Phase 2 | Complete |

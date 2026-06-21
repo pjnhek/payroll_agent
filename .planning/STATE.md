@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-06-21T10:33:57.112Z"
+last_updated: "2026-06-21T10:48:28.914Z"
 last_activity: 2026-06-21
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 7
-  completed_plans: 5
+  completed_plans: 6
   percent: 17
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 ## Current Position
 
 Phase: 02 (walking-skeleton) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-06-21
 
-Progress: [███████░░░] 71%
+Progress: [█████████░] 86%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [███████░░░] 71%
 | Phase 01 P03 | 5 | 2 tasks | 3 files |
 | Phase 02 P01 | 34 | 3 tasks | 14 files |
 | Phase 02 P02 | 38 | 4 tasks | 25 files |
+| Phase 02 P03 | 24 | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 2 P01]: repo helpers take optional conn= so the webhook shares a transaction and tests assert SQL offline via a FakeConnection (no live DB needed for parameterized-SQL/serialization/status-write contracts).
 - [Phase ?]: [Phase 2 P02]: validate() is pay-type aware via the roster (a pure value) so the missing-hours rule distinguishes hourly (hours required) from salaried (legitimately none) — keeps purity AND the clean path green.
 - [Phase ?]: [Phase 2 P02]: the code gate in decide.py uses per-name Decimal('0.8') (never the collapsed min() scalar); check_one_to_one ships empty-but-real for Plan 03 to extend.
+- [Phase ?]: [Phase 2 P03]: Layer-2 LLM reconcile is residual-only via the NameReconciliationResponse{matches} wrapper (FIX 6 — model_validate_json needs a BaseModel, not a bare list); a layer-1 hit is never re-decided.
+- [Phase ?]: [Phase 2 P03]: check_one_to_one EXTENDED (signature unchanged) into full one-to-one mapping enforcement (two->one emp / dup name / name->no emp); a high-confidence collision still gates (G6).
+- [Phase ?]: [Phase 2 P03]: clarify drafts via DRAFT_* call_text (templated fallback), sends via gateway.send_outbound (Message-ID on the outbound email_messages row — single FIX-3 anchor, no payroll_runs column), pauses at awaiting_reply via set_status; one persist_reconciliation covers both branches (D-A3-05).
 
 ### Pending Todos
 
@@ -112,6 +116,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-21T10:33:50.464Z
+Last session: 2026-06-21T10:48:01.817Z
 Stopped at: Completed 02-01-PLAN.md
 Resume file: None
