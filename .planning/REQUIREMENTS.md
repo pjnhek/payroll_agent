@@ -125,13 +125,63 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated by roadmapper) | | |
+| FOUND-01 | Phase 1 | Pending |
+| FOUND-02 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-05 | Phase 1 | Pending |
+| FOUND-06 | Phase 1 | Pending |
+| INGEST-01 | Phase 2 | Pending |
+| INGEST-02 | Phase 2 | Pending |
+| INGEST-03 | Phase 2 | Pending |
+| INGEST-04 | Phase 2 | Pending |
+| EMAIL-01 | Phase 2 | Pending |
+| LLM-01 | Phase 2 | Pending |
+| LLM-02 | Phase 2 | Pending |
+| LLM-03 | Phase 2 | Pending |
+| LLM-04 | Phase 2 | Pending |
+| LLM-05 | Phase 2 | Pending |
+| LLM-06 | Phase 2 | Pending |
+| LLM-07 | Phase 2 | Pending |
+| LLM-08 | Phase 2 | Pending |
+| LLM-09 | Phase 2 | Pending |
+| HITL-01 | Phase 2 | Pending |
+| CLAR-01 | Phase 2 | Pending |
+| CLAR-02 | Phase 2 | Pending |
+| CLAR-03 | Phase 2 | Pending |
+| DEMO-01 | Phase 2 | Pending |
+| CALC-01 | Phase 3 | Pending |
+| CALC-02 | Phase 3 | Pending |
+| CALC-03 | Phase 3 | Pending |
+| CALC-04 | Phase 3 | Pending |
+| CALC-05 | Phase 3 | Pending |
+| CALC-06 | Phase 3 | Pending |
+| CALC-07 | Phase 3 | Pending |
+| CALC-08 | Phase 3 | Pending |
+| EVAL-01 | Phase 4 | Pending |
+| EVAL-02 | Phase 4 | Pending |
+| EVAL-03 | Phase 4 | Pending |
+| EVAL-04 | Phase 4 | Pending |
+| EVAL-05 | Phase 4 | Pending |
+| DASH-01 | Phase 5 | Pending |
+| DASH-02 | Phase 5 | Pending |
+| DASH-03 | Phase 5 | Pending |
+| DASH-04 | Phase 5 | Pending |
+| DASH-05 | Phase 5 | Pending |
+| HITL-02 | Phase 5 | Pending |
+| HITL-03 | Phase 5 | Pending |
+| CLAR-04 | Phase 5 | Pending |
+| INGEST-05 | Phase 5 | Pending |
+| FOUND-04 | Phase 5 | Pending |
+| OPS-01 | Phase 6 | Pending |
+| OPS-02 | Phase 6 | Pending |
+| OPS-03 | Phase 6 | Pending |
+| OPS-04 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 51 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 51 ⚠️
+- Mapped to phases: 51 ✓
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-06-20*
-*Last updated: 2026-06-20 after initial definition + Codex cross-AI scope review (added FOUND-06, LLM-09, CLAR-04, EMAIL-01, DEMO-01; clarified CALC-04/08, LLM-03/07, EVAL-04/05) + Claude (build-plan author) review (DASH-02 raw-body column for an honest operator gate; EVAL-01 reversed to a bootstrap helper with the full generator deferred to v2; INGEST-05 descoped to re-trigger-from-start; EVAL-04 given a rubric; Additional-Medicare disclaimer)*
+*Last updated: 2026-06-20 after initial definition + Codex cross-AI scope review (added FOUND-06, LLM-09, CLAR-04, EMAIL-01, DEMO-01; clarified CALC-04/08, LLM-03/07, EVAL-04/05) + Claude (build-plan author) review (DASH-02 raw-body column for an honest operator gate; EVAL-01 reversed to a bootstrap helper with the full generator deferred to v2; INGEST-05 descoped to re-trigger-from-start; EVAL-04 given a rubric; Additional-Medicare disclaimer) + roadmapper traceability population (51/51 mapped across 6 Vertical-MVP phases)*
