@@ -55,16 +55,59 @@ def check_one_to_one(
     matches: list[NameMatchResult],
     extracted: Extracted,
 ) -> list[str]:
-    """Validate the submitted-name → employee one-to-one mapping (LLM-09, D-A3-02).
+    """Enforce the submitted-name → employee one-to-one mapping (LLM-09, D-A3-02).
 
-    Returns a list of gate_reasons (one per collision). This is a REAL function
-    with the FINAL signature, genuinely called inside decide() and unioned into
-    the gate now — it simply detects no collisions YET. Plan 03 EXTENDS this same
-    function with the three collision rules (duplicate name / two names → one
-    employee / name → no employee). Returning [] (empty-but-real) gives Plan 03 a
-    concrete artifact to extend and a stub-shape test to pin it.
+    Returns a list of gate_reasons, one per collision. The SAME real function
+    shipped empty-but-real in Plan 02 (signature UNCHANGED; still called inside
+    decide()), now extended with the three pure-code collision rules so a confident
+    model can never let a name silently collapse onto another employee:
+
+      (a) two DISTINCT submitted names resolve to the SAME matched_employee_id;
+      (b) a submitted name is DUPLICATED in the extraction;
+      (c) a submitted name resolves to NO roster employee (matched_employee_id is
+          None) — overlaps decide()'s Rule 2 but kept distinct as its own
+          collision gate_reason for legibility/audit.
+
+    A clean, collision-free mapping returns [] (no false gate on a legitimately
+    clean run), preserving the Plan-02 stub-shape contract.
     """
-    return []
+    reasons: list[str] = []
+
+    # (a) two distinct submitted names → the same employee_id.
+    by_employee: dict = {}
+    for m in matches:
+        if m.matched_employee_id is None:
+            continue
+        by_employee.setdefault(m.matched_employee_id, [])
+        # Track only DISTINCT submitted names per employee (a duplicate name is
+        # rule (b), not a two-names-to-one collision).
+        if m.submitted_name not in by_employee[m.matched_employee_id]:
+            by_employee[m.matched_employee_id].append(m.submitted_name)
+    for emp_id, names in by_employee.items():
+        if len(names) > 1:
+            reasons.append(
+                "two submitted names resolve to one employee: "
+                + " + ".join(sorted(names))
+                + f" → {emp_id}"
+            )
+
+    # (b) a duplicated submitted name (same name extracted more than once).
+    seen: set = set()
+    flagged: set = set()
+    for m in matches:
+        if m.submitted_name in seen and m.submitted_name not in flagged:
+            reasons.append(f"duplicate submitted name: {m.submitted_name}")
+            flagged.add(m.submitted_name)
+        seen.add(m.submitted_name)
+
+    # (c) a name resolving to no roster employee.
+    for m in matches:
+        if m.matched_employee_id is None:
+            reasons.append(
+                f"{m.submitted_name}: resolves to no roster employee (one-to-one)"
+            )
+
+    return reasons
 
 
 def _ask_model(

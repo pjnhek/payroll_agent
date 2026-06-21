@@ -164,3 +164,84 @@ def test_gate_uses_decimal_threshold_not_float_source():
 
     src = pathlib.Path(decide_mod.__file__).read_text()
     assert 'Decimal("0.8")' in src, "gate must use Decimal('0.8'), never float 0.8"
+
+
+# ---------------------------------------------------------------------------
+# One-to-one mapping enforcement (LLM-09, D-A3-02) — the EXTENDED check_one_to_one.
+# A confident model can NEVER let a name silently collapse onto another employee.
+# ---------------------------------------------------------------------------
+
+
+def test_one_to_one_collisions():
+    """All three collision shapes gate to clarify as DISTINCT gate_reasons:
+    (a) two distinct names → same employee, (b) a duplicated submitted name,
+    (c) a name → no roster employee."""
+    llm = _StubLLM(model_action="process")
+
+    # (a) two distinct names → same matched_employee_id (all high-confidence).
+    shared = uuid.uuid4()
+    matches_a = [
+        _match("David Reyes", "1.0", mtype="exact", emp_id=shared),
+        _match("D. Reyes", "1.0", mtype="alias", emp_id=shared),
+    ]
+    out_a = check_one_to_one(matches_a, _extracted("David Reyes", "D. Reyes"))
+    assert any("David Reyes" in r and "D. Reyes" in r for r in out_a), (
+        "two distinct names → one employee must produce a collision gate_reason"
+    )
+    dec_a = decide(_extracted("David Reyes", "D. Reyes"), matches_a, [], llm=llm)
+    assert dec_a.final_action == "request_clarification"
+
+    # (b) a duplicated submitted_name (same name twice).
+    eid = uuid.uuid4()
+    matches_b = [
+        _match("Maria Chen", "1.0", mtype="exact", emp_id=eid),
+        _match("Maria Chen", "1.0", mtype="exact", emp_id=eid),
+    ]
+    out_b = check_one_to_one(matches_b, _extracted("Maria Chen", "Maria Chen"))
+    assert any("Maria Chen" in r for r in out_b), (
+        "a duplicated submitted name must produce a collision gate_reason"
+    )
+    dec_b = decide(_extracted("Maria Chen", "Maria Chen"), matches_b, [], llm=llm)
+    assert dec_b.final_action == "request_clarification"
+
+    # (c) a name → no roster employee (matched_employee_id is None).
+    matches_c = [
+        NameMatchResult(
+            submitted_name="Ghosty McGhost",
+            matched_employee_id=None,
+            match_type="unknown",
+            confidence=Decimal("0.0"),
+            reason="no match",
+        )
+    ]
+    out_c = check_one_to_one(matches_c, _extracted("Ghosty McGhost"))
+    assert any("Ghosty McGhost" in r for r in out_c), (
+        "a name resolving to no employee must produce a collision gate_reason"
+    )
+
+
+def test_high_confidence_collision_still_gates():
+    """A collision between TWO 1.0-confidence names still gates (the mapping gate is
+    independent of confidence, G6) — confidence alone would have let it process."""
+    llm = _StubLLM(model_action="process")
+    shared = uuid.uuid4()
+    matches = [
+        _match("David Reyes", "1.0", mtype="exact", emp_id=shared),
+        _match("Dave Reyes", "1.0", mtype="llm_nickname", emp_id=shared),
+    ]
+    decision = decide(_extracted("David Reyes", "Dave Reyes"), matches, [], llm=llm)
+    assert decision.final_action == "request_clarification", (
+        "a high-confidence collision must still gate (mapping gate, not confidence)"
+    )
+    assert decision.gate_triggered is True
+
+
+def test_check_one_to_one_stub_shape_still_passes_after_extend():
+    """The Plan-02 signature is UNCHANGED: a clean, collision-free set returns []
+    so the extended function never gates a legitimately clean run."""
+    clean = [
+        _match("Maria Chen", "1.0", mtype="exact", emp_id=uuid.uuid4()),
+        _match("James Okafor", "1.0", mtype="exact", emp_id=uuid.uuid4()),
+    ]
+    out = check_one_to_one(clean, _extracted("Maria Chen", "James Okafor"))
+    assert out == [], "a clean one-to-one mapping must produce NO collision reasons"

@@ -120,13 +120,30 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
 def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
     """Feed an unresolved name: the model says 'process' but the gate forces
     clarify, and the orchestrator follows final_action (→ needs_clarification),
-    proving it never branches on model_action."""
+    proving it never branches on model_action.
+
+    The residual name triggers the layer-2 reconcile call (extract → reconcile →
+    decide), so the FIFO script carries THREE responses: the reconcile wrapper
+    returns an `unknown` (no roster match) so the gate blocks regardless."""
     mock_llm.script = [
         json.dumps(
             {
                 "employees": [{"submitted_name": "Totally Unseen Person", "hours_regular": "40"}],
                 "pay_period_start": "2026-06-15",
                 "pay_period_end": None,
+            }
+        ),
+        json.dumps(
+            {
+                "matches": [
+                    {
+                        "submitted_name": "Totally Unseen Person",
+                        "matched_employee_id": None,
+                        "match_type": "unknown",
+                        "confidence": "0.0",
+                        "reason": "no roster employee matches",
+                    }
+                ]
             }
         ),
         json.dumps({"model_action": "process", "reasons": ["model is willing"]}),
