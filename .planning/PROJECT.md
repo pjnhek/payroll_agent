@@ -118,6 +118,8 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 | Tax basis: 2026 Pub 15-T standard percentage method, disclaim OBBBA | Current-year credibility ($184,500 wage base, 2026 brackets) without OBBBA complexity; engine + eval ground truth share one assumption | — Pending |
 | Add explicit `orchestrator.py` + stuck-run/error recovery | Keeps transition logic auditable in one place; a sleeping dyno can strand a run, so recovery is a first-class state, not an afterthought | — Pending |
 | Hard gates live inside `decide.py` (not the orchestrator), computing `final_action` | The one placement that lets the eval test the same gated path as production — makes the eval credible and the thesis verifiable | — Pending |
+| Operator gate shows the raw cleaned inbound email as the leftmost column (not just extracted vs computed) | Comparing computed paystubs against the LLM's own extraction agrees by construction; the human must verify the LLM's *reading* against what the client actually sent, or extraction errors pass the gate invisibly | — Pending |
+| v1 eval uses hand-curated fixtures + a throwaway bootstrap drafting helper (full synthetic generator → v2) | At ~20 fixtures, hand-curation is faster, more realistic, and kills the train/test-leakage critique; the "scales to thousands" generator story isn't realized at demo scale | — Pending |
 
 ## Evolution
 
@@ -137,4 +139,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-20 after initialization + research (tax-year/OBBBA, orchestrator, and DRY-seam decisions folded in)*
+*Last updated: 2026-06-20 after initialization + research + dual cross-AI scope review (Codex + the build-plan-author Claude); scope locked at 51 v1 requirements*

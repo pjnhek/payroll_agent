@@ -21,7 +21,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [ ] **CALC-01**: Gross pay computes hourly × rate with FLSA overtime at 1.5× for hours worked over 40 in the week (paid-leave hours excluded from the 40-hour threshold)
 - [ ] **CALC-02**: Salary gross computes as annual ÷ pay periods, plus added vacation/sick/holiday pay
 - [ ] **CALC-03**: 401k pre-tax deduction computes as a percent of gross and reduces the federal taxable base but NOT the FICA base
-- [ ] **CALC-04**: FICA computes Social Security at 6.2% up to the current-year wage base ($184,500 for 2026), honoring the employee's static YTD SS wages (FOUND-06) so the cap is respected, and Medicare at 1.45% (no cap)
+- [ ] **CALC-04**: FICA computes Social Security at 6.2% up to the current-year wage base ($184,500 for 2026, verified against SSA — caps employee SS tax at $11,439/yr), honoring the employee's static YTD SS wages (FOUND-06) so the cap is respected, and Medicare at 1.45% (no cap). The Additional Medicare 0.9% over $200k YTD is NOT modeled (never triggers in a weekly demo) and is disclaimed in the README
 - [ ] **CALC-05**: Federal withholding computes via the real IRS Pub 15-T 2026 percentage method (Worksheet 1A, all three filing statuses + the Step-2-checkbox branch), standard method only (OBBBA disclaimed)
 - [ ] **CALC-06**: Tax constants live in a dated, year-keyed module (source + retrieval date in header); a golden-value test suite asserts hand-computed 2026 paystubs to the penny using `Decimal`
 - [ ] **CALC-07**: Net pay computes as gross − pre-tax − FICA − federal withholding
@@ -33,7 +33,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [ ] **INGEST-02**: The inbound payload is stored in `email_messages` with Message-ID, In-Reply-To, and References headers; reply quoted-history/signatures are stripped before extraction
 - [ ] **INGEST-03**: The sender address is matched to `businesses.contact_email`; an unknown sender is logged and stopped, never guessed
 - [ ] **INGEST-04**: An explicit `orchestrator.py` drives the run state machine — it owns the legal `status` transitions and the two pause points (`awaiting_reply`, `awaiting_approval`)
-- [ ] **INGEST-05**: A stuck/errored run surfaces an `error` status on the dashboard and can be re-triggered idempotently, resuming from the last persisted status
+- [ ] **INGEST-05**: A stuck/errored run surfaces an `error` status on the dashboard and can be re-triggered idempotently **from the start of the run** (the demo requirement is "nothing silently hangs," not mid-pipeline resume; full resume-from-arbitrary-status is deferred to v2). Drop-if-tight.
 
 ### LLM Judgment (the gated decisioning core)
 
@@ -64,17 +64,17 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 ### Dashboard
 
 - [ ] **DASH-01**: A runs list shows every payroll run with a status badge
-- [ ] **DASH-02**: A run detail view shows the client's submitted data side-by-side with the computed paystubs and the decision object's reasons
+- [ ] **DASH-02**: A run detail view shows THREE columns left-to-right: (1) the **raw cleaned inbound email body** (from INGEST-02) as the leftmost column, (2) the LLM's `extracted_data`, and (3) the computed paystubs — plus the decision object's reasons. The raw body is mandatory and leftmost: without it the operator gate verifies arithmetic against the LLM's own reading (which agree by construction) instead of verifying the LLM's reading against what the client actually sent, so an extraction error (e.g. 40 misread as 44, a dropped employee) would pass the gate invisibly
 - [ ] **DASH-03**: A pending run's detail view shows Approve-and-send and Reject controls (the operator gate)
-- [ ] **DASH-04**: An eval view renders the latest eval summary with the headline metrics and a per-category breakdown chart (clean / typo / missing / unknown / nickname / vague)
+- [ ] **DASH-04**: An eval view renders the latest eval summary with the headline metrics and a per-category breakdown chart (clean / typo / missing / unknown / nickname / vague); drilling into a fixture shows its raw email body beside the expected vs actual extraction/decision so a miss is inspectable, not just counted
 - [ ] **DASH-05**: A "Send test email" button fires a fixture through the whole pipeline from the page (demo trigger and live-email fallback)
 
 ### Eval (the proof)
 
-- [ ] **EVAL-01**: A synthetic generator produces realistic messy payroll emails + ground-truth JSON, decoupled from the extractor (different model/persona) to prevent train/test leakage; decision-critical cases are hand-labeled
+- [ ] **EVAL-01**: A throwaway **bootstrap helper** drafts candidate messy payroll emails that the builder then edits and hand-labels — named honestly as a drafting aid, NOT a production generator. The committed hand-curated fixtures (EVAL-02) are the source of truth; this kills the train/test-leakage critique outright. (The full decoupled-persona synthetic generator that scales to thousands of cases is deferred to v2 — at a ~20-fixture corpus it adds build surface without realizing the "scales" narrative, and you'd pay for both the generator and the hand-labeling.)
 - [ ] **EVAL-02**: ~15–25 email+label fixtures across all seeded categories (clean, name typo, missing hours, unknown employee, nickname, vague hours, buried reply) are committed to the repo for reproducibility
 - [ ] **EVAL-03**: `run_eval.py` imports and runs the SAME production pipeline functions over the fixtures and scores the code-owned `final_action` (not the model's raw action)
-- [ ] **EVAL-04**: Scoring computes four metrics — extraction field accuracy, name-reconciliation accuracy, decision accuracy (the three core thesis metrics), and an LLM-as-judge email-quality score (lowest-priority metric; first to drop if time is short) — broken out per category
+- [ ] **EVAL-04**: Scoring computes four metrics — extraction field accuracy, name-reconciliation accuracy, decision accuracy (the three core thesis metrics, front-and-center in the chart) — and a **secondary** LLM-as-judge email-quality score scored against a **one-line rubric with 2–3 calibration anchors** (so it's defensible, not a vanity number), all broken out per category. The judge metric is lowest-priority and first to drop if time is short.
 - [ ] **EVAL-05**: Eval results (including the pinned model IDs used) write to `eval_results` and render on the dashboard chart; local eval is authoritative, and CI runs the scorers against cached/committed fixture outputs (no live LLM calls on push) with a manual-dispatch live eval
 - [ ] **DEMO-01**: Two canonical demo fixtures are committed and replayable from DASH-05 — one clean happy path (run completes to operator approval) and one code-gated clarify path (the model says process but the gate blocks and forces clarification) — so the 60–90s demo is deterministic and the gate is visible on camera
 
@@ -83,7 +83,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [ ] **OPS-01**: The FastAPI app is containerized in one Dockerfile (binds `0.0.0.0:$PORT`) and deploys as a single Render free web service
 - [ ] **OPS-02**: A real email gateway provider is wired behind the existing interface (`parse_inbound`, `send`) as the final integration step, with the fixture path unchanged
 - [ ] **OPS-03**: A GitHub Actions keep-alive workflow pings Supabase a couple of times a week so the free project does not pause
-- [ ] **OPS-04**: A README documents the system, states the educational/not-tax-compliant disclaimer (including the OBBBA exclusion), and includes an architecture diagram; a 60–90s demo recording exists
+- [ ] **OPS-04**: A README documents the system, states the educational/not-tax-compliant disclaimer (including the OBBBA exclusion and the unmodeled Additional Medicare 0.9% over $200k YTD), and includes an architecture diagram; a 60–90s demo recording exists
 
 ## v2 Requirements
 
@@ -97,10 +97,12 @@ Deferred to a future release. Tracked but not in the current roadmap.
 ### Ingest
 
 - **INGEST-V2-01**: Spreadsheet-attachment parsing (CSV/XLSX timesheets)
+- **INGEST-V2-02**: Full mid-pipeline resume-from-arbitrary-status recovery (every stage safely re-runnable from its predecessor's exact persisted state) — v1 re-triggers errored runs from the start only
 
 ### Eval
 
 - **EVAL-V2-01**: Larger fixture corpus with confusion-matrix-style breakdowns and a multi-judge ensemble for email quality
+- **EVAL-V2-02**: Full decoupled-persona synthetic fixture generator that scales to thousands of cases (v1 uses a throwaway bootstrap drafting helper + hand-curated fixtures)
 
 ## Out of Scope
 
@@ -132,4 +134,4 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 ---
 *Requirements defined: 2026-06-20*
-*Last updated: 2026-06-20 after initial definition + Codex cross-AI scope review (added FOUND-06, LLM-09, CLAR-04, EMAIL-01, DEMO-01; clarified CALC-04/08, LLM-03/07, EVAL-04/05)*
+*Last updated: 2026-06-20 after initial definition + Codex cross-AI scope review (added FOUND-06, LLM-09, CLAR-04, EMAIL-01, DEMO-01; clarified CALC-04/08, LLM-03/07, EVAL-04/05) + Claude (build-plan author) review (DASH-02 raw-body column for an honest operator gate; EVAL-01 reversed to a bootstrap helper with the full generator deferred to v2; INGEST-05 descoped to re-trigger-from-start; EVAL-04 given a rubric; Additional-Medicare disclaimer)*
