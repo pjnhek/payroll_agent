@@ -158,3 +158,14 @@ The user asked whether to Codex-review the decisions now or feed them into Claud
 - Decimal rounding rule (`ROUND_HALF_UP` to cents) + DB `numeric(p,s)` precision — a Phase 3 (calc-engine) concern, not contract substrate.
 - Full typed DB access layer with `SELECT ... FOR UPDATE` double-approval guard (FOUND-04) — mapped to Phase 5; Phase 1 builds only minimal DB plumbing.
 - Hello-world Render+Supabase deploy (STATE.md build-time guidance) — valuable to retire the deploy landmine early; surfaced as an optional Phase 1 stretch, full deploy is Phase 6.
+
+## Post-Review Hardening (2026-06-21)
+
+A cross-review pass arrived after the initial CONTEXT.md was written. All 13 original decisions stood; the following were added/corrected in CONTEXT.md (see its `<review_adjustments>` section). Recorded here for the audit trail:
+
+- **D-12 reframed (structural):** name-mismatch hero case is a Phase 1 *candidate*, not final — original `Reyes`/`Ríos` example was a double-difference name the model would clarify on its own (gate never fires). Corrected to a single clean typo on a distinctive name targeting a 0.6–0.79 confidence band; **Phase 2 owns an exit check** that it actually produces `model_action=process` + gate-block.
+- **D-14 added (structural):** the contract set is larger than the four FOUND-03 names. Phase 1 must also type the `Roster`/`Employee` input shape (so `reconcile_names` takes a value, never a `business_id` DB lookup), the name-match-result shape, and the validation-issue shape — acceptance bar: every judgment stage callable from the eval with only typed fixture inputs, zero DB access inside. Protects the D-07 DRY seam.
+- **D-13 corrected:** seed the period wage so YTD-SS *straddles* the $184,500 cap within the run; "just under" alone leaves the partial-cap branch dead in Phase 3 golden tests.
+- **Four gotchas handed to the planner** (inline on their decisions): `prepare_threshold=None` (transaction-mode pooler + psycopg3 auto-prepare, D-04); persist jsonb from `model_dump(mode="json")` not raw `Decimal`s (D-06); add a `--reset` dev path since `CREATE TABLE IF NOT EXISTS` silently skips schema edits (D-01); wage-base straddle (D-13). The two non-obvious technical claims were verified against psycopg 3.3 docs (Jun 2026) before adoption, not taken on faith.
+- **Hello-world deploy de-risked:** reviewer confirmed D-04's local pooler test already retires most of the deploy risk (same IPv4 6543 host Render uses); only `$PORT` bind + cold-start remain, both small. Stays an optional Phase 1 stretch.
+- **Process note:** the review explicitly green-lit sending to the planner after these fixes.
