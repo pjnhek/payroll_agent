@@ -76,7 +76,7 @@ Plans:
 - [x] 02-03-PLAN.md — slice (b) gate-block: layer-2 LLM reconcile, one-to-one mapping enforcement (LLM-09), clarify draft+send -> awaiting_reply, David Reyez hero fixture (mock proves the gate)
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 02-04-PLAN.md — slice (c) clarify->reply->resume loop: header-chain routing (CLAR-02), idempotent re-entry (CLAR-03), reply-fixture injection (EMAIL-01) + the LIVE hero-run exit gate (D-A4-01a, manual)
+- [~] 02-04-PLAN.md — slice (c) clarify->reply->resume loop: header-chain routing (CLAR-02), idempotent re-entry (CLAR-03), reply-fixture injection (EMAIL-01) — **Tasks 1-2 COMPLETE (CLAR-02/03/EMAIL-01 green; mocked suite 159 passed)**; Task 3 the LIVE hero-run exit gate (D-A4-01a) is a PENDING human-verify checkpoint (env-gated test authored, skips by default)
 
 ### Phase 3: Harden the Calc
 

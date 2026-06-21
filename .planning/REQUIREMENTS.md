@@ -50,8 +50,8 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 ### Clarification & Resume
 
 - [x] **CLAR-01**: When `final_action` is request_clarification, the LLM drafts a clarification email (cheap model) and the system auto-sends it; the outbound Message-ID is stored on the run and status moves to `awaiting_reply`
-- [ ] **CLAR-02**: A client reply is routed to its run via the RFC In-Reply-To/References header chain (subject/provider-thread are only fallbacks)
-- [ ] **CLAR-03**: A matched reply re-enters the pipeline at extraction and resumes the run, with idempotent re-entrancy (overwrite `extracted_data`, replace line items by run, match only runs in `awaiting_reply`; a header match to a sent/reconciled run is logged as a late reply, not resumed)
+- [x] **CLAR-02**: A client reply is routed to its run via the RFC In-Reply-To/References header chain (subject/provider-thread are only fallbacks)
+- [x] **CLAR-03**: A matched reply re-enters the pipeline at extraction and resumes the run, with idempotent re-entrancy (overwrite `extracted_data`, replace line items by run, match only runs in `awaiting_reply`; a header match to a sent/reconciled run is logged as a late reply, not resumed)
 - [ ] **CLAR-04**: Outbound sends are idempotent — retrying an approval or re-triggering an errored run (INGEST-05) never sends a duplicate clarification or confirmation email (guard on already-sent state per run)
 - [x] **EMAIL-01**: The stub email gateway records every outbound clarification/confirmation with a synthetic Message-ID in `email_messages` and supports injecting a fixture reply, so the full clarify → reply → resume loop and DEMO-01 are exercisable with zero real email
 
@@ -146,8 +146,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | LLM-09 | Phase 2 | Complete |
 | HITL-01 | Phase 2 | Complete |
 | CLAR-01 | Phase 2 | Complete |
-| CLAR-02 | Phase 2 | Pending |
-| CLAR-03 | Phase 2 | Pending |
+| CLAR-02 | Phase 2 | Complete |
+| CLAR-03 | Phase 2 | Complete |
 | DEMO-01 | Phase 2 | Complete |
 | CALC-01 | Phase 3 | Pending |
 | CALC-02 | Phase 3 | Pending |

@@ -26,10 +26,10 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 
 Phase: 02 (walking-skeleton) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: PAUSED at checkpoint — Plan 02-04 Tasks 1-2 complete; Task 3 (LIVE hero exit gate, D-A4-01a) is a pending human-verify checkpoint
 Last activity: 2026-06-21
 
-Progress: [█████████░] 86%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [█████████░] 86%
 | Phase 02 P01 | 34 | 3 tasks | 14 files |
 | Phase 02 P02 | 38 | 4 tasks | 25 files |
 | Phase 02 P03 | 24 | 3 tasks | 14 files |
+| Phase 02 P04 (Tasks 1-2; Task 3 = human checkpoint) | 8 | 2 of 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 2 P03]: Layer-2 LLM reconcile is residual-only via the NameReconciliationResponse{matches} wrapper (FIX 6 — model_validate_json needs a BaseModel, not a bare list); a layer-1 hit is never re-decided.
 - [Phase ?]: [Phase 2 P03]: check_one_to_one EXTENDED (signature unchanged) into full one-to-one mapping enforcement (two->one emp / dup name / name->no emp); a high-confidence collision still gates (G6).
 - [Phase ?]: [Phase 2 P03]: clarify drafts via DRAFT_* call_text (templated fallback), sends via gateway.send_outbound (Message-ID on the outbound email_messages row — single FIX-3 anchor, no payroll_runs column), pauses at awaiting_reply via set_status; one persist_reconciliation covers both branches (D-A3-05).
+- [Phase ?]: [Phase 2 P04]: reply routing happens in the webhook BEFORE first ingest, gated on the inbound carrying an in_reply_to/references — find_awaiting_reply_for_header (awaiting_reply only) for resume, FIX-5 sender revalidation against the run's business, find_any_run_for_header for late-reply log (FIX 10); no-header inbounds fall through unchanged.
+- [Phase ?]: [Phase 2 P04]: resume_pipeline re-extracts over (original cleaned body via load_source_email + reply body) so a partial reply is lossless (FIX 4 + FIX C), passes the code-owned run_id into extract (FIX A), overwrites extracted_data + replaces line items; the four stages are factored into a shared _run_stages() so first-run and resume share the identical gate path (DRY).
+- [Phase ?]: [Phase 2 P04]: the live-vs-mock provenance marker (FIX 12) is a structured LOG field source="live"/"mock" derived from Settings.allow_live_llm — never a key in the extra=forbid Decision and never a schema column (an always-runs guard test pins this).
 
 ### Pending Todos
 
@@ -116,6 +120,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-21T10:48:01.817Z
-Stopped at: Completed 02-01-PLAN.md
-Resume file: None
+Last session: 2026-06-21T10:59:23Z
+Stopped at: PAUSED at Plan 02-04 Task 3 checkpoint (LIVE hero exit gate, D-A4-01a — human-verify). Tasks 1-2 complete and committed (47f83f1, c7138f7); live-test scaffolding committed (94cfc41). Mocked suite 159 passed.
+Resume file: .planning/phases/02-walking-skeleton/02-04-SUMMARY.md (see "Pending Human Checkpoint")
