@@ -303,9 +303,9 @@ def seed(dry_run: bool = False) -> SeedResult:
             #    ON CONFLICT updates every mutable field + updated_at.
             # ----------------------------------------------------------------
             for emp in _EMPLOYEES:
-                # model_dump(mode="json") produces JSON-safe values (D-06 pattern)
-                # For JSONB fields that would apply to future jsonb employee columns;
-                # current employee fields are scalar, so we use Pydantic-native values.
+                # psycopg adapts Pydantic-native Decimal/list/bool values directly
+                # (IN-08): no model_dump is called here. Decimal -> numeric,
+                # list[str] -> TEXT[] (including the empty-list case), bool -> boolean.
                 conn.execute(
                     """
                     INSERT INTO employees (

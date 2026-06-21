@@ -1,7 +1,9 @@
 [project]
 name = "payroll-agent"
 version = "0.1.0"
-requires-python = ">=3.12"
+# IN-09: pinned to 3.12.x to match CLAUDE.md's python:3.12-slim runtime target
+# and avoid the 3.13/3.14 wheel-availability edge cases for native deps.
+requires-python = ">=3.12,<3.13"
 
 [tool.setuptools.packages.find]
 where = ["."]
