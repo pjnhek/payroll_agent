@@ -110,6 +110,43 @@ def test_absent_hours_treated_as_zero_in_calc():
 
 
 # ===========================================================================
+# Section 1b — record_run_error must not clobber a terminal run (WR-04, DB-free)
+# ===========================================================================
+
+
+def test_record_run_error_skips_terminal_run(fake_conn):
+    """WR-04 — record_run_error must NOT overwrite a run that is already terminal.
+
+    The FakeConnection replays the status SELECT as 'approved'; record_run_error must
+    then make NO error_reason UPDATE and NO status write (it would otherwise flip an
+    approved/human-finalized run to ERROR, destroying the approval audit trail)."""
+    from app.db import repo
+
+    fake_conn.script_fetchone(("approved",))  # the run is terminal
+    repo.record_run_error(uuid.uuid4(), "boom: a late resume hit an exception", conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    assert "SELECT status" in sql, "must read the current status before mutating"
+    assert "SET error_reason" not in sql, (
+        "a terminal run's error_reason must NOT be overwritten (WR-04)"
+    )
+    assert "SET status" not in sql, "a terminal run must NOT be flipped to ERROR (WR-04)"
+
+
+def test_record_run_error_writes_for_non_terminal_run(fake_conn):
+    """WR-04 — a NON-terminal run still records the error and advances to ERROR (the
+    original behavior is preserved for in-flight runs)."""
+    from app.db import repo
+
+    fake_conn.script_fetchone(("extracting",))  # the run is mid-pipeline (non-terminal)
+    repo.record_run_error(uuid.uuid4(), "boom: a real stage failure", conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    assert "SET error_reason" in sql, "a non-terminal run must persist the error_reason"
+    assert "SET status" in sql, "a non-terminal run must advance to ERROR via set_status"
+
+
+# ===========================================================================
 # Section 2 — live-DB decision + reconciliation round-trip (two-factor guard)
 # ===========================================================================
 

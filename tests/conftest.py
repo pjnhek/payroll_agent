@@ -268,8 +268,12 @@ class InMemoryRepo:
         self.runs[str(run_id)]["status"] = RunStatus(status).value
 
     def record_run_error(self, run_id, reason, conn=None):
+        from app.db.repo import _TERMINAL_STATUSES
         from app.models.status import RunStatus
 
+        # Mirror the real repo's WR-04 guard: never clobber a terminal run to ERROR.
+        if self.runs[str(run_id)]["status"] in _TERMINAL_STATUSES:
+            return
         self.runs[str(run_id)]["error_reason"] = reason
         self.set_status(run_id, RunStatus.ERROR)
 

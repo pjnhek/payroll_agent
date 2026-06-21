@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -60,6 +61,8 @@ from app.db.supabase import get_connection
 from app.models.contracts import Decision, Extracted, PaystubLineItem
 from app.models.roster import Employee, NameMatchResult, Roster
 from app.models.status import RunStatus
+
+logger = logging.getLogger("payroll_agent.repo")
 
 # Explicit column list for rebuilding Employee (no SELECT * — extra="forbid").
 EMPLOYEE_COLS = (
@@ -73,6 +76,21 @@ EMPLOYEE_COLS = (
 RUN_COLS = (
     "id, business_id, source_email_id, status, extracted_data, decision,"
     " reconciliation, error_reason, pay_period_start, pay_period_end"
+)
+
+# Terminal run statuses (WR-04): once a run reaches one of these, an error must NOT
+# overwrite it. APPROVED/SENT/RECONCILED/REJECTED are finalized human/operator
+# outcomes (clobbering them destroys the approval audit trail); ERROR is already
+# terminal. A late/duplicate-reply resume (cf. CR-02) that hits an exception must not
+# be able to flip a human-approved run to ERROR.
+_TERMINAL_STATUSES = frozenset(
+    {
+        RunStatus.APPROVED.value,
+        RunStatus.SENT.value,
+        RunStatus.RECONCILED.value,
+        RunStatus.REJECTED.value,
+        RunStatus.ERROR.value,
+    }
 )
 
 
@@ -268,9 +286,29 @@ def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
     it writes the error_reason data column itself, then routes its ERROR
     transition THROUGH set_status (FIX B) — so there is still exactly one
     status-write path and no second writer can corrupt the state machine.
+
+    WR-04: this must NOT clobber a run that is already TERMINAL. A late/duplicate
+    reply (cf. CR-02) that resumes a run which then hits an exception would otherwise
+    flip an approved/sent/reconciled/rejected run to ERROR, destroying the run's real
+    state and the approval audit trail. So read the current status inside the same
+    transaction first; if it is terminal, log and return WITHOUT writing — defense in
+    depth even with CR-02's resume precondition in place. (No-op on terminal includes
+    a run already in ERROR — re-stamping it is pointless.)
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
+            current = c.execute(
+                "SELECT status FROM payroll_runs WHERE id = %s", (str(run_id),)
+            ).fetchone()
+            if current is not None and current[0] in _TERMINAL_STATUSES:
+                logger.info(
+                    "record_run_error skipped: run %s is terminal (%s) — not "
+                    "clobbering to ERROR (WR-04). reason was: %s",
+                    run_id,
+                    current[0],
+                    reason,
+                )
+                return
             c.execute(
                 "UPDATE payroll_runs SET error_reason = %s, updated_at = now() WHERE id = %s",
                 (reason, str(run_id)),
