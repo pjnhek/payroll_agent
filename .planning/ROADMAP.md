@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thin Foundation | 3/3 | Complete   | 2026-06-21 |
+| 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 0/TBD | Not started | - |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
