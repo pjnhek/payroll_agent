@@ -46,7 +46,15 @@ _CENTS = Decimal("0.01")
 
 
 def _money(value: Decimal) -> Decimal:
-    """Round a Decimal to cents (banker-safe HALF_UP for currency)."""
+    """Round a Decimal to cents using ROUND_HALF_UP (round half AWAY from zero).
+
+    WR-06: this is standard payroll rounding, NOT banker's rounding. Banker's rounding
+    is ROUND_HALF_EVEN (round half to the nearest even cent); ROUND_HALF_UP always
+    rounds a halfway value up in magnitude. The behavior is deliberately UNCHANGED
+    here — ROUND_HALF_UP is the defensible payroll convention and every calc/FICA test
+    is pinned to it. Only the previous "banker-safe" comment was wrong and is corrected
+    (rounding mode is correctness-relevant for the Phase 3 IRS Pub 15-T port).
+    """
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
