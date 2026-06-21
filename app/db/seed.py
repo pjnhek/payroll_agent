@@ -362,4 +362,8 @@ def seed(dry_run: bool = False) -> SeedResult:
 
 
 if __name__ == "__main__":
-    seed()
+    try:
+        seed()
+    finally:
+        from app.db.supabase import close_pool
+        close_pool()

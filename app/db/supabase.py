@@ -11,6 +11,7 @@ docs + pgbouncer/Supabase transaction-mode caveat, Jun 2026.)
 Public API:
     get_pool()       → ConnectionPool singleton (min=1, max=5)
     get_connection() → context manager yielding a pooled psycopg Connection
+    close_pool()     → drain the pool and reset the singleton (idempotent)
 """
 
 from contextlib import contextmanager
@@ -39,6 +40,7 @@ def get_pool() -> ConnectionPool:
             conninfo=settings.database_url,
             min_size=1,
             max_size=5,
+            open=True,  # explicit; avoids DeprecationWarning about default changing
             # D-04: disable server-side prepared statements on every connection
             # so they do not break under Supavisor transaction-mode pooling.
             kwargs={"prepare_threshold": None},
@@ -59,3 +61,19 @@ def get_connection() -> Generator[psycopg.Connection, None, None]:
     pool = get_pool()
     with pool.connection() as conn:
         yield conn
+
+
+def close_pool() -> None:
+    """Close the ConnectionPool singleton and reset it to None.
+
+    Drains active connections and stops the background worker thread so the
+    process exits cleanly without "couldn't stop thread" warnings.  Safe to
+    call when the pool is already None (idempotent).
+
+    Use this in CLI entrypoints (e.g. seed.py __main__) via a finally block
+    so the pool is always closed whether the caller succeeds or raises.
+    """
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
