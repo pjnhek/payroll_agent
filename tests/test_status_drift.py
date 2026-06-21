@@ -86,7 +86,6 @@ class TestStatusDrift:
         # This test is self-documenting: if we got here, no DB was required.
         # The test file must NOT import app.db.supabase or psycopg.
         import sys
-        assert "psycopg" not in sys.modules or True  # pool may be imported elsewhere
         # Key assertion: test_status_drift itself only depends on pathlib+re+app.models
         assert "app.db.supabase" not in sys.modules, (
             "test_status_drift.py must not import the DB layer"

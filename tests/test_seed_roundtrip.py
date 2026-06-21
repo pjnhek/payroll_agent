@@ -16,6 +16,8 @@ Two sections:
 import os
 from decimal import Decimal
 
+import psycopg
+import psycopg.rows
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -295,7 +297,7 @@ def test_high_earner_fields(seeded_db) -> None:
     from app.db.supabase import get_connection
 
     with get_connection() as conn, conn.cursor(
-        row_factory=psycopg.rows.dict_row  # noqa: F821
+        row_factory=psycopg.rows.dict_row
     ) as cur:
         cur.execute(
             "SELECT ytd_ss_wages, pay_periods_per_year"
@@ -336,7 +338,7 @@ def test_employee_roundtrip(seeded_db) -> None:
     )
 
     with get_connection() as conn, conn.cursor(
-        row_factory=psycopg.rows.dict_row  # noqa: F821
+        row_factory=psycopg.rows.dict_row
     ) as cur:
         cur.execute(f"SELECT {EMPLOYEE_COLS} FROM employees")
         rows = cur.fetchall()
@@ -409,9 +411,6 @@ def test_hero_case_exists(seeded_db) -> None:
 @pytest.mark.integration
 def test_alias_exists(seeded_db) -> None:
     """Maria Chen's known_aliases contains 'Maria' (alias fast-path coverage, D-13)."""
-    import psycopg
-    import psycopg.rows
-
     from app.db.supabase import get_connection
 
     with get_connection() as conn, conn.cursor(
