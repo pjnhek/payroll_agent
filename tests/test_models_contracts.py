@@ -312,3 +312,143 @@ def test_employee_salary_valid() -> None:
     )
     assert e.annual_salary == Decimal("60000")
     assert e.hourly_rate is None
+
+
+# ---------------------------------------------------------------------------
+# Employee compensation mutual exclusivity (WR-07)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_hourly_rejects_stray_annual_salary() -> None:
+    """An hourly Employee carrying a stray annual_salary raises ValidationError (WR-07)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(
+                pay_type="hourly",
+                hourly_rate=Decimal("18.50"),
+                annual_salary=Decimal("99999"),
+            )
+        )
+
+
+def test_employee_salary_rejects_stray_hourly_rate() -> None:
+    """A salaried Employee carrying a stray hourly_rate raises ValidationError (WR-07)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(
+                pay_type="salary",
+                hourly_rate=Decimal("18.50"),
+                annual_salary=Decimal("60000"),
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Numeric field bounds (WR-01)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_rejects_negative_hourly_rate() -> None:
+    """A negative hourly_rate raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(hourly_rate=Decimal("-50.00")))
+
+
+def test_employee_rejects_negative_annual_salary() -> None:
+    """A negative annual_salary raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(
+            **_employee_kwargs(
+                pay_type="salary",
+                hourly_rate=None,
+                annual_salary=Decimal("-60000"),
+            )
+        )
+
+
+def test_employee_rejects_retirement_pct_above_one() -> None:
+    """retirement_contribution_pct > 1 (e.g. 50 == 5000%) raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("50")))
+
+
+def test_employee_rejects_negative_retirement_pct() -> None:
+    """A negative retirement_contribution_pct raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("-0.01")))
+
+
+def test_employee_accepts_retirement_pct_bounds() -> None:
+    """retirement_contribution_pct of exactly 0 and 1 are accepted (inclusive bounds)."""
+    e0 = Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("0")))
+    e1 = Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("1")))
+    assert e0.retirement_contribution_pct == Decimal("0")
+    assert e1.retirement_contribution_pct == Decimal("1")
+
+
+def test_name_match_result_rejects_confidence_above_one() -> None:
+    """NameMatchResult.confidence > 1 raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Reyez",
+            matched_employee_id=uuid.uuid4(),
+            match_type="llm_typo",
+            confidence=Decimal("5.0"),
+            reason="out of range",
+        )
+
+
+def test_name_match_result_rejects_negative_confidence() -> None:
+    """NameMatchResult.confidence < 0 raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Reyez",
+            matched_employee_id=None,
+            match_type="unknown",
+            confidence=Decimal("-1"),
+            reason="out of range",
+        )
+
+
+def test_extracted_employee_rejects_negative_hours() -> None:
+    """ExtractedEmployee with negative hours raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        ExtractedEmployee(submitted_name="Bob", hours_regular=Decimal("-10"))
+
+
+def test_decision_rejects_confidence_out_of_range() -> None:
+    """Decision.confidence outside [0,1] raises ValidationError (WR-01)."""
+    with pytest.raises(ValidationError):
+        Decision(
+            model_action="process",
+            gate_triggered=False,
+            gate_reasons=[],
+            final_action="process",
+            unresolved_names=[],
+            missing_fields=[],
+            confidence=Decimal("-1"),
+            reasons=["out of range"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# pay_periods_per_year drift guard (WR-02)
+# ---------------------------------------------------------------------------
+
+
+def test_employee_rejects_invalid_pay_periods() -> None:
+    """A pay_periods_per_year not in {12,24,26,52} raises ValidationError (WR-02).
+
+    Mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52)) so a value
+    like 13 cannot pass the contract and silently drift toward the DB boundary.
+    """
+    for bad in (0, -1, 13, 1):
+        with pytest.raises(ValidationError):
+            Employee(**_employee_kwargs(pay_periods_per_year=bad))
+
+
+def test_employee_accepts_all_legal_pay_periods() -> None:
+    """All four legal pay_periods_per_year values construct (WR-02)."""
+    for good in (12, 24, 26, 52):
+        e = Employee(**_employee_kwargs(pay_periods_per_year=good))
+        assert e.pay_periods_per_year == good

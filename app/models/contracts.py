@@ -9,13 +9,12 @@ D-08: Decision carries model_action AND final_action as structurally separate fi
 """
 from __future__ import annotations
 
-import enum
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 class _DecimalModel(BaseModel):
@@ -75,12 +74,12 @@ class ExtractedEmployee(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     submitted_name: str
-    hours_regular: Decimal | None = None
-    hours_overtime: Decimal | None = None
-    hours_vacation: Decimal | None = None
-    hours_sick: Decimal | None = None
-    hours_holiday: Decimal | None = None
-    contribution_401k_override: Decimal | None = None
+    hours_regular: Decimal | None = Field(default=None, ge=0)
+    hours_overtime: Decimal | None = Field(default=None, ge=0)
+    hours_vacation: Decimal | None = Field(default=None, ge=0)
+    hours_sick: Decimal | None = Field(default=None, ge=0)
+    hours_holiday: Decimal | None = Field(default=None, ge=0)
+    contribution_401k_override: Decimal | None = Field(default=None, ge=0)
 
 
 class Extracted(BaseModel):
@@ -117,7 +116,7 @@ class Decision(BaseModel):
     final_action: Literal["process", "request_clarification"]
     unresolved_names: list[str]
     missing_fields: list[str]
-    confidence: Decimal
+    confidence: Decimal = Field(ge=0, le=1)  # 0.0–1.0; <0.8 fires the gate (WR-01)
     reasons: list[str]
 
     @field_serializer("confidence", when_used="json")

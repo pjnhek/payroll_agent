@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -40,11 +40,15 @@ class Employee(BaseModel):
 
     # Compensation — mutually exclusive per pay_type
     pay_type: Literal["hourly", "salary"]
-    hourly_rate: Decimal | None = None   # required when pay_type == "hourly"
-    annual_salary: Decimal | None = None  # required when pay_type == "salary"
+    hourly_rate: Decimal | None = Field(
+        default=None, ge=0
+    )  # required when pay_type == "hourly"
+    annual_salary: Decimal | None = Field(
+        default=None, ge=0
+    )  # required when pay_type == "salary"
 
     # Retirement
-    retirement_contribution_pct: Decimal  # e.g. 0.03 for 3%
+    retirement_contribution_pct: Decimal = Field(ge=0, le=1)  # e.g. 0.03 for 3%
 
     # W-4 fields (2020+ form)
     filing_status: Literal["single", "married_jointly", "married_separately"]
@@ -56,8 +60,9 @@ class Employee(BaseModel):
     # YTD Social Security wages before this run (for the $184,500 wage-base cap)
     ytd_ss_wages: Decimal
 
-    # Pay schedule
-    pay_periods_per_year: int  # 52=weekly, 26=biweekly, 24=semi-monthly, 12=monthly
+    # Pay schedule — mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52))
+    # so an eval fixture / LLM-produced value can't drift past the contract (WR-02).
+    pay_periods_per_year: Literal[12, 24, 26, 52]  # 52=weekly, 26=biweekly, 24=semi-monthly, 12=monthly
 
     # ------------------------------------------------------------------
     # D-10 / FOUND-06 compensation invariant
@@ -70,15 +75,30 @@ class Employee(BaseModel):
         annual_salary, is un-computable.  Catching this at seed time (before any
         DB write) guarantees a missing calc input never reaches the calc engine
         mid-demo.
+
+        Exclusivity is enforced as well (WR-07): the docstring claims the comp
+        fields are "mutually exclusive per pay_type," so a stray off-type field
+        (e.g. an hourly employee carrying an annual_salary) is rejected rather
+        than left to be silently picked up by a later calc path.
         """
-        if self.pay_type == "hourly" and self.hourly_rate is None:
-            raise ValueError(
-                "hourly_rate is required when pay_type is 'hourly'"
-            )
-        if self.pay_type == "salary" and self.annual_salary is None:
-            raise ValueError(
-                "annual_salary is required when pay_type is 'salary'"
-            )
+        if self.pay_type == "hourly":
+            if self.hourly_rate is None:
+                raise ValueError(
+                    "hourly_rate is required when pay_type is 'hourly'"
+                )
+            if self.annual_salary is not None:
+                raise ValueError(
+                    "annual_salary must be None when pay_type is 'hourly'"
+                )
+        if self.pay_type == "salary":
+            if self.annual_salary is None:
+                raise ValueError(
+                    "annual_salary is required when pay_type is 'salary'"
+                )
+            if self.hourly_rate is not None:
+                raise ValueError(
+                    "hourly_rate must be None when pay_type is 'salary'"
+                )
         return self
 
 
@@ -118,7 +138,7 @@ class NameMatchResult(BaseModel):
     submitted_name: str
     matched_employee_id: UUID | None  # None when match_type == "unknown"
     match_type: Literal["exact", "alias", "llm_typo", "llm_nickname", "unknown"]
-    confidence: Decimal
+    confidence: Decimal = Field(ge=0, le=1)  # 0.0–1.0; <0.8 fires the gate (WR-01)
     reason: str
 
 
