@@ -192,8 +192,8 @@ def test_decision_roundtrip(seeded_db):
         NameMatchResult(
             submitted_name="Maria Chen",
             matched_employee_id=maria.id,
-            match_type="exact",
-            confidence=Decimal("1.0"),
+            source="exact",
+            resolved=True,
             reason="exact match",
         )
     ]
@@ -203,14 +203,11 @@ def test_decision_roundtrip(seeded_db):
         pay_period_start="2026-06-15",
     )
     decision = Decision(
-        model_action="process",
-        gate_triggered=False,
-        gate_reasons=[],
         final_action="process",
+        gate_reasons=[],
         unresolved_names=[],
         missing_fields=[],
-        confidence=Decimal("1.0"),
-        reasons=["clean run"],
+        resolutions=matches,
     )
 
     repo.persist_extracted(run_id, extracted)
@@ -222,4 +219,9 @@ def test_decision_roundtrip(seeded_db):
     assert run["decision"]["final_action"] == "process"
     assert run["reconciliation"] is not None, "reconciliation must NOT be NULL (D-A3-05)"
     assert run["reconciliation"][0]["submitted_name"] == "Maria Chen"
-    assert run["reconciliation"][0]["confidence"] == "1.0"
+    # The deterministic resolution carries source/resolved, NOT a confidence score.
+    assert run["reconciliation"][0]["source"] == "exact"
+    assert run["reconciliation"][0]["resolved"] is True
+    assert "confidence" not in run["reconciliation"][0], (
+        "the deterministic reconciliation JSONB must be confidence-free (D-21-01)"
+    )

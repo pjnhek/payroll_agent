@@ -60,7 +60,14 @@ def client(fake_repo):
 
 
 def _script_gate_block_to_reply(mock_llm) -> None:
-    """Drive the David Reyez fixture to awaiting_reply (extract→reconcile→decide→draft)."""
+    """Drive the David Reyez fixture to awaiting_reply.
+
+    reconcile + decide are PURE deterministic code (D-21-01) — no LLM calls — so the
+    FIFO script carries ONLY the extract response and the free-text clarification
+    draft. The extracted "David Reyez" is a TYPO of the seeded "David Reyes" (which
+    has no known_alias for the misspelling), so the deterministic resolver leaves it
+    unresolved → decide gates to request_clarification → the draft+send branch runs.
+    """
     mock_llm.script = [
         json.dumps(
             {
@@ -69,20 +76,6 @@ def _script_gate_block_to_reply(mock_llm) -> None:
                 "pay_period_end": None,
             }
         ),
-        json.dumps(
-            {
-                "matches": [
-                    {
-                        "submitted_name": "David Reyez",
-                        "matched_employee_id": _DAVID_REYES_ID,
-                        "match_type": "llm_typo",
-                        "confidence": "0.6",
-                        "reason": "likely a typo of David Reyes (y->z)",
-                    }
-                ]
-            }
-        ),
-        json.dumps({"model_action": "process", "reasons": ["all hours present"]}),
         "Hi — could you confirm the employee name 'David Reyez'?",
     ]
 
@@ -91,8 +84,9 @@ def _script_resume_resolved(mock_llm) -> None:
     """Script the RESUME pass: the corrected name now resolves cleanly and processes.
 
     On resume the orchestrator re-extracts over (original cleaned body + reply body),
-    then runs reconcile→decide again. Here the corrected name resolves to the seeded
-    David Reyes at confidence 1.0 and the model says process → final_action process.
+    then runs the PURE reconcile→decide stages again. The corrected "David Reyes" is
+    now an EXACT match to the seeded employee, so the deterministic resolver resolves
+    it and decide returns final_action='process'. Only the extract call hits the LLM.
     """
     mock_llm.script = [
         # extract over (original + reply body) — the corrected spelling now extracted.
@@ -103,22 +97,6 @@ def _script_resume_resolved(mock_llm) -> None:
                 "pay_period_end": None,
             }
         ),
-        # reconcile — David Reyes resolves cleanly (model layer-2, full confidence).
-        json.dumps(
-            {
-                "matches": [
-                    {
-                        "submitted_name": "David Reyes",
-                        "matched_employee_id": _DAVID_REYES_ID,
-                        "match_type": "llm_nickname",
-                        "confidence": "1.0",
-                        "reason": "resolved after clarification",
-                    }
-                ]
-            }
-        ),
-        # decide — model says process; no gate trigger now (confidence 1.0).
-        json.dumps({"model_action": "process", "reasons": ["name confirmed"]}),
     ]
 
 
@@ -628,16 +606,14 @@ def test_reply_with_no_matching_outbound_handled_gracefully(client, fake_repo, m
 
 
 def _stub_matches(names):
-    from decimal import Decimal
-
     from app.models.roster import NameMatchResult
 
     return [
         NameMatchResult(
             submitted_name=n,
             matched_employee_id=uuid.UUID(_DAVID_REYES_ID),
-            match_type="exact",
-            confidence=Decimal("1.0"),
+            source="exact",
+            resolved=True,
             reason="stub",
         )
         for n in names
@@ -645,19 +621,14 @@ def _stub_matches(names):
 
 
 def _stub_decision_process():
-    from decimal import Decimal
-
     from app.models.contracts import Decision
 
     return Decision(
-        model_action="process",
-        gate_triggered=False,
-        gate_reasons=[],
         final_action="process",
+        gate_reasons=[],
         unresolved_names=[],
         missing_fields=[],
-        confidence=Decimal("1.0"),
-        reasons=["stub"],
+        resolutions=_stub_matches(["David Reyes"]),
     )
 
 

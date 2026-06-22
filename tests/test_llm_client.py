@@ -147,10 +147,12 @@ def test_structured_returns_validated_object_and_routes_per_tier(monkeypatch):
     assert inst.create_calls[0]["model"] == "deepseek-v4-flash"
 
 
-def test_decision_tier_routes_to_decision_config(monkeypatch):
+def test_draft_tier_routes_to_draft_config(monkeypatch):
+    """The mid/decision tier was removed (D-21-05) — only extraction + draft remain.
+    The draft tier routes to its own Settings triple."""
     _set_tier_env(
         monkeypatch,
-        prefix="DECISION",
+        prefix="DRAFT",
         model="moonshot-v1-8k",
         base_url="https://api.moonshot.test/v1",
         key="sk-moon",
@@ -158,13 +160,24 @@ def test_decision_tier_routes_to_decision_config(monkeypatch):
     _FakeOpenAI.next_script = ['{"name": "Bo", "score": "0.5"}']
 
     call_structured(
-        tier="decision",
+        tier="draft",
         messages=[{"role": "user", "content": "json"}],
         response_model=_Payload,
     )
     inst = _FakeOpenAI.instances[0]
     assert inst.base_url == "https://api.moonshot.test/v1"
     assert inst.create_calls[0]["model"] == "moonshot-v1-8k"
+
+
+def test_decision_tier_is_removed():
+    """D-21-05 — the decision tier no longer exists; resolving it raises (the mid
+    model was retired when the decision became pure code)."""
+    with pytest.raises(ValueError, match="unknown tier"):
+        call_structured(
+            tier="decision",  # type: ignore[arg-type]
+            messages=[{"role": "user", "content": "json"}],
+            response_model=_Payload,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -188,11 +201,11 @@ def test_deepseek_tier_sends_non_thinking_toggle(monkeypatch):
 
 
 def test_non_deepseek_tier_omits_non_thinking_toggle(monkeypatch):
-    _set_tier_env(monkeypatch, prefix="DECISION", model="moonshot-v1-8k")
+    _set_tier_env(monkeypatch, prefix="DRAFT", model="moonshot-v1-8k")
     _FakeOpenAI.next_script = ['{"name": "Di", "score": "0.7"}']
 
     call_structured(
-        tier="decision",
+        tier="draft",
         messages=[{"role": "user", "content": "json"}],
         response_model=_Payload,
     )

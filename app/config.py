@@ -31,12 +31,10 @@ class Settings(BaseSettings):
     extraction_base_url: str = "https://api.deepseek.com"
     extraction_api_key: str = ""
 
-    # ── Decision tier (mid model) ─────────────────────────────────────────────
-    decision_model: str = "moonshot-v1-8k"
-    decision_base_url: str = "https://api.moonshot.ai/v1"
-    decision_api_key: str = ""
-
     # ── Drafting tier (cheap model) ───────────────────────────────────────────
+    # The mid/decision tier was removed in Phase 2.1 (D-21-05): the decision is pure
+    # code with no model call, so there are TWO tiers — extraction + drafting (the
+    # cheap tier also serves the optional clarification-suggestion call in Wave 4).
     draft_model: str = "moonshot-v1-8k"
     draft_base_url: str = "https://api.moonshot.ai/v1"
     draft_api_key: str = ""

@@ -10,9 +10,8 @@ Design locks (CLAUDE.md / CONTEXT D-A2-02/03 / RESEARCH §Pattern 2):
 - `response_format={"type": "json_object"}` + `model_validate_json` — NOT the
   strict structured-output helper (DeepSeek lacks strict `json_schema`, which
   would break the one-provider-agnostic-client goal).
-- `temperature=0` on every structured call — the 0.8 reconciliation gate keys
-  off the model's reported confidence, so any nonzero temperature makes that
-  confidence wobble run-to-run and flips the gate between takes.
+- `temperature=0` on every structured call — temperature 0 for deterministic,
+  eval-stable extraction (no confidence gate exists; the decision is pure code).
 - DeepSeek's thinking vs non-thinking is a per-REQUEST toggle in V4, not a model
   name — so the wrapper must explicitly select non-thinking in the request body
   for any deepseek-* tier. The exact field placement is an open console blocker
@@ -36,8 +35,9 @@ from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
 
-# The three model tiers (D-A2-02). The code gate calls NO model.
-Tier = Literal["extraction", "decision", "draft"]
+# The two model tiers (D-21-05): extraction + draft. The decision is pure code and
+# calls NO model, so the mid/decision tier was removed in Phase 2.1.
+Tier = Literal["extraction", "draft"]
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -70,12 +70,6 @@ def _resolve_tier(tier: Tier) -> _TierConfig:
             settings.extraction_base_url,
             settings.extraction_model,
             settings.extraction_api_key,
-        )
-    if tier == "decision":
-        return _TierConfig(
-            settings.decision_base_url,
-            settings.decision_model,
-            settings.decision_api_key,
         )
     if tier == "draft":
         return _TierConfig(

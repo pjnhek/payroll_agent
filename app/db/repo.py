@@ -344,7 +344,12 @@ def persist_decision(run_id: uuid.UUID, decision: Decision, conn=None) -> None:
 def persist_reconciliation(
     run_id: uuid.UUID, matches: list[NameMatchResult], conn=None
 ) -> None:
-    """Write the per-run list[NameMatchResult] JSONB ONLY (D-A3-05; no status)."""
+    """Write the per-run list[NameMatchResult] JSONB ONLY (D-A3-05; no status).
+
+    The deterministic NameMatchResult shape (source/resolved) carries no score, so
+    the persisted JSONB is automatically free of any per-name confidence; there is no
+    separate name_matches relational write path (dropped in Phase 2.1, D-21-06).
+    """
     payload = [m.model_dump(mode="json") for m in matches]
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
@@ -371,12 +376,12 @@ def replace_line_items(
                 c.execute(
                     """
                     INSERT INTO paystub_line_items (
-                        id, run_id, employee_id, submitted_name, match_confidence,
+                        id, run_id, employee_id, submitted_name,
                         hours_regular, hours_overtime, hours_vacation, hours_sick,
                         hours_holiday, gross_pay, pretax_401k, fica_ss,
                         fica_medicare, federal_withholding, state_withholding, net_pay
                     ) VALUES (
-                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s
@@ -387,7 +392,6 @@ def replace_line_items(
                         str(it.run_id),
                         str(it.employee_id) if it.employee_id else None,
                         it.submitted_name,
-                        it.match_confidence,
                         it.hours_regular,
                         it.hours_overtime,
                         it.hours_vacation,

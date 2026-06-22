@@ -29,10 +29,17 @@ from app.config import get_settings
 # Path to the DDL source of truth relative to this file's location
 _SCHEMA_SQL = pathlib.Path(__file__).parent / "schema.sql"
 
-# Reverse-dependency drop order (paystub_line_items first, businesses last)
-# CASCADE handles any lingering FK dependencies, but explicit reverse order
-# documents the dependency direction and avoids races without CASCADE.
+# Reverse-dependency drop order (name_matches + paystub_line_items first,
+# businesses last). CASCADE handles any lingering FK dependencies, but explicit
+# reverse order documents the dependency direction and avoids races without CASCADE.
+#
+# D-21-06: name_matches is the DEAD relational reconciliation table (resolutions now
+# live in payroll_runs.reconciliation JSONB). It is no longer created by schema.sql,
+# so it is dropped FIRST on a --reset to clear it from an existing DB. The default
+# (non-reset) apply path ALSO drops it unconditionally below, because
+# CREATE TABLE IF NOT EXISTS cannot remove a table that already exists on the live DBs.
 _DROP_ORDER = [
+    "name_matches",
     "paystub_line_items",
     "eval_results",
     "email_messages",
@@ -95,6 +102,15 @@ def bootstrap(reset: bool = False) -> None:
                 print(f"  DROP TABLE IF EXISTS {table} CASCADE")
                 conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
             conn.commit()
+
+        # D-21-06 live-DB migration: drop the DEAD name_matches table on EVERY apply
+        # (not just --reset). schema.sql no longer creates it, but CREATE IF NOT EXISTS
+        # cannot remove a table that already exists on the live local / Supabase DBs —
+        # so the only way to retire it on a running database is an explicit DROP here,
+        # BEFORE re-applying schema.sql. IF EXISTS makes this a no-op once it is gone.
+        print("  DROP TABLE IF EXISTS name_matches CASCADE  (D-21-06 dead-table migration)")
+        conn.execute("DROP TABLE IF EXISTS name_matches CASCADE;")
+        conn.commit()
 
         # Apply the full DDL source of truth atomically.
         schema_sql = _SCHEMA_SQL.read_text()

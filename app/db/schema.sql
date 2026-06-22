@@ -78,7 +78,13 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
                                 )),
     extracted_data  JSONB,      -- D-06: persisted from Extracted.model_dump(mode="json")
     decision        JSONB,      -- D-06: persisted from Decision.model_dump(mode="json")
-    reconciliation  JSONB,      -- D-A3-05: list[NameMatchResult].model_dump(mode="json") per run
+    -- D-A3-05 / D-21-06: the per-name resolutions (submitted_name, matched_employee_id,
+    -- source, resolved, reason) live HERE as list[NameMatchResult].model_dump(mode="json").
+    -- This JSONB is the SINGLE source of truth for reconciliation — the relational
+    -- name_matches table is intentionally ABSENT (dropped in Phase 2.1 via bootstrap;
+    -- CREATE IF NOT EXISTS cannot drop a live table, so the DROP runs in bootstrap.py).
+    -- The deterministic shape carries no confidence score (D-21-01).
+    reconciliation  JSONB,
     error_reason    TEXT,       -- D-A1-03 / FIX 7: orchestrator's persisted ERROR reason
     pay_period_start DATE,
     pay_period_end   DATE,
@@ -102,7 +108,6 @@ CREATE TABLE IF NOT EXISTS paystub_line_items (
     run_id              UUID        NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
     employee_id         UUID        REFERENCES employees(id),
     submitted_name      TEXT        NOT NULL,
-    match_confidence    NUMERIC(4,3)  NOT NULL DEFAULT 0,
     hours_regular       NUMERIC(6,2)  NOT NULL DEFAULT 0,
     hours_overtime      NUMERIC(6,2)  NOT NULL DEFAULT 0,
     hours_vacation      NUMERIC(6,2)  NOT NULL DEFAULT 0,
