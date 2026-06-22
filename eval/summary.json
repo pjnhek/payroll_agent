@@ -1,0 +1,674 @@
+{
+  "schema_version": "1",
+  "suite_run_id": "132aa90b-16f7-4637-9dec-0535f49d3968",
+  "generated_at": "2026-06-22T20:21:55.664529+00:00",
+  "extraction_model_id": "deepseek-v4-flash",
+  "false_process_rate": 0.0,
+  "confusion_matrix": {
+    "true_process": 7,
+    "false_process": 0,
+    "false_clarify": 0,
+    "true_clarify": 8,
+    "false_process_rate": 0.0,
+    "false_process_precision_rate": 0.0
+  },
+  "extraction_overall_f1": 0.9866666666666667,
+  "extraction_overall_field_accuracy": 0.9888888888888889,
+  "per_category_extraction": {
+    "exact": {
+      "f1": 0.96,
+      "field_accuracy": 1.0
+    },
+    "stored-alias": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "collision": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "unknown": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "typo": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "first-time-alias": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "missing-hours": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "vague-hours": {
+      "f1": 1.0,
+      "field_accuracy": 0.8333333333333334
+    },
+    "buried-reply": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    }
+  },
+  "per_category_reconciliation": [
+    {
+      "category": "exact",
+      "correct": 11,
+      "total": 11,
+      "accuracy": 1.0
+    },
+    {
+      "category": "stored-alias",
+      "correct": 2,
+      "total": 2,
+      "accuracy": 1.0
+    },
+    {
+      "category": "collision",
+      "correct": 2,
+      "total": 2,
+      "accuracy": 1.0
+    },
+    {
+      "category": "unknown",
+      "correct": 1,
+      "total": 1,
+      "accuracy": 1.0
+    },
+    {
+      "category": "typo",
+      "correct": 2,
+      "total": 2,
+      "accuracy": 1.0
+    },
+    {
+      "category": "first-time-alias",
+      "correct": 1,
+      "total": 1,
+      "accuracy": 1.0
+    }
+  ],
+  "per_category_decision": {
+    "exact": {
+      "correct": 5,
+      "total": 5,
+      "fraction": "5/5"
+    },
+    "stored-alias": {
+      "correct": 2,
+      "total": 2,
+      "fraction": "2/2"
+    },
+    "collision": {
+      "correct": 2,
+      "total": 2,
+      "fraction": "2/2"
+    },
+    "unknown": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "typo": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "first-time-alias": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "missing-hours": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "vague-hours": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "buried-reply": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    }
+  },
+  "rigor_gate_struct_accuracy": 0.8666666666666667,
+  "per_fixture": [
+    {
+      "fixture_id": "f0000001-0000-0000-0000-000000000001",
+      "fixture_path": "01_exact_match_coastal.json",
+      "fixture_category": "exact",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000002-0000-0000-0000-000000000002",
+      "fixture_path": "02_stored_alias_metro.json",
+      "fixture_category": "stored-alias",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "P. Nair",
+          "name_category": "stored-alias",
+          "correct": true,
+          "actual_source": "alias",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000004-0000-0000-0000-000000000004",
+          "expected_matched_employee_id": "e0000004-0000-0000-0000-000000000004"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000003-0000-0000-0000-000000000003",
+      "fixture_path": "03_collision_metro.json",
+      "fixture_category": "collision",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "D. Reyes",
+          "name_category": "collision",
+          "correct": true,
+          "actual_source": "none",
+          "actual_resolved": false,
+          "actual_matched_employee_id": null,
+          "expected_matched_employee_id": null
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000004-0000-0000-0000-000000000004",
+      "fixture_path": "04_unknown_shorthand_metro.json",
+      "fixture_category": "unknown",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Dave Reyes",
+          "name_category": "unknown",
+          "correct": true,
+          "actual_source": "none",
+          "actual_resolved": false,
+          "actual_matched_employee_id": null,
+          "expected_matched_employee_id": null
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000005-0000-0000-0000-000000000005",
+      "fixture_path": "05_typo_coastal.json",
+      "fixture_category": "typo",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "James Okafr",
+          "name_category": "typo",
+          "correct": true,
+          "actual_source": "none",
+          "actual_resolved": false,
+          "actual_matched_employee_id": null,
+          "expected_matched_employee_id": null
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000006-0000-0000-0000-000000000006",
+      "fixture_path": "06_first_time_alias_metro.json",
+      "fixture_category": "first-time-alias",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Priya",
+          "name_category": "first-time-alias",
+          "correct": true,
+          "actual_source": "none",
+          "actual_resolved": false,
+          "actual_matched_employee_id": null,
+          "expected_matched_employee_id": null
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000007-0000-0000-0000-000000000007",
+      "fixture_path": "07_missing_hours_coastal.json",
+      "fixture_category": "missing-hours",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": false,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000008-0000-0000-0000-000000000008",
+      "fixture_path": "08_vague_hours_coastal.json",
+      "fixture_category": "vague-hours",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 0.8333333333333334,
+        "field_correct": 5,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": false,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000009-0000-0000-0000-000000000009",
+      "fixture_path": "09_buried_reply_metro.json",
+      "fixture_category": "buried-reply",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 12,
+        "field_total": 12,
+        "true_positives": 2,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "David Reyes",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000003-0000-0000-0000-000000000003",
+          "expected_matched_employee_id": "e0000003-0000-0000-0000-000000000003"
+        },
+        {
+          "submitted_name": "Priya Nair",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000004-0000-0000-0000-000000000004",
+          "expected_matched_employee_id": "e0000004-0000-0000-0000-000000000004"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000010-0000-0000-0000-000000000010",
+      "fixture_path": "10_multi_employee_coastal.json",
+      "fixture_category": "exact",
+      "extraction": {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "f1": 0.8,
+        "field_accuracy": 1.0,
+        "field_correct": 12,
+        "field_total": 12,
+        "true_positives": 2,
+        "false_positives": 1,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        },
+        {
+          "submitted_name": "Jame Okafor",
+          "name_category": "typo",
+          "correct": true,
+          "actual_source": "none",
+          "actual_resolved": false,
+          "actual_matched_employee_id": null,
+          "expected_matched_employee_id": null
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000011-0000-0000-0000-000000000011",
+      "fixture_path": "11_multi_employee_metro.json",
+      "fixture_category": "collision",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 18,
+        "field_total": 18,
+        "true_positives": 3,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "David Reyes",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000003-0000-0000-0000-000000000003",
+          "expected_matched_employee_id": "e0000003-0000-0000-0000-000000000003"
+        },
+        {
+          "submitted_name": "D. Reyes",
+          "name_category": "collision",
+          "correct": true,
+          "actual_source": "none",
+          "actual_resolved": false,
+          "actual_matched_employee_id": null,
+          "expected_matched_employee_id": null
+        },
+        {
+          "submitted_name": "Priya Nair",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000004-0000-0000-0000-000000000004",
+          "expected_matched_employee_id": "e0000004-0000-0000-0000-000000000004"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000012-0000-0000-0000-000000000012",
+      "fixture_path": "12_exact_process_summit.json",
+      "fixture_category": "exact",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Thomas Bergmann",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000005-0000-0000-0000-000000000005",
+          "expected_matched_employee_id": "e0000005-0000-0000-0000-000000000005"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000013-0000-0000-0000-000000000013",
+      "fixture_path": "13_exact_process_metro.json",
+      "fixture_category": "exact",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "David Reyes",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000003-0000-0000-0000-000000000003",
+          "expected_matched_employee_id": "e0000003-0000-0000-0000-000000000003"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000014-0000-0000-0000-000000000014",
+      "fixture_path": "14_collision_process_summit.json",
+      "fixture_category": "exact",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Sandra Kim",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000006-0000-0000-0000-000000000006",
+          "expected_matched_employee_id": "e0000006-0000-0000-0000-000000000006"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000015-0000-0000-0000-000000000015",
+      "fixture_path": "15_stored_alias_process_coastal.json",
+      "fixture_category": "stored-alias",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "M. Chen",
+          "name_category": "stored-alias",
+          "correct": true,
+          "actual_source": "alias",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    }
+  ]
+}
