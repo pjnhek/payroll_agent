@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-last_updated: "2026-06-22T03:52:41.837Z"
+status: ready_to_plan
+last_updated: 2026-06-22T03:55:07.273Z
 last_activity: 2026-06-22
 progress:
   total_phases: 7
@@ -11,6 +11,7 @@ progress:
   total_plans: 12
   completed_plans: 12
   percent: 43
+stopped_at: Phase 02.1 complete (5/5) — ready to discuss Phase 3
 ---
 
 # Project State
@@ -20,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-20)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
-**Current focus:** Phase 02.1 — deterministic-decisioning
+**Current focus:** Phase 3 — harden the calc
 
 ## Current Position
 
-Phase: 02.1 (deterministic-decisioning) — COMPLETE (all 5 plans)
-Plan: 02.1-05 complete (DEMO-01 reframe + final test/live-LLM sweep + doc rewrite + grep-clean acceptance); Phase 2.1 done
-Status: 02.1-05 done — gate_block_hero reframed (unknown-shorthand-clarify-with-suggestion) + new collision_safety.json + constraint-safe seed collision pair (Daniel Reyes e0000007 sharing "D. Reyes"); all residual tests swept to source/resolved + deterministic Decision; CLAUDE.md/REQUIREMENTS.md/PROJECT.md/ROADMAP.md rewritten to deterministic decisioning + eval taxonomy. Full mocked suite GREEN (195 passed); app/ + tests/ + thesis docs grep-clean of confidence/model_action/0.8. Wave 3 live-DB checkpoint already resolved (per environment notes).
+Phase: 3
+Plan: Not started
+Status: Ready to plan
 Last activity: 2026-06-22
 
 Progress: [██████████] 100%
@@ -35,7 +36,7 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 12
+- Total plans completed: 17
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -44,6 +45,7 @@ Progress: [██████████] 100%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 3 | - | - |
+| 02.1 | 5 | - | - |
 
 **Recent Trend:**
 
