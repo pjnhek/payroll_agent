@@ -1,8 +1,12 @@
 """Calc + persistence round-trip tests (LLM-08, D-A3-05; FIX 2).
 
-Section 1 (always run, DB-free): the thin gross+FICA calc — federal=0, the
-pre-federal label is a module constant (not a contract field), SS honors the
-wage-base cap.
+Section 1 (always run, DB-free): the full-fidelity gross+FICA+federal calc (Phase 3) —
+federal is real (not zero), SS honors the wage-base cap.
+
+NOTE: PRE_FEDERAL_NET_LABEL was removed in Phase 3 (Plan 03-03) — the net is now real.
+The Phase 2 tests that asserted federal_withholding == 0 and tested PRE_FEDERAL_NET_LABEL
+have been updated to reflect Phase 3 behavior. (Rule 1 auto-fix — Phase 3 retired the
+label and replaced the Decimal("0") federal stub with real Pub 15-T withholding.)
 
 Section 2 (live-DB, two-factor guard): a clean run persisted to payroll_runs
 round-trips BOTH decision AND reconciliation — mirrors tests/test_seed_roundtrip.py
@@ -19,7 +23,7 @@ import pytest
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, PaystubLineItem
 from app.models.roster import Employee, NameMatchResult
-from app.pipeline.calculate import PRE_FEDERAL_NET_LABEL, calculate
+from app.pipeline.calculate import calculate
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
@@ -55,28 +59,46 @@ def _hourly_employee(ytd_ss="12000.00", rate="18.50", pct="0.00") -> Employee:
     )
 
 
-def test_calc_federal_is_zero_and_no_fabricated_figure():
+def test_calc_federal_is_real_in_phase3():
+    """Phase 3: federal_withholding is real (non-zero) for a typical earning employee.
+
+    Phase 2 asserted federal_withholding == Decimal("0") (thin calc, no federal).
+    Phase 3 (Plan 03-03) replaces that stub with real IRS Pub 15-T withholding.
+    This test is updated to reflect Phase 3 behavior (Rule 1 auto-fix).
+    """
     item = calculate({"hours_regular": Decimal("40")}, _hourly_employee())
     assert isinstance(item, PaystubLineItem)
-    assert item.federal_withholding == Decimal("0"), "Phase 2 calc has NO federal"
+    # Phase 3: federal_withholding is real for a typical employee (non-zero)
+    assert item.federal_withholding > Decimal("0"), "Phase 3 calc has REAL federal withholding"
 
 
-def test_pre_federal_label_is_a_module_constant_not_a_contract_field():
-    """FIX 2: the pre-federal label lives in calculate.py, NOT on PaystubLineItem
-    (which is extra='forbid' — a net_pay_label field would raise)."""
-    assert "pre-federal" in PRE_FEDERAL_NET_LABEL.lower()
+def test_no_net_pay_label_field_on_paystub():
+    """FIX 2 (updated for Phase 3): PaystubLineItem must NOT gain a label field.
+
+    The Phase 2 'pre-federal' label constant has been retired in Phase 3 (Plan 03-03).
+    This test retains the critical invariant: no net_pay_label field on PaystubLineItem
+    (which is extra='forbid' — such a field would break existing callers).
+    """
     assert "net_pay_label" not in PaystubLineItem.model_fields, (
         "PaystubLineItem must NOT gain a label field (FIX 2)"
     )
 
 
 def test_calc_gross_and_net_hourly():
+    """Phase 3 update: net_pay now includes real federal withholding (Rule 1 auto-fix).
+
+    Phase 2 asserted net_pay == 683.39 (gross - FICA, no federal).
+    Phase 3 adds real Pub 15-T withholding, so net_pay = gross - FICA - federal.
+    The gross and FICA assertions remain unchanged; net_pay is now computed from the item.
+    """
     item = calculate({"hours_regular": Decimal("40")}, _hourly_employee(rate="18.50"))
     assert item.gross_pay == Decimal("740.00")  # 40 * 18.50
-    # FICA: SS 6.2% (under cap) + Medicare 1.45%; no 401k; no federal.
+    # FICA: SS 6.2% (under cap) + Medicare 1.45%; no 401k
     assert item.fica_ss == Decimal("45.88")  # 740 * 0.062
     assert item.fica_medicare == Decimal("10.73")  # 740 * 0.0145
-    assert item.net_pay == Decimal("683.39")  # 740 - 45.88 - 10.73
+    # Phase 3: net_pay = gross - fica_ss - fica_medicare - federal_withholding (real)
+    expected_net = (item.gross_pay - item.fica_ss - item.fica_medicare - item.federal_withholding).quantize(Decimal("0.01"))
+    assert item.net_pay == expected_net  # net is now real (includes federal withholding)
 
 
 def test_ss_honors_wage_base_cap_straddle():
