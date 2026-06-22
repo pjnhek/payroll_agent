@@ -102,7 +102,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 02.1-02-PLAN.md — rewrite reconcile_names (pure exact + stored-alias) and decide (pure resolution + run-level collisions + missing-field → final_action); delete the decide/reconcile prompts; new deterministic test taxonomy
+- [x] 02.1-02-PLAN.md — rewrite reconcile_names (pure exact + stored-alias) and decide (pure resolution + run-level collisions + missing-field → final_action); delete the decide/reconcile prompts; new deterministic test taxonomy
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -210,7 +210,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 3/4 | In Progress|  |
-| 2.1 Deterministic Decisioning *(INSERTED)* | 1/5 | In Progress|  |
+| 2.1 Deterministic Decisioning *(INSERTED)* | 2/5 | In Progress|  |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |

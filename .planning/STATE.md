@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-last_updated: "2026-06-22T01:46:23.885Z"
+status: executing
+last_updated: "2026-06-22T01:57:39.205Z"
 last_activity: 2026-06-22
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 12
-  completed_plans: 8
+  completed_plans: 9
   percent: 29
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 ## Current Position
 
 Phase: 02.1 (deterministic-decisioning) — EXECUTING
-Plan: 1 of 5 complete (next: 02.1-02)
-Status: Plan 02.1-01 complete (Wave 1, contract reshape) — contracts now deterministic + confidence-free; downstream waves (02.1-02..05) rewrite the consumers
+Plan: 2 of 5 complete (next: 02.1-02)
+Status: Ready to execute
 Last activity: 2026-06-22
 
-Progress: [███████░░░] 67%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -58,6 +58,7 @@ Progress: [███████░░░] 67%
 | Phase 02 P03 | 24 | 3 tasks | 14 files |
 | Phase 02 P04 (Tasks 1-2; Task 3 = human checkpoint) | 8 | 2 of 3 tasks | 6 files |
 | Phase 02.1 P01 | 4 | 2 tasks | 3 files |
+| Phase 02.1 P02 | 5 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,8 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 2 P04]: resume_pipeline re-extracts over (original cleaned body via load_source_email + reply body) so a partial reply is lossless (FIX 4 + FIX C), passes the code-owned run_id into extract (FIX A), overwrites extracted_data + replaces line items; the four stages are factored into a shared _run_stages() so first-run and resume share the identical gate path (DRY).
 - [Phase ?]: [Phase 2 P04]: the live-vs-mock provenance marker (FIX 12) is a structured LOG field source="live"/"mock" derived from Settings.allow_live_llm — never a key in the extra=forbid Decision and never a schema column (an always-runs guard test pins this).
 - [Phase ?]: [Phase 02.1 P01]: Contracts reshaped deterministic — NameMatchResult=source(exact|alias|none)+explicit resolved bool; Decision=final_action/gate_reasons/unresolved_names/missing_fields+resolutions:list[NameMatchResult] (folded into decision JSONB, no name_matches table); PaystubLineItem drops match_confidence; reconcile.py/NameReconciliationResponse deleted. No confidence anywhere (D-21-01/04/05/06).
+- [Phase 02.1]: [Phase 02.1 P02]: reconcile_names + decide are now PURE deterministic code — no LLM, no confidence, no model_action; final_action computed from unresolved (resolved is False) + run-level collisions + missing fields is the SOLE branch source (D-21-01/02/03)
+- [Phase 02.1]: [Phase 02.1 P02]: collision safety lives in TWO places — deterministic_match refuses to resolve a name matching 2+ employees (None -> unresolved); check_one_to_one stays a run-level authority gating even when both colliding names are resolved=True (D-21-02); decide Rule 1 keys off resolved and the old check_one_to_one no-roster-employee branch was dropped to avoid double-counting Rule 1
 
 ### Pending Todos
 
@@ -122,6 +125,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T01:45:15.479Z
+Last session: 2026-06-22T01:57:24.240Z
 Stopped at: Completed Plan 02.1-01 (Wave 1, contract reshape). Tasks 1-2 committed (f844b0b, 783160e). Contracts now deterministic + confidence-free; app/models/ grep-clean; test_models_contracts.py 37 passed. Expected: downstream test collection (test_reconcile/test_clarify/test_orchestrator_states) breaks until Waves 02.1-02..05 rewrite the consumers.
-Resume file: .planning/phases/02.1-deterministic-decisioning/02.1-01-SUMMARY.md
+Resume file: None
