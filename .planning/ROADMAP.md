@@ -139,8 +139,11 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 03-02-PLAN.md — Golden-value test suite: tests/test_federal_withholding.py covering all 6 Worksheet 1A schedules + D-04 edge cases + python-taxes structural test (autonomous: false — layer-B oracle verification checkpoint)
-- [ ] 03-03-PLAN.md — Deepen calculate.py: salaried leave pay, FICA constants migration, real federal withholding call, real net, reconciliation backstop + extend tests/test_calculate.py (CALC-01/02/07/08)
+- [ ] 03-03-PLAN.md — Deepen calculate.py: salaried leave pay (annual/2080 form), FICA constants migration, real federal withholding call, real net, Additional-Medicare limitation flag, reconciliation backstop via PayrollCalculationError + extend tests/test_calculate.py (CALC-01/02/03/04/07/08)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 03-02-PLAN.md — Golden-value test suite: tests/test_federal_withholding.py covering all 6 Worksheet 1A schedules + D-04 edge cases + the in-PDF wage-bracket PRIMARY oracle + bracket-boundary tests (autonomous: false — layer-B over-ceiling oracle verification checkpoint)
 
 ### Phase 4: The Eval (the proof)
 
