@@ -170,7 +170,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 04-03-PLAN.md — Chart + CI: eval/chart.svg (SVG, committed, recruiter-visible), .github/workflows/eval.yml (hermetic push check + live workflow_dispatch), matplotlib dev dep (D-08, D-17 — EVAL-04, EVAL-05)
+- [x] 04-03-PLAN.md — Chart + CI: eval/chart.svg (SVG, committed, recruiter-visible), .github/workflows/eval.yml (hermetic push check + live workflow_dispatch), matplotlib dev dep (D-08, D-17 — EVAL-04, EVAL-05)
 
 **Wave 4** *(if-time, optional — drop first under time pressure)*
 
@@ -241,6 +241,6 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
-| 4. The Eval | 2/4 | In Progress|  |
+| 4. The Eval | 3/4 | In Progress|  |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
