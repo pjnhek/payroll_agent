@@ -162,7 +162,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Fixture corpus: 15 labeled eval fixtures + stubbed extraction caches + draft_candidate_emails.py helper (D-01..D-05, D-18, D-19 — EVAL-01, EVAL-02)
+- [x] 04-01-PLAN.md — Fixture corpus: 15 labeled eval fixtures + stubbed extraction caches + draft_candidate_emails.py helper (D-01..D-05, D-18, D-19 — EVAL-01, EVAL-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -241,6 +241,6 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
-| 4. The Eval | 0/4 | Not started | - |
+| 4. The Eval | 1/4 | In Progress|  |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |

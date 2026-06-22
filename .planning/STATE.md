@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-last_updated: "2026-06-22T18:03:54.894Z"
-last_activity: 2026-06-22 -- Phase 03 shipped (pushed to origin/master)
+status: executing
+last_updated: "2026-06-22T20:04:46.815Z"
+last_activity: 2026-06-22 -- Phase 04 execution started
 progress:
   total_phases: 7
   completed_phases: 4
-  total_plans: 15
+  total_plans: 19
   completed_plans: 15
   percent: 57
 ---
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-20)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
-**Current focus:** Phase 4 — the eval (the proof)
+**Current focus:** Phase 04 — the-eval-the-proof
 
 ## Current Position
 
-Phase: 4
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-06-22 -- Phase 03 shipped (pushed to origin/master)
+Phase: 04 (the-eval-the-proof) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 04
+Last activity: 2026-06-22 -- Phase 04 execution started
 
 Progress: [██████████] 100%
 
