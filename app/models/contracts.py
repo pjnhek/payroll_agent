@@ -176,3 +176,8 @@ class PaystubLineItem(BaseModel):
     state_withholding: Decimal | None
     net_pay: Decimal
     created_at: datetime
+    additional_medicare_not_modeled: bool = False
+    # User Decision 1 (FIX B): Additional Medicare 0.9% surtax on wages over $200k YTD
+    # is NOT modeled. When this flag is True the engine is known to under-withhold by 0.9%
+    # above the threshold. The flag makes the limitation observable and test-backed.
+    # Default=False so existing callers are unbroken (additive, non-breaking field addition).
