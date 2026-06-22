@@ -114,7 +114,6 @@ def calculate(resolved_hours: dict, employee: Employee) -> PaystubLineItem:
         run_id=uuid.uuid4(),  # the orchestrator overwrites with the real run_id
         employee_id=employee.id,
         submitted_name=employee.full_name,
-        match_confidence=Decimal("1.0"),
         hours_regular=hours["hours_regular"],
         hours_overtime=hours["hours_overtime"],
         hours_vacation=hours["hours_vacation"],

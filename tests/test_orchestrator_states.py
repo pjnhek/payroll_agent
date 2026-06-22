@@ -3,8 +3,14 @@
 In-memory mocked-LLM assertions (always run, DB-free via fake_repo): the clean run
 drives received → ... → awaiting_approval, persists Extracted + Decision +
 reconciliation then advances via set_status SEPARATELY; a stage raise routes
-through record_run_error; the orchestrator branches on final_action only and never
-reads model_action; extract is called with the code-owned run_id.
+through record_run_error; the orchestrator branches on final_action only; extract
+is called with the code-owned run_id.
+
+The reconcile + decide stages are PURE deterministic code (D-21-01) — they take no
+llm and make no model call — so the only LLM-scripted calls in these flows are the
+extract stage and (on the clarify branch) the free-text clarification draft. The
+FIFO mock_llm script therefore carries ONE extract response (+ one draft string on a
+clarify run), NOT the dead layer-2 reconcile / advisory-decide responses.
 """
 from __future__ import annotations
 
@@ -49,6 +55,9 @@ def _coastal_business_id(fake_repo) -> str:
 
 
 def _clean_script(mock_llm):
+    """Script ONLY the extract call. Maria Chen + James Okafor are exact seed-roster
+    names (Business 1), so reconcile resolves both deterministically and decide
+    (pure code) returns final_action='process' — no LLM reconcile/decide responses."""
     mock_llm.script = [
         json.dumps(
             {
@@ -60,7 +69,6 @@ def _clean_script(mock_llm):
                 "pay_period_end": None,
             }
         ),
-        json.dumps({"model_action": "process", "reasons": ["clean"]}),
     ]
 
 
@@ -113,19 +121,16 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Branches on final_action only — never reads model_action
+# Branches on final_action — an unresolved name deterministically gates to clarify
 # ---------------------------------------------------------------------------
 
 
-def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
-    """Feed an unresolved name: the model says 'process' but the gate forces
-    clarify, and the orchestrator follows final_action (→ awaiting_reply via the
-    draft+send clarify branch), proving it never branches on model_action.
-
-    The residual name triggers the layer-2 reconcile call (extract → reconcile →
-    decide → draft), so the FIFO script carries FOUR responses: the reconcile
-    wrapper returns an `unknown` (no roster match) so the gate blocks regardless,
-    then a free-text clarification body."""
+def test_unresolved_name_gates_to_clarify(fake_repo, mock_llm):
+    """Feed a name absent from the roster: the deterministic resolver leaves it
+    unresolved, decide (pure code) sets final_action='request_clarification', and the
+    orchestrator follows final_action into the draft+send clarify branch (→
+    awaiting_reply). The FIFO script carries the extract response then the free-text
+    clarification draft — reconcile + decide make NO LLM call (D-21-01)."""
     mock_llm.script = [
         json.dumps(
             {
@@ -134,20 +139,6 @@ def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
                 "pay_period_end": None,
             }
         ),
-        json.dumps(
-            {
-                "matches": [
-                    {
-                        "submitted_name": "Totally Unseen Person",
-                        "matched_employee_id": None,
-                        "match_type": "unknown",
-                        "confidence": "0.0",
-                        "reason": "no roster employee matches",
-                    }
-                ]
-            }
-        ),
-        json.dumps({"model_action": "process", "reasons": ["model is willing"]}),
         "Hi — we need to confirm one employee name before running payroll.",
     ]
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
@@ -155,8 +146,9 @@ def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
     run_pipeline(run_id)
 
     run = fake_repo.load_run(run_id)
-    assert run["decision"]["model_action"] == "process"
     assert run["decision"]["final_action"] == "request_clarification"
+    # The unresolved name is recorded in the deterministic decision.
+    assert "Totally Unseen Person" in run["decision"]["unresolved_names"]
     assert run["status"] == "awaiting_reply", (
         "orchestrator must follow final_action (gated → draft+send → awaiting_reply)"
     )
@@ -166,55 +158,49 @@ def test_branches_on_final_action_not_model_action(fake_repo, mock_llm):
     assert fake_repo.get_outbound_message_id(run_id) is not None
 
 
-def test_process_run_missing_roster_employee_raises(fake_repo, mock_llm):
+def test_process_run_missing_roster_employee_raises():
     """WR-01 — a process run whose resolved match points at an employee_id NOT in the
-    loaded roster is an INVARIANT VIOLATION; _compute_line_items must raise (→ ERROR
-    via the D-A1-03 wrap), never silently drop the employee and ship a short payroll.
+    loaded roster is an INVARIANT VIOLATION; _compute_line_items must raise, never
+    silently drop the employee and ship a short payroll.
 
-    Driven through run_pipeline: extract a name that does NOT deterministically match
-    the seed roster (so it reaches the layer-2 model), reconcile it to a HIGH-
-    confidence match whose matched_employee_id is a random UUID absent from the seed
-    roster, and let the model say process. The gate passes (confidence 1.0, resolved)
-    so the run reaches the process branch — where the missing roster row must blow up
-    loudly instead of silently dropping the employee.
+    The deterministic resolver can only ever resolve a name to an employee that IS in
+    the loaded roster, so this invariant can no longer be reached through the normal
+    gate path (the old layer-2 LLM could route a name to an arbitrary id; it is gone,
+    D-21-05). The defensive guard still exists for a stale persisted reconciliation /
+    wrong-business roster, so it is exercised directly: hand _compute_line_items a
+    resolved NameMatchResult whose matched_employee_id is absent from the roster and
+    assert it raises with an integrity message.
     """
-    ghost_employee_id = str(uuid.uuid4())  # high-confidence id NOT in the seed roster
-    mock_llm.script = [
-        json.dumps(
-            {
-                # A name absent from the Coastal roster → residual → layer-2 model.
-                "employees": [{"submitted_name": "Mariana Sandoval", "hours_regular": "40"}],
-                "pay_period_start": "2026-06-15",
-                "pay_period_end": None,
-            }
-        ),
-        json.dumps(
-            {
-                "matches": [
-                    {
-                        "submitted_name": "Mariana Sandoval",
-                        "matched_employee_id": ghost_employee_id,
-                        "match_type": "llm_typo",
-                        "confidence": "1.0",
-                        "reason": "high confidence but points at a non-roster id",
-                    }
-                ]
-            }
-        ),
-        json.dumps({"model_action": "process", "reasons": ["resolved, full confidence"]}),
-    ]
-    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+    from app.db.seed import seed
+    from app.models.contracts import Extracted, ExtractedEmployee
+    from app.models.roster import NameMatchResult, Roster
+    from app.pipeline.orchestrator import _compute_line_items
 
-    run_pipeline(run_id)
-
-    run = fake_repo.load_run(run_id)
-    assert run["status"] == "error", (
-        "a process run with a match pointing outside the roster must route to ERROR "
-        "(WR-01), not silently drop the employee"
+    seeded = seed(dry_run=True)
+    business_id = seeded.employees[0].business_id
+    roster = Roster(
+        business_id=business_id,
+        employees=[e for e in seeded.employees if e.business_id == business_id],
     )
-    assert run["error_reason"] and "integrity" in run["error_reason"].lower()
-    # No partial/short payroll was persisted for the run.
-    assert str(run_id) not in fake_repo.line_items
+
+    ghost_employee_id = uuid.uuid4()  # resolved id NOT in the loaded roster
+    extracted = Extracted(
+        run_id=uuid.uuid4(),
+        employees=[ExtractedEmployee(submitted_name="Mariana Sandoval", hours_regular="40")],
+        pay_period_start="2026-06-15",
+    )
+    matches = [
+        NameMatchResult(
+            submitted_name="Mariana Sandoval",
+            matched_employee_id=ghost_employee_id,
+            source="exact",
+            resolved=True,
+            reason="resolved but points at a non-roster id (stale reconciliation)",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="integrity"):
+        _compute_line_items(extracted.run_id, extracted, matches, roster)
 
 
 def test_orchestrator_source_never_reads_model_action():

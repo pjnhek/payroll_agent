@@ -2,9 +2,10 @@
 
 run_pipeline(run_id) is the explicit state machine: it loads the run + roster, runs
 the four PURE judgment stages in order, persists Extracted + Decision + per-name
-reconciliation on EVERY run, then branches SOLELY on Decision.final_action — never
-on the model's advisory action (RESEARCH Anti-Pattern; the thesis). It is NOT
-LangGraph; Postgres status IS the durable checkpoint.
+reconciliation on EVERY run, then branches SOLELY on Decision.final_action. The
+decision is computed deterministically by code (decide.py makes no model call and
+reads no score, D-21-01/03; the thesis), so there is no separate advisory action to
+diverge from. It is NOT LangGraph; Postgres status IS the durable checkpoint.
 
 Persistence vs status (review FIX B): the persist_* helpers write DATA ONLY; the
 orchestrator advances state by calling repo.set_status SEPARATELY (set_status is
@@ -169,20 +170,17 @@ def _run_stages(run_id, email, roster, *, llm) -> None:
     extracted = extract(email, roster, **extract_kwargs)
 
     submitted_names = [e.submitted_name for e in extracted.employees]
-    matches = reconcile_names(submitted_names, roster)
+    matches = reconcile_names(submitted_names, roster)  # pure: no llm (D-21-01)
     issues = validate(extracted, roster, matches)
 
-    decide_kwargs = {}
-    if llm is not None:
-        decide_kwargs["llm"] = llm
-    decision = decide(extracted, matches, issues, **decide_kwargs)
+    decision = decide(extracted, matches, issues)  # pure: no llm, no score (D-21-01)
 
     # --- persist DATA on EVERY run BEFORE branching (D-A3-05); OVERWRITES on resume ---
     repo.persist_extracted(run_id, extracted)
     repo.persist_decision(run_id, decision)  # data-only (FIX B), two-arg call
     repo.persist_reconciliation(run_id, matches)  # never NULL on a clean run
 
-    # --- branch SOLELY on final_action (never the model's advisory action) ---
+    # --- branch SOLELY on final_action (the code-owned deterministic decision) ---
     if decision.final_action == "process":
         line_items = _compute_line_items(run_id, extracted, matches, roster)
         repo.replace_line_items(run_id, line_items)  # DELETE-by-run then insert
@@ -251,12 +249,12 @@ def _compute_line_items(run_id, extracted, matches, roster):
             "hours_holiday": ee.hours_holiday,
         }
         item = calculate(resolved_hours, employee)
-        # Stamp the real run identity + the submitted name + per-name confidence.
+        # Stamp the real run identity + the submitted name (the per-name provenance;
+        # there is no score on a deterministic resolution, D-21-01/04).
         item = item.model_copy(
             update={
                 "run_id": run_id,
                 "submitted_name": ee.submitted_name,
-                "match_confidence": m.confidence,
             }
         )
         items.append(item)
