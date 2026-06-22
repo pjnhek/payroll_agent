@@ -130,7 +130,17 @@ Plans:
   4. A golden-value test suite asserts hand-computed 2026 paystubs to the penny using `Decimal`, sourced from a dated, year-keyed tax-constants module (source + retrieval date in header).
   5. The reconciliation check confirms net + taxes + deductions ties to the run total and flags arithmetic drift — understood as an arithmetic backstop only, not the correctness oracle (the golden tests are the oracle).
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 03-01-PLAN.md — New pure-function modules: tax_tables_2026.py (all 2026 bracket tables + FICA constants, dated header) + federal_withholding.py (Worksheet 1A engine)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 03-02-PLAN.md — Golden-value test suite: tests/test_federal_withholding.py covering all 6 Worksheet 1A schedules + D-04 edge cases + python-taxes structural test (autonomous: false — layer-B oracle verification checkpoint)
+- [ ] 03-03-PLAN.md — Deepen calculate.py: salaried leave pay, FICA constants migration, real federal withholding call, real net, reconciliation backstop + extend tests/test_calculate.py (CALC-01/02/07/08)
 
 ### Phase 4: The Eval (the proof)
 
@@ -211,7 +221,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
-| 3. Harden the Calc | 0/TBD | Not started | - |
+| 3. Harden the Calc | 0/3 | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
