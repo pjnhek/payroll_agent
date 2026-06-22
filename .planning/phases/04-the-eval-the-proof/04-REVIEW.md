@@ -15,7 +15,9 @@ findings:
   warning: 4
   info: 3
   total: 8
-status: issues_found
+status: resolved
+resolved_in: 744a203
+resolution_note: "All 8 findings (CR-01, WR-01..04, IN-01..03) fixed and committed. 314 tests pass, ruff clean, --check green."
 ---
 
 # Phase 04: Code Review Report
