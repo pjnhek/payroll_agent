@@ -1,10 +1,12 @@
 ---
 phase: 5
-reviewers: [codex]
+reviewers: [codex, codex-round2]
 reviewed_at: 2026-06-22T23:17:02Z
+round2_reviewed_at: 2026-06-22T23:40:00Z
 plans_reviewed: [05-01-PLAN.md, 05-02-PLAN.md, 05-03-PLAN.md, 05-04-PLAN.md, 05-05-PLAN.md, 05-06-PLAN.md, 05-07-PLAN.md]
 codex_model: default (codex-cli 0.135.0)
-overall_risk: HIGH (until outbound purpose-aware idempotency + alias-candidate binding fixed)
+overall_risk: MEDIUM-HIGH (round 2 — original HIGHs mostly closed; 3 NEW HIGH defects found: invalid DDL syntax, send_state read-guard not wired, non-exclusive received→received CAS)
+round1_status: addressed via reviews-mode replan (commit 1a8f066) — see round-2 verification below
 ---
 
 # Cross-AI Plan Review — Phase 5
@@ -149,3 +151,51 @@ Replan via `/gsd-plan-phase 5 --reviews`. The four idempotency/binding HIGHs (#1
 priority — they make the "exactly once" and "learns safely" claims false as written. #4 and #6
 are genuine but partly mitigated by D-15 (drop the alias loop) and the existing error-wrap; the
 clean fix for #6 is to add stale/in-flight recovery and decide `sent` terminality.
+
+---
+
+# Cross-AI Plan Review — Phase 5 — ROUND 2 (verification of fixes)
+
+> After the round-1 findings were folded in via the reviews-mode replan (commit 1a8f066),
+> Codex re-reviewed the revised plans to confirm resolution and hunt for new issues.
+> Two round-2 HIGH findings were spot-verified by the orchestrator against the actual
+> artifacts and CONFIRMED real:
+> - DDL: 05-03 line 183 uses `ALTER TABLE ... ADD CONSTRAINT IF NOT EXISTS` — INVALID Postgres syntax (Postgres has ADD COLUMN IF NOT EXISTS but NOT ADD CONSTRAINT IF NOT EXISTS); would crash bootstrap.
+> - Collision: `deterministic_match` returns None for BOTH no-match AND ambiguous collision (reconcile_names.py:32-35), so the 05-07 capture-time guard would still capture "D. Reyes" as a learnable candidate — capture-time exclusion is NOT actually achieved (write-side backstop still catches it).
+
+## Codex Round-2 Review
+
+## Prior-Findings Resolution Table
+
+| Finding | Status | Evidence |
+|---|---|---|
+| HIGH #1: purpose-blind `get_outbound_message_id(run_id)` could skip confirmation after clarification | RESOLVED | Plan 03 changes signature to `get_outbound_message_id(run_id, purpose)` and filters `AND purpose = %s` in [05-03-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-03-PLAN.md:151>). Plan 05 calls it with `purpose='confirmation'` in `_deliver` in [05-05-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-05-PLAN.md:180>). |
+| HIGH #2: `_clarify` not idempotent | RESOLVED | Plan 05 adds a pre-send guard using `purpose='clarification'`, skips duplicate send, and restores `AWAITING_REPLY` in [05-05-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-05-PLAN.md:167>). Tests are specified in Plan 01/02. |
+| HIGH #3: `outbound-pending` invalid and pending row not proof of sent | PARTIALLY RESOLVED | Invalid `direction` overload is fixed: Plan 03 adds `purpose`/`send_state` columns in [05-03-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-03-PLAN.md:171>) and Plan 05 forbids `outbound-pending` in [05-05-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-05-PLAN.md:150>). Still short: the read guard is still “row exists by purpose,” not “sent row exists,” so `reserved`/`failed` semantics are not actually wired. |
+| HIGH #4: alias binding at resume unsolved | PARTIALLY RESOLVED | Plan 07 scopes learning to exactly one unresolved token in [05-07-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-07-PLAN.md:63>). That removes multi-token ambiguity, but the resume update still says to match the original token against post-resume submitted names in [05-07-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-07-PLAN.md:228>), which is the original failure mode. |
+| HIGH #5: ambiguous/colliding tokens captured | PARTIALLY RESOLVED | Plan 07 states capture-time exclusion in [05-07-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-07-PLAN.md:76>). But the action block uses `deterministic_match`; that returns `None` for both no-match and collision, so a colliding token like `D. Reyes` can still be treated as “genuinely unresolved” and stored. |
+| HIGH #6: strandable in-flight states / `sent` terminality | RESOLVED for route coverage, PARTIAL for concurrency | Plan 05 removes `APPROVED` terminality via Plan 03, adds stale recovery for `received/extracting/computing/sent`, and treats `reconciled` as the only success terminal in [05-05-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-05-PLAN.md:81>). Remaining risk: stale retry is not fenced against a slow original worker. |
+| MEDIUM: batch-unsafe multi-alias writes | RESOLVED | Plan 07 refreshes `current_roster` after each accepted alias write in [05-07-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-07-PLAN.md:252>). |
+| MEDIUM: demo send-test reuses fixture `Message-ID` | RESOLVED | Plan 06 requires uuid4 synthetic Message-ID per click in [05-06-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-06-PLAN.md:297>). |
+| MEDIUM: DASH-04 drill-in missing raw fixture body | PARTIALLY RESOLVED | Plan 06 adds a `Raw Input` column in [05-06-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-06-PLAN.md:172>), but current `eval/summary.json` does not include raw body fields; the plan allows rendering `—`, which does not satisfy the actual drill-in requirement. |
+| MEDIUM: `compose_confirmation timeout_s` breaks fake LLM stubs | RESOLVED | Plan 02 requires fake stubs to accept `**kwargs` in [05-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-02-PLAN.md:124>); Plan 04 updates `call_text`/timeout handling in [05-04-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-04-PLAN.md:198>). |
+| LOW: 05-04/05-05 mislabeled concurrent | PARTIALLY RESOLVED | Plan metadata is fixed: 05-05 is wave 3 and depends on 05-04 in [05-05-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-05-PLAN.md:5>). The roadmap excerpt still says they run concurrently. |
+| LOW: `load_line_items SELECT *` | PARTIALLY RESOLVED | Plan 05 requires explicit columns in [05-05-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/05-dashboard-delivery/05-05-PLAN.md:207>), but the proposed example selects `additional_medicare_not_modeled`, which is not in current `paystub_line_items`, and omits required `created_at`. |
+
+## New Issues
+
+- **HIGH: Plan 03 DDL is not safely executable as written.** `ALTER TABLE email_messages ADD COLUMN...` is instructed before the table exists, and `ALTER TABLE ... ADD CONSTRAINT IF NOT EXISTS` is not valid Postgres syntax. Use `ALTER TABLE IF EXISTS` after table creation and a `DO $$ ... pg_constraint ... ALTER TABLE ADD CONSTRAINT ... $$` block, matching the existing FK pattern.
+
+- **HIGH: `send_state` state machine still conflates reserved/failed/sent.** `get_outbound_message_id(run_id, purpose)` should either filter `send_state='sent'` when proving delivery, or the system needs explicit `reserve_outbound_send` / `mark_outbound_sent` / `mark_outbound_failed` helpers. As planned, a future `reserved` or `failed` row can still make retry skip as if sent.
+
+- **HIGH: stale `received -> received` CAS is not exclusive.** Plan 05’s stale retry can call `claim_status(run_id, RECEIVED, RECEIVED)`. Because the status does not change, two concurrent retrigger clicks can both return true and enqueue duplicate workers. Claim stale `received` to `extracting`, or add an `updated_at`/attempt-token predicate.
+
+- **MEDIUM: stale re-trigger has no worker fencing.** A slow original worker can continue after the UI declares the run stale and starts a second worker. Status CAS reduces some downstream damage, but it does not prevent stale writes from the old attempt. An `attempt_id` or updated-at compare in write helpers would make this robust.
+
+- **MEDIUM: Plan 01 and Plan 07 alias-capture tests conflict.** Plan 01 expects a multi-unresolved run to capture only the unambiguous token; Plan 07’s single-token-only rule expects no capture at all for 2+ unresolved names. That will produce contradictory test guidance.
+
+- **MEDIUM: inbound rows get `send_state='sent'` by default.** Because `send_state` is `NOT NULL DEFAULT 'sent'` on all `email_messages`, inbound rows become “sent” too. Queries filter `direction='outbound'`, so this is not immediately fatal, but it weakens the audit semantics. Prefer nullable `send_state` with a direction-aware check.
+
+## Updated Risk Assessment
+
+**Overall risk: MEDIUM-HIGH.** The major prior idempotency holes are mostly addressed: purpose-aware confirmation/clarification guards, no `outbound-pending` direction value, stale recovery coverage, fresh demo Message-IDs, and fake-LLM timeout compatibility are all materially better. I would not drop this to MEDIUM yet because Plan 03’s DDL can fail outright, the new `send_state` model does not yet define real reserve/sent/failed behavior, and the alias learning plan remains internally inconsistent around collision detection and resume binding.
