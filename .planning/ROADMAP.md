@@ -15,6 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Thin Foundation** - Contracts, minimal schema for the slice, and seed data for one happy-path + one name-mismatch case (completed 2026-06-21)
 - [ ] **Phase 2: Walking Skeleton** - First end-to-end proof: messy fixture flows through the four gated judgment stages to a code-gated decision (calc thin, net pre-federal)
+- [ ] **Phase 2.1: Deterministic Decisioning** *(INSERTED)* - Replace the confidence-threshold gate with deterministic resolution + collision safety + alias read-side; never guesses on a money-moving decision; LLM kept for extraction + clarification suggestion only
 - [ ] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny
 - [ ] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart
 - [ ] **Phase 5: Dashboard & Delivery** - Operator gate UI (raw email beside extracted beside computed), runs/eval views, confirmation email + on-demand PDFs, idempotency + error path
