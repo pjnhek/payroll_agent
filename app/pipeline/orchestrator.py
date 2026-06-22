@@ -141,7 +141,10 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         repo.set_status(run_id, RunStatus.EXTRACTING)
         _run_stages(run_id, combined_email, roster, llm=llm)
     except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (resume)
-        reason = f"{type(exc).__name__}: {exc}"
+        # PII-safe: exception TYPE only — str(exc) can echo submitted names / prompt
+        # text, and `reason` is logged AND persisted to error_reason (review fix —
+        # the resume path was missed when run_pipeline was sanitized).
+        reason = type(exc).__name__
         logger.warning("resume of run %s failed: %s", run_id, reason)
         repo.record_run_error(run_id, reason)
 
@@ -272,7 +275,9 @@ def _compute_line_items(run_id, extracted, matches, roster):
             "hours_sick": ee.hours_sick,
             "hours_holiday": ee.hours_holiday,
         }
-        item = calculate(resolved_hours, employee)
+        item = calculate(
+            resolved_hours, employee, ee.contribution_401k_override
+        )
         # Stamp the real run identity + the submitted name (the per-name provenance;
         # there is no score on a deterministic resolution, D-21-01/04).
         item = item.model_copy(

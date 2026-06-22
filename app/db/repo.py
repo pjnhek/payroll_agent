@@ -317,12 +317,22 @@ def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
 
 
 def persist_extracted(run_id: uuid.UUID, extracted: Extracted, conn=None) -> None:
-    """Write the Extracted JSONB ONLY (no status — the orchestrator advances state)."""
+    """Write the Extracted JSONB + the run's pay-period columns (no status — the
+    orchestrator advances state). The pay_period_start/end run columns were left null
+    before (review fix): they exist on payroll_runs for the dashboard/queries to read
+    off the run row, so populate them from the extraction rather than only the JSONB."""
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             c.execute(
-                "UPDATE payroll_runs SET extracted_data = %s, updated_at = now() WHERE id = %s",
-                (json.dumps(extracted.model_dump(mode="json")), str(run_id)),
+                "UPDATE payroll_runs SET extracted_data = %s, "
+                "pay_period_start = %s, pay_period_end = %s, updated_at = now() "
+                "WHERE id = %s",
+                (
+                    json.dumps(extracted.model_dump(mode="json")),
+                    extracted.pay_period_start,
+                    extracted.pay_period_end,
+                    str(run_id),
+                ),
             )
 
 

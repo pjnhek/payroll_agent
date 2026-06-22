@@ -70,11 +70,19 @@ def _resolved_hours(resolved: dict) -> dict[str, Decimal]:
     return {f: Decimal(resolved.get(f) or 0) for f in fields}
 
 
-def calculate(resolved_hours: dict, employee: Employee) -> PaystubLineItem:
+def calculate(
+    resolved_hours: dict,
+    employee: Employee,
+    contribution_401k_override: Decimal | None = None,
+) -> PaystubLineItem:
     """Compute one employee's thin paystub (gross + FICA, net pre-federal).
 
     resolved_hours: a mapping of the five hours_* fields (None/absent → 0). For a
     salaried employee hours are ignored — gross is annual_salary / pay_periods.
+    contribution_401k_override: a current-run-only 401k rate the CLIENT specified for
+    this run (D-A3-04 / LLM-03). When provided it overrides the employee's stored
+    default for THIS paystub only — it never mutates the stored default. (review fix:
+    the override was parsed but silently ignored before.)
     """
     hours = _resolved_hours(resolved_hours)
 
@@ -94,8 +102,14 @@ def calculate(resolved_hours: dict, employee: Employee) -> PaystubLineItem:
 
     gross = _money(gross)
 
-    # Pre-tax 401k: the employee's stored default rate applied to gross.
-    pretax_401k = _money(gross * employee.retirement_contribution_pct)
+    # Pre-tax 401k: the client's current-run override if supplied, else the
+    # employee's stored default rate — applied to gross (review fix: D-A3-04).
+    rate_401k = (
+        contribution_401k_override
+        if contribution_401k_override is not None
+        else employee.retirement_contribution_pct
+    )
+    pretax_401k = _money(gross * rate_401k)
 
     # FICA — SS honors the remaining wage-base cap; Medicare has no cap.
     remaining_cap = _SS_WAGE_BASE - employee.ytd_ss_wages

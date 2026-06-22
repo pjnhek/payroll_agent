@@ -77,7 +77,7 @@ class ExtractedEmployee(BaseModel):
     hours_vacation: Decimal | None = Field(default=None, ge=0)
     hours_sick: Decimal | None = Field(default=None, ge=0)
     hours_holiday: Decimal | None = Field(default=None, ge=0)
-    contribution_401k_override: Decimal | None = Field(default=None, ge=0)
+    contribution_401k_override: Decimal | None = Field(default=None, ge=0, le=1)
 
 
 class ExtractionPayload(BaseModel):
