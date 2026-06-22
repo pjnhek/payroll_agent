@@ -71,11 +71,11 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 
 ### Eval (the proof)
 
-- [ ] **EVAL-01**: A throwaway **bootstrap helper** drafts candidate messy payroll emails that the builder then edits and hand-labels — named honestly as a drafting aid, NOT a production generator. The committed hand-curated fixtures (EVAL-02) are the source of truth; this kills the train/test-leakage critique outright. (The full decoupled-persona synthetic generator that scales to thousands of cases is deferred to v2 — at a ~20-fixture corpus it adds build surface without realizing the "scales" narrative, and you'd pay for both the generator and the hand-labeling.)
-- [ ] **EVAL-02**: ~15–25 email+label fixtures across all seeded categories (clean, name typo, missing hours, unknown employee, nickname, vague hours, buried reply) are committed to the repo for reproducibility
-- [ ] **EVAL-03**: `run_eval.py` imports and runs the SAME production pipeline functions over the fixtures and scores the code-owned `final_action` (not the model's raw action)
-- [ ] **EVAL-04**: Scoring computes four metrics — extraction field accuracy, name-reconciliation accuracy, decision accuracy (the three core thesis metrics, front-and-center in the chart) — and a **secondary** LLM-as-judge email-quality score scored against a **one-line rubric with 2–3 calibration anchors** (so it's defensible, not a vanity number), all broken out per category. The judge metric is lowest-priority and first to drop if time is short.
-- [ ] **EVAL-05**: Eval results (including the pinned model IDs used) write to `eval_results` and render on the dashboard chart; local eval is authoritative, and CI runs the scorers against cached/committed fixture outputs (no live LLM calls on push) with a manual-dispatch live eval
+- [x] **EVAL-01**: A throwaway **bootstrap helper** drafts candidate messy payroll emails that the builder then edits and hand-labels — named honestly as a drafting aid, NOT a production generator. The committed hand-curated fixtures (EVAL-02) are the source of truth; this kills the train/test-leakage critique outright. (The full decoupled-persona synthetic generator that scales to thousands of cases is deferred to v2 — at a ~20-fixture corpus it adds build surface without realizing the "scales" narrative, and you'd pay for both the generator and the hand-labeling.)
+- [x] **EVAL-02**: ~15–25 email+label fixtures across all seeded categories (clean, name typo, missing hours, unknown employee, nickname, vague hours, buried reply) are committed to the repo for reproducibility
+- [x] **EVAL-03**: `run_eval.py` imports and runs the SAME production pipeline functions over the fixtures and scores the code-owned `final_action` (not the model's raw action)
+- [x] **EVAL-04**: Scoring computes four metrics — extraction field accuracy, name-reconciliation accuracy, decision accuracy (the three core thesis metrics, front-and-center in the chart) — and a **secondary** LLM-as-judge email-quality score scored against a **one-line rubric with 2–3 calibration anchors** (so it's defensible, not a vanity number), all broken out per category. The judge metric is lowest-priority and first to drop if time is short.
+- [x] **EVAL-05**: Eval results (including the pinned model IDs used) write to `eval_results` and render on the dashboard chart; local eval is authoritative, and CI runs the scorers against cached/committed fixture outputs (no live LLM calls on push) with a manual-dispatch live eval
 - [x] **DEMO-01**: Canonical demo fixtures are committed and replayable from DASH-05 — one clean happy path (run completes to operator approval) and the deterministic clarify paths: an **unknown-shorthand hero** ("David Reyez" can't be resolved → the code gate clarifies, and the suggestion-only call names the specific intended employee) and a **collision-safety** fixture ("D. Reyes" is a shared alias on two employees → the system never guesses, always clarifies) — so the 60–90s demo is deterministic and the "never guesses on a money-moving decision" thesis is visible on camera (Phase 2.1 reframe; the "learns and stops asking" beat moves to Phase 5 with the alias WRITE side)
 
 ### Hosting & Ops
@@ -157,11 +157,11 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CALC-06 | Phase 3 | Complete |
 | CALC-07 | Phase 3 | Complete |
 | CALC-08 | Phase 3 | Complete |
-| EVAL-01 | Phase 4 | Pending |
-| EVAL-02 | Phase 4 | Pending |
-| EVAL-03 | Phase 4 | Pending |
-| EVAL-04 | Phase 4 | Pending |
-| EVAL-05 | Phase 4 | Pending |
+| EVAL-01 | Phase 4 | Complete |
+| EVAL-02 | Phase 4 | Complete |
+| EVAL-03 | Phase 4 | Complete |
+| EVAL-04 | Phase 4 | Complete |
+| EVAL-05 | Phase 4 | Complete |
 | DASH-01 | Phase 5 | Pending |
 | DASH-02 | Phase 5 | Pending |
 | DASH-03 | Phase 5 | Pending |
