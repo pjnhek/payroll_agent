@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: planning
-last_updated: "2026-06-22T17:26:37.505Z"
+last_updated: "2026-06-22T18:03:54.894Z"
 last_activity: 2026-06-22 -- Phase 03 shipped (pushed to origin/master)
 progress:
   total_phases: 7
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 15
   completed_plans: 15
-  percent: 43
+  percent: 57
 ---
 
 # Project State
@@ -137,6 +137,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T04:56:34.901Z
-Stopped at: Phase 3 executed + verified (human_needed) + 3 code-review rounds applied
-Resume file: .planning/phases/03-harden-the-calc/03-HUMAN-UAT.md (2 operator-pending items)
+Last session: 2026-06-22T18:03:54.881Z
+Stopped at: Phase 4 context gathered
+Resume file: .planning/phases/04-the-eval-the-proof/04-CONTEXT.md
