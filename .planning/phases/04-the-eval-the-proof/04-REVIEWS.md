@@ -2,7 +2,7 @@
 phase: 4
 reviewers: [codex]
 reviewed_at: 2026-06-22T18:31:29Z
-rounds: 3
+rounds: 4
 plans_reviewed: [04-01-PLAN.md, 04-02-PLAN.md, 04-03-PLAN.md, 04-04-PLAN.md]
 reviewer_versions:
   codex: codex-cli 0.135.0
@@ -10,7 +10,7 @@ reviewer_versions:
 
 # Cross-AI Plan Review — Phase 4 (The Eval)
 
-> **Three review rounds, appended in order below.** R1: 13 findings (scoring credibility). R2: confirmed all 13 fixed; found 8 new (2 HIGH cross-plan-consistency bugs the R1 edits introduced + 6 MED/LOW). R3: confirmed all 8 R2 fixes + no regressions; found 1 HIGH (the D-09 test didn't actually test decide→calculate wiring — it had survived all prior rounds) + 3 MED/LOW. All findings across all rounds resolved.
+> **Four review rounds, appended in order below.** R1: 13 findings (scoring credibility). R2: confirmed all 13 fixed; found 8 new (2 HIGH cross-plan-consistency bugs the R1 edits introduced + 6 MED/LOW). R3: confirmed all 8 R2 fixes + no regressions; found 1 HIGH (the D-09 test didn't actually test decide→calculate wiring — it had survived all prior rounds) + 3 MED/LOW. R4: confirmed all 4 R3 fixes + no regressions; found 2 (1 MED `--record` advertised-live-but-stub + 1 LOW `--db` skip crashes on absent DATABASE_URL), both on the optional/honesty seam. All findings across all rounds resolved. Finding rate: 13 → 8 → 4 → 2.
 
 ---
 
@@ -157,3 +157,29 @@ signature mismatch · nullable pay_period_start · divergence one-precision+one-
 | precision-miss host misleading | MED | 04-01 now specifies the PRECISION miss as a PHANTOM employee on a multi-employee fixture (name not in expected → `cache_names - exp_names` non-empty) and the FIELD miss as wrong hours on a same-name employee (08); the two live on different fixtures so both validator assertions fire. Removed the contradictory "07 fabricates Maria's hours = invention" note. |
 | uv.lock missing from files_modified | MED | Added `uv.lock` to 04-03 `files_modified`; the `uv add --dev` step + acceptance criteria now require committing both pyproject.toml and uv.lock. |
 | 04-03 verify used =placeholder | LOW | All 04-03 run-command verifies (task + final verification block) switched to `env -u DATABASE_URL` so a reintroduced app.config import on the scoring/chart path is caught, not masked. (eval.yml's own `DATABASE_URL: "placeholder"` stays — harmless belt-and-suspenders; the record job needs it.) |
+
+---
+
+# Round 4 (re-review after Round-3 fixes)
+
+## Codex Review (Round 4)
+
+**Summary.** All 4 Round-3 fixes CONFIRMED-FIXED; no earlier fix regressed. Codex verified the D-09 rewrite end-to-end — confirming `validate.py:57` explicitly allows a salaried employee with null hours, so the test's `final_action=="process"` precondition genuinely holds, and `_compute_line_items` requires the matched id in the roster (which fixture 12 satisfies). Two new findings, both on the `--record` honesty contract.
+
+### Round-3 fix verification — all 4 CONFIRMED-FIXED
+D-09 now a real wiring test (drives the fixture through reconcile→validate→decide→_compute_line_items, not bare calculate) · phantom-employee precision-miss vs same-name field-miss correctly separated · uv.lock in files_modified · 04-03 verifies use `env -u DATABASE_URL`. **Regression check: none** (PATH-A still expected-extraction, reconciliation still requires matched_employee_id, false-process denominator still expected-clarify, chart still highlights table[1,2], --check still full-metric).
+
+### New findings (Round 4)
+- **MEDIUM — `--record` advertised as live but planned as a stub (cross-plan contradiction).** D-05 (HARD exit bar) and the 04-03 `workflow_dispatch` "Live re-record" job (runs `run_eval.py --record`) both promise live extraction; 04-01 says caches are overwritten by genuine extractor output after `--record`; but 04-02 said the live loop was intentionally NOT implemented. Consequence: a "Live re-record" run would produce no real caches — a materially misleading workflow path.
+- **LOW — optional `--db` skip path crashes when DATABASE_URL is absent.** 04-04 said the DB stub "skips silently otherwise," but the action imported `get_settings()` before checking `database_url`; `Settings.database_url` is required with no default (config.py:27), so an unset env var raises before the skip branch. Affects optional 04-04 only.
+
+**Overall risk (Round 4): MEDIUM for the full set (the `--record` contradiction); LOW for the exit bar if 04-04 is deferred.**
+
+## Round-4 Resolution (all applied — see commit)
+
+| Finding | Sev | Resolution |
+|---------|-----|------------|
+| `--record` stub vs advertised-live | MED | Reclassified per CONTEXT: D-05 (the record step) is HARD exit bar; only D-07 path-(b) end-to-end SCORING is "if time" — I had conflated them in R1. 04-02 now specs a REAL `_record_extraction()`: gated by `_require_live_llm()`, imports `extract` + `llm_client` inside the function, calls the production `extract(email, roster, run_id=…, llm=llm_client)` once per fixture and overwrites each `*_extraction.json` with `model_dump_json`. The synthetic day-one divergences are documented as a bootstrap that `--record` replaces (the divergence validator runs against committed day-one caches, so no regression). must_haves/artifact/import-note updated; "stub" language removed. The workflow_dispatch "Live re-record" job is now truthful. |
+| `--db` skip crashes on absent DATABASE_URL | LOW | 04-04 now reads `os.environ.get("DATABASE_URL")` BEFORE any app.config import; unset/placeholder → "DB write skipped" + exit 0 with no `get_settings()` call (avoids the required-field fail-fast). Added a verify case `env -u DATABASE_URL … --db` asserting clean exit 0, plus an acceptance criterion and a guard grep for `os.environ.get("DATABASE_URL")`. |
+
+**Convergence:** R1:13 → R2:8 → R3:4 → R4:2 (1 MED + 1 LOW, both on the `--record`/DB honesty seam, none on the core scoring credibility). The exit bar (04-01..03) is execution-ready.
