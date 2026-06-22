@@ -23,12 +23,12 @@ def _extracted(employees) -> Extracted:
     )
 
 
-def _match(name, emp_id, mtype="exact", conf="1.0") -> NameMatchResult:
+def _match(name, emp_id, source="exact") -> NameMatchResult:
     return NameMatchResult(
         submitted_name=name,
         matched_employee_id=emp_id,
-        match_type=mtype,
-        confidence=Decimal(conf),
+        source=source,
+        resolved=True,
         reason="t",
     )
 
