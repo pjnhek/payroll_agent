@@ -37,44 +37,48 @@ def _norm(name: str) -> str:
 def deterministic_match(name: str, roster: Roster) -> NameMatchResult | None:
     """Resolve a name to EXACTLY ONE roster employee, or None if it can't.
 
-    Scans the whole roster. A unique exact normalized full_name match →
-    source="exact"; otherwise a unique stored known_alias match → source="alias".
-    If the name (or alias) matches 2+ employees, it is NOT uniquely resolvable, so
-    this returns None (it falls through to the unresolved result — D-21-02). No
-    match at all also returns None.
+    Uniqueness is enforced ACROSS BOTH tiers, not within each separately: the name
+    is matched against every employee's normalized full_name AND every stored
+    known_alias, and the set of DISTINCT candidate employees is what must be unique.
+    So a name that is one employee's full_name AND a *different* employee's alias is
+    ambiguous (2 distinct candidates) → None, even though it is a unique exact hit on
+    its own (review fix: cross-tier exact-vs-alias collision, D-21-02). A name shared
+    by 2+ employees in either tier is likewise ambiguous → None. No match → None.
+    When the single resolved employee was reached by full_name the source is "exact";
+    otherwise (alias-only) it is "alias".
     """
     norm = _norm(name)
 
-    # Exact normalized full_name match — require uniqueness.
     exact_ids = [emp.id for emp in roster.employees if _norm(emp.full_name) == norm]
-    if len(exact_ids) == 1:
-        return NameMatchResult(
-            submitted_name=name,
-            matched_employee_id=exact_ids[0],
-            source="exact",
-            resolved=True,
-            reason="exact match",
-        )
-    if len(exact_ids) > 1:
-        # Shared by 2+ employees → cannot uniquely resolve (D-21-02).
-        return None
-
-    # Stored known_alias match — require uniqueness.
     alias_ids = [
         emp.id
         for emp in roster.employees
         if any(_norm(alias) == norm for alias in emp.known_aliases)
     ]
-    if len(alias_ids) == 1:
+
+    # Distinct candidate employees across BOTH tiers — uniqueness is global.
+    candidate_ids = set(exact_ids) | set(alias_ids)
+    if len(candidate_ids) != 1:
+        # Zero candidates (no match) or 2+ distinct employees (ambiguous collision,
+        # D-21-02) → not uniquely resolvable; falls through to the unresolved result.
+        return None
+
+    matched_id = next(iter(candidate_ids))
+    if matched_id in exact_ids:
         return NameMatchResult(
             submitted_name=name,
-            matched_employee_id=alias_ids[0],
-            source="alias",
+            matched_employee_id=matched_id,
+            source="exact",
             resolved=True,
-            reason="known alias",
+            reason="exact match",
         )
-
-    return None
+    return NameMatchResult(
+        submitted_name=name,
+        matched_employee_id=matched_id,
+        source="alias",
+        resolved=True,
+        reason="known alias",
+    )
 
 
 def _unresolved(name: str) -> NameMatchResult:

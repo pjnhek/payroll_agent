@@ -79,26 +79,32 @@ def suggest_employees(
     try:
         messages = suggest_prompt.build_messages(unresolved_names, roster)
         response = llm.call_structured("draft", messages, NameSuggestionResponse)
-    except Exception:  # noqa: BLE001 — a suggestion failure must never strand the run (D-21-05)
+    except Exception as exc:  # noqa: BLE001 — a suggestion failure must never strand the run (D-21-05)
+        # Log the failure TYPE only — never the email body, submitted names, or
+        # suggested names (payroll PII must not land in logs — review fix). No
+        # exc_info: a traceback can echo the prompt/name arguments.
         logger.warning(
-            "suggestion call failed — clarification falls back to the generic ask",
-            exc_info=True,
+            "suggestion call failed (%s) — clarification falls back to the generic ask",
+            type(exc).__name__,
         )
         return {}
 
     mapping: dict[str, str] = {}
+    dropped = 0
     for s in response.suggestions:
         name = s.suggested_full_name
         if not name:
             continue  # null/unknown — fall back to the generic ask for this name
         if name not in valid_full_names:
-            # The suggestion must name an ACTUAL employee — a clarification can
-            # never claim a non-existent employee. Drop a hallucinated name.
-            logger.warning(
-                "dropping suggestion %r for %r — not a roster full_name",
-                name,
-                s.submitted_name,
-            )
+            # The suggestion must name an ACTUAL employee — a clarification can never
+            # claim a non-existent employee. Drop a hallucinated name. Count only —
+            # do NOT log the submitted/suggested names (PII — review fix).
+            dropped += 1
             continue
         mapping[s.submitted_name] = name
+    if dropped:
+        logger.warning(
+            "dropped %d hallucinated suggestion(s) not matching any roster full_name",
+            dropped,
+        )
     return mapping

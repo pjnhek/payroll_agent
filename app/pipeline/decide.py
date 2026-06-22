@@ -98,6 +98,18 @@ def decide(
     if not extracted.employees:
         gate_reasons.append("no employees could be extracted from the email")
 
+    # Rule 0b — fail closed if `matches` is not one-for-one with the extracted
+    # employees (review fix). decide() is a PURE public function the eval calls with
+    # arbitrary inputs, so it must not trust that reconcile_names produced exactly one
+    # match per submitted name. A missing/extra/duplicate resolution record means an
+    # employee could be silently dropped from a "process" run — gate closed instead.
+    submitted_names = sorted(e.submitted_name for e in extracted.employees)
+    resolution_names = sorted(m.submitted_name for m in matches)
+    if extracted.employees and submitted_names != resolution_names:
+        gate_reasons.append(
+            "resolution records do not match the extracted employees one-for-one"
+        )
+
     # Rule 1 — any name the resolver could not uniquely resolve (resolved is False).
     for m in matches:
         if m.resolved is False:

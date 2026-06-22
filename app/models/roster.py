@@ -158,6 +158,28 @@ class NameMatchResult(BaseModel):
     resolved: bool
     reason: str
 
+    @model_validator(mode="after")
+    def _check_resolution_invariant(self) -> "NameMatchResult":
+        """Reject impossible states so decide() can trust ``resolved`` (review fix).
+
+        ``source`` and ``resolved`` are not independent: a resolved name MUST name a
+        real employee, and an unresolved name MUST name none. Without this, a
+        malformed construction (a test, the eval, or future code) like
+        ``source="none", resolved=True`` would silently sail past the gate.
+        """
+        if self.source == "none":
+            if self.resolved or self.matched_employee_id is not None:
+                raise ValueError(
+                    "source='none' requires resolved=False and matched_employee_id=None"
+                )
+        else:  # "exact" | "alias"
+            if not self.resolved or self.matched_employee_id is None:
+                raise ValueError(
+                    f"source={self.source!r} requires resolved=True and a "
+                    "non-null matched_employee_id"
+                )
+        return self
+
 
 # ---------------------------------------------------------------------------
 # ValidationIssue — per-field output of field validation (LLM-06)

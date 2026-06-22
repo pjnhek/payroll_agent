@@ -149,6 +149,34 @@ def test_alias_shared_by_two_employees_does_not_resolve(roster_from_seed):
     assert result.matched_employee_id is None
 
 
+def test_name_is_one_employees_fullname_and_another_employees_alias_does_not_resolve(
+    roster_from_seed,
+):
+    """CROSS-TIER collision (review fix): a name that is employee A's exact full_name
+    AND employee B's stored alias is ambiguous between TWO employees, so it must NOT
+    silently resolve to A — uniqueness is enforced across both tiers (D-21-02)."""
+    import uuid
+
+    from app.models.roster import Roster as _R
+
+    maria = _emp(roster_from_seed, "Maria Chen")
+    # A different employee whose alias is exactly Maria's full name.
+    other = maria.model_copy(
+        update={
+            "id": uuid.uuid4(),
+            "full_name": "Dave Smithson",
+            "known_aliases": ["Maria Chen"],
+        }
+    )
+    ambiguous = _R(business_id=roster_from_seed.business_id, employees=[maria, other])
+
+    [result] = reconcile_names(["Maria Chen"], ambiguous)
+
+    assert result.source == "none", "exact-vs-alias collision must NOT resolve to one"
+    assert result.resolved is False
+    assert result.matched_employee_id is None
+
+
 # ---------------------------------------------------------------------------
 # shape: one result per submitted name, in submitted order
 # ---------------------------------------------------------------------------

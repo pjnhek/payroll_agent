@@ -23,6 +23,7 @@ import sys
 import urllib.parse
 
 import psycopg
+import psycopg.sql
 
 from app.config import get_settings
 
@@ -100,7 +101,14 @@ def bootstrap(reset: bool = False) -> None:
             )
             for table in _DROP_ORDER:
                 print(f"  DROP TABLE IF EXISTS {table} CASCADE")
-                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
+                # Identifier-quote the table name rather than f-string it into SQL —
+                # the list is trusted (no injection risk) but the project rule is
+                # "never f-string SQL" (review fix).
+                conn.execute(
+                    psycopg.sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(
+                        psycopg.sql.Identifier(table)
+                    )
+                )
             conn.commit()
 
         # D-21-06 live-DB migration: drop the DEAD name_matches table on EVERY apply

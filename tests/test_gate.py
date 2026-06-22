@@ -238,3 +238,59 @@ def test_decide_source_has_no_confidence_or_model_action():
     assert "model_action" not in lowered
     assert "0.8" not in src
     assert "_threshold" not in lowered
+
+
+# ---------------------------------------------------------------------------
+# fail-closed: matches must be one-for-one with the extracted employees
+# ---------------------------------------------------------------------------
+
+
+def test_decide_clarifies_when_a_match_record_is_missing():
+    """Review fix: decide() is a pure public function the eval calls with arbitrary
+    inputs, so it must not trust that reconcile produced one match per employee. A
+    MISSING resolution record (here: 2 extracted, only 1 resolved) must gate the run
+    closed rather than silently drop the unmatched employee from a 'process' run."""
+    matches = [_resolved("Maria Chen")]  # James Okafor has NO resolution record
+    decision = decide(_extracted("Maria Chen", "James Okafor"), matches, [])
+    assert decision.final_action == "request_clarification"
+    assert any("one-for-one" in r for r in decision.gate_reasons)
+
+
+def test_decide_clarifies_when_a_match_record_is_extra():
+    """Symmetric: an EXTRA resolution record (3 resolved, 2 extracted) also fails
+    closed — the resolution set must mirror the extracted employees exactly."""
+    matches = [_resolved("Maria Chen"), _resolved("James Okafor"), _resolved("Ghost")]
+    decision = decide(_extracted("Maria Chen", "James Okafor"), matches, [])
+    assert decision.final_action == "request_clarification"
+
+
+# ---------------------------------------------------------------------------
+# NameMatchResult semantic invariant (review fix)
+# ---------------------------------------------------------------------------
+
+
+def test_name_match_result_rejects_impossible_states():
+    """source/resolved/matched_employee_id are not independent — a resolved match
+    must name a real employee and an unresolved one must name none. Impossible
+    combinations must raise at construction so decide() can trust `resolved`."""
+    import pytest
+    from pydantic import ValidationError
+
+    # source='none' but resolved=True / has an id → invalid
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="x", matched_employee_id=None,
+            source="none", resolved=True, reason="bad",
+        )
+    # source='exact' but resolved=False → invalid
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="x", matched_employee_id=uuid.uuid4(),
+            source="exact", resolved=False, reason="bad",
+        )
+    # source='alias' but no employee id → invalid
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="x", matched_employee_id=None,
+            source="alias", resolved=True, reason="bad",
+        )
