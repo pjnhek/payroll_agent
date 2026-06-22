@@ -16,6 +16,8 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 - **Phase 1 (Thin Foundation), 2026-06-21:** The shared contract substrate exists and is proven by tests — the Postgres schema (6 tables, 11-value `payroll_runs.status` enum, `email_messages.message_id` idempotency UNIQUE), the shared `app/models/` Pydantic v2 contracts imported by both pipeline and eval, and seed data covering 3 businesses / 6 employees across every calc path and name-match case (happy-path + name-mismatch). FOUND-01, FOUND-02, FOUND-03, FOUND-05, FOUND-06. (Live-DB round-trip tests are written and skip-guarded pending Supabase credentials.)
 
+- **Phase 4 (The Eval, the proof), 2026-06-22:** A reproducible offline eval imports and scores the *same* production judgment functions (`reconcile_names → validate → decide → _compute_line_items`) over 15 committed hand-curated fixtures spanning the full name-resolution taxonomy (exact / stored-alias / first-time-alias / typo / collision / unknown) plus field cases (missing/vague hours, buried reply). `eval/run_eval.py` scores the code-owned `final_action` (never the model's raw action), producing the three core metrics (extraction F1, per-NAME reconciliation accuracy, two-level decision accuracy) per category with a confusion matrix; headline `false_process_count=0`. Renders one committed per-category SVG chart (`eval/chart.svg`), guarded by a DB-free `--check` regression gate and the project's first CI workflow (`eval.yml`: hermetic push check + gated live re-record). Optional secondary LLM-as-judge (`eval/judge.py`) and `eval_results` write stub (`--db`) wired but local-only. Verified 4/4; code review found 8 issues, all fixed (commit 744a203). EVAL-01, EVAL-02, EVAL-03, EVAL-04, EVAL-05.
+
 ### Active
 
 <!-- All hypotheses until shipped and validated. Grouped by capability. -->
@@ -52,12 +54,12 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 - [ ] Eval view: latest eval summary + headline metrics + a small chart
 - [ ] "Send test email" demo button that fires the whole flow from the page
 
-**Eval (the proof)**
-- [ ] Synthetic generator prompts a model to emit realistic messy payroll emails + ground-truth JSON, seeded across categories (clean, typo, missing hours, unknown employee, nickname, vague hours, buried reply)
-- [ ] ~15–25 email+label fixtures committed to the repo for reproducibility
-- [ ] Scoring over fixtures: extraction field accuracy, name-reconciliation accuracy, decision accuracy, LLM-as-judge email quality
-- [ ] Results write to `eval_results` and render on the dashboard as one clean summary chart
-- [ ] Eval runs locally and in GitHub Actions on each push
+**Eval (the proof)** — _validated in Phase 4 (2026-06-22)_
+- [x] Bootstrap drafting helper (`draft_candidate_emails.py`) prompts a model for messy candidate emails — named honestly as a throwaway aid; the committed fixtures are the source of truth (no train/test leakage)
+- [x] 15 email+label fixtures committed to the repo for reproducibility, spanning the full taxonomy (exact/stored-alias/first-time-alias/typo/collision/unknown + missing/vague hours + buried reply)
+- [x] Scoring over fixtures: extraction F1/field accuracy, per-category name-reconciliation accuracy, two-level decision accuracy, + optional local LLM-as-judge email quality (`eval/judge.py`)
+- [x] Results render as one committed per-category SVG chart (`eval/chart.svg`); `eval_results` write wired as a local-only `--db` stub. _Dashboard rendering of the chart lands in Phase 5._
+- [x] Eval runs locally (authoritative) and in GitHub Actions on each push (hermetic `--check`, no live LLM)
 
 **Hosting & ops**
 - [ ] FastAPI app containerized in one Dockerfile, deployed as a single Render free web service
@@ -139,4 +141,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-21 after Phase 1 (Thin Foundation) complete — contract substrate, schema, and seed data validated by tests. Initialization + research + dual cross-AI scope review (Codex + the build-plan-author Claude); scope locked at 51 v1 requirements.*
+*Last updated: 2026-06-22 after Phase 4 (The Eval, the proof) complete — a reproducible offline eval scores the same production judgment functions over 15 committed fixtures, headline `false_process_count=0`, rendered as one per-category SVG chart with a DB-free `--check` CI gate. Verified 4/4; 8 code-review findings fixed. Prior: Phases 1, 2, 2.1, 3 complete (contract substrate, walking skeleton, deterministic decisioning, penny-accurate Pub 15-T calc).*
