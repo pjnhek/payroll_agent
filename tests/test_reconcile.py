@@ -177,6 +177,21 @@ def test_name_is_one_employees_fullname_and_another_employees_alias_does_not_res
     assert result.matched_employee_id is None
 
 
+def test_roster_rejects_duplicate_employee_ids(roster_from_seed):
+    """Review fix: a Roster with two employees sharing one UUID must raise — otherwise
+    the set-based uniqueness check in deterministic_match could collapse two distinct
+    rows into one candidate and wrongly resolve an ambiguous name."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.models.roster import Roster as _R
+
+    maria = _emp(roster_from_seed, "Maria Chen")
+    dup = maria.model_copy(update={"full_name": "Maria Lopez"})  # SAME id
+    with pytest.raises(ValidationError):
+        _R(business_id=roster_from_seed.business_id, employees=[maria, dup])
+
+
 # ---------------------------------------------------------------------------
 # shape: one result per submitted name, in submitted order
 # ---------------------------------------------------------------------------

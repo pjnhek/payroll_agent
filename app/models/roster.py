@@ -124,6 +124,22 @@ class Roster(BaseModel):
     business_id: UUID
     employees: list[Employee]
 
+    @model_validator(mode="after")
+    def _check_unique_employee_ids(self) -> "Roster":
+        """Enforce unique employee ids (review fix).
+
+        reconcile_names resolves uniqueness over the SET of candidate employee ids, so
+        two roster rows sharing one UUID would collapse to one candidate and could
+        wrongly resolve an ambiguous name. Real DB rows are PK-protected; this guards
+        the pure-Roster path the eval constructs (D-14 — the eval uses these types).
+        (business_id consistency is intentionally NOT enforced here — callers build a
+        roster with an explicit business_id and the existing contracts allow it.)
+        """
+        ids = [e.id for e in self.employees]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Roster has duplicate employee ids")
+        return self
+
 
 # ---------------------------------------------------------------------------
 # NameMatchResult — per-name DETERMINISTIC resolution result (D-21-01 / D-21-04)

@@ -61,8 +61,11 @@ def run_pipeline(run_id: uuid.UUID, *, llm=None) -> None:
     try:
         _run(run_id, llm=llm)
     except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary
-        # PII-safe summary: the exception type + message, never the raw body.
-        reason = f"{type(exc).__name__}: {exc}"
+        # PII-safe summary: the exception TYPE only — str(exc) can echo prompt text,
+        # submitted names, or model output, and this `reason` is BOTH logged AND
+        # persisted to payroll_runs.error_reason (review fix). run_id is the
+        # correlation key for deeper debugging.
+        reason = type(exc).__name__
         logger.warning("run %s failed: %s", run_id, reason)
         repo.record_run_error(run_id, reason)
 

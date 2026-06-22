@@ -62,10 +62,13 @@ def check_one_to_one(
             by_employee[m.matched_employee_id].append(m.submitted_name)
     for emp_id, names in by_employee.items():
         if len(names) > 1:
+            # NOTE: gate_reasons are CLIENT-FACING (compose_email/clarify copy them
+            # into the clarification email), so this must NOT include the internal
+            # employee UUID (review fix) — the submitted names are what the client
+            # needs to disambiguate.
             reasons.append(
                 "two submitted names resolve to one employee: "
                 + " + ".join(sorted(names))
-                + f" -> {emp_id}"
             )
 
     # (b) a duplicated submitted name (same name extracted more than once).

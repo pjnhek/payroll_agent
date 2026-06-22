@@ -114,10 +114,12 @@ def compose_clarification(
     api_error = False
     try:
         body = llm.call_text("draft", messages, temperature=0.3)
-    except Exception:  # noqa: BLE001 — a draft failure must never strand the run (CLAR-01)
+    except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (CLAR-01)
+        # Log the failure TYPE only — no exc_info (a traceback can echo the prompt /
+        # submitted names — payroll PII — review fix).
         logger.warning(
-            "draft call failed — falling back to templated clarification body",
-            exc_info=True,
+            "draft call failed (%s) — falling back to templated clarification body",
+            type(exc).__name__,
         )
         body = None
         api_error = True
