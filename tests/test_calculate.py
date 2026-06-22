@@ -417,3 +417,79 @@ def test_additional_medicare_flag_present():
     assert item_normal.additional_medicare_not_modeled is False, (
         "Flag must not fire for a normal employee with low YTD and normal gross"
     )
+
+
+# ---- Code review round 2: input-guard hardening (WR-01 bool, WR-02 unknown keys, WR-03 status) ----
+
+def _valid_hours() -> dict:
+    return {
+        "hours_regular": Decimal("40"),
+        "hours_overtime": Decimal("0"),
+        "hours_vacation": Decimal("0"),
+        "hours_sick": Decimal("0"),
+        "hours_holiday": Decimal("0"),
+    }
+
+
+def test_bool_hours_rejected(hourly_employee):
+    """WR-01: a bool hours value must raise, not silently become 1 hour of pay.
+
+    bool is a subclass of int, so without an explicit guard hours_regular=True would
+    pass isinstance(_, float)==False and Decimal(True)==1 — a silent wrong number.
+    """
+    bad = _valid_hours()
+    bad["hours_regular"] = True
+    with pytest.raises(TypeError, match="bool"):
+        calculate(bad, hourly_employee)
+
+
+def test_float_hours_rejected(hourly_employee):
+    """Round-1 WR-02: a float hours value must raise (D-05 Decimal-everywhere)."""
+    bad = _valid_hours()
+    bad["hours_overtime"] = 5.0
+    with pytest.raises(TypeError, match="float"):
+        calculate(bad, hourly_employee)
+
+
+def test_unknown_hours_key_rejected(hourly_employee):
+    """WR-02: a misspelled/unknown hours key must raise, not silently zero the field.
+
+    calculate() takes a raw dict (no Pydantic extra='forbid'), so this is the only seam
+    that can catch a malformed hours payload. A dropped 'hours_regualr' typo would zero
+    regular pay and still pass reconciliation — exactly the silent wrong number to prevent.
+    """
+    bad = _valid_hours()
+    bad["hours_regualr"] = Decimal("40")  # typo of hours_regular
+    with pytest.raises(ValueError, match="Unknown hours key"):
+        calculate(bad, hourly_employee)
+
+
+def test_additional_medicare_threshold_is_status_aware():
+    """WR-03: MFJ threshold ($250k) differs from single ($200k); flag must respect status.
+
+    A single employee with a Medicare-wage proxy of $200,500 MUST fire the flag; an MFJ
+    employee at the same proxy (between $200k and $250k) must NOT — proving the threshold
+    is filing-status-aware rather than a flat $200k.
+    """
+    from app.models.roster import Employee
+
+    def mk(status):
+        return Employee(
+            id=uuid.uuid4(), business_id=uuid.uuid4(), full_name="T", known_aliases=[],
+            pay_type="hourly", hourly_rate=Decimal("500.00"), annual_salary=None,
+            retirement_contribution_pct=Decimal("0"),
+            filing_status=status, step_2_checkbox=False,
+            step_3_dependents=Decimal("0"), step_4a_other_income=Decimal("0"),
+            step_4b_deductions=Decimal("0"),
+            ytd_ss_wages=Decimal("180000"), pay_periods_per_year=52,
+        )
+    hrs = _valid_hours()
+    hrs["hours_regular"] = Decimal("41")  # gross 20500 -> proxy 180000+20500 = 200500
+    single_item = calculate(hrs, mk("single"))
+    mfj_item = calculate(hrs, mk("married_jointly"))
+    assert single_item.additional_medicare_not_modeled is True, (
+        "single: proxy 200500 > 200000 must fire"
+    )
+    assert mfj_item.additional_medicare_not_modeled is False, (
+        "MFJ: proxy 200500 < 250000 must NOT fire (status-aware threshold, WR-03)"
+    )

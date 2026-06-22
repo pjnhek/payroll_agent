@@ -249,3 +249,42 @@ def test_bracket_base_continuity_smoke() -> None:
                     f"{cur.base} drifts {drift} from continuity-derived {derived} "
                     f"(>= $1 => likely a real transcription error, not IRS rounding)."
                 )
+
+
+def test_bracket_upper_ties_to_next_lower() -> None:
+    """WR-04 (review round 2): each row's `upper` must equal the next row's `lower`.
+
+    `BracketRow.upper` is transcribed on all 48 rows but `_find_bracket()` only reads
+    `lower`, so `upper` is otherwise dead data that could silently drift out of sync with
+    the real boundary (the next row's `lower`). This guard keeps the unused column honest
+    so a transcription typo in `upper` can't rot undetected.
+    """
+    from app.pipeline.tax_tables_2026 import STANDARD_BRACKETS, STEP2_BRACKETS
+
+    seen: set[int] = set()
+    for table in (STANDARD_BRACKETS, STEP2_BRACKETS):
+        for status, rows in table.items():
+            if id(rows) in seen:  # skip the married_separately alias of single
+                continue
+            seen.add(id(rows))
+            for i in range(len(rows) - 1):
+                assert rows[i].upper == rows[i + 1].lower, (
+                    f"[{status}] row {i}: upper {rows[i].upper} != next.lower "
+                    f"{rows[i + 1].lower}"
+                )
+            assert rows[-1].upper is None, f"[{status}] top row upper must be None"
+
+
+def test_money_helpers_agree() -> None:
+    """IN-02 (review round 2): the two intentionally-duplicated _money() helpers must agree.
+
+    _money() is deliberately copied into federal_withholding.py (for independent
+    importability — documented round-1 decision). The risk of duplication is drift: both
+    copies must use the identical rounding mode (ROUND_HALF_UP). This locks them together
+    so a future edit to one (e.g. switching to ROUND_HALF_EVEN) is caught immediately.
+    """
+    from app.pipeline.calculate import _money as money_calc
+    from app.pipeline.federal_withholding import _money as money_fed
+
+    for v in ("1.005", "2.675", "0.125", "-1.005", "0.00", "99999.999"):
+        assert money_calc(Decimal(v)) == money_fed(Decimal(v)), f"drift at {v}"

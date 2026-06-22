@@ -37,6 +37,15 @@ from app.pipeline.tax_tables_2026 import (
 
 _CENTS = Decimal("0.01")
 
+# WR-03: filing-status-specific Additional Medicare 0.9% surtax thresholds (IRS).
+# Used only to set the additional_medicare_not_modeled DISCLAIMER flag — no surtax is
+# withheld. $200k single / $250k MFJ / $125k MFS, matching README "Known Limitations".
+_ADDITIONAL_MEDICARE_THRESHOLDS = {
+    "single": Decimal("200000"),
+    "married_jointly": Decimal("250000"),
+    "married_separately": Decimal("125000"),
+}
+
 
 def _money(value: Decimal) -> Decimal:
     """Round a Decimal to cents using ROUND_HALF_UP (round half AWAY from zero).
@@ -63,6 +72,15 @@ def _to_decimal(value: object) -> Decimal:
     """
     if value is None:
         return Decimal("0")
+    # WR-01 (review round 2): bool is a subclass of int, so isinstance(True, float) is
+    # False and Decimal(True) == 1. Without this check, hours_regular=True silently
+    # becomes 1 hour of pay — the exact silent-coercion this function exists to prevent.
+    # Check bool BEFORE float/int since bool ⊂ int.
+    if isinstance(value, bool):
+        raise TypeError(
+            f"hours value must not be bool (D-05: Decimal everywhere): got {value!r}. "
+            "Pass an int, str, or Decimal."
+        )
     if isinstance(value, float):
         raise TypeError(
             f"hours value must not be float (D-05: Decimal everywhere): got {value!r}. "
@@ -74,16 +92,31 @@ def _to_decimal(value: object) -> Decimal:
     return Decimal(value)
 
 
+_HOURS_FIELDS = (
+    "hours_regular",
+    "hours_overtime",
+    "hours_vacation",
+    "hours_sick",
+    "hours_holiday",
+)
+
+
 def _resolved_hours(resolved: dict) -> dict[str, Decimal]:
-    """Coalesce the five hours fields to Decimal('0') for any unspecified field."""
-    fields = (
-        "hours_regular",
-        "hours_overtime",
-        "hours_vacation",
-        "hours_sick",
-        "hours_holiday",
-    )
-    return {f: _to_decimal(resolved.get(f)) for f in fields}
+    """Coalesce the five hours fields to Decimal('0') for any unspecified field.
+
+    WR-02 (review round 2): calculate() takes a raw dict (not a Pydantic model with
+    extra="forbid"), so this is the only seam that can catch a malformed hours payload.
+    Reject unknown/misspelled keys (e.g. "hours_regualr") rather than silently dropping
+    them — a dropped key would zero that hours type and produce a wrong-but-reconciliation-
+    passing paystub, violating the module's "never silently ship a wrong number" thesis.
+    """
+    unknown = set(resolved) - set(_HOURS_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"Unknown hours key(s): {sorted(unknown)}. "
+            f"Expected only {list(_HOURS_FIELDS)}."
+        )
+    return {f: _to_decimal(resolved.get(f)) for f in _HOURS_FIELDS}
 
 
 class PayrollCalculationError(Exception):
@@ -156,7 +189,9 @@ def calculate(
             + hours["hours_sick"]
             + hours["hours_holiday"]
         )
-        gross = rate * straight + rate * Decimal("1.5") * hours["hours_overtime"]
+        # IN-04: round once, here — this is the hourly branch's single rounding point
+        # (rate * hours is not otherwise quantized).
+        gross = _money(rate * straight + rate * Decimal("1.5") * hours["hours_overtime"])
     else:  # salary
         annual = employee.annual_salary or Decimal("0")
         p = Decimal(employee.pay_periods_per_year)
@@ -176,11 +211,8 @@ def calculate(
             + hours["hours_holiday"]
         )
         leave_pay = _money((annual / _ANNUAL_WORK_HOURS) * leave_hours)
+        # Salaried branch's single rounding point (IN-04: each branch now rounds once).
         gross = _money(period_salary + leave_pay)
-
-    # IN-01: the salaried branch already cent-quantizes gross above; this final _money()
-    # is the single rounding point for the HOURLY branch (rate * hours is not pre-rounded).
-    gross = _money(gross)
 
     # Pre-tax 401k: the client's current-run override if supplied, else the
     # employee's stored default rate — applied to gross (review fix: D-A3-04).
@@ -217,8 +249,14 @@ def calculate(
     # of the static-seed model (no per-employee YTD Medicare ledger in Phase 3).
     # R2-2 note: ytd_ss_wages is capped at $184,500 (the SS wage base) in any real run —
     # it CANNOT legitimately exceed that cap. Tests must use realistic values (ytd_ss_wages <= 184500).
-    _ADDITIONAL_MEDICARE_THRESHOLD = Decimal("200000")
-    additional_medicare_not_modeled = (employee.ytd_ss_wages + gross) > _ADDITIONAL_MEDICARE_THRESHOLD
+    # WR-03 (review round 2): the Additional Medicare 0.9% surtax threshold is filing-status
+    # specific per the IRS — $200k (single), $250k (MFJ), $125k (MFS). The flag is now
+    # status-aware so it matches the documented thresholds (the prior flat $200k over-flagged
+    # MFJ between $200k–$250k). The flag only DISCLAIMS a non-modeled feature (withholds
+    # nothing), so this is an accuracy/consistency fix, not a withholding change.
+    additional_medicare_not_modeled = (
+        employee.ytd_ss_wages + gross
+    ) > _ADDITIONAL_MEDICARE_THRESHOLDS[employee.filing_status]
 
     # CALC-08: arithmetic backstop — call the named helper (R2-3).
     # The helper is a pure function that raises PayrollCalculationError on drift.

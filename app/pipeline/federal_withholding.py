@@ -52,7 +52,12 @@ def _find_bracket(annual_wage: Decimal, brackets: list) -> object:
     for row in reversed(brackets):
         if annual_wage >= row.lower:
             return row
-    return brackets[0]  # zero-bracket fallback (should never trigger — all first rows start at $0)
+    # IN-03 (review round 2): unreachable for all shipped tables — every first row has
+    # lower == 0 and line_1i floors at 0, so annual_wage >= 0 == brackets[0].lower always
+    # matches on the reverse scan. The first-bracket-lower-is-zero tests pin that invariant.
+    # If a future table set a non-zero first lower, this would return the wrong (zero-rate)
+    # row for sub-threshold wages — keep the first row at lower == 0.
+    return brackets[0]
 
 
 # ---------------------------------------------------------------------------

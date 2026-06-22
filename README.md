@@ -25,11 +25,12 @@ by code** so a low-confidence match can never reach a real payroll calculation.
 ## Known Limitations
 
 **Additional Medicare surtax (0.9% over $200k YTD) is not modeled.**
-The Additional Medicare Tax of 0.9% that applies to wages over $200,000 (single/MFS)
-or $250,000 (MFJ) in a calendar year is **not computed** by this engine. When an
-employee's Medicare-wage proxy (YTD SS wages + current gross) exceeds $200,000, the
-engine sets `additional_medicare_not_modeled = True` on the returned `PaystubLineItem`
-as a known-limitation flag. No surtax amount is withheld. This is an accepted scope
+The Additional Medicare Tax of 0.9% that applies to wages over $200,000 (single),
+$250,000 (married filing jointly), or $125,000 (married filing separately) in a calendar
+year is **not computed** by this engine. When an employee's Medicare-wage proxy (YTD SS
+wages + current gross) exceeds their filing-status threshold, the engine sets
+`additional_medicare_not_modeled = True` on the returned `PaystubLineItem` as a
+known-limitation flag. No surtax amount is withheld. This is an accepted scope
 limitation for a demo at typical wage levels.
 
 _(The full README — setup, architecture, demo, eval chart, and the complete

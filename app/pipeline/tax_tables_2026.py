@@ -71,6 +71,10 @@ _SINGLE_STANDARD: list[BracketRow] = [
 
 _HOH_STANDARD: list[BracketRow] = [
     # Head of Household — out of scope (no seeded HoH employees). Listed for completeness.
+    # IN-01 (review round 2): UNTESTED — these rows are never reached (filing_status Literal
+    # excludes HoH; federal_withholding_2026 raises ValueError before any HoH lookup) and are
+    # NOT cross-checked against IRS golden/wage-bracket values. Independently verify against
+    # the live PDF before enabling any HoH withholding path.
     BracketRow(Decimal("0"),       Decimal("15550"),  Decimal("0.00"),      Decimal("0.00")),
     BracketRow(Decimal("15550"),   Decimal("33250"),  Decimal("0.00"),      Decimal("0.10")),
     BracketRow(Decimal("33250"),   Decimal("83000"),  Decimal("1770.00"),   Decimal("0.12")),
@@ -127,6 +131,8 @@ _SINGLE_STEP2: list[BracketRow] = [
 
 _HOH_STEP2: list[BracketRow] = [
     # Head of Household Step-2 — out of scope. Listed for completeness.
+    # IN-01 (review round 2): UNTESTED — unreachable (HoH rejected before lookup) and not
+    # cross-checked against IRS golden values. Verify against the live PDF before enabling.
     BracketRow(Decimal("0"),       Decimal("12075"),  Decimal("0.00"),      Decimal("0.00")),
     BracketRow(Decimal("12075"),   Decimal("20925"),  Decimal("0.00"),      Decimal("0.10")),
     BracketRow(Decimal("20925"),   Decimal("45800"),  Decimal("885.00"),    Decimal("0.12")),
