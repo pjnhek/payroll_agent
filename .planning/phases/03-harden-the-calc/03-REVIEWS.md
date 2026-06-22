@@ -180,3 +180,53 @@ Codex re-reviewed the 8 fixes. The two HIGH money-moving bugs from round 1 are *
 
 ### Net
 Architecture and the money-moving fixes are solid. The blocker for "ready to execute" is the test suite's own rigor — exactly the unit this phase is meant to make bulletproof: tighten the oracle to exact-equality, fix the two impossible/weak tests, and make boundary + reconciliation tests actually exercise their paths.
+
+
+---
+
+# Cross-AI Plan Review — Phase 3 (Round 3 — re-review after R2-1..R2-8)
+
+**Reviewer:** Codex · **Reviewed:** 2026-06-22T07:05:08Z · **Verdict:** LOW-MEDIUM risk (down from MEDIUM) — **"Ready to execute? yes-with-nits."** All 8 round-2 fixes CONFIRMED-CLOSED; no remaining HIGH/MEDIUM blockers; 3 LOW enforcement/wording nits.
+
+## Codex Re-Review (Round 3)
+
+## Round-2 Fix Closure
+
+| Fix | Status | Evidence |
+|---|---|---|
+| R2-1: exact wage-bracket equality | CONFIRMED-CLOSED | 03-02 now says: `DEFAULT ASSERTION: assert engine_whole_dollar == published_cell` and “A blanket `abs(cell_whole_dollar - published_cell) <= 1` tolerance masks a real $1 transcription or line-1g bug.” Acceptance also says exact equality is default, with `±$1` only on a “SPECIFICALLY-NAMED fixture row.” |
+| R2-2: possible Additional Medicare fixtures | CONFIRMED-CLOSED | 03-02/03-03 use `ytd_ss_wages=Decimal("184500")` plus high current gross: “$184,500 is the MAXIMUM possible SS YTD” and “hourly_rate=Decimal("500.00"), 40 hours → gross=$20,000 → proxy=$204,500 > $200k.” Does-not-fire case uses `ytd_ss_wages=Decimal("0")`. This proves the proxy `(ytd_ss_wages + gross) > 200000`, not just the boolean. This matches IRS/SSA facts: Additional Medicare starts over $200k Medicare wages, while 2026 SS wage base is $184,500. Sources: IRS Topic 751 and SSA CBB. |
+| R2-3: reconciliation raise path | CONFIRMED-CLOSED | 03-03 requires `_raise_if_reconciliation_drift()` as a named helper and `test_reconciliation_raises_on_drift` with “BOTH paths tested” including `with pytest.raises(PayrollCalculationError)`. It explicitly says source grep is “secondary only.” |
+| R2-4: direct bracket boundary tests | CONFIRMED-CLOSED | 03-02 now says boundary tests “call `_find_bracket()` DIRECTLY with adjusted-annual-wage inputs at exactly B, B - $0.01, and B + $0.01 — no annualization rounding confound,” and assert `result_at_B.lower == B`. |
+| R2-5: over-ceiling unresolved reporting | CONFIRMED-CLOSED | 03-02 requires two calculator agreement or `@pytest.mark.skip(reason="OVER-CEILING ORACLE UNRESOLVED — high-earner withholding not independently verified")`, and SUMMARY.md must state: “OVER-CEILING COVERAGE: UNRESOLVED...” It also says “a skip is not treated as coverage.” |
+| R2-6: add p=26 to salary leave invariant | CONFIRMED-CLOSED | 03-03 requires `delta_52 == delta_26 == delta_24 == delta_12 == Decimal("200.00")`, with explicit R2-6 commentary that biweekly `p=26` must be included. |
+| R2-7: remove unused python-taxes dep | CONFIRMED-CLOSED | 03-02 says “python-taxes dev dep REMOVED,” `pyproject.toml` and `uv.lock` are removed from `files_modified`, and acceptance says “No python-taxes structural test; no python-taxes install.” |
+| R2-8: schedule wording reconciled | CONFIRMED-CLOSED, with wording nit | 03-02 now repeatedly requires “all 6 Worksheet 1A schedules” / “3 filing statuses × 2 Step-2 branches.” HoH is intentionally rejected, so this is really the six project schedules, not six unique IRS wage-bracket columns. |
+
+## Residual / New Concerns
+
+LOW — The grep gate for unnamed `abs(...) <= 1` tolerances only prints a warning, not a failing exit. The plan text is strong enough, but the automated check should ideally raise or `sys.exit(1)`.
+
+LOW — 03-02 has a seed-reference typo: it says “Single + Standard ... Maria Chen weekly, Priya Nair biweekly,” but the provided seed table has Priya as MFS + Step-2 weekly; Sandra Kim is the biweekly Single/Standard seed. This is executor-confusing, not a correctness blocker because the plan also tells executors to filter by predicates.
+
+LOW — “All 6 schedule columns” remains imprecise wording. The actual project target is six filing-status/Step-2 combinations; there are only four unique project-relevant IRS table columns because Single and MFS share a column and HoH is rejected.
+
+## Risk Assessment
+
+Overall risk: LOW-MEDIUM, down from MEDIUM. No remaining HIGH or MEDIUM blockers in the plans.
+
+Ready to execute? yes-with-nits. The round-2 blockers are closed; the remaining items are enforcement/wording cleanup, not money-moving plan defects.
+
+---
+
+## Round-3 Consensus Summary
+
+Convergence. Codex confirms every round-2 fix (R2-1 exact-equality oracle, R2-2 possible Medicare fixtures proving the proxy, R2-3 real reconciliation raise test, R2-4 direct _find_bracket boundary tests, R2-5 over-ceiling UNRESOLVED reporting, R2-6 p=26 invariance, R2-7 python-taxes removed, R2-8 6-schedule wording) is CONFIRMED-CLOSED with quoted evidence. No HIGH or MEDIUM concerns remain.
+
+### Remaining (3 LOW nits — execution-time cleanup, none money-moving)
+- **N1 [LOW] — grep gate severity:** the `abs(...) <= 1` unnamed-tolerance grep gate only WARNS; ideally it should `sys.exit(1)` / fail. (Plan text already mandates exact equality; this is belt-and-suspenders on the automated guard.)
+- **N2 [LOW] — seed-reference typo (03-02):** an example line says "Single+Standard ... Priya Nair biweekly," but per the seed, Priya is MFS+Step-2 weekly and Sandra Kim is the biweekly Single/Standard seed. Executor-confusing only; the plan also tells executors to filter by predicate, so it's not a correctness blocker.
+- **N3 [LOW] — "all 6 schedule columns" wording:** precise count is 6 filing-status×Step-2 COMBINATIONS, but only 4 UNIQUE IRS wage-bracket columns (single & MFS share a column; HoH rejected). Wording imprecision, not a coverage gap.
+
+### Verdict
+Ready to execute (yes-with-nits). The 3 LOW items are enforcement-strength + wording accuracy; they do not block execution and can be tidied in the next touch or at execution time. The plans have now passed 3 internal plan-checker verifications + 3 adversarial Codex rounds; the money-moving risks (inverted leave formula, dead Medicare trigger, ±$1 oracle tolerance, hollow tests) are all closed.
