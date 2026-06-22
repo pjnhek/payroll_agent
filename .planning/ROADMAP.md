@@ -110,7 +110,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 02.1-04-PLAN.md — NEW suggestion-only LLM call (cheap tier, never feeds decide): unresolved name → likely employee → the clarification email names a specific suggested employee
+- [x] 02.1-04-PLAN.md — NEW suggestion-only LLM call (cheap tier, never feeds decide): unresolved name → likely employee → the clarification email names a specific suggested employee
 
 **Wave 5** *(blocked on Wave 4)*
 
@@ -210,7 +210,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 3/4 | In Progress|  |
-| 2.1 Deterministic Decisioning *(INSERTED)* | 3/5 | In Progress|  |
+| 2.1 Deterministic Decisioning *(INSERTED)* | 4/5 | In Progress|  |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |

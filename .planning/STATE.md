@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-last_updated: "2026-06-22T02:08:34.484Z"
+status: Awaiting human — live-DB name_matches DROP (local + Supabase) + remove DECISION_* from .env
+last_updated: "2026-06-22T03:34:16.304Z"
 last_activity: 2026-06-22
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 12
-  completed_plans: 10
+  completed_plans: 11
   percent: 29
 ---
 
@@ -24,12 +24,12 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 
 ## Current Position
 
-Phase: 02.1 (deterministic-decisioning) — EXECUTING (paused at checkpoint)
-Plan: 02.1-03 autonomous tasks 1-2 done; Task 3 = PENDING blocking human-verify checkpoint (next: resolve checkpoint, then 02.1-04)
-Status: Awaiting human — live-DB name_matches DROP (local + Supabase) + remove DECISION_* from .env
+Phase: 02.1 (deterministic-decisioning) — EXECUTING
+Plan: 02.1-04 complete (suggestion-only clarification call); next: 02.1-05 (DEMO-01 reframe + remaining downstream suites)
+Status: 02.1-04 done — suggestion-only call wired after decide, walled off from the decision; test_suggest 8/8 + test_clarify 15/15 + test_orchestrator_states 6/6 green. STILL PENDING (Wave 3): blocking human checkpoint — live-DB name_matches DROP (local + Supabase) + remove DECISION_* from .env
 Last activity: 2026-06-22
 
-Progress: [████████░░] 83%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: [████████░░] 83%
 | Phase 02.1 P01 | 4 | 2 tasks | 3 files |
 | Phase 02.1 P02 | 5 | 2 tasks | 5 files |
 | Phase 02.1 P03 (Tasks 1-2; Task 3 = human checkpoint) | 7m | 2 of 3 tasks tasks | 12 files files |
+| Phase 02.1 P04 | 5m | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,8 @@ Recent decisions affecting current work:
 - [Phase 02.1]: [Phase 02.1 P02]: reconcile_names + decide are now PURE deterministic code — no LLM, no confidence, no model_action; final_action computed from unresolved (resolved is False) + run-level collisions + missing fields is the SOLE branch source (D-21-01/02/03)
 - [Phase 02.1]: [Phase 02.1 P02]: collision safety lives in TWO places — deterministic_match refuses to resolve a name matching 2+ employees (None -> unresolved); check_one_to_one stays a run-level authority gating even when both colliding names are resolved=True (D-21-02); decide Rule 1 keys off resolved and the old check_one_to_one no-roster-employee branch was dropped to avoid double-counting Rule 1
 - [Phase 02.1]: [Phase 02.1 P03]: orchestrator wired to the pure stages (decide/reconcile called with no llm; no m.confidence stamp; branches solely on final_action); repo INSERT + schema.sql drop match_confidence; bootstrap drops the dead name_matches on EVERY apply (default path + _DROP_ORDER front) for the live-DB migration; config two-tier (extraction+draft), mid/decision tier removed from Settings/client/.env.example (D-21-05/06). Live-DB DROP + human .env edit = PENDING blocking checkpoint (Task 3).
+- [Phase 02.1]: [Phase 02.1 P04]: Suggestion-only call (LLM-05/D-21-05) — a cheap draft-tier call maps an unresolved name to the likely roster employee for the clarification email ONLY; wired strictly after decide() inside _clarify, degrades to {} on any failure, structurally walled off from decide (decide never imports suggest; a test asserts the suggested id never leaks into the persisted Decision).
+- [Phase 02.1]: [Phase 02.1 P04]: compose_clarification gains suggestions= threaded into BOTH the draft prompt and the deterministic _template_body floor so the 'did you mean David Reyes?' hero survives a total draft failure (WR-03); a suggested name must be an exact roster full_name or it is dropped.
 
 ### Pending Todos
 
@@ -128,6 +131,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T02:08:34.478Z
-Stopped at: 02.1-03 Tasks 1-2 committed (c123c59, d5bbef4); Task 3 = PENDING blocking human-verify checkpoint (live-DB name_matches DROP on local+Supabase + remove DECISION_* from .env). Autonomous code + owned tests green; downstream Wave 4-5 tests expected-red.
+Last session: 2026-06-22T03:34:16.297Z
+Stopped at: 02.1-04 complete (eda5949, e698b17): suggestion-only clarification call wired after decide, walled off from the decision; test_suggest 8/8 + test_clarify 15/15 + test_orchestrator_states 6/6 green. Next: 02.1-05 (DEMO-01 reframe + remaining downstream suites). STILL PENDING: Wave 3 blocking human checkpoint (live-DB name_matches DROP + .env DECISION_* removal).
 Resume file: None
