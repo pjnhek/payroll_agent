@@ -464,6 +464,29 @@ def test_unknown_hours_key_rejected(hourly_employee):
         calculate(bad, hourly_employee)
 
 
+def test_negative_hours_rejected(hourly_employee):
+    """WR-01 (round 3): negative hours must raise, not ship a negative paystub.
+
+    The reconciliation backstop is a sign-blind arithmetic identity, so a negative gross
+    ties out and would pass — exactly the "wrong-but-reconciliation-passing" paystub the
+    raw-dict seam documents itself as the last-line defense against. Mirrors the model-layer
+    ExtractedEmployee Field(ge=0).
+    """
+    bad = _valid_hours()
+    bad["hours_regular"] = Decimal("-40")
+    with pytest.raises(ValueError, match="non-negative"):
+        calculate(bad, hourly_employee)
+
+
+def test_garbage_string_hours_raises_domain_error(hourly_employee):
+    """IN-01 (round 3): a non-numeric hours string raises a domain ValueError, not a
+    bare decimal.InvalidOperation, matching the typed errors used for bool/float."""
+    bad = _valid_hours()
+    bad["hours_regular"] = "abc"
+    with pytest.raises(ValueError, match="not a valid number"):
+        calculate(bad, hourly_employee)
+
+
 def test_additional_medicare_threshold_is_status_aware():
     """WR-03: MFJ threshold ($250k) differs from single ($200k); flag must respect status.
 

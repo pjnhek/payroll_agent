@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.models.contracts import PaystubLineItem
 from app.models.roster import Employee
@@ -68,7 +68,8 @@ def _to_decimal(value: object) -> Decimal:
     downstream amount. calculate() takes a raw dict, so the engine — not just the
     caller — must enforce this. A float is a programming error, not user input, so we
     raise loudly rather than silently coercing via str() (which would hide the bug).
-    int / str / Decimal / None are all accepted (None → 0).
+    int / str / Decimal / None are all accepted (None → 0). Values must be non-negative
+    (mirrors ExtractedEmployee Field(ge=0) — review round 3 WR-01).
     """
     if value is None:
         return Decimal("0")
@@ -89,7 +90,23 @@ def _to_decimal(value: object) -> Decimal:
     # Empty string is treated as absent (preserves the prior `or 0` coalescing for "").
     if value == "":
         return Decimal("0")
-    return Decimal(value)
+    # IN-01 (review round 3): surface a domain error for garbage input rather than a bare
+    # decimal.InvalidOperation, matching the typed errors used above.
+    try:
+        result = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"hours value is not a valid number: got {value!r}") from exc
+    # WR-01 (review round 3): the raw-dict seam is the last-line defense against a
+    # "wrong-but-reconciliation-passing" paystub. Negatives are the single most
+    # consequential wrong number it must catch — the reconciliation backstop is a
+    # sign-blind arithmetic identity, so a negative gross/net would tie out and ship.
+    # Mirror the model-layer ExtractedEmployee Field(ge=0) here.
+    if result < 0:
+        raise ValueError(
+            f"hours value must be non-negative (matches ExtractedEmployee Field ge=0): "
+            f"got {result}."
+        )
+    return result
 
 
 _HOURS_FIELDS = (
