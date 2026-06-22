@@ -276,17 +276,71 @@ def test_roster_valid() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_name_match_result() -> None:
-    """NameMatchResult with llm_typo match validates."""
+def test_name_match_result_exact_resolved() -> None:
+    """An exact deterministic resolution validates with source/resolved (D-21-04)."""
+    emp_id = uuid.uuid4()
     result = NameMatchResult(
-        submitted_name="Reyez",
-        matched_employee_id=uuid.uuid4(),
-        match_type="llm_typo",
-        confidence=Decimal("0.72"),
-        reason="likely typo of Reyes",
+        submitted_name="Maria Chen",
+        matched_employee_id=emp_id,
+        source="exact",
+        resolved=True,
+        reason="exact normalized match",
     )
-    assert result.match_type == "llm_typo"
-    assert result.confidence == Decimal("0.72")
+    assert result.source == "exact"
+    assert result.resolved is True
+    assert result.matched_employee_id == emp_id
+
+
+def test_name_match_result_unresolved_none() -> None:
+    """An unresolved name validates with source='none', no employee, resolved=False."""
+    result = NameMatchResult(
+        submitted_name="Dave",
+        matched_employee_id=None,
+        source="none",
+        resolved=False,
+        reason="no deterministic or alias match",
+    )
+    assert result.source == "none"
+    assert result.resolved is False
+    assert result.matched_employee_id is None
+
+
+def test_name_match_result_rejects_bad_source() -> None:
+    """source only accepts exact|alias|none — any other value raises (D-21-04)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Dave",
+            matched_employee_id=None,
+            source="llm_typo",  # dead value from the confidence era
+            resolved=False,
+            reason="bad source",
+        )
+
+
+def test_name_match_result_rejects_confidence_kwarg() -> None:
+    """A leftover confidence= kwarg raises ValidationError (extra='forbid', D-21-01)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Maria Chen",
+            matched_employee_id=uuid.uuid4(),
+            source="exact",
+            resolved=True,
+            reason="r",
+            confidence=Decimal("0.99"),
+        )
+
+
+def test_name_match_result_rejects_match_type_kwarg() -> None:
+    """A leftover match_type= kwarg raises ValidationError (extra='forbid', D-21-01)."""
+    with pytest.raises(ValidationError):
+        NameMatchResult(
+            submitted_name="Maria Chen",
+            matched_employee_id=uuid.uuid4(),
+            source="exact",
+            resolved=True,
+            reason="r",
+            match_type="exact",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -406,30 +460,6 @@ def test_employee_accepts_retirement_pct_bounds() -> None:
     e1 = Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("1")))
     assert e0.retirement_contribution_pct == Decimal("0")
     assert e1.retirement_contribution_pct == Decimal("1")
-
-
-def test_name_match_result_rejects_confidence_above_one() -> None:
-    """NameMatchResult.confidence > 1 raises ValidationError (WR-01)."""
-    with pytest.raises(ValidationError):
-        NameMatchResult(
-            submitted_name="Reyez",
-            matched_employee_id=uuid.uuid4(),
-            match_type="llm_typo",
-            confidence=Decimal("5.0"),
-            reason="out of range",
-        )
-
-
-def test_name_match_result_rejects_negative_confidence() -> None:
-    """NameMatchResult.confidence < 0 raises ValidationError (WR-01)."""
-    with pytest.raises(ValidationError):
-        NameMatchResult(
-            submitted_name="Reyez",
-            matched_employee_id=None,
-            match_type="unknown",
-            confidence=Decimal("-1"),
-            reason="out of range",
-        )
 
 
 def test_extracted_employee_rejects_negative_hours() -> None:

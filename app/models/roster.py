@@ -126,24 +126,36 @@ class Roster(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# NameMatchResult — per-name output of reconcile_names (LLM-05 / LLM-09)
+# NameMatchResult — per-name DETERMINISTIC resolution result (D-21-01 / D-21-04)
 # ---------------------------------------------------------------------------
 
 
 class NameMatchResult(BaseModel):
-    """One name-reconciliation result returned by reconcile_names.
+    """One per-name deterministic-resolution result returned by reconcile_names.
 
-    match_type Literal covers the 5 legal values from LLM-05/LLM-09
-    (Finding #7 — constrained to known value set).
-    confidence 0.0–1.0; values below 0.8 trigger the gate in decide().
+    Resolution is pure code over roster facts (D-21-01) — no score, no LLM-classified
+    category, just deterministic source attribution. A submitted name resolves one
+    of three ways:
+
+    - ``source="exact"`` — exact normalized match (casefold + whitespace-normalize)
+      to exactly one employee, with no other employee sharing the normalized name.
+    - ``source="alias"`` — matches a stored ``known_alias`` for exactly one
+      employee, no collision (the READ side of the learning loop, D-21-07).
+    - ``source="none"`` — anything else (no match, typo, first-time nickname,
+      garbled, ambiguous) — the name is left unresolved for the clarify path.
+
+    ``resolved`` is an EXPLICIT bool (not derived from ``source``) for legibility
+    per D-21-04: the dashboard/eval read ``resolved`` directly rather than
+    re-deriving the rule. ``matched_employee_id`` is None whenever ``source`` is
+    "none" (an unresolved name maps to no employee).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     submitted_name: str
-    matched_employee_id: UUID | None  # None when match_type == "unknown"
-    match_type: Literal["exact", "alias", "llm_typo", "llm_nickname", "unknown"]
-    confidence: Decimal = Field(ge=0, le=1)  # 0.0–1.0; <0.8 fires the gate (WR-01)
+    matched_employee_id: UUID | None  # None when source == "none" (unresolved)
+    source: Literal["exact", "alias", "none"]
+    resolved: bool
     reason: str
 
 
