@@ -1,0 +1,76 @@
+{
+  "id": "f0000011-0000-0000-0000-000000000011",
+  "message_id": "<eval-11-multi-employee-collision@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll for all three - 6/15",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nHere's everyone's hours for the week of June 15:\n\nDavid Reyes - 40 regular\nD. Reyes - 38 regular\nPriya Nair - 35 regular\n\nThanks\nRoger",
+  "created_at": "2026-06-16T09:30:00Z",
+  "fixture_category": "collision",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "David Reyes",
+          "hours_regular": "40",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        },
+        {
+          "submitted_name": "D. Reyes",
+          "hours_regular": "38",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        },
+        {
+          "submitted_name": "Priya Nair",
+          "hours_regular": "35",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "David Reyes",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000003-0000-0000-0000-000000000003"
+      },
+      {
+        "submitted_name": "D. Reyes",
+        "name_category": "collision",
+        "expected_source": "none",
+        "expected_resolved": false,
+        "expected_matched_employee_id": null
+      },
+      {
+        "submitted_name": "Priya Nair",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000004-0000-0000-0000-000000000004"
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["D. Reyes"],
+      "unresolved_names": ["D. Reyes"],
+      "missing_fields": []
+    }
+  }
+}

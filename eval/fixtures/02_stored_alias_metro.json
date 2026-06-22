@@ -1,0 +1,44 @@
+{
+  "id": "f0000002-0000-0000-0000-000000000002",
+  "message_id": "<eval-02-stored-alias@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Weekly payroll - June 15",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hey,\n\nJust sending over hours for this week (June 15):\n\nP. Nair - 35 regular hours\n\nLet me know if anything looks off.\nRoger",
+  "created_at": "2026-06-16T09:15:00Z",
+  "fixture_category": "stored-alias",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "P. Nair",
+          "hours_regular": "35",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "P. Nair",
+        "name_category": "stored-alias",
+        "expected_source": "alias",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000004-0000-0000-0000-000000000004"
+      }
+    ],
+    "decision": {
+      "final_action": "process",
+      "gate_reasons_contains": [],
+      "unresolved_names": [],
+      "missing_fields": []
+    }
+  }
+}

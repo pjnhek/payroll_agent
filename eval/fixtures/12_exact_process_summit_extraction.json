@@ -1,0 +1,16 @@
+{
+  "run_id": "00000000-0000-0000-0000-000000000000",
+  "employees": [
+    {
+      "submitted_name": "Thomas Bergmann",
+      "hours_regular": null,
+      "hours_overtime": null,
+      "hours_vacation": null,
+      "hours_sick": null,
+      "hours_holiday": null,
+      "contribution_401k_override": null
+    }
+  ],
+  "pay_period_start": "2026-06-15",
+  "pay_period_end": null
+}

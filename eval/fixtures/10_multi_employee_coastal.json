@@ -1,0 +1,60 @@
+{
+  "id": "f0000010-0000-0000-0000-000000000010",
+  "message_id": "<eval-10-multi-employee@coastalcleaning.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Weekly payroll - both employees - week of 6/15",
+  "from_addr": "payroll@coastalcleaning.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nHours for the week starting June 15:\n\nMaria Chen - 38 regular hours, 2 hours overtime\nJame Okafor - salaried, 40 regular hours\n\nLet me know!\nDana",
+  "created_at": "2026-06-16T08:30:00Z",
+  "fixture_category": "exact",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "Maria Chen",
+          "hours_regular": "38",
+          "hours_overtime": "2",
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        },
+        {
+          "submitted_name": "Jame Okafor",
+          "hours_regular": "40",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "Maria Chen",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+      },
+      {
+        "submitted_name": "Jame Okafor",
+        "name_category": "typo",
+        "expected_source": "none",
+        "expected_resolved": false,
+        "expected_matched_employee_id": null
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["Jame Okafor"],
+      "unresolved_names": ["Jame Okafor"],
+      "missing_fields": []
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "f0000004-0000-0000-0000-000000000004",
+  "message_id": "<eval-04-unknown-shorthand@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Hours for payroll 6/15",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Quick note — Dave Reyes did 38 regular hours this week (starting 6/15). Can you process that?\n\nThanks",
+  "created_at": "2026-06-16T10:30:00Z",
+  "fixture_category": "unknown",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "Dave Reyes",
+          "hours_regular": "38",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "Dave Reyes",
+        "name_category": "unknown",
+        "expected_source": "none",
+        "expected_resolved": false,
+        "expected_matched_employee_id": null
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["Dave Reyes"],
+      "unresolved_names": ["Dave Reyes"],
+      "missing_fields": []
+    }
+  }
+}
