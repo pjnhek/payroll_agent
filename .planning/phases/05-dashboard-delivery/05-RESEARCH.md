@@ -873,9 +873,10 @@ def _safe_to_learn_alias(token: str, target_employee: Employee, roster: Roster) 
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `alias_candidates` be a top-level key in the existing `reconciliation` JSONB, or a new `payroll_runs.alias_candidates` JSONB column?**
+   - **RESOLVED (planning, 2026-06-22):** Option (a) — a new, separate `payroll_runs.alias_candidates` JSONB column via idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS`. Implemented in Plan 05-03 (DDL + live-DB apply checkpoint); written in Plan 05-07 (`_clarify` capture → resume bind). A separate column avoids the `persist_reconciliation` clobber described below.
    - What we know: reconciliation JSONB is written twice (at clarify-emit via `_clarify`, and on resume via `persist_reconciliation`). The second write OVERWRITES the column entirely — this means alias_candidates written at clarify-emit would be CLOBBERED by the resume's `persist_reconciliation` call at orchestrator.py:187.
    - **This is a sequencing problem.** The resume's `persist_reconciliation` (which reflects the POST-resolution state) will overwrite whatever was written at clarify-emit.
    - **Recommendation:** Use a SEPARATE key/approach — either (a) a new `payroll_runs.alias_candidates` JSONB column (requires DDL, but cleanest), or (b) write the alias_candidates AFTER the resume's persist_reconciliation in `_run_stages` by merging them, or (c) capture alias_candidates in a separate JSON merge query that is not a full overwrite. Option (a) is cleanest.
@@ -883,6 +884,7 @@ def _safe_to_learn_alias(token: str, target_employee: Employee, roster: Roster) 
    - Recommendation for planner: add a `payroll_runs.alias_candidates` JSONB column (ALTER TABLE IF NOT EXISTS, idempotent).
 
 2. **Should re-trigger claim from `approved` as well as `error`?**
+   - **RESOLVED (planning, 2026-06-22):** Yes — both, per CONTEXT.md D-13b. Implemented in Plan 05-05 (re-trigger route attempts a claim from `error` and from `approved`, so a delivery that died after the approve claim is recoverable).
    - CONTEXT.md D-13b says yes. But the `claim_status` helper only accepts a single `expected` status. A re-trigger from `approved` OR `error` needs either two separate claim attempts, or the UPDATE predicate to use `IN (...)`.
    - Recommendation: Two attempts — first try `error → received`, then try `approved → received` (since a re-trigger from `approved` means delivery died). Or: `UPDATE … WHERE id=%s AND status IN ('error','approved') RETURNING id`.
 
