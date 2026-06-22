@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-06-22T01:57:39.205Z"
+last_updated: "2026-06-22T02:08:34.484Z"
 last_activity: 2026-06-22
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 12
-  completed_plans: 9
+  completed_plans: 10
   percent: 29
 ---
 
@@ -24,12 +24,12 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 
 ## Current Position
 
-Phase: 02.1 (deterministic-decisioning) — EXECUTING
-Plan: 2 of 5 complete (next: 02.1-02)
-Status: Ready to execute
+Phase: 02.1 (deterministic-decisioning) — EXECUTING (paused at checkpoint)
+Plan: 02.1-03 autonomous tasks 1-2 done; Task 3 = PENDING blocking human-verify checkpoint (next: resolve checkpoint, then 02.1-04)
+Status: Awaiting human — live-DB name_matches DROP (local + Supabase) + remove DECISION_* from .env
 Last activity: 2026-06-22
 
-Progress: [████████░░] 75%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [████████░░] 75%
 | Phase 02 P04 (Tasks 1-2; Task 3 = human checkpoint) | 8 | 2 of 3 tasks | 6 files |
 | Phase 02.1 P01 | 4 | 2 tasks | 3 files |
 | Phase 02.1 P02 | 5 | 2 tasks | 5 files |
+| Phase 02.1 P03 (Tasks 1-2; Task 3 = human checkpoint) | 7m | 2 of 3 tasks tasks | 12 files files |
 
 ## Accumulated Context
 
@@ -86,6 +87,7 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 02.1 P01]: Contracts reshaped deterministic — NameMatchResult=source(exact|alias|none)+explicit resolved bool; Decision=final_action/gate_reasons/unresolved_names/missing_fields+resolutions:list[NameMatchResult] (folded into decision JSONB, no name_matches table); PaystubLineItem drops match_confidence; reconcile.py/NameReconciliationResponse deleted. No confidence anywhere (D-21-01/04/05/06).
 - [Phase 02.1]: [Phase 02.1 P02]: reconcile_names + decide are now PURE deterministic code — no LLM, no confidence, no model_action; final_action computed from unresolved (resolved is False) + run-level collisions + missing fields is the SOLE branch source (D-21-01/02/03)
 - [Phase 02.1]: [Phase 02.1 P02]: collision safety lives in TWO places — deterministic_match refuses to resolve a name matching 2+ employees (None -> unresolved); check_one_to_one stays a run-level authority gating even when both colliding names are resolved=True (D-21-02); decide Rule 1 keys off resolved and the old check_one_to_one no-roster-employee branch was dropped to avoid double-counting Rule 1
+- [Phase 02.1]: [Phase 02.1 P03]: orchestrator wired to the pure stages (decide/reconcile called with no llm; no m.confidence stamp; branches solely on final_action); repo INSERT + schema.sql drop match_confidence; bootstrap drops the dead name_matches on EVERY apply (default path + _DROP_ORDER front) for the live-DB migration; config two-tier (extraction+draft), mid/decision tier removed from Settings/client/.env.example (D-21-05/06). Live-DB DROP + human .env edit = PENDING blocking checkpoint (Task 3).
 
 ### Pending Todos
 
@@ -100,6 +102,7 @@ None yet.
 - [Phase 3]: Confirm 2026 Pub 15-T bracket tables + Step-1 standard amounts against the live IRS PDF before coding — any number from memory is stale (research flag; LOW confidence on the numbers until transcribed).
 - [Phase 2]: Confirm exact non-reasoning model IDs against the consoles (DeepSeek/Kimi) and pin versioned IDs for reproducibility (research flag).
 - [Phase 6]: Real gateway payload shape, signing-secret verification, and reply-only field are unknown until the provider is picked (research flag).
+- [Phase 02.1 P03 — Task 3 CHECKPOINT]: Apply the live-DB name_matches DROP on local + Supabase (uv run python -m app.db.bootstrap) and remove DECISION_MODEL/DECISION_BASE_URL/DECISION_API_KEY from the local .env. Bootstrap CODE is committed; the live execution + .env edit are the blocking human-verify gate.
 
 ### Quick Tasks Completed
 
@@ -125,6 +128,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T01:57:24.240Z
-Stopped at: Completed Plan 02.1-01 (Wave 1, contract reshape). Tasks 1-2 committed (f844b0b, 783160e). Contracts now deterministic + confidence-free; app/models/ grep-clean; test_models_contracts.py 37 passed. Expected: downstream test collection (test_reconcile/test_clarify/test_orchestrator_states) breaks until Waves 02.1-02..05 rewrite the consumers.
+Last session: 2026-06-22T02:08:34.478Z
+Stopped at: 02.1-03 Tasks 1-2 committed (c123c59, d5bbef4); Task 3 = PENDING blocking human-verify checkpoint (live-DB name_matches DROP on local+Supabase + remove DECISION_* from .env). Autonomous code + owned tests green; downstream Wave 4-5 tests expected-red.
 Resume file: None

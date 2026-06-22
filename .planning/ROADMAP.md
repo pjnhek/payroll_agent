@@ -106,7 +106,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 02.1-03-PLAN.md — wire deterministic stages through orchestrator/repo/schema; DROP name_matches on live local + Supabase + drop match_confidence; remove the mid/decision config tier; keep the drift guard green (NOT autonomous — live-DB DROP + .env checkpoint)
+- [x] 02.1-03-PLAN.md — wire deterministic stages through orchestrator/repo/schema; DROP name_matches on live local + Supabase + drop match_confidence; remove the mid/decision config tier; keep the drift guard green (NOT autonomous — live-DB DROP + .env checkpoint)
 
 **Wave 4** *(blocked on Wave 3)*
 
@@ -210,7 +210,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 3/4 | In Progress|  |
-| 2.1 Deterministic Decisioning *(INSERTED)* | 2/5 | In Progress|  |
+| 2.1 Deterministic Decisioning *(INSERTED)* | 3/5 | In Progress|  |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
