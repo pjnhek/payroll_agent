@@ -658,6 +658,160 @@ def _record_extraction() -> None:
 
 
 # ---------------------------------------------------------------------------
+# SVG chart writer (D-08, D-11, D-12, D-13)
+# ---------------------------------------------------------------------------
+
+
+def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
+    """Generate eval/chart.svg from in-memory scoring results.
+
+    3-subplot layout:
+      Subplot 1 -- Extraction field accuracy + employee-set F1 per fixture category
+      Subplot 2 -- Reconciliation accuracy per name-category (k/n fractions, D-12)
+      Subplot 3 -- Decision confusion matrix 2x2 + false-process headline (D-11)
+
+    matplotlib imported inside this function only (NOT at module top level) to
+    keep it off the --check/scoring import path (CI has the dep only for chart
+    generation, not the regression gate).
+    """
+    # Local imports only -- never at module level (T-04-11, D-08)
+    import matplotlib                          # noqa: PLC0415
+    matplotlib.use("Agg")                      # non-interactive backend, safe on CI/server
+    import matplotlib.pyplot as plt            # noqa: PLC0415
+    import numpy as np                         # noqa: PLC0415
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 14))
+
+    # -----------------------------------------------------------------------
+    # Subplot 1 -- Extraction: field accuracy + F1 per fixture category (grouped bars)
+    # -----------------------------------------------------------------------
+    pce = aggregated["per_category_extraction"]
+    categories = list(pce.keys())
+    field_values = [pce[c]["field_accuracy"] for c in categories]
+    f1_values = [pce[c]["f1"] for c in categories]
+
+    y = np.arange(len(categories))
+    h = 0.38
+    bars_fa = ax1.barh(y - h / 2, field_values, height=h, color="steelblue", label="field accuracy")
+    bars_f1 = ax1.barh(y + h / 2, f1_values, height=h, color="#9ecae1", label="employee-set F1")
+
+    ax1.set_yticks(y)
+    ax1.set_yticklabels(categories)
+    ax1.set_xlabel("Score")
+    ax1.set_xlim(0, 1.05)
+    overall_fa = aggregated["extraction_overall_field_accuracy"]
+    overall_f1 = aggregated["extraction_overall_f1"]
+    ax1.set_title(
+        f"Extraction: field accuracy + employee-set F1 per fixture category\n"
+        f"(overall: field_accuracy={overall_fa:.3f}, F1={overall_f1:.3f})"
+    )
+    ax1.legend(loc="lower right")
+
+    # Annotate each field-accuracy bar
+    for bar, val in zip(bars_fa, field_values):
+        ax1.text(
+            min(val + 0.005, 1.03),
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.3f}",
+            va="center",
+            ha="left",
+            fontsize=8,
+        )
+    # Annotate each F1 bar
+    for bar, val in zip(bars_f1, f1_values):
+        ax1.text(
+            min(val + 0.005, 1.03),
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.3f}",
+            va="center",
+            ha="left",
+            fontsize=8,
+        )
+
+    # -----------------------------------------------------------------------
+    # Subplot 2 -- Reconciliation accuracy per NAME-category (k/n fractions, D-12)
+    # -----------------------------------------------------------------------
+    rec_data = aggregated["per_category_reconciliation"]
+    # Sort by category name for stable ordering
+    rec_data_sorted = sorted(rec_data, key=lambda r: r["category"])
+    cat_labels = [f'{r["category"]}\n(n={r["total"]})' for r in rec_data_sorted]
+    acc_values = [r["accuracy"] for r in rec_data_sorted]
+
+    bars_rec = ax2.barh(cat_labels, acc_values, color="seagreen")
+    ax2.set_xlabel("Accuracy on fixtures of category X")  # D-13 exact label wording
+    ax2.set_title(
+        "Name-reconciliation accuracy by name category\n"
+        "(resolver returns none for all 4 unresolved categories -- these are coverage buckets)"
+    )
+    ax2.set_xlim(0, 1.05)
+
+    # Annotate each bar with "k/n" fraction (D-12)
+    for bar, r in zip(bars_rec, rec_data_sorted):
+        label = f'{r["correct"]}/{r["total"]}'
+        ax2.text(
+            min(r["accuracy"] + 0.005, 1.03),
+            bar.get_y() + bar.get_height() / 2,
+            label,
+            va="center",
+            ha="left",
+            fontsize=9,
+        )
+
+    # -----------------------------------------------------------------------
+    # Subplot 3 -- Decision confusion matrix 2x2 + false-process headline
+    # -----------------------------------------------------------------------
+    cm = aggregated["confusion_matrix"]
+    ax3.axis("off")
+    matrix_data = [
+        ["", "Expected: process", "Expected: clarify"],
+        ["Actual: process", str(cm["true_process"]), str(cm["false_process"])],
+        ["Actual: clarify", str(cm["false_clarify"]), str(cm["true_clarify"])],
+    ]
+    table = ax3.table(cellText=matrix_data, loc="center", cellLoc="center")
+    table.auto_set_font_size(False)
+    table.set_fontsize(12)
+    table.scale(1, 1.8)
+
+    # Highlight the FALSE-PROCESS cell (row 1, col 2) -- the dangerous error:
+    # "Actual: process" row x "Expected: clarify" col = pays the wrong person.
+    # Row 0 = header; row 1 = "Actual: process"; col 2 = "Expected: clarify".
+    # (Codex HIGH fix: prior [2,2] highlighted true-clarify, the SAFE cell.)
+    table[1, 2].set_facecolor("#FFCCCC")
+
+    ax3.set_title(
+        f"Decision Confusion Matrix\n"
+        f"FALSE-PROCESS (pays wrong person): "
+        f"{cm['false_process']} of {cm['false_process'] + cm['true_clarify']} "
+        f"should-clarify cases  ({cm['false_process_rate']:.1%})",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    # -----------------------------------------------------------------------
+    # Honesty caption (Codex partial-fix #1 -- don't overclaim extraction bars)
+    # -----------------------------------------------------------------------
+    model_id = _extraction_model_id()
+    fig.text(
+        0.5,
+        0.01,
+        (
+            "Extraction scored against committed extraction caches (replayed, not a live model run); "
+            "deterministic stages (reconcile/validate/decide) scored on labeled expected extraction. "
+            f"Model: {model_id}"
+        ),
+        ha="center",
+        fontsize=8,
+        color="gray",
+        wrap=True,
+    )
+
+    plt.tight_layout(pad=2.0)
+    plt.savefig(str(CHART_PATH), format="svg", bbox_inches="tight")
+    plt.close()
+    print(f"eval/chart.svg written ({CHART_PATH.stat().st_size} bytes)")
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -678,6 +832,11 @@ def main() -> None:
             "Re-record extraction caches via LIVE extraction "
             "(requires ALLOW_LIVE_LLM=true + EXTRACTION_API_KEY)"
         ),
+    )
+    parser.add_argument(
+        "--chart",
+        action="store_true",
+        help="Generate eval/chart.svg from scoring results (requires matplotlib dev dep)",
     )
     args = parser.parse_args()
 
@@ -728,7 +887,10 @@ def main() -> None:
         f"extraction_overall_f1={aggregated['extraction_overall_f1']:.4f}, "
         f"field_accuracy={aggregated['extraction_overall_field_accuracy']:.4f}"
     )
-    print("Run with --chart (04-03) to generate eval/chart.svg")
+    if args.chart:
+        _write_svg_chart(fixture_results, aggregated)
+    else:
+        print("Run with --chart to generate eval/chart.svg")
 
 
 if __name__ == "__main__":

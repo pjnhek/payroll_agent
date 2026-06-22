@@ -1,0 +1,54 @@
+name: eval
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+    inputs:
+      live_record:
+        description: "Re-record extraction cache (requires EXTRACTION_API_KEY secret)"
+        type: boolean
+        default: false
+        required: false
+
+jobs:
+  check:
+    name: "Eval regression gate (hermetic)"
+    runs-on: ubuntu-latest
+    # Push and all workflow_dispatch runs get the hermetic check job
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (all groups)
+        run: uv sync
+      - name: Run eval regression gate
+        run: uv run python eval/run_eval.py --check
+        env:
+          DATABASE_URL: "placeholder"
+          # NOTE: ALLOW_LIVE_LLM intentionally NOT set -- eval gate stays hermetic on push.
+          # Green CI = deterministic scoring didn't regress against committed summary.json.
+          # Green CI does NOT mean extraction is good (no live LLM was called).
+
+  record:
+    name: "Live re-record (workflow_dispatch only)"
+    if: github.event_name == 'workflow_dispatch' && inputs.live_record
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (all groups)
+        run: uv sync
+      - name: Re-record extraction cache
+        run: uv run python eval/run_eval.py --record
+        env:
+          DATABASE_URL: "placeholder"
+          ALLOW_LIVE_LLM: "true"
+          EXTRACTION_API_KEY: ${{ secrets.EXTRACTION_API_KEY }}
