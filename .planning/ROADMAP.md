@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Thin Foundation** - Contracts, minimal schema for the slice, and seed data for one happy-path + one name-mismatch case (completed 2026-06-21)
 - [x] **Phase 2: Walking Skeleton** - First end-to-end proof: messy fixture flows through the four gated judgment stages to a code-gated decision (calc thin, net pre-federal) (completed 2026-06-22)
 - [x] **Phase 2.1: Deterministic Decisioning** *(INSERTED)* - Replace the confidence-threshold gate with deterministic resolution + collision safety + alias read-side; never guesses on a money-moving decision; LLM kept for extraction + clarification suggestion only (completed 2026-06-22)
-- [ ] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny
+- [x] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny (completed 2026-06-22)
 - [ ] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart
 - [ ] **Phase 5: Dashboard & Delivery** - Operator gate UI (raw email beside extracted beside computed), runs/eval views, confirmation email + on-demand PDFs, idempotency + error path
 - [ ] **Phase 6: Real Integration & Ship** - Real email provider behind the interface, Docker + Render + Supabase + keep-alive, README with disclaimer + demo recording
@@ -143,7 +143,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 03-02-PLAN.md — Golden-value test suite: tests/test_federal_withholding.py covering all 6 Worksheet 1A schedules + D-04 edge cases + the in-PDF wage-bracket PRIMARY oracle + bracket-boundary tests (autonomous: false — layer-B over-ceiling oracle verification checkpoint)
+- [x] 03-02-PLAN.md — Golden-value test suite: tests/test_federal_withholding.py covering all 6 Worksheet 1A schedules + D-04 edge cases + the in-PDF wage-bracket PRIMARY oracle + bracket-boundary tests (autonomous: false — layer-B over-ceiling oracle verification checkpoint)
 
 ### Phase 4: The Eval (the proof)
 
@@ -224,7 +224,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
-| 3. Harden the Calc | 2/3 | In Progress|  |
+| 3. Harden the Calc | 3/3 | Complete   | 2026-06-22 |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
