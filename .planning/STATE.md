@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-20)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
-**Current focus:** Phase 03 — harden-the-calc
+**Current focus:** Phase 03 — harden-the-calc (verified 8/8; 2 operator-pending human-UAT items)
 
 ## Current Position
 
-Phase: 03 (harden-the-calc) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 03
-Last activity: 2026-06-22 -- Phase 03 execution started
+Phase: 03 (harden-the-calc) — VERIFIED (human_needed)
+Plan: 3 of 3 complete
+Status: Phase 03 verified 8/8 must-haves; 3 code-review rounds applied; awaiting human-UAT (03-HUMAN-UAT.md)
+Last activity: 2026-06-22 -- Phase 03 executed + 3 code-review rounds + verified (human_needed)
 
 Progress: [██████████] 100%
 
@@ -137,5 +137,5 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-06-22T04:56:34.901Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-harden-the-calc/03-CONTEXT.md
+Stopped at: Phase 3 executed + verified (human_needed) + 3 code-review rounds applied
+Resume file: .planning/phases/03-harden-the-calc/03-HUMAN-UAT.md (2 operator-pending items)
