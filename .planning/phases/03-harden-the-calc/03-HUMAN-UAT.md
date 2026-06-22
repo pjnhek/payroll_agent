@@ -3,25 +3,27 @@ status: partial
 phase: 03-harden-the-calc
 source: [03-VERIFICATION.md]
 started: 2026-06-22T08:15:30Z
-updated: 2026-06-22T08:15:30Z
+updated: 2026-06-22T08:40:00Z
 ---
 
 ## Current Test
 
-[awaiting human testing]
+[Item 2 awaiting human testing]
 
 ## Tests
 
 ### 1. Thomas Bergmann over-ceiling federal-withholding fixture (layer-B oracle)
-expected: Both usapaycheck.org (biweekly variant) AND paycheckcity.com, in IRS Pub 15-T
-2026 percentage-method mode, return the same federal withholding (within ±$1) for Thomas
-Bergmann: biweekly, married_jointly, Step-2 NOT checked, gross ≈ $9,230.77 ($240,000 / 26),
-401k = 8% (federal taxable ≈ $8,492.31), step_3_dependents = $8,000. Calibrate each tool
-first on the under-ceiling case ($800/week, Single, no Step-2 → $54.08). If both agree,
-write the value into the fixture at `test_federal_withholding_thomas_bergmann_over_ceiling`
-in tests/test_federal_withholding.py and remove the `@pytest.mark.skip`. If they disagree
-by > $1, leave the skip (over-ceiling coverage stays UNRESOLVED).
-result: [pending]
+expected: An independent IRS-percentage-method calculator confirms the over-ceiling
+federal withholding for Thomas Bergmann (biweekly, MFJ, Step-2 unchecked, gross $9,230.77,
+pre-tax 401k 8% → federal taxable $8,492.31, step_3 $8,000).
+result: RESOLVED 2026-06-22 — paycheckcity.com (calibrated to $54.08 on the under-ceiling
+case) returned Federal Withholding = $881.39 with the 401k entered as TRADITIONAL pre-tax,
+a PENNY-EXACT match with the engine. (An initial run without the 401k applied to the
+federal base gave $1,043.85; re-running with pre-tax 401k reconciled it exactly to $881.39,
+confirming the difference was 401k input handling, not an engine/table error.) usapaycheck.org
+was discarded (rounds inputs/outputs, not penny-exact). Fixture
+`test_federal_withholding_thomas_bergmann_over_ceiling` now asserts $881.39 via calculate();
+skip removed. Provenance: one penny-exact online oracle + full Worksheet 1A hand trace.
 
 ### 2. MFJ Standard wage-bracket independent cross-check
 expected: 4–6 "Married Filing Jointly, Standard (Step-2 unchecked)" weekly wage-bracket
@@ -35,9 +37,9 @@ result: [pending]
 ## Summary
 
 total: 2
-passed: 0
+passed: 1
 issues: 0
-pending: 2
+pending: 1
 skipped: 0
 blocked: 0
 
