@@ -2,12 +2,19 @@
 phase: 4
 reviewers: [codex]
 reviewed_at: 2026-06-22T18:31:29Z
+rounds: 2
 plans_reviewed: [04-01-PLAN.md, 04-02-PLAN.md, 04-03-PLAN.md, 04-04-PLAN.md]
 reviewer_versions:
   codex: codex-cli 0.135.0
 ---
 
 # Cross-AI Plan Review — Phase 4 (The Eval)
+
+> **Round 2 (re-review after applying Round-1 fixes) is appended at the bottom of this file.** Round 2 confirmed all 13 Round-1 findings fixed (11 confirmed, 2 partial) and surfaced 8 new findings (2 HIGH cross-plan-consistency bugs introduced by the edits + 6 MEDIUM/LOW), all since resolved.
+
+---
+
+# Round 1
 
 ## Codex Review
 
@@ -83,3 +90,42 @@ Single reviewer (Codex). Findings independently verified against the plan text a
 - **PyYAML not declared** (LOW): rather than add a dep, the verify is switched to a dependency-free parse so the eval doesn't grow a dev dependency just for a CI-yaml smoke check.
 
 All fixes applied directly to the plan files (concrete + surgical); see commit. The DRY seam, D-09 golden reuse, hermetic-CI shape, and scope tiering were confirmed sound and unchanged.
+
+---
+
+# Round 2 (re-review after Round-1 fixes)
+
+## Codex Review (Round 2)
+
+**Summary.** Round-2 fixes are directionally stronger, especially PATH-A isolation, `matched_employee_id` scoring, Counter-based extraction alignment, and the false-process denominator/cell. Two hard blockers found: 04-03 called `_write_summary_json` with the wrong signature, and 04-01 allowed `pay_period_start: null` while 04-02 validates it as required. (Codex also independently checked `astral-sh/setup-uv@v5` action metadata and confirmed `python-version` is a valid input — no CI-action finding.)
+
+### Prior-fix verification (all 13)
+- CONFIRMED-FIXED (11): #2 PATH-A isolation, #3 reconciliation matched_employee_id, #4 false-process denominator, #5 chart dangerous cell (`table[1,2]` re-derived correct), #6 seed UUIDs + roster validation, #7 duplicate alignment (Counter), #8 `--check` breadth, #9 field accuracy first-class, #11 DB write derives from summary, #12 PyYAML fallback, #13 `--db` failure masking.
+- PARTIALLY-FIXED (2): #1 extraction caches (divergence now required, but `--record` is still a stub so caches aren't raw recorded output — by D-07 design; honesty framing added); #10 DB-free eval (main path fixed, but the 04-02 threat-model text still claimed `_write_summary_json` imports config / DATABASE_URL required).
+
+### New findings (Round 2)
+- **HIGH — 04-03 Task 1:** `_write_summary_json(fixture_results, aggregated)` called with 2 args; 04-02 requires `suite_run_id` 3rd arg. (Introduced by the Round-1 signature change.)
+- **HIGH — 04-01/04-02 schema mismatch:** 04-01 allowed `expected.extracted.pay_period_start: null`; `Extracted.pay_period_start` is required non-null and `_expected_to_extracted` validates through it.
+- **MEDIUM — 04-01:** divergence validation only checked `divergent >= 2`, didn't enforce one precision-miss + one field-miss, and used dicts (collapses duplicate-only divergence).
+- **MEDIUM — 04-01:** contradictory `_note`-in-cache instruction (cache is `extra="forbid"`).
+- **MEDIUM — 04-01:** bad fixture examples — whitespace "typo" normalizes to exact; James Okafor is SALARY (bad missing-hours candidate).
+- **MEDIUM — 04-04:** DB rows referenced per-fixture `reconciliation_accuracy` scalar; 04-02 per-fixture result has a reconciliation LIST, not a scalar.
+- **LOW — 04-04:** judge verification still masked failures with `|| echo`.
+- **LOW — 04-04:** objective said `run_eval.py` gets a `--judge` flag; task says judge.py is standalone.
+
+**Overall risk (Round 2): HIGH until the signature mismatch + nullable pay-period schema are fixed.**
+
+## Round-2 Resolution (all applied — see commit)
+
+| Finding | Sev | Resolution |
+|---------|-----|------------|
+| `_write_summary_json` signature | HIGH | 04-03 now keeps 04-02's 3-arg call (`…, suite_run_id`) and only ADDS the chart step; no second/2-arg call. |
+| `pay_period_start` nullable | HIGH | 04-01 schema marks it REQUIRED non-null; validation script asserts `exp['extracted']['pay_period_start']` truthy on every fixture. |
+| divergence one-of-each | MED | validator now requires ≥1 precision-miss (multiset difference) AND ≥1 field-miss, using `Counter` (no dict collapse). |
+| `_note` contradiction | MED | removed `_note`-in-cache; divergences recorded in a sidecar `eval/fixtures/DIVERGENCES.md`; cache stays pure `Extracted` JSON. |
+| bad fixture examples | MED | typo fixtures use character-level misspellings (not whitespace); missing-hours uses Maria (hourly); fixture 13 reassigned to David Reyes by exact full name (hourly, distinct business); files_modified renamed `_coastal`→`_metro`. |
+| DB `reconciliation_accuracy` | MED | 04-04 derives the scalar from the per-fixture reconciliation list (`correct/total`); every metric's extraction path from the entry is now spelled out. |
+| judge `\|\| echo` mask | LOW | replaced with an `rc`-capture + sentinel-grep that only passes on a genuine SystemExit. |
+| `--judge` flag inconsistency | LOW | objective corrected: judge.py is standalone, no `--judge` on run_eval.py. |
+| #10 stale threat-model text | (carry) | 04-02 trust-boundary + T-04-07 rows rewritten: DB-free scoring/--check, app.config only on --record. |
+| #1 honesty | (carry) | 04-03 chart adds a gray caption: extraction scored against replayed caches (not a live model run) until --record. |
