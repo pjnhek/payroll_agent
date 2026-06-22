@@ -1,10 +1,11 @@
 ---
 phase: 5
 slug: dashboard-delivery
-status: draft
+status: approved
 shadcn_initialized: false
 preset: not applicable
 created: 2026-06-22
+reviewed_at: 2026-06-22
 ---
 
 # Phase 5 — UI Design Contract
@@ -150,6 +151,8 @@ This phase delivers four server-rendered pages. Each maps to one Jinja2 template
 - `<tbody>` background: `#F9FAFB`. `<td>` text: 14px regular `#111827`. Padding: `sm` vertical, `sm` horizontal.
 - Row border-bottom: 1px `#E5E7EB`.
 - `awaiting_approval` rows get no special row highlight — the badge emphasis is sufficient triage signal.
+- **Primary visual focal point:** the `badge-pending` (`awaiting_approval`) badge is the page's focal point — the operator's eye should land there first. It is the only badge using the accent-blue family; all other badges are muted by comparison so "what needs me" reads at a glance.
+- In-table action links ("View"): `color: #111827` (text primary) with `text-decoration: underline` on `:hover` — matching the `base.html` nav link pattern. Not the accent color.
 - Rows are in reverse-chronological order (newest first).
 
 **Empty state (no runs yet):**
@@ -203,7 +206,7 @@ Column labels (12px semibold `#111827`, margin-bottom `sm` 8px):
 - Values: right-aligned, formatted as `$X,XXX.XX` (2 decimal places).
 - If `state_withholding` is null: omit the row (do not show "$0.00 State").
 - If `additional_medicare_not_modeled = true`: show a 12px `#6B7280` footnote below the table: "Additional Medicare (0.9% over $200k) not modeled."
-- A "Download PDF" link below each employee's table: `GET /runs/{run_id}/pdf/{employee_id}`. 14px text-primary underline.
+- A "Download PDF" link below each employee's table: `GET /runs/{run_id}/pdf/{employee_id}`. 14px `#111827` (text primary) with `text-decoration: underline` on `:hover`, matching the `base.html` nav link pattern (not the accent color).
 - If paystubs are not yet computed: display "Calculation in progress..."
 
 **Operator controls (DASH-03) — only rendered when `status = awaiting_approval`:**
@@ -401,11 +404,11 @@ app/
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS (two non-blocking FLAGs folded in: runs-list focal-point declaration + in-table link hover treatment)
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS (not applicable — no shadcn/registry; server-rendered Jinja2)
 
-**Approval:** pending
+**Approval:** approved 2026-06-22
