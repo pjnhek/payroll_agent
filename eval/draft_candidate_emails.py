@@ -1,0 +1,38 @@
+"""Throwaway bootstrap drafting aid — NOT a production generator.
+
+Prompts the Kimi draft model to produce candidate messy payroll emails for
+the builder to hand-edit and hand-label into eval/fixtures/. The committed
+fixtures are the source of truth; this script just provides phrasing variety.
+Delete or ignore after the fixture corpus is built.
+"""
+from app.config import get_settings
+from app.llm.client import call_text
+
+
+def _require_live_llm() -> None:
+    settings = get_settings()
+    if not settings.allow_live_llm:
+        raise SystemExit("Set ALLOW_LIVE_LLM=true to use this drafting helper.")
+    if not settings.draft_api_key:
+        raise SystemExit("DRAFT_API_KEY must be set to use this drafting helper.")
+
+
+if __name__ == "__main__":
+    _require_live_llm()
+    draft = call_text(
+        tier="draft",
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Draft a realistic but intentionally messy payroll email for a "
+                    "small business. Include at least one name abbreviation or nickname "
+                    "that might not match the employee's full name. Be casual and "
+                    "informal, like a real small-business payroll submission. Include a "
+                    "random mix of regular/OT hours. Sign off with a name."
+                ),
+            }
+        ],
+        temperature=0.9,
+    )
+    print(draft or "No content returned — retry or hand-write the fixture.")
