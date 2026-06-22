@@ -812,6 +812,91 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# D-14: Optional DB write -- derives from eval/summary.json (never in-memory)
+# ---------------------------------------------------------------------------
+
+
+def _write_db_results() -> None:
+    """Write per-fixture/per-metric rows to eval_results from eval/summary.json.
+
+    Design notes (D-14):
+    - Reads os.environ directly BEFORE any app.config import to avoid the
+      required-field fail-fast in Settings (DATABASE_URL has no default).
+    - Only proceeds when DATABASE_URL is a real DSN (not absent, not the
+      CI/dev "placeholder" sentinel).
+    - Derives suite_run_id and all rows from the committed eval/summary.json
+      so the DB rows can never diverge from the published artifact.
+    - psycopg imported inside this function (local import, not at module level).
+    - On psycopg.Error: warns and returns -- DB write is optional, never crashes eval.
+    """
+    # CRITICAL: check os.environ BEFORE importing app.config (Codex R4 LOW fix).
+    # Settings.database_url is a REQUIRED field with no default; calling
+    # get_settings() when DATABASE_URL is absent raises ValidationError.
+    db_url = os.environ.get("DATABASE_URL")
+
+    if not db_url or db_url == "placeholder":
+        print("DB write skipped (DATABASE_URL unset or placeholder)")
+        return
+
+    if not SUMMARY_PATH.exists():
+        print(
+            "DB write skipped (no eval/summary.json -- run the scorer first)"
+        )
+        return
+
+    # summary.json is authoritative: read from disk, not in-memory state.
+    summary = json.loads(SUMMARY_PATH.read_text())
+
+    suite_run_id = summary["suite_run_id"]
+
+    # Build per-fixture, per-metric rows.
+    rows: list[tuple] = []
+    for entry in summary.get("per_fixture", []):
+        fixture_id = entry["fixture_id"]
+        details_json = json.dumps(entry)
+
+        # Derive each metric value explicitly (per-fixture shape from 04-02).
+        metrics: dict[str, float] = {
+            "extraction_f1": float(entry["extraction"]["f1"]),
+            "extraction_field_accuracy": float(entry["extraction"]["field_accuracy"]),
+            # reconciliation is a list; derive a scalar per-fixture accuracy.
+            "reconciliation_accuracy": (
+                sum(1 for r in entry["reconciliation"] if r["correct"])
+                / len(entry["reconciliation"])
+            )
+            if entry.get("reconciliation")
+            else 1.0,
+            "decision_action_correct": 1.0 if entry["decision"]["action_correct"] else 0.0,
+            "decision_gate_struct_ok": 1.0 if entry["decision"]["gate_struct_ok"] else 0.0,
+        }
+
+        for metric_name, value in metrics.items():
+            rows.append((suite_run_id, fixture_id, metric_name, value, details_json))
+
+    # Import psycopg inside the function -- keeps it off the scoring path.
+    import psycopg  # noqa: PLC0415
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO eval_results
+                            (suite_run_id, fixture_id, metric_name, value, details)
+                        VALUES (%s, %s, %s, %s, %s::jsonb)
+                        """,
+                        rows,
+                    )
+        print(
+            f"DB write complete: {len(rows)} rows inserted "
+            f"(suite_run_id={suite_run_id})"
+        )
+    except psycopg.Error as exc:
+        print(f"DB write warning: {exc} -- skipping (DB write is optional)")
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -837,6 +922,14 @@ def main() -> None:
         "--chart",
         action="store_true",
         help="Generate eval/chart.svg from scoring results (requires matplotlib dev dep)",
+    )
+    parser.add_argument(
+        "--db",
+        action="store_true",
+        help=(
+            "Write eval results to eval_results table from eval/summary.json "
+            "(requires real DATABASE_URL)"
+        ),
     )
     args = parser.parse_args()
 
@@ -887,6 +980,8 @@ def main() -> None:
         f"extraction_overall_f1={aggregated['extraction_overall_f1']:.4f}, "
         f"field_accuracy={aggregated['extraction_overall_field_accuracy']:.4f}"
     )
+    if args.db:
+        _write_db_results()
     if args.chart:
         _write_svg_chart(fixture_results, aggregated)
     else:
