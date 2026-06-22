@@ -4,11 +4,11 @@
 
 An email-driven system that automates the weekly payroll intake the builder used to do by hand as a tax analyst. A client business emails its employees' hours; an LLM-driven pipeline reads the email, reconciles the submitted names against the business's roster, decides whether it can process the run or must ask the client a clarifying question, computes the payroll (gross, FICA, real IRS Pub 15-T federal withholding), and routes the result to a single human operator for one approval before the confirmation goes back to the client. Built end-to-end on a free stack so it runs and demos cleanly.
 
-The narrative for the writeup: the manual payroll process from the builder's accounting days, rebuilt as an agentic pipeline — the LLM does the reading, name matching, and decisioning; a human approves only the final payroll before it reaches the client. **Primary audience: hiring managers / recruiters.** Optimize for *visibly works end to end* > *clean 60–90s demo* > *a real, legible eval chart*.
+The narrative for the writeup: the manual payroll process from the builder's accounting days, rebuilt as an agentic pipeline — the LLM does the reading and an optional clarification *suggestion*; the name-match and process-vs-clarify decisions are resolved deterministically by code; a human approves only the final payroll before it reaches the client. **Primary audience: hiring managers / recruiters.** Optimize for *visibly works end to end* > *clean 60–90s demo* > *a real, legible eval chart*.
 
 ## Core Value
 
-A messy real-world payroll email goes in; a correct, human-approved payroll comes out — and every judgment call (name match, process-vs-clarify) is made by the LLM but **gated by code so a low-confidence match can never reach a real payroll calculation.** If that gated decision flow works, everything else is plumbing.
+A messy real-world payroll email goes in; a correct, human-approved payroll comes out — and every money-moving judgment call (name match, process-vs-clarify) is **deterministic, auditable decisioning that never guesses, with a human-confirmation learning loop.** Each submitted name resolves against the roster in pure code (exact / stored-alias / none), collisions always clarify, and the LLM never decides — it only reads (extraction) and suggests a likely employee for the clarification email. The learning loop reads stored aliases now; it writes a newly-confirmed alias at the operator-approval gate (Phase 5). If that deterministic decision flow works, everything else is plumbing.
 
 ## Requirements
 
@@ -28,10 +28,10 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 **Extraction & reconciliation (the judgment layer)**
 - [ ] LLM extracts structured per-employee entries (name as written, regular/OT/vacation/sick/holiday hours, any 401k change) via JSON mode + Pydantic, retry once on parse failure
-- [ ] Deterministic name match resolves exact / case / whitespace / known-alias hits with no model call
-- [ ] LLM name reconciliation runs only on names that fail the deterministic match; returns match + confidence + short reason; never re-decides a clean match
+- [ ] Deterministic name resolver is the WHOLE matcher — pure code resolves each name as exact / stored-alias / none, with no model call and no confidence score
+- [ ] An optional clarification-SUGGESTION call (cheap tier) maps an unresolved name to the likely roster employee for the email copy only — it never feeds the decision
 - [ ] Deterministic field validation produces a per-field issues list (presence, sanity bounds, numeric)
-- [ ] LLM decision returns `process` or `request_clarification` + issues; **code hard-gates** it (block on missing required field or any name unresolved below the 0.8 confidence threshold)
+- [ ] Deterministic decision: `decide.py` computes `final_action` purely from the resolution facts — unresolved name, run-level collision, or missing required field → `request_clarification`; no model action, no confidence number
 
 **Payroll calculation**
 - [ ] Gross pay: hourly × rate with FLSA overtime at 1.5× over 40 hrs/week; salary = annual ÷ pay periods; plus vacation/sick/holiday
@@ -79,12 +79,12 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 ## Context
 
 - **Origin:** rebuild of the builder's real manual weekly-payroll intake from their tax-analyst/accounting days. The operator role is the role the builder personally played.
-- **Decisioning model (the heart of the design), three layers:**
-  1. *Deterministic fast-path* (code, no model): exact/normalized/alias name match, required-field presence, sanity bounds, arithmetic. Anything unambiguous resolves here and never touches a model.
-  2. *LLM judgment* (only where language understanding is needed): fuzzy name reconciliation (typo vs nickname vs different person, with confidence + reason) and the process-vs-clarify decision.
-  3. *Hard gates* (code): even on a model "process," code blocks a truly-missing field or any name unresolved below the 0.8 threshold. Keeps the decision auditable.
-- **Pipeline stages (9):** ingest/route → extract → name reconcile → field validate → decide (gated) → clarify-path or process-path → operator approval → send → reconciliation check.
-- **Model tiering:** extraction = stronger model; name reconcile = strong/mid; decision = mid (gated); email drafting = cheap. One OpenAI-compatible client, base URL/model/key swapped per task.
+- **Decisioning model (the heart of the design), as shipped in Phase 2.1 — deterministic, no confidence anywhere:**
+  1. *Deterministic resolution* (code, no model): each submitted name resolves against the roster as **exact** (unique normalized full_name), **stored-alias** (unique `known_aliases` hit — the READ side of the learning loop), or **none** (no match, typo, first-time nickname, garbled, or ambiguous). Required-field presence, sanity bounds, and arithmetic are likewise pure code. The resolver never guesses.
+  2. *LLM judgment* (only where language understanding helps, and only as advisory copy): the **clarification-suggestion** call maps an unresolved name to the likely intended employee so the email is specific ("did you mean David Reyes?"). It is wired strictly AFTER the gate and never feeds the decision (D-21-05). Extraction is the other LLM judgment role.
+  3. *The pure decide* (code): `decide.py` computes `final_action` purely from the resolution facts — `request_clarification` on any unresolved name, any run-level collision, or any missing required field. There is no model action to override and no score is read anywhere; the decision is deterministic and auditable.
+- **Pipeline stages (9):** ingest/route → extract → name resolve (deterministic) → field validate → decide (pure code) → clarify-path (with the suggestion call) or process-path → operator approval → send → reconciliation check.
+- **Model tiering (two tiers — the decision is pure code, so no decision/mid tier):** extraction = DeepSeek (stronger); drafting + the clarification suggestion = Kimi (cheap). One OpenAI-compatible client, base URL/model/key swapped per task.
 - **Fixture-first development:** the whole pipeline is built and demoable by POSTing JSON fixtures to the webhook; the real email provider (n8n or a hosted inbound-parse service) is wired **last**, and the "send test email" button is both a demo feature and a live-email fallback. (Open decision #4, resolved.)
 - **Render free realities to design around:** web service sleeps after 15 min, cold-starts under a minute, ephemeral filesystem, only inbound HTTP keeps it awake — so the webhook model fits and a polling loop would not.
 - **The `status` column IS the orchestration engine** (surfaced by research): `payroll_runs.status` is simultaneously workflow position, durable checkpoint, the HITL gate, and the crash-recovery anchor — this is what cleanly replaces LangGraph. There are **two pause states** (still one *human* gate): `awaiting_reply` (machine pause on the client, resumes at stage 2) and `awaiting_approval` (the single operator gate, resumes at stage 8).
@@ -99,7 +99,7 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 - **Orchestration**: plain Python workflow, fixed path, state in Postgres — deliberately not an autonomous agent and not LangGraph.
 - **Human-in-the-loop**: exactly one gate (operator approves computed payroll before send). Everything before it is automated.
 - **Structured LLM calls**: JSON mode + Pydantic schema, one retry on parse failure.
-- **Confidence threshold**: name-reconciliation auto-clarify starts at **0.8**, tuned against the eval. (Open decision #6, resolved.)
+- **Deterministic decisioning**: `decide.py` is pure code over resolution facts (exact / stored-alias / none + run-level collisions + missing fields → `final_action`) — no LLM call, no confidence number. (Phase 2.1 superseded the original 0.8-confidence-gate decision; the LLM is kept for extraction + the clarification suggestion only.)
 - **Audience**: hiring-manager / recruiter facing — bias effort toward a rock-solid end-to-end happy-path-plus-name-mismatch flow and a real, legible eval chart over eval exotica.
 
 ## Key Decisions
@@ -112,7 +112,7 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 | Gateway-agnostic + fixture-first build sequencing | Decouples the one risky external dependency (inbound email) from everything that proves the system works; "send test email" doubles as demo + fallback | — Pending |
 | Config-driven model routing with placeholder IDs | Builder pastes real Kimi/DeepSeek strings from consoles; keeps tiers swappable | — Pending |
 | Real IRS Pub 15-T percentage method for federal withholding | Most credible paystub; highest bug risk, so it's an isolated well-tested unit guarded by the reconciliation check | — Pending |
-| Name-reconciliation auto-clarify threshold starts at 0.8 | Conservative default; below it, code forces clarify/block; tuned against the eval | — Pending |
+| Deterministic decisioning — resolve each name in pure code (exact / stored-alias / none), collisions always clarify, no confidence number (Phase 2.1, supersedes the original 0.8 threshold) | The "model says process, code blocks at 0.8" hero was not a real state for a well-calibrated model (an uncertain model self-clarifies); a pure resolver is auditable, reproducible, and genuinely never guesses on a money-moving decision | Decided (Phase 2.1) |
 | Eval = all 4 metrics over ~15–25 fixtures, one summary chart | Covers the full "judgment" narrative for a recruiter audience while staying achievable; the chart is the proof, not the demo | — Pending |
 | Plain Python workflow over LangGraph/agent loop | Path is fixed and controlled; Postgres is the checkpoint for the HITL pause | — Pending |
 | Tax basis: 2026 Pub 15-T standard percentage method, disclaim OBBBA | Current-year credibility ($184,500 wage base, 2026 brackets) without OBBBA complexity; engine + eval ground truth share one assumption | — Pending |

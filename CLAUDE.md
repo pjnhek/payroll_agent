@@ -16,19 +16,20 @@ See the **Installation** section below for the full command reference and the Ph
 
 An email-driven system that automates the weekly payroll intake the builder used to do by hand as a tax analyst. A client business emails its employees' hours; an LLM-driven pipeline reads the email, reconciles the submitted names against the business's roster, decides whether it can process the run or must ask the client a clarifying question, computes the payroll (gross, FICA, real IRS Pub 15-T federal withholding), and routes the result to a single human operator for one approval before the confirmation goes back to the client. Built end-to-end on a free stack so it runs and demos cleanly.
 
-The narrative for the writeup: the manual payroll process from the builder's accounting days, rebuilt as an agentic pipeline — the LLM does the reading, name matching, and decisioning; a human approves only the final payroll before it reaches the client. **Primary audience: hiring managers / recruiters.** Optimize for *visibly works end to end* > *clean 60–90s demo* > *a real, legible eval chart*.
+The narrative for the writeup: the manual payroll process from the builder's accounting days, rebuilt as an agentic pipeline — the LLM does the reading and an optional clarification *suggestion*; **the name-match and process-vs-clarify decisions are resolved deterministically by code**, and a human approves only the final payroll before it reaches the client. **Primary audience: hiring managers / recruiters.** Optimize for *visibly works end to end* > *clean 60–90s demo* > *a real, legible eval chart*.
 
-**Core Value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — and every judgment call (name match, process-vs-clarify) is made by the LLM but **gated by code so a low-confidence match can never reach a real payroll calculation.** If that gated decision flow works, everything else is plumbing.
+**Core Value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — and every money-moving judgment call (name match, process-vs-clarify) is **gated by code: deterministic, auditable, and never guesses.** Each submitted name is resolved against the roster in pure code (exact / stored-alias / none), collisions always clarify, and the LLM never decides — it only reads (extraction) and suggests a likely employee for the clarification email. If that deterministic decision flow works, everything else is plumbing.
 
 ### Constraints
 
 - **Tech stack**: FastAPI in Docker on a Render free web service; Supabase Postgres for all state — chosen to run end-to-end on a free tier and demo cleanly.
-- **Models**: Kimi and DeepSeek via OpenAI-compatible clients, non-reasoning chat variants — latency, and the task isn't multi-step reasoning. Model IDs are **config-driven** (env vars + `.env.example` placeholders); real strings pasted from the consoles later. (Open decision #5, resolved.)
+- **Models**: Kimi and DeepSeek via OpenAI-compatible clients, non-reasoning chat variants — latency, and the task isn't multi-step reasoning. **Two tiers only** (the decision is pure code, so there is no decision/mid tier): DeepSeek for extraction, Kimi for drafting + the clarification suggestion. Model IDs are **config-driven** (env vars + `.env.example` placeholders); real strings pasted from the consoles later. (Open decision #5, resolved.)
 - **Email**: a gateway catches inbound mail and posts to the app and sends outbound; threading is anchored on the RFC `Message-ID` header. Written gateway-agnostic behind one small interface.
 - **Orchestration**: plain Python workflow, fixed path, state in Postgres — deliberately not an autonomous agent and not LangGraph.
 - **Human-in-the-loop**: exactly one gate (operator approves computed payroll before send). Everything before it is automated.
 - **Structured LLM calls**: JSON mode + Pydantic schema, one retry on parse failure.
-- **Confidence threshold**: name-reconciliation auto-clarify starts at **0.8**, tuned against the eval. (Open decision #6, resolved.)
+- **Deterministic decisioning**: `decide.py` is pure code over resolution facts — each submitted name resolves against the roster as **exact / stored-alias / none**, run-level collisions always clarify, and `final_action` is computed with **no LLM call and no confidence number**. There is no model action to diverge from; the code never guesses on a money-moving decision. The LLM is kept for extraction and an optional clarification *suggestion* only.
+- **Human-confirmation learning loop**: a submitted name is resolved against an employee's stored `known_aliases` (the READ side, shipped). The WRITE side — persisting a newly-confirmed alias so the system stops asking — happens **at the operator-approval gate** and lands in Phase 5 (it reuses the single human gate, no auto state change without the human).
 - **Audience**: hiring-manager / recruiter facing — bias effort toward a rock-solid end-to-end happy-path-plus-name-mismatch flow and a real, legible eval chart over eval exotica.
 <!-- GSD:project-end -->
 
@@ -79,7 +80,7 @@ uv add --dev <pkg> # add a dev/eval-only dep
 ### 2. OpenAI-compatible client against Kimi + DeepSeek — JSON mode + retry
 - **DeepSeek `json_object` requires the word "json" in the prompt + an example shape**, or it silently won't enter JSON mode. It can also occasionally return empty content — the retry loop covers this.
 - **`json_object` guarantees valid JSON syntax, NOT your schema.** Field-level correctness comes from `model_validate_json()` on *your* Pydantic model. This is by design and is exactly why the project pairs JSON mode with a Pydantic schema.
-- **`temperature=0`** for extraction/decision (deterministic, eval-stable). The drafting tier (cheap model, email text) can run warmer.
+- **`temperature=0`** for extraction (deterministic, eval-stable). The drafting tier (cheap model, email text — including the clarification suggestion) can run warmer. (There is no decision LLM call: `decide.py` is pure code, D-21-01.)
 - Keep `max_tokens` high enough that the JSON object can't be cut off mid-stream.
 | Provider | Base URL (verified Jun 2026) | Non-reasoning chat family to target | Flag |
 |----------|------------------------------|-------------------------------------|------|
