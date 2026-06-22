@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
-  "suite_run_id": "4db0c49e-9e16-46c7-9dca-1939ef7d7c06",
-  "generated_at": "2026-06-22T20:21:23.854560+00:00",
+  "suite_run_id": "132aa90b-16f7-4637-9dec-0535f49d3968",
+  "generated_at": "2026-06-22T20:21:55.664529+00:00",
   "extraction_model_id": "deepseek-v4-flash",
   "false_process_rate": 0.0,
   "confusion_matrix": {
