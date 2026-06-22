@@ -64,11 +64,11 @@ Over-40-no-OT validation rule (weekly/biweekly frequencies) emits a ValidationIs
 
 Phase 3 deepens the existing thin pure calc in `app/pipeline/calculate.py` from "gross + FICA + fake zero federal" into fully correct payroll math: real Pub 15-T 2026 federal withholding, full-fidelity gross (FLSA OT, salary leave pay), 401k reducing federal-not-FICA base, and a real net. All of this is locked behind a golden-value test suite sourced from an oracle that is independent of the code being tested.
 
-The most critical research output is the live transcription of the 2026 IRS Pub 15-T PDF — retrieved 2026-06-22 from `https://www.irs.gov/pub/irs-pdf/p15t.pdf`. The 2026 edition incorporates OBBBA changes (permanent extension of individual tax rates, increased standard deduction, no personal exemptions). Every number in Mandatory Deliverables 1–4 below was extracted directly from that PDF binary using `pdfplumber`.
+The most critical research output is the live transcription of the 2026 IRS Pub 15-T PDF — retrieved 2026-06-22 from `https://www.irs.gov/pub/irs-pdf/p15t.pdf`. The 2026 edition incorporates OBBBA changes (permanent extension of individual tax rates, increased standard deduction, no personal exemptions). Every number in Mandatory Deliverables 1–5 below was extracted directly from that PDF binary using `pdfplumber`.
 
-The 2026 Pub 15-T does NOT contain worked Worksheet 1A examples for standard resident employees. The only "Example" in the PDF is for a nonresident alien employee using a different worksheet (Worksheet 3 / Wage Bracket Method for manual systems, page 7). This means **the golden suite layer A cannot use IRS-authored Worksheet 1A worked examples because none exist in the 2026 publication**. Instead, the planner must adapt the D-01 oracle strategy: layer A becomes hand-computed fixtures that verify against TWO independent online percentage-method calculators (layer B), accepting that the independence guarantee comes from the calculator rather than IRS-authored paper. See Mandatory Deliverable 3 for the full inventory and oracle tool verification.
+The 2026 Pub 15-T contains NO worked *Worksheet 1A* examples (Deliverable 3) — the only narrative "Example" is a nonresident-alien Wage Bracket case on page 7. **However, the IRS-published Wage Bracket Method tables (Section 2, pages 13–27) ARE the in-PDF answer key** (Deliverable 5): each wage-bracket cell is the IRS's own percentage-method result, transcribed SEPARATELY from our percentage-method bracket rows, so a transcription typo in our tables cannot hide behind a wage-bracket cell. This restores the D-01 "the oracle is the IRS itself" independence guarantee for every fixture whose adjusted per-period wage falls under the table ceiling (≈$1,925 weekly / $3,875 biweekly / $4,185 semimonthly / $8,395 monthly — all ~$100k annualized). The wage-bracket oracle is the PRIMARY golden-suite oracle; the online percentage-method calculators (Deliverable 4) drop to secondary corroboration behind a manual human-verify checkpoint, used only for over-ceiling high earners (Thomas Bergmann). See Mandatory Deliverable 5 for the full structure, ceilings, the midpoint cross-check rule, and a verbatim sample block.
 
-**Primary recommendation:** Implement the Pub 15-T engine as an isolated pure-function module `app/pipeline/federal_withholding.py` (see Architecture Patterns); migrate all year-specific constants into `app/pipeline/tax_tables_2026.py`; write the golden suite as table-driven pytest parametrize covering the D-04 matrix; use `usapaycheck.org` as the primary layer-B oracle (explicitly claims IRS Pub 15-T percentage method, accepts Step 2 checkbox and Step 3 credits) and `paycheckcity.com/calculator/salary` as the secondary oracle (references Pub 15-T tables).
+**Primary recommendation:** Implement the Pub 15-T engine as an isolated pure-function module `app/pipeline/federal_withholding.py` (see Architecture Patterns); migrate all year-specific constants into `app/pipeline/tax_tables_2026.py`; write the golden suite as table-driven pytest parametrize covering the D-04 matrix; use the **in-PDF Wage Bracket Method tables (Deliverable 5) as the primary oracle** for under-ceiling fixtures (evaluate the engine at the interval midpoint, round to whole dollars, assert `==` the published cell), and the online percentage-method calculators (`usapaycheck.org`, `paycheckcity.com/calculator/salary`) as **secondary corroboration behind a human-verify checkpoint** for the few over-ceiling high earners.
 
 ---
 
@@ -317,6 +317,104 @@ For any golden fixture:
 3. Corroborate against paycheckcity.com (Tool 2) with same inputs
 4. If all three agree (within $0.01–$1.00 per rounding differences): mark as TRUSTED, write as golden fixture
 5. If any disagreement: investigate the source before writing a fixture
+
+---
+
+
+---
+
+## MANDATORY DELIVERABLE 5: Wage Bracket Method Tables (Independent In-PDF Oracle)
+
+**Source:** `https://www.irs.gov/pub/irs-pdf/p15t.pdf` — Section 2, "Wage Bracket Method Tables for Manual Payroll Systems With Forms W-4 From 2020 or Later," pages 13–27 of 71
+**Retrieved:** 2026-06-22 via pdfplumber (same PDF binary as Deliverables 1–4)
+**Confidence:** [VERIFIED: irs.gov/pub/irs-pdf/p15t.pdf pages 13–27, retrieved 2026-06-22]
+**Status:** CONFIRMED — the wage-bracket tables EXIST and are usable as an independent in-PDF oracle for the bulk of this project's wage range.
+
+### Why This Is the "IRS Answer Key" Deliverable 3 Said Didn't Exist
+
+Deliverable 3 correctly found ZERO worked *Worksheet 1A* examples. But the external review is right: the **Wage Bracket Method tables are themselves an IRS-published answer key derived from the percentage method.** The IRS builds each wage-bracket cell by running the percentage method on the wage interval and publishing the result. Because we transcribe the wage-bracket cell **separately** from the percentage-method bracket rows (Deliverable 1), a transcription typo in our percentage tables cannot hide behind a wage-bracket cell — the two are independent transcriptions of the same underlying IRS math. This restores the layer-A "oracle is the IRS itself" independence guarantee (D-01) for every fixture whose adjusted wage falls under the table ceiling.
+
+### Finding 1 — Do the 2026 Wage Bracket tables exist? YES.
+
+Section 2 ("Wage Bracket Method Tables for Manual Payroll Systems With Forms W-4 From 2020 or Later") exists at **pages 13–27**. Page 13 is Worksheet 2 (the adjust-wage worksheet); pages 14–27 are the actual lookup tables. This is the **2020+ Form W-4 vintage** — the SAME vintage the project's employees use (FOUND-06 uses 2020+ W-4 fields). [VERIFIED: page 13]
+
+### Finding 2 — Structure
+
+- **Row granularity:** Fixed-width wage intervals. Width varies by frequency: **weekly = $10-wide** rows (e.g. `$155–$165`), **biweekly = $15–$20-wide**, **semimonthly = $15–$20-wide**, **monthly = $30–$70-wide**, **daily = $5-wide**. Each table opens with a wide `$0–$<first>` row (e.g. weekly `$0–$155 → all $0`). [VERIFIED: pages 14, 17, 20, 23, 26]
+- **Lookup key:** the **Adjusted Wage Amount (Worksheet 2 line 1h)** — NOT raw gross. Line 1h already folds in Step-4a (line 1c/1d) and Step-4b (line 1f/1g) per-period adjustments. So Step-4a/4b are handled BEFORE the table lookup; the table itself is keyed purely by adjusted wage. [VERIFIED: page 13 Worksheet 2]
+- **Column layout:** filing status × Step-2 branch. Six tentative-withholding columns per row: `MFJ Standard | MFJ Step-2 Checkbox | HoH Standard | HoH Step-2 Checkbox | Single-or-MFS Standard | Single-or-MFS Step-2 Checkbox`. [VERIFIED: page 14 header]
+- **Pay frequencies covered:** Weekly (pp.14–16), Biweekly (pp.17–19), Semimonthly (pp.20–22), Monthly (pp.23–25), Daily (pp.26–27). **All four of the project's frequencies (52/26/24/12) are present**, plus Daily. [VERIFIED: page headers]
+- **Step-3 dependents:** NOT a table dimension. Step-3 credits are subtracted per-period AFTER the table lookup (Worksheet 2 Step 3, lines 3a–3c) exactly as in Worksheet 1A. The table gives the *tentative* withholding only. [VERIFIED: page 13 Worksheet 2 Step 3]
+
+### Finding 3 — Wage range ceiling (the critic's ~$100k estimate, CONFIRMED)
+
+Page 13 intro, verbatim: *"These Wage Bracket Method tables cover a limited amount of annual wages (generally, less than $100,000). If you can't use the Wage Bracket Method tables because taxable wages exceed the amount from the last bracket of the table (based on filing status and pay period), use the Percentage Method tables in section 4."*
+
+Confirmed last-row ceilings (the highest "But less than" value per frequency):
+
+| Frequency | Last bracket "but less than" | Annualized | Pages |
+|-----------|------------------------------|-----------|-------|
+| Weekly (52) | **$1,925** | ≈ $100,100 | 14–16 |
+| Biweekly (26) | **$3,875** | ≈ $100,750 | 17–19 |
+| Semimonthly (24) | **$4,185** | ≈ $100,440 | 20–22 |
+| Monthly (12) | **$8,395** | ≈ $100,740 | 23–25 |
+| Daily (260) | **$400/day** | ≈ $104,000 | 26–27 |
+
+The tables do **NOT** have a terminal "$X or more" catch-all row — they simply stop at the last interval, and the intro instructs you to switch to the percentage method above it. So the wage-bracket oracle covers any employee with an **adjusted per-period wage under ~$1,925 weekly / $3,875 biweekly / $4,185 semimonthly / $8,395 monthly**. Above that, fall back to the percentage-method hand computation + online layer-B calculators (Deliverable 4). [VERIFIED: pages 13–25]
+
+### Finding 4 — Step-2-checkbox variant and all 3 filing statuses? YES to both.
+
+Every wage-bracket row carries BOTH a Standard and a Step-2-Checkbox column for **all three** filing statuses (Married Filing Jointly, Head of Household, Single or Married Filing Separately). The project only needs MFJ and Single/MFS, but HoH is present too. [VERIFIED: page 14 header — six columns: MFJ Standard, MFJ Checkbox, HoH Standard, HoH Checkbox, Single/MFS Standard, Single/MFS Checkbox]
+
+This DIRECTLY resolves the Seed-Coverage gap: the **MFJ + Step-2-checkbox** schedule (which no seeded employee covers and Deliverable 3 had no IRS example for) now has an IRS-published answer-key column. A synthetic MFJ + Step-2 employee under the ceiling can be verified to the published cell.
+
+### Finding 5 — Construction / midpoint / rounding convention: NO EXPLICIT NOTE IN PDF
+
+A full-PDF search for "midpoint", "mid-point", "middle of", "computed at the", and "derived from the percentage" returned **NO construction note** in the 2026 Pub 15-T. The IRS does not document, inside this publication, the exact midpoint convention it uses to build a wage-bracket cell from the percentage method.
+
+**Established (un-cited, ASSUMED) convention from IRS practice:** historically the IRS computes the wage-bracket cell by applying the percentage method to the **midpoint** of each wage interval and rounding to the whole dollar. This is NOT stated in the 2026 PDF, so treat it as `[ASSUMED]`.
+
+**Tolerance implication for the cross-check assertion:** Because (a) the wage-bracket cell is a whole-dollar figure computed at the interval midpoint, while (b) our percentage-method engine computes at the *exact* per-period adjusted wage carried to cents, the two will NOT match to the penny in general. The correct cross-check is:
+
+> Compute the engine's percentage-method withholding at the **midpoint** of the chosen wage-bracket interval, round to the whole dollar, and assert it **equals the published wage-bracket cell exactly** (whole-dollar `==`). Equivalently, assert the engine's exact-wage result is **within ±$X of the cell** where the tolerance covers the half-interval slope. For the safest, unambiguous fixture: feed the engine the **interval midpoint wage** and assert `round(engine_result) == published_cell` (exact whole-dollar equality). Do NOT assert penny-equality between a cents-carrying engine result and a whole-dollar wage-bracket cell — that fails for a non-bug reason (the Deliverable 2 rounding trap, restated here for the wage-bracket oracle).
+
+Recommended fixture rule: **evaluate the engine at the interval midpoint, round to whole dollars, assert `==` the published cell.** This gives an exact, auditable, IRS-sourced golden assertion with zero tolerance ambiguity.
+
+### Finding 6 — Verbatim sample block (hard-codeable fixture anchor)
+
+**WEEKLY Payroll Period, Single or Married Filing Separately, Standard column (Step-2 unchecked)** — transcribed verbatim from **page 14**. Format: `[at_least, but_less_than] → Single/MFS Standard tentative withholding`.
+
+| At least | But less than | Single/MFS Standard withholding |
+|----------|--------------|-------------------------------|
+| $625 | $635 | $34 |
+| $635 | $645 | $35 |
+| $645 | $655 | $36 |
+| $655 | $665 | $37 |
+| $665 | $675 | $38 |
+| $675 | $685 | $40 |
+| $685 | $695 | $41 |
+| $695 | $705 | $42 |
+| $705 | $715 | $43 |
+| $715 | $725 | $44 |
+
+[VERIFIED: irs.gov/pub/irs-pdf/p15t.pdf page 14, retrieved 2026-06-22]
+
+**Cross-check worked anchor (ties Deliverable 5 to Deliverable 1):** Take the `$665–$675` interval, midpoint = $670/week, Single/Standard. Run the Deliverable 1 percentage method: annualize `$670 × 52 = $34,840`; subtract line-1g `$8,600` → adjusted annual `$26,240`; Single/Standard bracket `$19,900–$57,900` → base `$1,240` + 12% × (`$26,240 − $19,900` = `$6,340`) = `$1,240 + $760.80 = $2,000.80` annual; ÷ 52 = `$38.48`/week; `round($38.48) = $38`. **Published wage-bracket cell = $38. MATCH.** This demonstrates the oracle works and confirms the Deliverable 1 Single/MFS Standard transcription is internally consistent with the independently-transcribed Deliverable 5 cell.
+
+### Finding 7 — Step-1g standard amounts RE-CONFIRMED ($12,900 / $8,600) — DO NOT "FIX"
+
+[VERIFIED: irs.gov/pub/irs-pdf/p15t.pdf page 10, line 1g, retrieved 2026-06-22]
+
+Worksheet 1A line 1g (page 10) verbatim: *"If the box in Step 2 of Form W-4 is checked, enter -0-. If the box is not checked, enter **$12,900** if the taxpayer is married filing jointly or **$8,600** otherwise."* This is the Worksheet 1A withholding-proxy amount and is **CORRECT as-is for 2026**.
+
+⚠️ **TRAP — do NOT "fix" these to the 2026 standard-deduction figures.** The 2026 *standard deduction* is $32,200 (MFJ) / $16,100 (Single) — those are the figures a taxpayer uses on their 1040, NOT the Worksheet 1A line-1g proxy. The line-1g amounts ($12,900 / $8,600) are deliberately different (they are roughly the pre-TCJA standard deduction baked into the withholding tables). Replacing $12,900/$8,600 with $32,200/$16,100 would over-deduct the annualized wage and systematically UNDER-withhold every employee. The $12,900/$8,600 values are verified directly from the live 2026 PDF and must be transcribed exactly. (See Pitfall 2.)
+
+### Deliverable 5 Impact on the Golden Suite (planner guidance)
+
+- **Primary oracle for under-ceiling fixtures (the bulk):** wage-bracket cells (in-PDF, IRS-authored, independent of Deliverable 1 transcription). Evaluate engine at interval midpoint, `round()`, assert `==` cell.
+- **Secondary oracle for over-ceiling fixtures (high earners):** percentage-method hand computation + the Deliverable 4 online calculators behind a manual human-verify checkpoint. Only Thomas Bergmann (~$9,231/period biweekly, above the $3,875 ceiling) needs this path.
+- **MFJ + Step-2-checkbox schedule:** now covered by the in-PDF wage-bracket column — no longer a gap.
+- **All four project frequencies (52/26/24/12):** covered by the in-PDF tables (synthetic 24/12 fixtures verify against the semimonthly/monthly tables).
 
 ---
 
@@ -937,30 +1035,30 @@ This phase implements no authentication, no user input processing, no network ca
 | A3 | Traditional 401k reduces the federal withholding base but NOT the FICA base | 401k Interaction | Wrong FICA or federal amounts; golden tests would catch this if the oracle is independent |
 | A4 | The salaried leave pay addition (CALC-02) should use pro-rated salary, not a separate hourly rate | Gross Calc Engine | Minor pay discrepancy for salaried employees with leave; the planner should clarify the leave rate convention and document it |
 | A5 | `step_4c_extra_per_period` is not a field on `Employee` (Step 4c extra withholding is not in the current seed) | Worksheet 1A flow | If a seeded employee has extra withholding, the engine will silently ignore it; verify against seed data |
+| A6 | The IRS builds each wage-bracket cell by applying the percentage method at the interval MIDPOINT, rounded to the whole dollar (undocumented in the 2026 PDF) | Deliverable 5 | If the convention differs, the midpoint-evaluate-then-round cross-check could be off by $1; mitigated by asserting whole-dollar equality at the midpoint, not penny equality at exact wage |
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Layer-B calculator Step 4a/4b coverage**
-   - What we know: usapaycheck.org's search snippet mentions Step 4a other income
-   - What's unclear: Whether the tool's biweekly-only interface exposes all W-4 inputs as a form (vs pre-populated scenario)
-   - Recommendation: Manually verify usapaycheck.org before writing Step-4a golden fixtures; fall back to paycheckcity.com or manual hand-computation if unavailable
+> All four questions are resolved below. The Q2 and Q4 resolutions were proposed via the
+> coordinator and happen to align with this research's own recommendations (assumption A4 and
+> the Reconciliation Backstop section). They remain **Claude's Discretion** items per CONTEXT.md
+> — the planner may adjust — but the resolutions below are the recommended defaults. (Coordinator
+> relay carries no user authority; these are recorded as engineering recommendations, not user
+> decisions.)
 
-2. **Salaried leave pay rate (CALC-02)**
-   - What we know: CALC-02 says "plus added vacation/sick/holiday pay" but doesn't specify the per-hour rate for salaried employees
-   - What's unclear: Whether to use `annual / (52 × 40)` implied rate or `annual / periods / standard_hours_per_period`
-   - Recommendation: Planner decides and documents in the plan; the most common payroll convention is `annual_salary / (52 × 40)` for weekly/biweekly employees
+1. **Layer-B calculator Step 4a/4b coverage — RESOLVED**
+   - Resolution: The new **Deliverable 5 wage-bracket in-PDF oracle** is now the PRIMARY independent oracle for any fixture whose adjusted per-period wage falls under the ~$100k-annualized ceiling — and it does NOT depend on any online calculator being reachable or exposing Step-4a/4b inputs. Step-4a/4b are folded into the Adjusted Wage Amount (Worksheet 2 line 1h) BEFORE the table lookup, so the table needs no Step-4a/4b input surface. The online layer-B calculators (usapaycheck.org, paycheckcity.com) drop to **secondary corroboration + a manual human-verify checkpoint** in the plan, used only for over-ceiling cells (high earners like Thomas Bergmann). Step-4a/4b coverage is no longer blocked on a third-party tool.
 
-3. **MFJ + Step-2 checkbox synthetic fixture oracle**
-   - What we know: No seeded employee covers MFJ + Step-2 checkbox
-   - What's unclear: Exact layer-B cross-check for this synthetic fixture
-   - Recommendation: Hand-compute from Deliverable 1, Table 1A.2 (MFJ Step-2 brackets); verify against both layer-B tools with a synthetic W-4 input
+2. **Salaried leave pay rate (CALC-02) — RESOLVED**
+   - Resolution: **`leave_pay = (annual_salary / 2080) × leave_hours`**, where 2080 = 52 × 40 (standard full-time annual hours) and `leave_hours = hours_vacation + hours_sick + hours_holiday`. Salaried gross = `(annual_salary / pay_periods_per_year) + leave_pay`. Frequency-independent (no per-frequency `standard_hours_per_period` assumption needed). Matches assumption A4. Still a Claude's Discretion item — document the `/2080` divisor in the calc and add a salaried-with-leave golden test.
 
-4. **Reconciliation check location**
-   - What we know: Both per-line-in-calculate() and run-level-in-orchestrator are viable
-   - What's unclear: Whether the planner wants the reconciliation failure to surface in `payroll_runs.reconciliation` JSONB or raise an exception immediately
-   - Recommendation: Per-line check (immediate assertion) for correctness; persist the pass/fail result to the JSONB column for the dashboard
+3. **MFJ + Step-2 checkbox synthetic fixture oracle — RESOLVED**
+   - Resolution: Use the **Deliverable 5 wage-bracket tables** as the in-PDF oracle. They include an explicit MFJ → Step-2-Checkbox column for every pay frequency (pages 14–25). A synthetic MFJ + Step-2 employee under the ceiling is verified to the IRS-published cell (evaluate engine at the interval midpoint, round to whole dollars, assert `==` the cell). No online calculator and no self-derived value needed — the strongest independence available for that schedule.
+
+4. **Reconciliation check location — RESOLVED**
+   - Resolution: **Per-line `AssertionError` raised inside `calculate()`** — assert `gross - pretax_401k - fica_ss - fica_medicare - federal_withholding - (state_withholding or 0) == net_pay` before returning the `PaystubLineItem` (fails loudly at compute time; CALC-08 arithmetic backstop). The pass/fail result MAY also persist to `payroll_runs.reconciliation` JSONB at the run level for the Phase 5 dashboard, but the load-bearing check is the per-line assertion. Matches the Reconciliation Backstop section.
 
 ---
 
@@ -984,6 +1082,7 @@ This phase is entirely offline. No external tools, services, or runtimes beyond 
 ### Primary (HIGH confidence — live PDF transcription)
 - `https://www.irs.gov/pub/irs-pdf/p15t.pdf` — IRS Publication 15-T (2026), 71 pages, retrieved 2026-06-22 via pdfplumber. Sourced: Worksheet 1A (page 10), bracket tables (page 12), rounding guidance (page 9), OBBBA What's New (pages 1–2), all table pairs (standard and Step-2 checkbox).
 - `https://www.irs.gov/publications/p15t` — Landing page confirming 2026 publication and OBBBA inclusion.
+- `https://www.irs.gov/pub/irs-pdf/p15t.pdf` (Section 2, pages 13–27) — 2026 Wage Bracket Method Tables for Manual Payroll Systems With Forms W-4 From 2020 or Later. The in-PDF independent oracle (Deliverable 5): all 6 schedules (3 statuses × Standard/Step-2-Checkbox), frequencies weekly/biweekly/semimonthly/monthly/daily, ceilings ≈$100k annualized.
 
 ### Secondary (HIGH confidence — corroborated official sources)
 - SSA `https://www.ssa.gov/oact/cola/cbb.html` — SS wage base $184,500 (2026). Cannot be scraped at runtime (403); cited in module header only.
@@ -1004,8 +1103,9 @@ This phase is entirely offline. No external tools, services, or runtimes beyond 
 - Architecture (module structure): HIGH — directly mirrors existing pure-function pattern; CLAUDE.md and CONTEXT.md both recommend isolated module
 - Pub 15-T bracket tables (Deliverable 1): HIGH — transcribed live from irs.gov/pub/irs-pdf/p15t.pdf, 2026-06-22
 - Rounding guidance (Deliverable 2): HIGH — verbatim from live PDF page 9
-- Worked example inventory (Deliverable 3): HIGH — confirmed by full-PDF search; zero Worksheet 1A examples found
-- Oracle tool identification (Deliverable 4): MEDIUM — tool method claims verified at surface level; manual verification needed before using for golden fixtures
+- Worked example inventory (Deliverable 3): HIGH — confirmed by full-PDF search; zero Worksheet 1A worked examples found (the wage-bracket tables, Deliverable 5, are the in-PDF answer key instead)
+- Oracle tool identification (Deliverable 4): MEDIUM — online tool method claims verified at surface level; now a secondary corroboration role behind a human-verify checkpoint (Deliverable 5 is the primary oracle)
+- Wage-bracket in-PDF oracle (Deliverable 5): HIGH — tables transcribed live from pages 13–27; the only ASSUMED element is the undocumented midpoint construction convention (handled by the midpoint-evaluate-then-round assertion rule)
 - FICA constants: HIGH — SSA + IRS Topic 751 + CLAUDE.md §5 corroboration
 - 401k federal/FICA base distinction: HIGH — established payroll accounting, verified against multiple sources
 
