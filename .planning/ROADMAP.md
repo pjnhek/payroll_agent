@@ -158,7 +158,23 @@ Plans:
   3. Scoring produces the three core thesis metrics — extraction field accuracy, name-reconciliation accuracy (over the deterministic resolver, scored across the exact / stored-alias / first-time-alias / typo / collision / unknown taxonomy), decision accuracy — broken out per category, plus (drop-if-tight) a secondary rubric'd LLM-as-judge email-quality score (EVAL-04).
   4. Eval results (including the pinned model IDs used) write to `eval_results` and render as one clean per-category chart; local eval is authoritative and CI scores against cached/committed fixture outputs with no live LLM calls on push.
 
-**Plans**: TBD
+**Plans**: 4 plans (3 exit-bar + 1 if-time)
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md — Fixture corpus: 15 labeled eval fixtures + stubbed extraction caches + draft_candidate_emails.py helper (D-01..D-05, D-18, D-19 — EVAL-01, EVAL-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 04-02-PLAN.md — Core scorer: eval/run_eval.py (extraction F1, per-NAME reconciliation, two-level decision accuracy, confusion matrix, summary.json, --check) + tests/test_eval_wiring.py D-09 smoke test (D-06..D-11 — EVAL-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 04-03-PLAN.md — Chart + CI: eval/chart.svg (SVG, committed, recruiter-visible), .github/workflows/eval.yml (hermetic push check + live workflow_dispatch), matplotlib dev dep (D-08, D-17 — EVAL-04, EVAL-05)
+
+**Wave 4** *(if-time, optional — drop first under time pressure)*
+
+- [ ] 04-04-PLAN.md — Optional: D-14 DB write stub + D-15/D-16 LLM-as-judge quality scorer (local-only, correctness floor, never CI — EVAL-04 secondary)
 
 ### Phase 5: Dashboard & Delivery
 
@@ -225,6 +241,6 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
-| 4. The Eval | 0/TBD | Not started | - |
+| 4. The Eval | 0/4 | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
