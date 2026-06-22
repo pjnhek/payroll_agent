@@ -1,0 +1,44 @@
+{
+  "id": "f0000005-0000-0000-0000-000000000005",
+  "message_id": "<eval-05-typo@coastalcleaning.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll hours week of 6/15",
+  "from_addr": "payroll@coastalcleaning.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi there,\n\nFor the week starting June 15:\n\nJames Okafr - 40 regular hours, salaried as usual\n\nSorry for any typos, in a rush!\nDana",
+  "created_at": "2026-06-16T08:45:00Z",
+  "fixture_category": "typo",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "James Okafr",
+          "hours_regular": "40",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "James Okafr",
+        "name_category": "typo",
+        "expected_source": "none",
+        "expected_resolved": false,
+        "expected_matched_employee_id": null
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["James Okafr"],
+      "unresolved_names": ["James Okafr"],
+      "missing_fields": []
+    }
+  }
+}

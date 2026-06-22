@@ -1,0 +1,44 @@
+{
+  "id": "f0000013-0000-0000-0000-000000000013",
+  "message_id": "<eval-13-exact-process-metro@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "David's hours for week of 6/15",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nDavid Reyes put in 40 regular hours this week, starting June 15. Please go ahead and process.\n\nThanks\nRoger",
+  "created_at": "2026-06-16T08:00:00Z",
+  "fixture_category": "exact",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "David Reyes",
+          "hours_regular": "40",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "David Reyes",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000003-0000-0000-0000-000000000003"
+      }
+    ],
+    "decision": {
+      "final_action": "process",
+      "gate_reasons_contains": [],
+      "unresolved_names": [],
+      "missing_fields": []
+    }
+  }
+}

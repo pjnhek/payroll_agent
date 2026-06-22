@@ -1,0 +1,44 @@
+{
+  "id": "f0000001-0000-0000-0000-000000000001",
+  "message_id": "<eval-01-exact-match@coastalcleaning.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll hours week of 2026-06-15",
+  "from_addr": "payroll@coastalcleaning.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nHere are Maria Chen's hours for the week of June 15:\n\nMaria Chen - 40 regular hours\n\nThanks!\nDana",
+  "created_at": "2026-06-16T08:00:00Z",
+  "fixture_category": "exact",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "Maria Chen",
+          "hours_regular": "40",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "Maria Chen",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+      }
+    ],
+    "decision": {
+      "final_action": "process",
+      "gate_reasons_contains": [],
+      "unresolved_names": [],
+      "missing_fields": []
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "f0000003-0000-0000-0000-000000000003",
+  "message_id": "<eval-03-collision@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll - week of 6/15",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nD. Reyes worked 40 hours regular this week (period starting 6/15).\n\nThanks\nMike",
+  "created_at": "2026-06-16T10:00:00Z",
+  "fixture_category": "collision",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "D. Reyes",
+          "hours_regular": "40",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "D. Reyes",
+        "name_category": "collision",
+        "expected_source": "none",
+        "expected_resolved": false,
+        "expected_matched_employee_id": null
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["D. Reyes"],
+      "unresolved_names": ["D. Reyes"],
+      "missing_fields": []
+    }
+  }
+}

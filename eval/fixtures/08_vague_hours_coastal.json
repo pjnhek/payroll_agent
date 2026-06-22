@@ -1,0 +1,44 @@
+{
+  "id": "f0000008-0000-0000-0000-000000000008",
+  "message_id": "<eval-08-vague-hours@coastalcleaning.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Maria's hours this week",
+  "from_addr": "payroll@coastalcleaning.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hey,\n\nMaria Chen worked about the same as usual this week (starting June 15). Maybe a bit less, I'd say roughly her regular amount.\n\nThanks\nDana",
+  "created_at": "2026-06-16T11:30:00Z",
+  "fixture_category": "vague-hours",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "Maria Chen",
+          "hours_regular": null,
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "Maria Chen",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["hours"],
+      "unresolved_names": [],
+      "missing_fields": ["hours_regular"]
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "f0000006-0000-0000-0000-000000000006",
+  "message_id": "<eval-06-first-time-alias@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "This week's hours",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hey, just the usual for week starting 6/15.\n\nPriya - 35 regular hours\n\nThanks!\nRoger",
+  "created_at": "2026-06-16T09:00:00Z",
+  "fixture_category": "first-time-alias",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "Priya",
+          "hours_regular": "35",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-15",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "Priya",
+        "name_category": "first-time-alias",
+        "expected_source": "none",
+        "expected_resolved": false,
+        "expected_matched_employee_id": null
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["Priya"],
+      "unresolved_names": ["Priya"],
+      "missing_fields": []
+    }
+  }
+}
