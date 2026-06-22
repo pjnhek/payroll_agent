@@ -1,6 +1,6 @@
 """Pydantic-contract-driven seed loader for the payroll agent.
 
-Populates 3 businesses and 6 employees covering every calc path and name-match case.
+Populates 3 businesses and 7 employees covering every calc path and name-match case.
 Every Employee record is validated through the Employee Pydantic contract before any
 DB write — missing FOUND-06 fields fail at seed time, not mid-demo (D-10).
 
@@ -114,16 +114,28 @@ _EMPLOYEES: list[Employee] = [
         pay_periods_per_year=52,  # Business 1 is weekly
     ),
     # -------------------------------------------------------------------
-    # Employee 3 — David Reyes (Business 2, hourly, single — HERO GATE CANDIDATE)
-    # Phase 2 will submit "David Reyez" (one-letter transposition: y→z in surname).
-    # This is a Phase 1 CANDIDATE per D-12, not final proof.  Phase 2 owns DEMO-01
-    # exit check to confirm the gate fires.  Phase 1 only seeds the clean name.
+    # Employee 3 — David Reyes (Business 2, hourly, single)
+    # DETERMINISTIC HERO (D-21 reframe): the gate_block_hero fixture submits the
+    # unknown shorthand "David Reyez" (one-letter transposition y→z). The
+    # deterministic resolver finds NO unique exact/alias match for it, so it
+    # resolves to source="none"/resolved=False (no model, no confidence) and decide
+    # gates the run to request_clarification — the system never guesses on a
+    # money-moving decision (D-21-01). The clarification-suggestion call (D-21-05)
+    # then names this employee in the email ("did you mean David Reyes?").
+    #
+    # COLLISION PAIR (D-21-02): David Reyes shares the known_alias "D. Reyes" with
+    # Daniel Reyes (Employee 7, same business). A submission of "D. Reyes" therefore
+    # matches 2+ employees, so the resolver refuses to pick either (source="none") and
+    # the run gates to clarification. The collision_safety fixture proves this:
+    # two plausible matches → always clarify, never guess. The UNIQUE(business_id,
+    # full_name) constraint is NOT violated — the collision is on a SHARED ALIAS,
+    # not a duplicate full_name (the constraint-safe construction, D-21-02).
     # -------------------------------------------------------------------
     Employee(
         id=uuid.UUID("e0000003-0000-0000-0000-000000000003"),
         business_id=uuid.UUID("b0000002-0000-0000-0000-000000000002"),
         full_name="David Reyes",
-        known_aliases=[],
+        known_aliases=["D. Reyes"],  # SHARED with Daniel Reyes → collision (D-21-02)
         pay_type="hourly",
         hourly_rate=Decimal("22.00"),
         annual_salary=None,
@@ -218,11 +230,40 @@ _EMPLOYEES: list[Employee] = [
         ytd_ss_wages=Decimal("52000.00"),
         pay_periods_per_year=26,  # Business 3 is biweekly (FIX B: corrected from 52)
     ),
+    # -------------------------------------------------------------------
+    # Employee 7 — Daniel Reyes (Business 2, hourly, single — COLLISION PAIR)
+    # The other half of the deterministic collision-safety pair (D-21-02). Daniel
+    # Reyes shares the known_alias "D. Reyes" with David Reyes (Employee 3, same
+    # business), so a submission of the shorthand "D. Reyes" matches BOTH employees.
+    # The deterministic resolver refuses to pick either (alias matches 2+ employees
+    # → source="none", resolved=False — reconcile_names.deterministic_match), and
+    # decide gates the run to request_clarification. This is the constraint-safe
+    # collision construction: the two employees have DISTINCT full_names (so the
+    # UNIQUE(business_id, full_name) constraint holds) but a SHARED alias.
+    # Carries the full FOUND-06 calc-input set so the Employee validator passes.
+    # -------------------------------------------------------------------
+    Employee(
+        id=uuid.UUID("e0000007-0000-0000-0000-000000000007"),
+        business_id=uuid.UUID("b0000002-0000-0000-0000-000000000002"),
+        full_name="Daniel Reyes",
+        known_aliases=["D. Reyes"],  # SHARED with David Reyes → collision (D-21-02)
+        pay_type="hourly",
+        hourly_rate=Decimal("20.00"),
+        annual_salary=None,
+        retirement_contribution_pct=Decimal("0.00"),
+        filing_status="single",
+        step_2_checkbox=False,
+        step_3_dependents=Decimal("0"),
+        step_4a_other_income=Decimal("0"),
+        step_4b_deductions=Decimal("0"),
+        ytd_ss_wages=Decimal("6000.00"),
+        pay_periods_per_year=52,  # Business 2 is weekly
+    ),
 ]
 
 # CADENCE VERIFICATION (static, documentational):
 #   Business 1 weekly  (52): Maria Chen 52 ✓, James Okafor 52 ✓
-#   Business 2 weekly  (52): David Reyes 52 ✓, Priya Nair 52 ✓
+#   Business 2 weekly  (52): David Reyes 52 ✓, Priya Nair 52 ✓, Daniel Reyes 52 ✓
 #   Business 3 biweekly (26): Thomas Bergmann 26 ✓, Sandra Kim 26 ✓ (FIX B)
 
 

@@ -1,0 +1,11 @@
+{
+  "id": "a0000003-0000-0000-0000-000000000003",
+  "message_id": "<collision-safety-001@metrodeli.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll hours for week of 2026-06-15",
+  "from_addr": "hr@metrodeli.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nHere are this week's hours for the period starting 2026-06-15:\n\nD. Reyes - 40 regular hours\n\nThanks!\nPat\n\n-- \nPat Lawson\nHR, Metro Deli Group\n",
+  "created_at": "2026-06-15T09:30:00Z"
+}
