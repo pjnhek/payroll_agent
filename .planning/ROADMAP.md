@@ -79,6 +79,43 @@ Plans:
 
 - [~] 02-04-PLAN.md — slice (c) clarify->reply->resume loop: header-chain routing (CLAR-02), idempotent re-entry (CLAR-03), reply-fixture injection (EMAIL-01) — **Tasks 1-2 COMPLETE (CLAR-02/03/EMAIL-01 green; mocked suite 159 passed)**; Task 3 the LIVE hero-run exit gate (D-A4-01a) is a PENDING human-verify checkpoint (env-gated test authored, skips by default)
 
+### Phase 2.1: Deterministic Decisioning *(INSERTED)*
+
+**Goal**: The confidence-threshold gate is replaced by deterministic decisioning that never guesses on a money-moving decision — `decide.py` resolves each submitted name against the roster in pure code (exact / stored-alias / none), enforces run-level collision safety, and computes `final_action` with no LLM call and no confidence number; the LLM is kept for extraction and an optional clarification suggestion only. Alias learning lands READ-side here (WRITE side is Phase 5, operator-gated).
+**Mode:** standard (re-architecture of completed, working Phase 2 code — 168 tests green)
+**Depends on**: Phase 2
+**Requirements**: LLM-04, LLM-05, LLM-07 (rewritten — deterministic resolver, suggestion-only call, code-owned `final_action`); LLM-09 (collision safety, now pure run-level code); DEMO-01 (hero reframed)
+**Success Criteria** (what must be TRUE):
+
+  1. No `confidence` / `model_action` / `gate_triggered` / `0.8` threshold anywhere in `app/` (grep-clean); the decision is deterministic.
+  2. `decide.py` is pure code (resolution + run-level collision + missing-field → `final_action` with `gate_reasons`; no LLM call); `reconcile_names` is pure code (exact + stored-alias READ only). Both stay importable functions the eval reuses.
+  3. `NameMatchResult` = `source`/`resolved`; `Decision` = `final_action`/`gate_reasons`/`unresolved_names`/`missing_fields` + per-name resolutions in JSONB; `name_matches` table dropped from live local + Supabase; `match_confidence` gone; status-drift guard green.
+  4. The optional clarification-suggestion call exists (cheap tier, suggestion-only, never feeds decide) and the clarification email names a specific suggested employee.
+  5. Config has TWO model tiers (extraction + suggestion/draft); the mid/decision tier is removed from Settings/.env.example/.env.
+  6. Full mocked suite green with a new deterministic-resolution taxonomy suite (exact / stored-alias / first-time-alias / typo / collision / unknown / empty-extraction); DEMO-01 fixtures reframed (unknown-shorthand-clarify-with-suggestion + collision-safety; learning beat deferred to P5); CLAUDE.md/REQUIREMENTS.md/PROJECT.md no longer reference the 0.8 gate.
+
+**Plans**: 5 plans
+Plans:
+**Wave 1**
+
+- [ ] 02.1-01-PLAN.md — re-shape the shared contracts: NameMatchResult → source/resolved, Decision → deterministic 4 fields + resolutions, drop PaystubLineItem.match_confidence, delete NameReconciliationResponse
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 02.1-02-PLAN.md — rewrite reconcile_names (pure exact + stored-alias) and decide (pure resolution + run-level collisions + missing-field → final_action); delete the decide/reconcile prompts; new deterministic test taxonomy
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 02.1-03-PLAN.md — wire deterministic stages through orchestrator/repo/schema; DROP name_matches on live local + Supabase + drop match_confidence; remove the mid/decision config tier; keep the drift guard green (NOT autonomous — live-DB DROP + .env checkpoint)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 02.1-04-PLAN.md — NEW suggestion-only LLM call (cheap tier, never feeds decide): unresolved name → likely employee → the clarification email names a specific suggested employee
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 02.1-05-PLAN.md — reframe DEMO-01 fixtures (hero + collision-safety) + finish the residual test/live-LLM sweep + rewrite CLAUDE.md/REQUIREMENTS.md/PROJECT.md + eval taxonomy; final grep-clean acceptance
+
 ### Phase 3: Harden the Calc
 
 **Goal**: The payroll math becomes trustworthy to the penny — real IRS Pub 15-T 2026 federal withholding plus full-fidelity gross/FICA/401k/net, asserted by golden-value tests against hand-computed 2026 paystubs — landing BEFORE the eval or dashboard ever present a number as correct.
@@ -167,12 +204,13 @@ The project uses **uv** (not pip/requirements.txt) — see `CLAUDE.md` Tooling R
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
+Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 3/4 | In Progress|  |
+| 2.1 Deterministic Decisioning *(INSERTED)* | 0/5 | Not started | - |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
