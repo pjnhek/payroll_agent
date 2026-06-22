@@ -273,7 +273,7 @@ _EMPLOYEES: list[Employee] = [
 
 
 def seed(dry_run: bool = False) -> SeedResult:
-    """Seed 3 businesses and 6 employees into the live DB.
+    """Seed 3 businesses and 7 employees into the live DB.
 
     Every Employee is validated through the Pydantic contract before any DB
     write — construction already ran at module import time, so if we reach

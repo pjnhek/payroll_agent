@@ -107,3 +107,12 @@ def test_decide_to_calculate_wiring_thomas_bergmann(summit_roster_and_fixture):
     assert item.fica_ss == Decimal("37.20"), (
         "D-09 wiring: fica_ss (SS-straddle remaining_cap=600 -> 600*0.062=37.20)"
     )
+    # Independent oracle (WR-04): Medicare is 1.45% of full gross, no cap, no 401k
+    # exemption -> money(9230.77 * 0.0145) = 133.85. Net ties the reconciliation:
+    # gross - pretax_401k - fica_ss - fica_medicare - federal_withholding.
+    assert item.fica_medicare == Decimal("133.85"), (
+        "D-09 wiring: fica_medicare (9230.77 * 0.0145 = 133.85)"
+    )
+    assert item.net_pay == Decimal("7439.87"), (
+        "D-09 wiring: net_pay (9230.77 - 738.46 - 37.20 - 133.85 - 881.39 = 7439.87)"
+    )

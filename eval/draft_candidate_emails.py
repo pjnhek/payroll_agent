@@ -5,11 +5,13 @@ the builder to hand-edit and hand-label into eval/fixtures/. The committed
 fixtures are the source of truth; this script just provides phrasing variety.
 Delete or ignore after the fixture corpus is built.
 """
-from app.config import get_settings
-from app.llm.client import call_text
+# Imports are lazy (inside __main__) so this module can be imported without
+# DATABASE_URL set, consistent with the other eval scripts (IN-03).
 
 
 def _require_live_llm() -> None:
+    from app.config import get_settings  # noqa: PLC0415
+
     settings = get_settings()
     if not settings.allow_live_llm:
         raise SystemExit("Set ALLOW_LIVE_LLM=true to use this drafting helper.")
@@ -18,6 +20,8 @@ def _require_live_llm() -> None:
 
 
 if __name__ == "__main__":
+    from app.llm.client import call_text  # noqa: PLC0415
+
     _require_live_llm()
     draft = call_text(
         tier="draft",

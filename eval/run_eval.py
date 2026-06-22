@@ -26,7 +26,7 @@ import sys
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from app.models.contracts import InboundEmail, Extracted
 from app.models.roster import Roster, NameMatchResult
@@ -292,8 +292,13 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
 
     gate_reasons_contains = exp_dec.get("gate_reasons_contains", [])
     if gate_reasons_contains:
-        joined = " ".join(decision.gate_reasons)
-        gate_reasons_match = all(s in joined for s in gate_reasons_contains)
+        # Match each expected substring against a SINGLE gate reason, never the
+        # space-joined blob -- joining lets an expected substring straddle two
+        # adjacent reasons and match spuriously (WR-01).
+        gate_reasons_match = all(
+            any(s in reason for reason in decision.gate_reasons)
+            for s in gate_reasons_contains
+        )
     else:
         gate_reasons_match = (
             set(decision.gate_reasons) == set(exp_dec.get("gate_reasons", []))
@@ -626,10 +631,10 @@ def _record_extraction() -> None:
     model output. The 04-01 divergence validator runs against the COMMITTED
     day-one caches, not post-record output -- so this is not a regression.
     """
-    # Lazy imports: live pieces only on the --record path (T-04-07)
+    # Lazy imports: live pieces only on the --record path (T-04-07).
+    # uuid is already imported at module level -- no lazy re-import needed (IN-01).
     from app.pipeline.extract import extract  # noqa: PLC0415
     from app.llm.client import llm_client    # noqa: PLC0415
-    import uuid as _uuid                     # noqa: PLC0415
 
     fixture_paths = sorted(FIXTURE_DIR.glob("*.json"))
     fixture_paths = [f for f in fixture_paths if "_extraction" not in f.name]
@@ -643,7 +648,7 @@ def _record_extraction() -> None:
             k: v for k, v in raw.items() if k not in ("expected", "fixture_category")
         }
         email = InboundEmail.model_validate(email_fields)
-        run_id = _uuid.uuid4()
+        run_id = uuid.uuid4()
         # LIVE extraction: the SAME production extractor, real DeepSeek call.
         extracted = extract(email, roster, run_id=run_id, llm=llm_client)
         cache_path = fp.parent / (fp.stem + "_extraction.json")

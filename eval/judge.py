@@ -204,7 +204,18 @@ def _load_fixture_expected_employee(fixture_id: str) -> str | None:
                         for emp in seeded.employees:
                             if str(emp.id) == str(emp_id):
                                 return emp.full_name
-        except Exception:
+        except (json.JSONDecodeError, KeyError):
+            # Malformed fixture or missing key -- skip this fixture only.
+            continue
+        except Exception as exc:  # noqa: BLE001
+            # Unexpected failure must NOT silently disable the D-16 correctness
+            # floor (WR-02): surface it so a swallowed bug can't let a draft
+            # naming the wrong real employee score above the floor undetected.
+            print(
+                f"WARNING: unexpected error loading expected employee from "
+                f"{fixture_path.name}: {exc!r}",
+                file=sys.stderr,
+            )
             continue
     return None
 

@@ -37,6 +37,10 @@ jobs:
     name: "Live re-record (workflow_dispatch only)"
     if: github.event_name == 'workflow_dispatch' && inputs.live_record
     runs-on: ubuntu-latest
+    # Least-privilege: the only write this job performs is committing the
+    # re-recorded extraction caches back to the branch (CR-01).
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,3 +56,10 @@ jobs:
           DATABASE_URL: "placeholder"
           ALLOW_LIVE_LLM: "true"
           EXTRACTION_API_KEY: ${{ secrets.EXTRACTION_API_KEY }}
+      - name: Commit & push re-recorded caches
+        # Without this step the live re-record runs on the ephemeral runner and
+        # is discarded -- burning API credits with no durable change (CR-01).
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore(eval): re-record extraction caches via workflow_dispatch"
+          file_pattern: "eval/fixtures/*_extraction.json eval/summary.json"
