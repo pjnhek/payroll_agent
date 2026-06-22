@@ -110,6 +110,13 @@ def bootstrap(reset: bool = False) -> None:
         # BEFORE re-applying schema.sql. IF EXISTS makes this a no-op once it is gone.
         print("  DROP TABLE IF EXISTS name_matches CASCADE  (D-21-06 dead-table migration)")
         conn.execute("DROP TABLE IF EXISTS name_matches CASCADE;")
+        # D-21-06 (col): same CREATE-IF-NOT-EXISTS limitation applies to the removed
+        # paystub_line_items.match_confidence column — schema.sql dropped it from the
+        # CREATE, but an existing table keeps the column until an explicit ALTER. Drop
+        # it here on every apply; IF EXISTS makes it a no-op once gone (confidence is
+        # fully removed in 2.1 — provenance is employee_id + submitted_name).
+        print("  ALTER TABLE paystub_line_items DROP COLUMN IF EXISTS match_confidence  (D-21-06 dead-column migration)")
+        conn.execute("ALTER TABLE IF EXISTS paystub_line_items DROP COLUMN IF EXISTS match_confidence;")
         conn.commit()
 
         # Apply the full DDL source of truth atomically.
