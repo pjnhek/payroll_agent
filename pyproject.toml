@@ -20,6 +20,7 @@ dependencies = [
 # `uv sync` installs these by default; the Docker build uses `--no-dev`.
 [dependency-groups]
 dev = [
+    "matplotlib>=3.11.0",
     "pytest",
     "ruff",
 ]
