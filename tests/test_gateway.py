@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from decimal import Decimal
 
 import pytest
 
@@ -36,15 +35,23 @@ _MSG_ID_RE = re.compile(r"^<[0-9a-f-]{36}@payroll-agent\.local>$")
 
 
 def _decision(action="process") -> Decision:
+    """A deterministic Decision (D-21-01): final_action + gate detail + per-name
+    resolutions. No model action, no score — decide computes final_action purely
+    from the resolution facts."""
     return Decision(
-        model_action=action,
-        gate_triggered=False,
-        gate_reasons=[],
         final_action=action,
+        gate_reasons=[],
         unresolved_names=[],
         missing_fields=[],
-        confidence=Decimal("0.95"),
-        reasons=["clean run"],
+        resolutions=[
+            NameMatchResult(
+                submitted_name="Maria Chen",
+                matched_employee_id=uuid.uuid4(),
+                source="exact",
+                resolved=True,
+                reason="exact match",
+            )
+        ],
     )
 
 
@@ -134,8 +141,11 @@ def test_persist_decision_serializes_via_model_dump_json(fake_conn):
     repo.persist_decision(run_id, _decision(), conn=fake_conn)
     sql, params = fake_conn.last()
     assert "decision" in str(sql).lower()
-    # Decimal confidence must round-trip as a JSON string (model_dump(mode="json")).
-    assert '"0.95"' in str(params), "confidence must serialize as a JSON string"
+    # The deterministic Decision round-trips via model_dump(mode="json"): the
+    # per-name resolutions are folded into the decision JSONB (D-21-04), so the
+    # submitted_name + source land in the serialized params.
+    assert "Maria Chen" in str(params), "resolutions must serialize into the decision JSONB"
+    assert "exact" in str(params), "the resolution source must serialize"
 
 
 def test_persist_decision_never_writes_status(fake_conn):
@@ -189,20 +199,23 @@ def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn,
 
 def test_persist_reconciliation_serializes_each_name(fake_conn):
     run_id = uuid.uuid4()
+    # An unresolved name (D-21-01): the deterministic resolver could not match the
+    # unknown shorthand to any roster employee — source="none", resolved=False, no
+    # employee guessed. No score is carried anywhere.
     matches = [
         NameMatchResult(
             submitted_name="David Reyez",
-            matched_employee_id=uuid.uuid4(),
-            match_type="llm_typo",
-            confidence=Decimal("0.6"),
-            reason="one-letter transposition",
+            matched_employee_id=None,
+            source="none",
+            resolved=False,
+            reason="no deterministic or stored-alias match",
         )
     ]
     repo.persist_reconciliation(run_id, matches, conn=fake_conn)
     sql, params = fake_conn.last()
     assert "reconciliation" in str(sql).lower()
     assert "David Reyez" in str(params)
-    assert '"0.6"' in str(params), "per-name confidence must serialize as JSON string"
+    assert '"none"' in str(params), "the deterministic source must serialize as JSON"
 
 
 # ---------------------------------------------------------------------------

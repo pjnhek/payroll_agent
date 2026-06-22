@@ -3,9 +3,9 @@
 Two sections:
 1. DB-INDEPENDENT (always run): Validates the seed dataset in-memory — every
    Employee record passes Pydantic validation; coverage invariants hold
-   (3+ businesses, 6+ employees, hourly/salary, all 3 filing statuses, at
+   (3+ businesses, 7 employees, hourly/salary, all 3 filing statuses, at
    least 1 Step-2 employee, the happy-path business, the name-mismatch
-   candidate, the SS cap straddle case).
+   hero, the alias-collision pair, the SS cap straddle case).
 
 2. LIVE-DB (requires DATABASE_URL + ALLOW_DB_RESET=1): Integration round-trip —
    seed then read back through Employee contract using explicit column select +
@@ -49,13 +49,14 @@ def test_seed_has_three_businesses() -> None:
     )
 
 
-def test_seed_has_six_employees() -> None:
-    """Seed contains exactly 6 employees."""
+def test_seed_has_seven_employees() -> None:
+    """Seed contains exactly 7 employees (6 base + Daniel Reyes, the alias-collision
+    pair half added in Phase 2.1 for the deterministic collision-safety proof)."""
     from app.db.seed import seed
 
     result = seed(dry_run=True)
-    assert len(result.employees) == 6, (
-        f"Expected 6 employees, got {len(result.employees)}"
+    assert len(result.employees) == 7, (
+        f"Expected 7 employees, got {len(result.employees)}"
     )
 
 
@@ -129,18 +130,47 @@ def test_seed_has_happy_path_business() -> None:
     )
 
 
-def test_seed_has_name_mismatch_candidate() -> None:
-    """David Reyes — the hero gate CANDIDATE (D-12) — is in the seed.
+def test_seed_has_name_mismatch_hero() -> None:
+    """David Reyes — the deterministic name-mismatch hero — is in the seed.
 
-    Phase 2 confirms the model returns model_action='request_clarification' for
-    'David Reyez' (one-letter typo).  Phase 1 only seeds the clean name.
+    The gate_block_hero fixture submits the unknown shorthand 'David Reyez'. The
+    deterministic resolver finds no unique exact/alias match, so it resolves to
+    source='none' and decide gates the run to request_clarification — no model
+    judgment, no score (D-21-01). The suggestion-only call then names this employee
+    in the clarification email. Phase 1 seeds the clean name; Phase 2.1 proves it.
     """
     from app.db.seed import seed
 
     result = seed(dry_run=True)
     names = {e.full_name for e in result.employees}
     assert "David Reyes" in names, (
-        "Name-mismatch hero CANDIDATE 'David Reyes' missing from seed"
+        "Name-mismatch hero 'David Reyes' missing from seed"
+    )
+
+
+def test_seed_has_alias_collision_pair() -> None:
+    """Two Business-2 employees share the known_alias 'D. Reyes' — the deterministic
+    collision-safety pair (D-21-02). A submitted 'D. Reyes' matches BOTH, so the
+    resolver refuses to pick either and the run gates to clarification. This is the
+    CONSTRAINT-SAFE construction: the two employees have DISTINCT full_names (so
+    UNIQUE(business_id, full_name) holds) but a SHARED alias.
+    """
+    from app.db.seed import seed
+
+    result = seed(dry_run=True)
+    sharing = [
+        e for e in result.employees if "D. Reyes" in e.known_aliases
+    ]
+    assert len(sharing) >= 2, (
+        "the collision-safety pair must share the 'D. Reyes' alias on 2+ employees"
+    )
+    # Same business (the in-business collision per D-21-02).
+    assert len({e.business_id for e in sharing}) == 1, (
+        "the shared-alias collision pair must be in the same business"
+    )
+    # Distinct full_names — the UNIQUE(business_id, full_name) constraint is NOT violated.
+    assert len({e.full_name for e in sharing}) == len(sharing), (
+        "the collision pair must have distinct full_names (constraint-safe)"
     )
 
 
@@ -227,8 +257,8 @@ def test_every_employee_cadence_matches_its_business() -> None:
         )
 
     # Guard: every employee's business must be present (no orphan business_id).
-    assert len(result.employees) == 6, (
-        f"Expected 6 employees, got {len(result.employees)}"
+    assert len(result.employees) == 7, (
+        f"Expected 7 employees, got {len(result.employees)}"
     )
     for emp in result.employees:
         biz_id = str(emp.business_id)
@@ -256,6 +286,7 @@ def test_seed_employees_have_stable_fixed_uuids() -> None:
         UUID("e0000004-0000-0000-0000-000000000004"),
         UUID("e0000005-0000-0000-0000-000000000005"),
         UUID("e0000006-0000-0000-0000-000000000006"),
+        UUID("e0000007-0000-0000-0000-000000000007"),  # Daniel Reyes (collision pair)
     }
     actual_ids = {e.id for e in result.employees}
     assert actual_ids == expected_ids, (
@@ -311,12 +342,12 @@ def test_business_count(seeded_db) -> None:
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_employee_count(seeded_db) -> None:
-    """SELECT COUNT(*) FROM employees returns 6 after seed."""
+    """SELECT COUNT(*) FROM employees returns 7 after seed."""
     from app.db.supabase import get_connection
 
     with get_connection() as conn:
         row = conn.execute("SELECT COUNT(*) FROM employees").fetchone()
-    assert row[0] == 6, f"Expected 6 employees, got {row[0]}"
+    assert row[0] == 7, f"Expected 7 employees, got {row[0]}"
 
 
 @_SKIP_LIVE_DB
@@ -372,7 +403,7 @@ def test_employee_roundtrip(seeded_db) -> None:
         cur.execute(f"SELECT {EMPLOYEE_COLS} FROM employees")
         rows = cur.fetchall()
 
-    assert len(rows) == 6, f"Expected 6 employee rows, got {len(rows)}"
+    assert len(rows) == 7, f"Expected 7 employee rows, got {len(rows)}"
     for row in rows:
         # Pydantic will raise ValidationError if any FOUND-06 field is wrong
         emp = Employee(**row)
@@ -398,7 +429,7 @@ def test_idempotent_reseed(seeded_db) -> None:
         emp_count = conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
 
     assert biz_count == 3, f"After re-seed: expected 3 businesses, got {biz_count}"
-    assert emp_count == 6, f"After re-seed: expected 6 employees, got {emp_count}"
+    assert emp_count == 7, f"After re-seed: expected 7 employees, got {emp_count}"
 
 
 @_SKIP_LIVE_DB
@@ -418,11 +449,12 @@ def test_seed_containment(seeded_db) -> None:
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_hero_case_exists(seeded_db) -> None:
-    """David Reyes (hero gate CANDIDATE per D-12) has exactly 1 row in employees.
+    """David Reyes (the deterministic name-mismatch hero) has exactly 1 row.
 
-    NOTE: This confirms the clean name is seeded.  Phase 2 proves the model
-    behaviour — that 'David Reyez' (one-letter typo) triggers model_action=
-    'request_clarification' with confidence < 0.8.  Phase 1 owns only seeding.
+    NOTE: This confirms the clean name is seeded. Phase 2.1 proves the behaviour —
+    that 'David Reyez' (the unknown shorthand) resolves to source='none'
+    deterministically and decide gates the run to request_clarification (no model,
+    no score, D-21-01). Phase 1 owns only seeding.
     """
     from app.db.supabase import get_connection
 

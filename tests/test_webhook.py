@@ -29,8 +29,10 @@ def client(fake_repo):
 
 
 def _script_clean_run(mock_llm) -> None:
-    """Enqueue the extraction payload + clean decision for the all-deterministic
-    happy path (Maria Chen + James Okafor both layer-1 match → no reconcile call)."""
+    """Enqueue ONLY the extraction payload for the all-deterministic happy path
+    (Maria Chen + James Okafor both resolve exactly). reconcile and decide are pure
+    deterministic code with no LLM call (D-21-01), so no decision response is
+    scripted — the gate runs on the resolution facts."""
     extraction = json.dumps(
         {
             "employees": [
@@ -41,10 +43,7 @@ def _script_clean_run(mock_llm) -> None:
             "pay_period_end": None,
         }
     )
-    decision = json.dumps(
-        {"model_action": "process", "reasons": ["all hours present, names clean"]}
-    )
-    mock_llm.script = [extraction, decision]
+    mock_llm.script = [extraction]
 
 
 # ---------------------------------------------------------------------------

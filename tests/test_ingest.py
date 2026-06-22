@@ -69,6 +69,9 @@ def client(fake_repo):
 
 
 def _script_clean_run(mock_llm) -> None:
+    """The clean happy path makes ONE LLM call — extraction. reconcile/decide are
+    pure deterministic code (D-21-01) and need no scripted response; both names
+    resolve exactly so the run processes without a clarify draft."""
     extraction = json.dumps(
         {
             "employees": [
@@ -79,8 +82,7 @@ def _script_clean_run(mock_llm) -> None:
             "pay_period_end": None,
         }
     )
-    decision = json.dumps({"model_action": "process", "reasons": ["clean"]})
-    mock_llm.script = [extraction, decision]
+    mock_llm.script = [extraction]
 
 
 def test_body_cleaned(client, fake_repo, mock_llm):

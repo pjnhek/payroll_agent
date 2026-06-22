@@ -1,11 +1,11 @@
-"""Live hero-fixture exit gate (D-A4-01a) — the DISTINCT Phase 2 exit criterion.
+"""Live hero-fixture exit gate (D-A4-01a, D-21 reframe) — the DISTINCT live proof.
 
 THIS TEST DOES NOT RUN IN CI OR ON A NORMAL `pytest` INVOCATION.
 
 It is a two-factor env-gated live test mirroring the Phase 1 live-DB guard
 (tests/test_seed_roundtrip.py §2) verbatim, swapping the env-var pair:
 
-    _HAS_LLM_KEYS = bool(EXTRACTION_API_KEY and DECISION_API_KEY)
+    _HAS_LLM_KEYS = bool(EXTRACTION_API_KEY and DRAFT_API_KEY)
     _LIVE_LLM     = os.environ.get("ALLOW_LIVE_LLM") == "1"
 
 Both must be set or the test SKIPS individually. It is also marked
@@ -13,22 +13,36 @@ Both must be set or the test SKIPS individually. It is also marked
 `pytest -m "not integration and not live_llm"` never collects it — green and free.
 
 What it proves (the property no mock can assert — D-A5-01: the mocked suite passing
-is NECESSARY but NOT SUFFICIENT): the REAL configured DeepSeek/Kimi models, run on
-the David Reyez hero fixture, genuinely return `model_action == "process"` (the
-model is WILLING to run payroll) AND a per-name reconciliation confidence
-`< Decimal("0.8")`, so the CODE GATE fires and `final_action == "request_clarification"`.
-That is "the model was willing; the code said no" on LIVE output, not a recording.
+is NECESSARY but NOT SUFFICIENT). The Phase 2.1 thesis made the DECISION pure code
+(no model judgment, no score — D-21-01), so the live proof is no longer a score
+gate. The two LLM calls that remain — EXTRACTION (DeepSeek) and the clarification
+SUGGESTION (Kimi, copy only, D-21-05) — are where live model quality matters, so
+the live gate proves:
+
+  1. LIVE EXTRACTION works: the real DeepSeek model reads the hero email and
+     returns the submitted name "David Reyez" with its 38 hours.
+  2. DETERMINISTIC DECIDE gates: run through the IDENTICAL pure stages the eval
+     reuses — reconcile resolves "David Reyez" to source="none" (no unique match)
+     and decide computes final_action == "request_clarification" purely from the
+     resolution facts. No model, no score.
+  3. LIVE SUGGESTION quality (advisory copy only): the real Kimi suggestion call
+     maps the unresolved "David Reyez" back to the roster "David Reyes" so the
+     clarification email can be specific ("did you mean David Reyes?"). This NEVER
+     feeds decide / final_action — it is email copy (D-21-05).
+
+That is "the system never guesses; it clarifies with a specific suggestion" on LIVE
+output, not a recording.
 
 Tuning loop (human judgment, NOT an automated pass/fail — see Task 3 checkpoint):
-if the live model SELF-clarifies (proposes request_clarification on its own → the
-gate never fires) or returns confidence ≥ 0.8 (a mismatch would process), tune the
-submitted-name variant ("David Reyez") and/or the reconcile prompt (AI-SPEC §7) and
-repeat until the live run genuinely produces model-says-process AND gate-blocks.
+if the live extraction misreads the name, or the live suggestion fails to map
+"David Reyez" → "David Reyes", tune the submitted-name variant and/or the
+extraction/suggestion prompts (AI-SPEC) and repeat until the live run genuinely
+produces extract-correct + deterministic-clarify + a specific suggestion.
 
 Live-vs-mock marker (FIX 12): a structured LOG field `source="live"` is emitted at
 the decide step, derived from `Settings.allow_live_llm` — NOT a key inside the
-`extra="forbid"` Decision object (contracts.py:124, which would raise a
-ValidationError) and NOT a schema column. It records DECISION PROVENANCE only.
+`extra="forbid"` Decision object (contracts.py, which would raise a ValidationError)
+and NOT a schema column. It records DECISION PROVENANCE only.
 """
 from __future__ import annotations
 
@@ -37,25 +51,25 @@ import logging
 import os
 import pathlib
 import uuid
-from decimal import Decimal
 
 import pytest
 
 # ---------------------------------------------------------------------------
-# Two-factor guard (EXACT analog tests/test_seed_roundtrip.py:26-27, 271-277).
-# Swap the env-var pair: live-LLM keys + ALLOW_LIVE_LLM=1.
+# Two-factor guard (EXACT analog tests/test_seed_roundtrip.py:26-27).
+# Swap the env-var pair: live-LLM keys + ALLOW_LIVE_LLM=1. The keys are the TWO
+# surviving tiers (D-21-05): extraction (DeepSeek) + draft (Kimi, suggestion copy).
 # ---------------------------------------------------------------------------
 _HAS_LLM_KEYS = bool(
-    os.environ.get("EXTRACTION_API_KEY") and os.environ.get("DECISION_API_KEY")
+    os.environ.get("EXTRACTION_API_KEY") and os.environ.get("DRAFT_API_KEY")
 )
 _LIVE_LLM = os.environ.get("ALLOW_LIVE_LLM") == "1"
 
 _SKIP_LIVE_LLM = pytest.mark.skipif(
     not (_HAS_LLM_KEYS and _LIVE_LLM),
     reason=(
-        "Live-LLM hero test requires EXTRACTION_API_KEY, DECISION_API_KEY and "
+        "Live-LLM hero test requires EXTRACTION_API_KEY, DRAFT_API_KEY and "
         "ALLOW_LIVE_LLM=1 (two-factor guard, mirrors ALLOW_DB_RESET). It hits the "
-        "REAL DeepSeek/Kimi APIs and is a manual Phase 2 exit gate, never CI."
+        "REAL DeepSeek/Kimi APIs and is a manual Phase 2.1 exit gate, never CI."
     ),
 )
 
@@ -63,26 +77,26 @@ _GATE_BLOCK_FIXTURE = (
     pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "gate_block_hero.json"
 )
 
-# The locked confidence threshold (CLAUDE.md / decide.py:_THRESHOLD).
-_THRESHOLD = Decimal("0.8")
-
 _logger = logging.getLogger("payroll_agent.live_llm")
 
 
 @_SKIP_LIVE_LLM
 @pytest.mark.live_llm
 def test_hero_fixture_live() -> None:
-    """The live exit gate: real models say PROCESS at sub-0.8 → the code gate BLOCKS.
+    """The live exit gate: real extraction + deterministic clarify + a real suggestion.
 
     Runs the David Reyez hero fixture through the REAL configured DeepSeek/Kimi
     models via the IDENTICAL pure judgment stages the eval (Phase 4) reuses — DB-free
     (the roster is built from seed(dry_run=True); the run_id is a code-owned literal).
     No orchestrator, no DB, no email send.
 
-    Asserts (D-A4-01a):
-      - model_action == "process"  (the model is WILLING to run payroll), AND
-      - some per-name reconciliation confidence < 0.8, AND
-      - final_action == "request_clarification"  (the code gate OVERRODE the model).
+    Asserts (D-A4-01a, D-21 reframe):
+      - LIVE EXTRACTION returns "David Reyez" (the real model read the email), AND
+      - DETERMINISTIC reconcile resolves it to source="none" / resolved=False, AND
+      - DETERMINISTIC decide computes final_action == "request_clarification"
+        purely from the resolution facts (no model, no score), AND
+      - the LIVE SUGGESTION call (copy only) maps "David Reyez" → "David Reyes" so
+        the clarification can name the specific intended employee.
     """
     from app.config import get_settings
     from app.db.seed import seed
@@ -91,6 +105,7 @@ def test_hero_fixture_live() -> None:
     from app.pipeline.decide import decide
     from app.pipeline.extract import extract
     from app.pipeline.reconcile_names import reconcile_names
+    from app.pipeline.suggest import suggest_employees
     from app.pipeline.validate import validate
 
     # --- build the pure stage inputs from committed fixtures (no DB) ---
@@ -104,12 +119,12 @@ def test_hero_fixture_live() -> None:
     )
     run_id = uuid.uuid4()  # code-owned run_id (FIX A) — the model never supplies it
 
-    # --- the REAL stages hit DeepSeek (extraction) + Kimi (decision/reconcile) ---
+    # --- LIVE extraction (DeepSeek) → PURE reconcile/decide → LIVE suggestion (Kimi) ---
     extracted = extract(email, roster, run_id=run_id)
     submitted_names = [e.submitted_name for e in extracted.employees]
-    matches = reconcile_names(submitted_names, roster)
+    matches = reconcile_names(submitted_names, roster)  # pure, no model
     issues = validate(extracted, roster, matches)
-    decision = decide(extracted, matches, issues)
+    decision = decide(extracted, matches, issues)  # pure, no model, no score
 
     # --- live-vs-mock provenance marker (FIX 12): a STRUCTURED LOG field, derived
     #     from Settings.allow_live_llm; NOT a key in the extra="forbid" Decision and
@@ -117,23 +132,35 @@ def test_hero_fixture_live() -> None:
     source = "live" if get_settings().allow_live_llm else "mock"
     _logger.info(
         "decision", extra={"run_id": str(run_id), "source": source,
-                           "model_action": decision.model_action,
                            "final_action": decision.final_action}
     )
 
-    # --- the exit-gate assertions (D-A4-01a) ---
-    assert decision.model_action == "process", (
-        "the live model must be WILLING (say process) — if it self-clarifies, TUNE "
-        "the submitted-name variant / reconcile prompt and re-run (Task 3 checkpoint)"
+    # --- exit-gate assertions (D-A4-01a, D-21 reframe) ---
+    # 1. LIVE EXTRACTION read the submitted name.
+    assert "David Reyez" in submitted_names, (
+        "live extraction must return the submitted name 'David Reyez' — if the model "
+        "misreads it, TUNE the extraction prompt and re-run (Task 3 checkpoint)"
     )
-    sub_threshold = [m for m in matches if m.confidence < _THRESHOLD]
-    assert sub_threshold, (
-        "at least one per-name confidence must be < 0.8 so the gate fires — if the "
-        "live model returns ≥0.8, TUNE the fixture/prompt and re-run (Task 3 checkpoint)"
+
+    # 2 & 3. DETERMINISTIC reconcile + decide: the unknown shorthand is unresolved
+    # and the code gate clarifies — purely from the resolution facts.
+    reyez = next(m for m in matches if m.submitted_name == "David Reyez")
+    assert reyez.resolved is False and reyez.source == "none", (
+        "the deterministic resolver must leave the unknown shorthand unresolved "
+        "(source='none') — it never guesses on a money-moving decision (D-21-01)"
     )
     assert decision.final_action == "request_clarification", (
-        "the code gate must OVERRIDE the willing model on the live sub-0.8 match — "
-        "'the model was willing; the code said no' on REAL output (D-A4-01a)"
+        "decide must gate the run to clarification from the resolution facts — "
+        "deterministic, no model action, no score (D-21-01)"
+    )
+
+    # 4. LIVE SUGGESTION quality (advisory copy only, never feeds decide).
+    suggestions = suggest_employees(decision.unresolved_names, roster)
+    assert suggestions.get("David Reyez") == "David Reyes", (
+        "the live suggestion call must map 'David Reyez' → 'David Reyes' so the "
+        "clarification names the specific employee — if it fails, TUNE the "
+        "suggestion prompt and re-run (Task 3 checkpoint). This is COPY ONLY and "
+        "never feeds decide (D-21-05)."
     )
 
 
@@ -142,21 +169,28 @@ def test_live_marker_is_not_a_decision_field() -> None:
     inside the extra="forbid" Decision object — adding it would raise a ValidationError.
 
     This pins the contract decision: provenance is a structured LOG field, not a
-    Decision column, and is verifiable with NO live call.
+    Decision column, and is verifiable with NO live call. The Decision shape is the
+    deterministic one (D-21-04): final_action + gate detail + per-name resolutions —
+    no model action, no score.
     """
     from app.models.contracts import Decision
 
     base = {
-        "model_action": "process",
-        "gate_triggered": True,
-        "gate_reasons": ["x: confidence 0.6 < 0.8"],
         "final_action": "request_clarification",
-        "unresolved_names": ["x"],
+        "gate_reasons": ["David Reyez: unresolved (no roster match)"],
+        "unresolved_names": ["David Reyez"],
         "missing_fields": [],
-        "confidence": "0.6",
-        "reasons": ["advisory"],
+        "resolutions": [
+            {
+                "submitted_name": "David Reyez",
+                "matched_employee_id": None,
+                "source": "none",
+                "resolved": False,
+                "reason": "no deterministic or stored-alias match",
+            }
+        ],
     }
-    # The honest Decision constructs fine.
+    # The honest deterministic Decision constructs fine.
     Decision.model_validate(base)
     # Smuggling a 'source' provenance key into the Decision must FAIL (extra="forbid").
     with pytest.raises(Exception):
