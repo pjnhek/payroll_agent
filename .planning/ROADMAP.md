@@ -190,7 +190,31 @@ Plans:
   4. Outbound sends are idempotent — retrying an approval or re-triggering an errored run never sends a duplicate clarification or confirmation (CLAR-04) — and a stuck/errored run surfaces an `error` status on the dashboard, re-triggerable idempotently from the start of the run (INGEST-05, drop-if-tight: "nothing silently hangs").
   5. An eval view renders the latest summary with headline metrics and a per-category breakdown chart, and a "Send test email" button fires a fixture through the whole pipeline from the page (demo trigger and live-email fallback).
 
-**Plans**: TBD
+**Plans**: 7 plans
+Plans:
+
+**Wave 0** *(test stubs — run concurrently)*
+
+- [ ] 05-01-PLAN.md — Wave 0 test stubs batch A: test_claim_status.py + test_alias_write.py + extend test_validate.py (D-05 OT rule, D-01b D.Reyes trap, FOUND-04)
+- [ ] 05-02-PLAN.md — Wave 0 test stubs batch B: test_pdf.py + test_compose_confirmation.py + test_delivery.py + test_dashboard.py + conftest extension
+
+**Wave 1** *(blocked on Wave 0)*
+
+- [ ] 05-03-PLAN.md — Atomic claim slice: claim_status CAS + _TERMINAL_STATUSES fix + alias_candidates DDL + resume_pipeline CAS refactor + over-40-no-OT validate rule (FOUND-04, D-12, D-05, D-13b prerequisite)
+
+**Wave 2** *(blocked on Wave 1 — two plans run concurrently)*
+
+- [ ] 05-04-PLAN.md — Delivery foundations: generate_paystub_pdf (pure, in-memory) + compose_confirmation (draft-tier + deterministic floor, hard 3s timeout) (HITL-02, HITL-03)
+- [ ] 05-05-PLAN.md — Delivery path + hardened routes: _deliver (compose+PDF+send+status) + approve/reject/retrigger in main.py using claim_status + 303 POST-redirect-GET (HITL-02, HITL-03, CLAR-04, INGEST-05, DASH-03, FOUND-04)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 05-06-PLAN.md — Jinja2 dashboard UI: 4 templates + style.css + GET /runs, /runs/{id}, /eval, /eval/chart.svg, /runs/{id}/pdf/{emp_id}, POST /demo/send-test (DASH-01, DASH-02, DASH-03, DASH-04, DASH-05)
+
+**Wave 4** *(blocked on Wave 2 — D-15 independently droppable)*
+
+- [ ] 05-07-PLAN.md — Alias write-side learning loop: _safe_to_learn_alias (D-01b collision guard) + update_known_alias + _clarify capture + resume update + _deliver alias write hook (D-01..D-04, Beat 3)
+
 **UI hint**: yes
 
 ### Phase 6: Real Integration & Ship
@@ -242,5 +266,5 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
-| 5. Dashboard & Delivery | 0/TBD | Not started | - |
+| 5. Dashboard & Delivery | 0/7 | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
