@@ -4,8 +4,11 @@ D-05: all monetary / rate / hours fields are Decimal, never float.
 D-06: Decimal serializes to JSON strings via model_dump(mode='json') — protects
       precision at the DB jsonb boundary and in committed eval fixtures.
 D-07: these are pipeline data-passing types, NOT 1:1 DB row mirrors.
-D-08: Decision carries model_action AND final_action as structurally separate fields —
-      code owns final_action; the two can differ when the gate fires.
+D-21-01: Decision is purely code-owned — final_action is computed deterministically
+      over resolution facts and is the SOLE branch source. There is no model action
+      to diverge from (no score, no LLM-judged decision).
+D-21-04 / D-21-06: Decision.resolutions carries the per-name resolution detail folded
+      into the decision JSONB so the dashboard/eval can read why each name resolved.
 """
 from __future__ import annotations
 
@@ -15,6 +18,8 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.roster import NameMatchResult
 
 # D-06: Pydantic v2 already serializes Decimal -> JSON string in
 # model_dump(mode="json") by default, so no per-field @field_serializer is
@@ -107,30 +112,33 @@ class Extracted(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Decision — the gated decision object (D-08 / LLM-08)
+# Decision — the deterministic decision object (D-21-01 / D-21-04 / LLM-07)
 # ---------------------------------------------------------------------------
 
 
 class Decision(BaseModel):
-    """Gated decision object — the core thesis of the design.
+    """Deterministic decision object — the core thesis of the design.
 
-    model_action: what the LLM proposed.
-    final_action: what code enforces (the sole branch source, per LLM-07).
+    final_action is computed PURELY by code over the resolution facts and is the
+    SOLE branch source for the orchestrator / dashboard / eval (LLM-07, D-21-03).
+    There is no model action to diverge from: decide.py never calls an LLM and
+    never reads a score (D-21-01). request_clarification fires when any name is
+    unresolved, any cross-name collision exists, or any required field is missing
+    — gate_reasons lists exactly what triggered it.
 
-    When gate_triggered=True, final_action overrides model_action.
-    The structurally-separate fields make the override visible and auditable.
+    resolutions is the per-name resolution detail (one NameMatchResult per
+    submitted name) folded into the decision JSONB so the dashboard and eval can
+    read WHY each name resolved or didn't (D-21-04 / D-21-06); there is no separate
+    name_matches table anymore.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    model_action: Literal["process", "request_clarification"]
-    gate_triggered: bool
-    gate_reasons: list[str]
     final_action: Literal["process", "request_clarification"]
+    gate_reasons: list[str]
     unresolved_names: list[str]
     missing_fields: list[str]
-    confidence: Decimal = Field(ge=0, le=1)  # 0.0–1.0; <0.8 fires the gate (WR-01)
-    reasons: list[str]
+    resolutions: list[NameMatchResult]
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +160,9 @@ class PaystubLineItem(BaseModel):
     id: UUID
     run_id: UUID
     employee_id: UUID | None  # None if name never resolved
+    # Provenance on a computed paystub is employee_id + submitted_name — no score
+    # is carried anywhere (D-21-01).
     submitted_name: str
-    # Same 0–1 semantic as Decision.confidence / NameMatchResult.confidence, and
-    # the one confidence field that reaches the DB (maps to NUMERIC(4,3), max
-    # 9.999). Unbounded, a value >9.999 crashes the INSERT and a value in (1,9.999]
-    # silently corrupts the audit record. (WR-01-incomplete)
-    match_confidence: Decimal = Field(ge=0, le=1)
     hours_regular: Decimal
     hours_overtime: Decimal
     hours_vacation: Decimal

@@ -4,7 +4,9 @@ Finding #6: these tests run in CI on every push.  They are the living proof that
 - All 10 public types import from app.models
 - RunStatus has exactly 11 members with the right values (mirrors Plan 02 CHECK)
 - Decimal serializes to JSON strings (D-06 guard at the DB jsonb boundary)
-- Decision carries structurally-separate model_action + final_action (D-08)
+- Decision is purely code-owned: final_action is the sole branch source and
+  resolutions carries per-name detail (D-21-01 / D-21-04) — no model_action,
+  no confidence, no gate_triggered
 - ExtractedEmployee hours are nullable so missing-hours cases don't parse-crash (Finding #3)
 - Employee enforces the pay_type compensation invariant at construction (D-10/FOUND-06)
 """
@@ -68,7 +70,6 @@ def _paystub_kwargs(**overrides) -> dict:
         run_id=uuid.uuid4(),
         employee_id=uuid.uuid4(),
         submitted_name="Alice Smith",
-        match_confidence=Decimal("0.99"),
         hours_regular=Decimal("40"),
         hours_overtime=Decimal("0"),
         hours_vacation=Decimal("0"),
@@ -162,56 +163,115 @@ def test_decimal_json_serialization() -> None:
     assert dumped["gross_pay"] == "1234.56"
     # A nullable Decimal still round-trips to JSON null (default behavior).
     assert dumped["state_withholding"] is None
-    # Decision.confidence also serializes to string via the same default.
-    decision = Decision(
-        model_action="process",
-        gate_triggered=False,
-        gate_reasons=[],
+    # fica_ss is another Decimal-bearing field that must serialize to a string
+    # (Decision no longer carries a Decimal field — confidence is gone, D-21-01).
+    assert dumped["fica_ss"] == "76.54"
+
+
+# ---------------------------------------------------------------------------
+# Decision deterministic shape (D-21-01 / D-21-04)
+# ---------------------------------------------------------------------------
+
+
+def test_decision_process_shape() -> None:
+    """A clean process Decision validates with the deterministic field set.
+
+    final_action is the sole branch source; there is no model_action to diverge
+    from (D-21-01). resolutions carries per-name detail folded into the decision
+    JSONB (D-21-04 / D-21-06).
+    """
+    resolution = NameMatchResult(
+        submitted_name="Maria Chen",
+        matched_employee_id=uuid.uuid4(),
+        source="exact",
+        resolved=True,
+        reason="exact normalized match",
+    )
+    d = Decision(
         final_action="process",
+        gate_reasons=[],
         unresolved_names=[],
         missing_fields=[],
-        confidence=Decimal("0.95"),
-        reasons=["ok"],
+        resolutions=[resolution],
     )
-    assert decision.model_dump(mode="json")["confidence"] == "0.95"
+    assert d.final_action == "process"
+    assert d.gate_reasons == []
+    assert len(d.resolutions) == 1
+    assert d.resolutions[0].resolved is True
+    # The deterministic Decision has no model action to diverge from.
+    assert not hasattr(d, "model_action")
+    assert not hasattr(d, "gate_triggered")
+    assert not hasattr(d, "confidence")
 
 
-# ---------------------------------------------------------------------------
-# Decision gate shape (D-08)
-# ---------------------------------------------------------------------------
-
-
-def test_decision_gate_shape() -> None:
-    """model_action and final_action can differ when gate fires (D-08)."""
+def test_decision_clarify_shape() -> None:
+    """A request_clarification Decision validates with gate_reasons + unresolved names."""
+    resolution = NameMatchResult(
+        submitted_name="Dave",
+        matched_employee_id=None,
+        source="none",
+        resolved=False,
+        reason="no deterministic or alias match",
+    )
     d = Decision(
-        model_action="process",
-        gate_triggered=True,
-        gate_reasons=["confidence below 0.8"],
         final_action="request_clarification",
-        unresolved_names=["Reyez"],
+        gate_reasons=["Dave: unresolved (no roster match)"],
+        unresolved_names=["Dave"],
         missing_fields=[],
-        confidence=Decimal("0.72"),
-        reasons=["name confidence 0.72 below threshold 0.80"],
+        resolutions=[resolution],
     )
-    assert d.model_action != d.final_action
-    assert d.gate_triggered is True
-    assert d.unresolved_names == ["Reyez"]
+    assert d.final_action == "request_clarification"
+    assert d.unresolved_names == ["Dave"]
+    assert d.gate_reasons == ["Dave: unresolved (no roster match)"]
 
 
-def test_decision_pass_through() -> None:
-    """Decision with model_action == final_action validates (happy path, no gate)."""
+def test_decision_resolutions_serialize_to_json() -> None:
+    """Decision.model_dump(mode='json')['resolutions'] is a list of resolution dicts.
+
+    This is what gets persisted in the decision JSONB (D-21-06) so the dashboard
+    and eval can read why each name resolved/didn't.
+    """
     d = Decision(
-        model_action="process",
-        gate_triggered=False,
-        gate_reasons=[],
         final_action="process",
+        gate_reasons=[],
         unresolved_names=[],
         missing_fields=[],
-        confidence=Decimal("0.95"),
-        reasons=["all names matched cleanly"],
+        resolutions=[
+            NameMatchResult(
+                submitted_name="Maria Chen",
+                matched_employee_id=uuid.uuid4(),
+                source="alias",
+                resolved=True,
+                reason="known_alias match",
+            )
+        ],
     )
-    assert d.model_action == d.final_action == "process"
-    assert d.gate_triggered is False
+    dumped = d.model_dump(mode="json")
+    assert isinstance(dumped["resolutions"], list)
+    res = dumped["resolutions"][0]
+    assert res["submitted_name"] == "Maria Chen"
+    assert res["source"] == "alias"
+    assert res["resolved"] is True
+    assert "reason" in res
+
+
+def test_decision_rejects_legacy_kwargs() -> None:
+    """Legacy confidence-era kwargs raise ValidationError (extra='forbid', D-21-04)."""
+    base = dict(
+        final_action="process",
+        gate_reasons=[],
+        unresolved_names=[],
+        missing_fields=[],
+        resolutions=[],
+    )
+    for dead_kwarg in (
+        {"model_action": "process"},
+        {"confidence": Decimal("0.95")},
+        {"gate_triggered": False},
+        {"reasons": ["ok"]},
+    ):
+        with pytest.raises(ValidationError):
+            Decision(**{**base, **dead_kwarg})
 
 
 # ---------------------------------------------------------------------------
@@ -468,42 +528,30 @@ def test_extracted_employee_rejects_negative_hours() -> None:
         ExtractedEmployee(submitted_name="Bob", hours_regular=Decimal("-10"))
 
 
-def test_decision_rejects_confidence_out_of_range() -> None:
-    """Decision.confidence outside [0,1] raises ValidationError (WR-01)."""
-    with pytest.raises(ValidationError):
-        Decision(
-            model_action="process",
-            gate_triggered=False,
-            gate_reasons=[],
-            final_action="process",
-            unresolved_names=[],
-            missing_fields=[],
-            confidence=Decimal("-1"),
-            reasons=["out of range"],
-        )
-
-
 # ---------------------------------------------------------------------------
-# PaystubLineItem.match_confidence bound (WR-01-incomplete)
+# PaystubLineItem confidence-free shape (D-21-01)
 # ---------------------------------------------------------------------------
 
 
-def test_paystub_line_item_rejects_confidence_above_one() -> None:
-    """PaystubLineItem.match_confidence > 1 raises ValidationError (WR-01-incomplete).
+def test_paystub_line_item_rejects_match_confidence_kwarg() -> None:
+    """A leftover match_confidence= kwarg raises ValidationError (extra='forbid').
 
-    Mirrors test_name_match_result_rejects_confidence_above_one for the one
-    confidence field that maps to the DB (paystub_line_items.match_confidence
-    NUMERIC(4,3)). Unbounded, 42.0 would crash the INSERT and 1.5 would silently
-    corrupt the audit record.
+    Confidence is gone everywhere (D-21-01); provenance on a paystub is carried
+    by employee_id + submitted_name, not a score.
     """
     with pytest.raises(ValidationError):
-        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("42.0")))
+        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("0.99")))
 
 
-def test_paystub_line_item_rejects_negative_confidence() -> None:
-    """PaystubLineItem.match_confidence < 0 raises ValidationError (WR-01-incomplete)."""
-    with pytest.raises(ValidationError):
-        PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("-0.01")))
+# ---------------------------------------------------------------------------
+# NameReconciliationResponse is deleted (D-21-05 — no layer-2 LLM wrapper)
+# ---------------------------------------------------------------------------
+
+
+def test_name_reconciliation_response_module_gone() -> None:
+    """app.models.reconcile no longer exists (the layer-2 LLM wrapper is dead)."""
+    with pytest.raises(ModuleNotFoundError):
+        __import__("app.models.reconcile")
 
 
 # ---------------------------------------------------------------------------
