@@ -61,6 +61,18 @@
 
 ---
 
+## Post-context review round (2026-06-22) — four hardening items folded in
+
+After the initial four-area pass, the user raised four review points to make "golden to the penny" actually hold. All four accepted; CONTEXT.md updated.
+
+1. **Layer-B oracle quality (→ D-01 hardened).** Pub 15-T ships only a couple of worked examples, so most of the matrix leans on layer B. Two hazards captured: (a) generic take-home estimators use annual-liability/simplified math, not the per-period Pub 15-T percentage method, so they disagree to the penny even when correct and you can't tell methodology from a transcription bug — layer B MUST use a calculator that explicitly implements the percentage method; (b) one source isn't verification — uncovered cells need **two independent** percentage-method calculators to agree. Researcher confirms which tools qualify.
+
+2. **Rounding convention/granularity/step-locations (→ D-03 rounding bullet hardened).** ROUND_HALF_UP pins direction, not granularity (cents vs whole-dollar) or worksheet step locations. Mismatch makes the penny test fail on rounding, not logic. Must be transcribed from the same live PDF as the brackets and matched to the worked examples.
+
+3. **Two taxonomy gaps (→ D-04 extended).** (a) Step-3 dependent credit (partial, and credit-exceeds-tentative → floors at $0 not negative) + Step-4a/4b paths — the engine uses the FOUND-06 seeded values, so they must be tested. (b) Multiple pay frequencies — annualization is a separate error surface; ≥2 frequencies in the penny matrix. Seed nuance surfaced: only 52 + 26 are seeded; 24/12 need synthetic fixtures.
+
+4. **Cross-phase OT under-pay hole (→ new D-05 + backlog).** Explicit-OT-only (D-03) silently under-pays a weekly "45 hours, no OT field" employee. User corrected the rule from a flat ">40" to **per-workweek** (>40×whole-workweeks): weekly >40 and biweekly >80 are detectable → clarify; semi-monthly/monthly cut across workweeks → documented limitation. Its own focused insertion **before Phase 5** (not bundled into Phase 3 calc, not deferred to Phase 5 — a money-guard shouldn't ride two phases out). Decided via AskUserQuestion; the user's freeform answer overrode all three offered options on both timing and the rule's correctness. Also a demo beat.
+
 ## Claude's Discretion
 
 - Exact path/name and internal year-keying data structure of the tax-constants module (scope fixed by D-02; layout open).
