@@ -27,12 +27,23 @@ logger = logging.getLogger("payroll_agent.compose_email")
 _SUBJECT = "Quick question before we run your payroll"
 
 
-def _template_body(decision: Decision) -> str:
+def _template_body(
+    decision: Decision,
+    suggestions: dict[str, str] | None = None,
+) -> str:
     """A deterministic clarification body from the gate detail (fallback / floor).
 
     Surfaces exactly what the code gate blocked on so the client can resolve it,
     even when the draft model returns nothing.
+
+    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY
+    from the suggestion call (D-21-05). When a suggestion exists for an unresolved
+    name, the line names the likely intended employee ("We could not match
+    'David Reyez' — did you mean David Reyes?") instead of the bare name. This is
+    the DETERMINISTIC floor of the new Phase 2 hero, so the specific ask survives
+    even a total draft-tier failure (WR-03).
     """
+    suggestions = suggestions or {}
     lines = [
         "Hello,",
         "",
@@ -41,11 +52,21 @@ def _template_body(decision: Decision) -> str:
         "",
     ]
     if decision.unresolved_names:
-        lines.append(
-            "  - We could not confidently match these names to an employee: "
-            + ", ".join(decision.unresolved_names)
-            + "."
-        )
+        # Split names with a suggestion (specific "did you mean ...?" line) from
+        # those without (the generic bundled ask) — the suggestion is copy only.
+        suggested_names = [n for n in decision.unresolved_names if suggestions.get(n)]
+        plain_names = [n for n in decision.unresolved_names if not suggestions.get(n)]
+        for name in suggested_names:
+            lines.append(
+                f"  - We could not match '{name}' — did you mean "
+                f"{suggestions[name]}?"
+            )
+        if plain_names:
+            lines.append(
+                "  - We could not confidently match these names to an employee: "
+                + ", ".join(plain_names)
+                + "."
+            )
     if decision.missing_fields:
         lines.append(
             "  - We are missing required information for: "
@@ -64,14 +85,25 @@ def _template_body(decision: Decision) -> str:
     return "\n".join(lines)
 
 
-def compose_clarification(decision: Decision, *, llm=llm_client) -> str:
+def compose_clarification(
+    decision: Decision,
+    *,
+    suggestions: dict[str, str] | None = None,
+    llm=llm_client,
+) -> str:
     """Draft a clarification email body for a gated run (CLAR-01).
 
     Uses the DRAFT_* tier free-text path; on empty model content falls back to a
     templated body so a draft failure never strands the run. Returns the body
     string the orchestrator hands to gateway.send_outbound.
+
+    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY
+    from the suggestion call (D-21-05), threaded into BOTH the draft prompt (so the
+    model can write "did you mean David Reyes?") AND the deterministic template
+    fallback (so the specific ask survives a draft failure, WR-03). It is copy
+    only — it never feeds decide / final_action.
     """
-    messages = clarify_prompt.build_messages(decision)
+    messages = clarify_prompt.build_messages(decision, suggestions)
     # WR-03: the "draft failure never strands the run" guarantee must cover BOTH
     # empty content AND an API error (auth/rate-limit/etc.). call_text returns None
     # on empty content but RAISES on an API error — unwrapped, that exception would
@@ -94,7 +126,7 @@ def compose_clarification(decision: Decision, *, llm=llm_client) -> str:
         # silently-templating draft tier is still visible (but don't double-log errors).
         if not api_error:
             logger.warning("draft returned empty content — using templated clarification body")
-        return _template_body(decision)
+        return _template_body(decision, suggestions)
     return body
 
 

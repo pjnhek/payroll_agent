@@ -46,6 +46,7 @@ from app.pipeline.compose_email import clarification_subject, compose_clarificat
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
 from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.suggest import suggest_employees
 from app.pipeline.validate import validate
 
 logger = logging.getLogger("payroll_agent.orchestrator")
@@ -187,10 +188,10 @@ def _run_stages(run_id, email, roster, *, llm) -> None:
         repo.set_status(run_id, RunStatus.COMPUTED)
         repo.set_status(run_id, RunStatus.AWAITING_APPROVAL)  # HITL-01 pause
     else:  # request_clarification — draft + stub-send, pause at AWAITING_REPLY
-        _clarify(run_id, email, decision, llm=llm)
+        _clarify(run_id, email, decision, roster, llm=llm)
 
 
-def _clarify(run_id, email, decision, *, llm) -> None:
+def _clarify(run_id, email, decision, roster, *, llm) -> None:
     """Draft a clarification, stub-send it, and pause the run at AWAITING_REPLY.
 
     The cheap DRAFT_* tier drafts the body (templated fallback on empty content so
@@ -201,8 +202,28 @@ def _clarify(run_id, email, decision, *, llm) -> None:
     Message-ID column. Status advances via repo.set_status (the sole writer, FIX B).
     The clarification threads off the client's inbound message_id (In-Reply-To +
     References) so the reply chain resolves in Plan 04.
+
+    D-21-05 — the suggestion-only call: BEFORE composing, ask the cheap (draft) tier
+    which roster employee each unresolved name most likely meant, and pass that as
+    `suggestions=` so the clarification can be SPECIFIC ("did you mean David
+    Reyes?"). CRITICAL: this runs ONLY here, on the request_clarification branch,
+    STRICTLY AFTER `decide` has already returned (decision is a parameter, computed
+    upstream in _run_stages). The suggestion is advisory COPY — it is NEVER passed
+    to decide and NEVER influences final_action. A suggestion failure degrades to
+    {} inside suggest_employees, so it can never strand the run.
     """
-    compose_kwargs = {}
+    # Like compose below: only pass `llm` when injected (a test mock). When llm is
+    # None (production), suggest_employees binds its own default client — passing
+    # llm=None would force the cheap call onto a None client and silently degrade
+    # every suggestion to the generic ask.
+    suggest_kwargs = {}
+    if llm is not None:
+        suggest_kwargs["llm"] = llm
+    suggestions = suggest_employees(
+        decision.unresolved_names, roster, **suggest_kwargs
+    )
+
+    compose_kwargs = {"suggestions": suggestions}
     if llm is not None:
         compose_kwargs["llm"] = llm
     body = compose_clarification(decision, **compose_kwargs)

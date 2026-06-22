@@ -14,11 +14,11 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 
 import pytest
 
 from app.models.contracts import Decision, InboundEmail
+from app.models.roster import NameMatchResult
 from app.pipeline.compose_email import compose_clarification
 from app.pipeline.orchestrator import run_pipeline
 
@@ -41,15 +41,24 @@ class _DraftLLM:
 
 
 def _gated_decision() -> Decision:
+    """A deterministically-gated Decision (D-21-01/04 shape): David Reyez is
+    unresolved, so final_action is request_clarification. No model_action /
+    confidence / gate_triggered / reasons exist anymore (the decision is pure
+    code over resolution facts)."""
     return Decision(
-        model_action="process",
-        gate_triggered=True,
-        gate_reasons=["David Reyez: confidence 0.6 < 0.8"],
         final_action="request_clarification",
+        gate_reasons=["David Reyez: unresolved (no roster match)"],
         unresolved_names=["David Reyez"],
         missing_fields=[],
-        confidence=Decimal("0.6"),
-        reasons=["model is willing"],
+        resolutions=[
+            NameMatchResult(
+                submitted_name="David Reyez",
+                matched_employee_id=None,
+                source="none",
+                resolved=False,
+                reason="no roster match",
+            )
+        ],
     )
 
 
@@ -73,6 +82,71 @@ def test_compose_falls_back_to_template_on_empty_content():
 
     assert body, "an empty draft must fall back to a non-empty templated body"
     assert "David Reyez" in body, "the fallback template surfaces the gate detail"
+
+
+# ---------------------------------------------------------------------------
+# D-21-05 — the suggestion names a SPECIFIC employee (the new Phase 2 hero copy)
+# ---------------------------------------------------------------------------
+
+
+def test_template_names_suggested_employee_when_supplied():
+    """When a suggestion is supplied for an unresolved name, the DETERMINISTIC
+    template floor names the likely intended employee ("did you mean David
+    Reyes?") — so the specific ask survives even a total draft failure (WR-03)."""
+    llm = _DraftLLM(None)  # force the template floor
+    body = compose_clarification(
+        _gated_decision(),
+        suggestions={"David Reyez": "David Reyes"},
+        llm=llm,
+    )
+
+    assert "David Reyez" in body, "the body still surfaces the submitted name"
+    assert "David Reyes" in body, "the body names the SPECIFIC suggested employee"
+    assert "did you mean" in body.lower(), "the hero copy is a specific did-you-mean ask"
+
+
+def test_template_generic_fallback_when_no_suggestion():
+    """With no suggestion (None / empty), the template falls back to the GENERIC
+    ask — it never invents a 'did you mean' for a name we have no suggestion for."""
+    llm = _DraftLLM(None)  # force the template floor
+
+    body_none = compose_clarification(_gated_decision(), suggestions=None, llm=llm)
+    assert "David Reyez" in body_none
+    assert "did you mean" not in body_none.lower(), (
+        "no suggestion → no specific did-you-mean line, only the generic ask"
+    )
+
+    llm2 = _DraftLLM(None)
+    body_empty = compose_clarification(_gated_decision(), suggestions={}, llm=llm2)
+    assert "David Reyez" in body_empty
+    assert "did you mean" not in body_empty.lower()
+
+
+def test_compose_threads_suggestion_into_draft_prompt():
+    """The suggestion is threaded into the draft prompt so the model can write the
+    specific ask — the prompt messages name the suggested employee."""
+    llm = _DraftLLM("Hi — did you mean David Reyes? Please confirm.")
+    compose_clarification(
+        _gated_decision(),
+        suggestions={"David Reyez": "David Reyes"},
+        llm=llm,
+    )
+
+    assert llm.calls, "compose must call the draft LLM"
+    _tier, messages, _temp = llm.calls[0]
+    prompt_text = " ".join(m["content"] for m in messages)
+    assert "David Reyes" in prompt_text, (
+        "the suggested employee must be threaded into the draft prompt (D-21-05)"
+    )
+
+
+def test_compose_signature_accepts_suggestions():
+    """compose_clarification exposes a keyword-only `suggestions` param (the wiring
+    contract the orchestrator depends on)."""
+    import inspect
+
+    params = inspect.signature(compose_clarification).parameters
+    assert "suggestions" in params, "compose_clarification must accept suggestions="
 
 
 class _RaisingDraftLLM:
@@ -193,11 +267,15 @@ def _david_reyes_id(fake_repo) -> uuid.UUID:
 
 
 def _gate_block_script(fake_repo) -> list[str]:
-    """The TWO distinct structured mocks (extract → reconcile) + a draft body.
+    """The orchestrator FIFO on the clarify branch: extract (structured) → SUGGEST
+    (structured) → draft (free text).
 
-    Reconcile returns David Reyez → llm_typo → David Reyes @ 0.6 (the model is
-    WILLING but sub-threshold); the decision-advisory mock says process. The
-    orchestrator's FIFO is extract → reconcile → decide → draft."""
+    reconcile_names + decide are PURE CODE now (no LLM, no confidence, no
+    model_action — D-21-01) so they consume NO scripted response. "David Reyez" is
+    not a roster name or stored alias, so the deterministic resolver leaves it
+    unresolved and the gate clarifies. The SUGGESTION call (D-21-05) then maps it
+    back to "David Reyes" purely for the email copy — it never touches the
+    decision. The draft body is last."""
     return [
         json.dumps(
             {
@@ -206,21 +284,18 @@ def _gate_block_script(fake_repo) -> list[str]:
                 "pay_period_end": None,
             }
         ),
+        # SUGGESTION (copy only): David Reyez → David Reyes. NEVER feeds decide.
         json.dumps(
             {
-                "matches": [
+                "suggestions": [
                     {
                         "submitted_name": "David Reyez",
-                        "matched_employee_id": str(_david_reyes_id(fake_repo)),
-                        "match_type": "llm_typo",
-                        "confidence": "0.6",
-                        "reason": "likely a typo of David Reyes",
+                        "suggested_full_name": "David Reyes",
                     }
                 ]
             }
         ),
-        json.dumps({"model_action": "process", "reasons": ["model is willing"]}),
-        "Hi — we need to confirm one employee name before running payroll.",
+        "Hi — we could not match David Reyez. Did you mean David Reyes?",
     ]
 
 
@@ -263,6 +338,71 @@ def test_clarify_sends_and_pauses(fake_repo, mock_llm, monkeypatch):
     # Reconciliation persisted on the gated branch too (D-A3-05, non-NULL).
     assert run["reconciliation"] is not None
     assert len(run["reconciliation"]) == 1
+    # D-21-05 — the SUGGESTION made the sent clarification specific: the body names
+    # the suggested employee ("David Reyes"), the new Phase 2 hero copy.
+    assert "David Reyes" in sent[str(run_id)]["body"]
+
+
+def test_clarify_suggestion_never_reaches_the_decision(fake_repo, mock_llm, monkeypatch):
+    """T-021-06 — the suggestion is wired AFTER decide and is purely email copy: it
+    is NEVER written into the persisted Decision (decision JSONB / reconciliation).
+
+    The deterministic resolver leaves "David Reyez" unresolved; the suggestion maps
+    it to "David Reyes" for the email ONLY. The persisted decision must still show
+    the name UNRESOLVED with matched_employee_id null — the suggested employee must
+    not have leaked into final_action / resolutions."""
+    def _fake_send_outbound(*, run_id, to_addr, subject, body, **kw):
+        return f"<{uuid.uuid4()}@payroll-agent.local>"
+
+    import app.email.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+
+    mock_llm.script = _gate_block_script(fake_repo)
+    run_id = _seed_metrodeli_run(fake_repo)
+    david_id = str(_david_reyes_id(fake_repo))
+
+    run_pipeline(run_id)
+
+    run = fake_repo.load_run(run_id)
+    decision = run["decision"]
+    # The decision still gates to clarification with the name UNRESOLVED — the
+    # suggestion did NOT flip final_action or resolve the name.
+    assert decision["final_action"] == "request_clarification"
+    assert "David Reyez" in decision["unresolved_names"]
+    # The suggested employee id must NOT appear anywhere in the persisted decision
+    # or reconciliation — the suggestion is copy only, walled off from the decision.
+    assert david_id not in json.dumps(decision), (
+        "the suggested employee must never leak into the persisted Decision (T-021-06)"
+    )
+    for m in run["reconciliation"]:
+        assert m["matched_employee_id"] is None, (
+            "the unresolved name stays unmatched — the suggestion never resolves it"
+        )
+
+
+def test_orchestrator_suggest_called_after_decide():
+    """Source-level: in the orchestrator the suggestion call lives ONLY on the
+    clarify branch, AFTER decide has returned (D-21-05). decide() is invoked in
+    _run_stages; suggest_employees() is invoked inside _clarify (the else branch),
+    so the suggestion can never precede or feed the decision."""
+    import pathlib
+
+    from app.pipeline import orchestrator
+
+    src = pathlib.Path(orchestrator.__file__).read_text()
+    decide_pos = src.index("decision = decide(")
+    suggest_pos = src.index("suggest_employees(")
+    assert decide_pos < suggest_pos, (
+        "suggest_employees must be called AFTER decide() in the orchestrator source "
+        "— the suggestion is wired strictly after the decision (D-21-05)"
+    )
+    # decide() takes only (extracted, matches, issues) — the suggestion is never an
+    # argument to it.
+    decide_call = src[decide_pos : src.index(")", decide_pos) + 1]
+    assert "suggest" not in decide_call, (
+        "the suggestion must never be passed into decide() (D-21-05)"
+    )
 
 
 def test_clarify_persists_reconciliation_single_call():
