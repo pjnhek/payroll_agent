@@ -278,6 +278,25 @@ married-filing-separately. Head-of-household is intentionally out of scope and r
 
 ---
 
+## Round 1 — Disposition (orchestrator, 2026-06-22)
+
+Each finding was verified before action (money-moving code — verify, don't blindly implement).
+
+| ID | Verdict | Action taken |
+|----|---------|--------------|
+| **CR-01** | **REFUTED (boundary) / cent-artifact (base)** | The headline claim — Single/MFS Step-2 37% should begin at $200,225 — is **wrong**. Verified against the live IRS source (irs.gov/publications/p15t, 2026, retrieved 2026-06-22): the 37% bracket begins at **$328,350** with base **$96,489.63**, exactly as transcribed. The "MFJ = 2× Single" heuristic does NOT hold for IRS Step-2 schedules. The base-continuity "mismatches" ($0.12, $0.18) are the IRS's own inherent boundary-rounding artifacts (IRS prints $20,512.00 where pure continuity gives $20,512.12 — both correct). **Did NOT change any tax constant.** Added two guards instead: `test_single_step2_top_bracket_boundary_verified_against_irs` (pins the IRS-verified values so the refuted "fix" can't be applied) and `test_bracket_base_continuity_smoke` (catches *dollar-scale* transcription errors across all six schedules, with sub-dollar tolerance for IRS rounding). |
+| **WR-01** | **VALID** | Confirmed circular: the MFJ Standard cross-check cells were engine-computed (line 257). Removed them rather than present engine output as an independent oracle. Could not fetch reliable independent MFJ Standard cells (PDF table extraction unreliable; this is exactly why layer-B is a human checkpoint). Added `test_mfj_standard_wage_bracket_oracle_unresolved` (strict xfail) to keep the gap visible. MFJ Standard correctness is still covered by the D-04 golden matrix (James Okafor). |
+| **WR-02** | **VALID** | Added `_to_decimal()` in calculate.py: rejects float hours with a `TypeError` (D-05 "Decimal everywhere"). Verified no production/test path passes floats (hours are Pydantic `Decimal` throughout) — purely defensive. |
+| **WR-03** | **VALID, deferred (out of phase scope)** | Unbounded hours is real, but input validation belongs in the validate stage and `ExtractedEmployee` is not a Phase 3 calc file. Logged for a future validation pass; not a calc-engine defect. |
+| **WR-04** | **VALID, known** | This is the pre-authorized Thomas Bergmann over-ceiling skip (operator decision pending). Mitigated the top-bracket *transcription* risk via the new continuity smoke-test (catches a wrong top base/boundary without an external calculator). The over-ceiling *withholding value* still awaits the two-calculator human verification. |
+| **IN-01** | **VALID** | Dropped the redundant inner `_money()` rationale into a clarifying comment (the salaried branch quantizes once; the final `_money()` is for the hourly branch). |
+| **IN-02** | **VALID** | Replaced dead `.get(..., Decimal("0"))` defaults with direct subscripts (keys always present). |
+| **IN-03** | **VALID** | README "all filing statuses" → "single, MFJ, MFS; head-of-household intentionally out of scope and rejected." |
+
+**Net:** 1 blocker refuted with authoritative-source evidence (no tax constant changed — changing it would have *introduced* a bug); 3 warnings + 3 info fixed; 1 warning deferred with rationale; 2 new structural guards added. Full suite: 299 passed, 13 skipped, 1 xfailed, 0 failed. N1 gate passes.
+
+---
+
 _Reviewed: 2026-06-22T07:49:31Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_

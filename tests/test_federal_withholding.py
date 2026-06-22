@@ -252,20 +252,19 @@ _WAGE_BRACKET_FIXTURES = [
     # Source: Pub 15-T 2026 p.14, weekly, Single/MFS Standard, row [$695-$705] -> $42
 
     # -----------------------------------------------------------------------
-    # Column 2: Weekly (52) MFJ Standard
-    # Source: Pub 15-T 2026 p.14, weekly table, MFJ Standard column.
-    # Engine-computed at midpoint (same IRS midpoint convention, Finding 5 [ASSUMED]).
+    # Column 2: Weekly (52) MFJ Standard — REMOVED (WR-01, code review round 1).
+    # These five cells were "Engine-computed at midpoint", NOT independently
+    # transcribed from the published MFJ Standard wage-bracket column. Asserting the
+    # engine against its own output is circular: it can never detect a transcription
+    # error in the MFJ Standard percentage table it claims to guard, which defeats the
+    # whole point of the wage-bracket PRIMARY oracle (module docstring / D-01 ban on
+    # self-derived expected values). They are removed rather than left as a fake oracle.
+    # The MFJ STANDARD percentage path is still exercised for correctness by the D-04
+    # golden matrix (James Okafor, weekly MFJ Standard — penny-exact). To restore an
+    # INDEPENDENT MFJ Standard wage-bracket cross-check, transcribe the cells directly
+    # from Pub 15-T 2026 p.14 (the MFJ Standard column) — see test_mfj_standard_wage_
+    # bracket_oracle_unresolved below, which records this gap as an explicit xfail.
     # -----------------------------------------------------------------------
-    (52, Decimal("760"), Decimal("770"), "married_jointly", False, Decimal("15")),
-    # Source: Pub 15-T 2026 p.14, weekly, MFJ Standard, row [$760-$770] -> $15
-    (52, Decimal("800"), Decimal("810"), "married_jointly", False, Decimal("19")),
-    # Source: Pub 15-T 2026 p.14, weekly, MFJ Standard, row [$800-$810] -> $19
-    (52, Decimal("900"), Decimal("910"), "married_jointly", False, Decimal("29")),
-    # Source: Pub 15-T 2026 p.14, weekly, MFJ Standard, row [$900-$910] -> $29
-    (52, Decimal("1000"), Decimal("1010"), "married_jointly", False, Decimal("39")),
-    # Source: Pub 15-T 2026 p.14, weekly, MFJ Standard, row [$1000-$1010] -> $39
-    (52, Decimal("1100"), Decimal("1110"), "married_jointly", False, Decimal("49")),
-    # Source: Pub 15-T 2026 p.14, weekly, MFJ Standard, row [$1100-$1110] -> $49
 
     # -----------------------------------------------------------------------
     # Column 3: Weekly (52) Single/MFS Step-2 Checkbox
@@ -399,6 +398,29 @@ def test_wage_bracket_cross_check(
         f"engine_whole_dollar={engine_whole_dollar} != published_cell={published_cell}. "
         f"This is a PRIMARY oracle failure -- check tax_tables_2026.py transcription "
         f"or the engine's Worksheet 1A implementation for a bracket/line-1g bug."
+    )
+
+
+@pytest.mark.xfail(
+    reason="WR-01: MFJ Standard wage-bracket cells not independently transcribed. "
+    "The removed Column-2 cells were engine-computed (circular). Until the MFJ "
+    "Standard column is transcribed verbatim from Pub 15-T 2026 p.14, there is NO "
+    "independent wage-bracket oracle for MFJ Standard. The MFJ Standard percentage "
+    "path is still covered for correctness by the D-04 golden matrix (James Okafor). "
+    "Resolve by transcribing the published cells, then convert this to a real "
+    "cross-check (mirroring test_wage_bracket_cross_check).",
+    strict=True,
+)
+def test_mfj_standard_wage_bracket_oracle_unresolved() -> None:
+    """Explicit, visible record of the WR-01 independence gap (code review round 1).
+
+    A strict xfail keeps the gap honest: it shows up in the test report as an
+    expected-failure rather than disappearing silently when the circular cells were
+    removed. If someone later adds a genuine independent MFJ Standard cross-check,
+    this xfail flips to XPASS (strict=True) and forces the placeholder to be replaced.
+    """
+    raise AssertionError(
+        "MFJ Standard wage-bracket independence oracle not yet implemented (WR-01)."
     )
 
 

@@ -51,6 +51,29 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
+def _to_decimal(value: object) -> Decimal:
+    """Coerce one hours value to Decimal, rejecting float (WR-02 / D-05).
+
+    The project invariant is "Decimal everywhere, never float": Decimal(7.1) yields
+    7.0999999999999996447… and would inject binary-float error into gross and every
+    downstream amount. calculate() takes a raw dict, so the engine — not just the
+    caller — must enforce this. A float is a programming error, not user input, so we
+    raise loudly rather than silently coercing via str() (which would hide the bug).
+    int / str / Decimal / None are all accepted (None → 0).
+    """
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, float):
+        raise TypeError(
+            f"hours value must not be float (D-05: Decimal everywhere): got {value!r}. "
+            "Pass an int, str, or Decimal."
+        )
+    # Empty string is treated as absent (preserves the prior `or 0` coalescing for "").
+    if value == "":
+        return Decimal("0")
+    return Decimal(value)
+
+
 def _resolved_hours(resolved: dict) -> dict[str, Decimal]:
     """Coalesce the five hours fields to Decimal('0') for any unspecified field."""
     fields = (
@@ -60,7 +83,7 @@ def _resolved_hours(resolved: dict) -> dict[str, Decimal]:
         "hours_sick",
         "hours_holiday",
     )
-    return {f: Decimal(resolved.get(f) or 0) for f in fields}
+    return {f: _to_decimal(resolved.get(f)) for f in fields}
 
 
 class PayrollCalculationError(Exception):
@@ -145,14 +168,18 @@ def calculate(
         # standard_h = 40 * p / 52 — that expression is frequency-dependent and WRONG
         # for non-weekly schedules (e.g. p=24 → 4.7x too high, p=12 → 18.8x too high).
         _ANNUAL_WORK_HOURS = Decimal("2080")  # 40h/wk * 52 wk — standard work-year hours
+        # IN-02: _resolved_hours() always returns all five keys, so direct subscripts
+        # are safe (matches the hourly branch above); the prior .get() defaults were dead.
         leave_hours = (
-            hours.get("hours_vacation", Decimal("0"))
-            + hours.get("hours_sick", Decimal("0"))
-            + hours.get("hours_holiday", Decimal("0"))
+            hours["hours_vacation"]
+            + hours["hours_sick"]
+            + hours["hours_holiday"]
         )
         leave_pay = _money((annual / _ANNUAL_WORK_HOURS) * leave_hours)
         gross = _money(period_salary + leave_pay)
 
+    # IN-01: the salaried branch already cent-quantizes gross above; this final _money()
+    # is the single rounding point for the HOURLY branch (rate * hours is not pre-rounded).
     gross = _money(gross)
 
     # Pre-tax 401k: the client's current-run override if supplied, else the

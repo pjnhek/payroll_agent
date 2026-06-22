@@ -17,8 +17,10 @@ by code** so a low-confidence match can never reach a real payroll calculation.
 > stack. Do not use it to run real payroll.
 
 > **Net pay includes IRS Pub 15-T 2026 federal income-tax withholding** (Worksheet 1A
-> percentage method, all filing statuses). The calculation is tested against the
-> independently-transcribed wage-bracket method tables as a cross-check oracle.
+> percentage method; single, married-filing-jointly, and married-filing-separately.
+> Head-of-household is intentionally out of scope and is rejected with an error.) The
+> calculation is tested against the independently-transcribed wage-bracket method tables
+> as a cross-check oracle.
 
 ## Known Limitations
 

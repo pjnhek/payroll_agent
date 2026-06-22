@@ -185,3 +185,67 @@ def test_single_step2_second_bracket() -> None:
     row = STEP2_BRACKETS["single"][1]
     assert row.lower == Decimal("8050")
     assert row.rate == Decimal("0.10")
+
+
+def test_single_step2_top_bracket_boundary_verified_against_irs() -> None:
+    """CR-01 refutation: Single/MFS Step-2 37% bracket begins at $328,350, base $96,489.63.
+
+    Code review round 1 (CR-01) claimed this boundary "should" be $200,225 based on an
+    MFJ=2x-Single heuristic. That heuristic does NOT hold for the IRS Step-2 schedules.
+    Verified against the live IRS source (irs.gov/publications/p15t, 2026, retrieved
+    2026-06-22): the Single/MFS Step-2 37% bracket begins at $328,350 with base
+    $96,489.63 — exactly as transcribed. This test pins the verified values so the
+    refuted "fix" can never be silently applied.
+    """
+    from app.pipeline.tax_tables_2026 import STEP2_BRACKETS
+    top = STEP2_BRACKETS["single"][-1]
+    assert top.lower == Decimal("328350"), "IRS-verified Single/MFS Step-2 37% boundary"
+    assert top.upper is None
+    assert top.base == Decimal("96489.63"), "IRS-verified Single/MFS Step-2 37% base"
+    assert top.rate == Decimal("0.37")
+
+
+# ---------------------------------------------------------------------------
+# CR-01 (code review round 1): bracket base/rate continuity smoke-test.
+#
+# Each row's base is the cumulative tax at that bracket's lower bound:
+#   base[i] ≈ base[i-1] + (lower[i] - lower[i-1]) * rate[i-1]
+# A GROSS transcription error (a wrong boundary, or a base off by whole dollars —
+# the kind that silently mis-withholds high earners) breaks this identity by dollars.
+#
+# IMPORTANT — why the tolerance is ~$1, NOT exact equality:
+# The IRS publishes whole-cent base amounts that do NOT perfectly satisfy pure
+# continuity, because the printed bracket BOUNDARIES are themselves rounded. This was
+# verified against the live IRS source for the Single/MFS Step-2 schedule:
+#   - 32% row [108,938 - 136,163): IRS prints base $20,512.00; pure continuity gives
+#     $20,512.12 (a $0.12 artifact of the rounded $108,938 boundary).
+#   - 37% row [328,350 - inf): IRS prints base $96,489.63; continuity gives ~$96,489.45.
+# Both printed figures are CORRECT per irs.gov/publications/p15t (2026), confirmed
+# 2026-06-22. An exact-equality continuity test would therefore reject the IRS's own
+# published tables. The < $1 tolerance catches real (dollar-scale) transcription
+# errors while tolerating the IRS's inherent sub-dollar boundary-rounding drift.
+# ---------------------------------------------------------------------------
+def test_bracket_base_continuity_smoke() -> None:
+    """Each bracket base ties to the cumulative tax at its lower bound within < $1.
+
+    Guards against gross (dollar-scale) transcription errors in any of the six
+    schedules. Tolerance is sub-dollar by design — see the module comment above for
+    why exact equality would (incorrectly) reject the real IRS tables.
+    """
+    from app.pipeline.tax_tables_2026 import STANDARD_BRACKETS, STEP2_BRACKETS
+
+    seen: set[int] = set()
+    for table_name, table in (("STANDARD", STANDARD_BRACKETS), ("STEP2", STEP2_BRACKETS)):
+        for status, rows in table.items():
+            if id(rows) in seen:  # skip the married_separately alias of single
+                continue
+            seen.add(id(rows))
+            for i in range(1, len(rows)):
+                prev, cur = rows[i - 1], rows[i]
+                derived = prev.base + (cur.lower - prev.lower) * prev.rate
+                drift = abs(cur.base - derived)
+                assert drift < Decimal("1"), (
+                    f"[{table_name}/{status}] row {i} (lower={cur.lower}): base "
+                    f"{cur.base} drifts {drift} from continuity-derived {derived} "
+                    f"(>= $1 => likely a real transcription error, not IRS rounding)."
+                )
