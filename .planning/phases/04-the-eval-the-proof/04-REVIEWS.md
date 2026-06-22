@@ -2,7 +2,7 @@
 phase: 4
 reviewers: [codex]
 reviewed_at: 2026-06-22T18:31:29Z
-rounds: 2
+rounds: 3
 plans_reviewed: [04-01-PLAN.md, 04-02-PLAN.md, 04-03-PLAN.md, 04-04-PLAN.md]
 reviewer_versions:
   codex: codex-cli 0.135.0
@@ -10,7 +10,7 @@ reviewer_versions:
 
 # Cross-AI Plan Review — Phase 4 (The Eval)
 
-> **Round 2 (re-review after applying Round-1 fixes) is appended at the bottom of this file.** Round 2 confirmed all 13 Round-1 findings fixed (11 confirmed, 2 partial) and surfaced 8 new findings (2 HIGH cross-plan-consistency bugs introduced by the edits + 6 MEDIUM/LOW), all since resolved.
+> **Three review rounds, appended in order below.** R1: 13 findings (scoring credibility). R2: confirmed all 13 fixed; found 8 new (2 HIGH cross-plan-consistency bugs the R1 edits introduced + 6 MED/LOW). R3: confirmed all 8 R2 fixes + no regressions; found 1 HIGH (the D-09 test didn't actually test decide→calculate wiring — it had survived all prior rounds) + 3 MED/LOW. All findings across all rounds resolved.
 
 ---
 
@@ -129,3 +129,31 @@ All fixes applied directly to the plan files (concrete + surgical); see commit. 
 | `--judge` flag inconsistency | LOW | objective corrected: judge.py is standalone, no `--judge` on run_eval.py. |
 | #10 stale threat-model text | (carry) | 04-02 trust-boundary + T-04-07 rows rewritten: DB-free scoring/--check, app.config only on --record. |
 | #1 honesty | (carry) | 04-03 chart adds a gray caption: extraction scored against replayed caches (not a live model run) until --record. |
+
+---
+
+# Round 3 (re-review after Round-2 fixes)
+
+## Codex Review (Round 3)
+
+**Summary.** Not a rubber stamp. All 8 Round-2 fixes CONFIRMED-FIXED; no Round-1 fix regressed; the cross-plan summary.json key contract is coherent (04-03 and 04-04 only read keys 04-02 produces). One HIGH new issue that had survived all prior rounds: the D-09 "decide→calculate wiring" test only called `calculate()` directly — duplicating the Phase-3 golden and testing NONE of the wiring it claims to close. Plus 3 medium/low execution cleanups.
+
+### Round-2 fix verification — all 8 CONFIRMED-FIXED
+signature mismatch · nullable pay_period_start · divergence one-precision+one-field via Counter · `_note` contradiction · bad fixture examples (incl. David-full-name exact resolve validated against seed) · DB reconciliation_accuracy from list · judge `|| echo` mask · `--judge` flag inconsistency. **Regression check: none.** Scope discipline intact; 04-01..03 still shippable without 04-04.
+
+### New findings (Round 3)
+- **HIGH — 04-02 Task 1:** the D-09 "decide→calculate wiring smoke test" did NOT test decide→calculate wiring — it only called `calculate(zero_hours, thomas_bergmann)` directly, duplicating the existing Phase-3 calculate golden and exercising none of the `reconcile_names → validate → decide → calculate` join D-09 exists to close.
+- **MEDIUM — 04-01 Task 1:** the recommended precision-miss host was misleading — "fabricate hours for Maria on 07" is a same-name FIELD miss, not a PRECISION miss (the validator counts precision only when `cache_names - exp_names` has an extra employee). Following 07/08 literally would make both field misses and fail the `precision_miss_fixtures >= 1` assertion.
+- **MEDIUM — 04-03 frontmatter:** `uv add --dev matplotlib` updates `uv.lock`, but `uv.lock` was missing from `files_modified` — a commit/CI reproducibility miss.
+- **LOW — 04-03 verify:** the final automated verify used `DATABASE_URL=placeholder` for `--chart`/`--check` while the action text says DB-free `env -u DATABASE_URL`, so it wouldn't catch a reintroduced config import.
+
+**Overall risk (Round 3): HIGH until the D-09 wiring test is corrected; otherwise MEDIUM/LOW.**
+
+## Round-3 Resolution (all applied — see commit)
+
+| Finding | Sev | Resolution |
+|---------|-----|------------|
+| D-09 doesn't test wiring | HIGH | Rewrote tests/test_eval_wiring.py: it now drives `12_exact_process_summit` through reconcile_names → validate → decide, asserts `final_action=="process"`, then computes the paystub via the PRODUCTION `app.pipeline.orchestrator._compute_line_items` (the exact decide→calculate join) and asserts the Thomas Bergmann Phase-3 golden. Acceptance criteria + key_links + must_haves updated to require the orchestrator import and `_compute_line_items` (not a bare `calculate()` call). Still no second net_pay oracle — reuses the trusted golden. |
+| precision-miss host misleading | MED | 04-01 now specifies the PRECISION miss as a PHANTOM employee on a multi-employee fixture (name not in expected → `cache_names - exp_names` non-empty) and the FIELD miss as wrong hours on a same-name employee (08); the two live on different fixtures so both validator assertions fire. Removed the contradictory "07 fabricates Maria's hours = invention" note. |
+| uv.lock missing from files_modified | MED | Added `uv.lock` to 04-03 `files_modified`; the `uv add --dev` step + acceptance criteria now require committing both pyproject.toml and uv.lock. |
+| 04-03 verify used =placeholder | LOW | All 04-03 run-command verifies (task + final verification block) switched to `env -u DATABASE_URL` so a reintroduced app.config import on the scoring/chart path is caught, not masked. (eval.yml's own `DATABASE_URL: "placeholder"` stays — harmless belt-and-suspenders; the record job needs it.) |
