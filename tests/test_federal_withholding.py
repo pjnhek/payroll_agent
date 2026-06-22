@@ -258,19 +258,24 @@ _WAGE_BRACKET_FIXTURES = [
     # Source: Pub 15-T 2026 p.14, weekly, Single/MFS Standard, row [$695-$705] -> $42
 
     # -----------------------------------------------------------------------
-    # Column 2: Weekly (52) MFJ Standard — REMOVED (WR-01, code review round 1).
-    # These five cells were "Engine-computed at midpoint", NOT independently
-    # transcribed from the published MFJ Standard wage-bracket column. Asserting the
-    # engine against its own output is circular: it can never detect a transcription
-    # error in the MFJ Standard percentage table it claims to guard, which defeats the
-    # whole point of the wage-bracket PRIMARY oracle (module docstring / D-01 ban on
-    # self-derived expected values). They are removed rather than left as a fake oracle.
-    # The MFJ STANDARD percentage path is still exercised for correctness by the D-04
-    # golden matrix (James Okafor, weekly MFJ Standard — penny-exact). To restore an
-    # INDEPENDENT MFJ Standard wage-bracket cross-check, transcribe the cells directly
-    # from Pub 15-T 2026 p.14 (the MFJ Standard column) — see test_mfj_standard_wage_
-    # bracket_oracle_unresolved below, which records this gap as an explicit xfail.
+    # Column 2: Weekly (52) MFJ Standard — INDEPENDENTLY TRANSCRIBED (WR-01 resolved).
+    # Round-1 removed the prior cells because they were engine-computed (circular). These
+    # replacements are copied VERBATIM from the published Pub 15-T 2026 Wage Bracket Method
+    # table (weekly, Married Filing Jointly, Standard / Step-2 NOT checked) by the operator
+    # on 2026-06-22, then cross-checked: each cell matches the engine's midpoint output to
+    # the whole dollar (ROUND_HALF_UP), restoring a genuine independent oracle for this
+    # column. All under the $1,925 weekly ceiling.
     # -----------------------------------------------------------------------
+    (52, Decimal("795"), Decimal("805"), "married_jointly", False, Decimal("18")),
+    # Source: Pub 15-T 2026 wage-bracket, weekly, MFJ Standard, row [$795-$805] -> $18
+    (52, Decimal("1005"), Decimal("1015"), "married_jointly", False, Decimal("39")),
+    # Source: Pub 15-T 2026 wage-bracket, weekly, MFJ Standard, row [$1005-$1015] -> $39
+    (52, Decimal("1705"), Decimal("1715"), "married_jointly", False, Decimal("121")),
+    # Source: Pub 15-T 2026 wage-bracket, weekly, MFJ Standard, row [$1705-$1715] -> $121
+    (52, Decimal("1865"), Decimal("1875"), "married_jointly", False, Decimal("141")),
+    # Source: Pub 15-T 2026 wage-bracket, weekly, MFJ Standard, row [$1865-$1875] -> $141
+    (52, Decimal("1915"), Decimal("1925"), "married_jointly", False, Decimal("147")),
+    # Source: Pub 15-T 2026 wage-bracket, weekly, MFJ Standard, row [$1915-$1925] -> $147
 
     # -----------------------------------------------------------------------
     # Column 3: Weekly (52) Single/MFS Step-2 Checkbox
@@ -407,27 +412,11 @@ def test_wage_bracket_cross_check(
     )
 
 
-@pytest.mark.xfail(
-    reason="WR-01: MFJ Standard wage-bracket cells not independently transcribed. "
-    "The removed Column-2 cells were engine-computed (circular). Until the MFJ "
-    "Standard column is transcribed verbatim from Pub 15-T 2026 p.14, there is NO "
-    "independent wage-bracket oracle for MFJ Standard. The MFJ Standard percentage "
-    "path is still covered for correctness by the D-04 golden matrix (James Okafor). "
-    "Resolve by transcribing the published cells, then convert this to a real "
-    "cross-check (mirroring test_wage_bracket_cross_check).",
-    strict=True,
-)
-def test_mfj_standard_wage_bracket_oracle_unresolved() -> None:
-    """Explicit, visible record of the WR-01 independence gap (code review round 1).
-
-    A strict xfail keeps the gap honest: it shows up in the test report as an
-    expected-failure rather than disappearing silently when the circular cells were
-    removed. If someone later adds a genuine independent MFJ Standard cross-check,
-    this xfail flips to XPASS (strict=True) and forces the placeholder to be replaced.
-    """
-    raise AssertionError(
-        "MFJ Standard wage-bracket independence oracle not yet implemented (WR-01)."
-    )
+# WR-01 RESOLVED (2026-06-22): the MFJ Standard independence gap is closed. Five MFJ
+# Standard cells were transcribed verbatim from the published Pub 15-T 2026 wage-bracket
+# table by the operator and added to _WAGE_BRACKET_FIXTURES above (Column 2); they are
+# now exercised by test_wage_bracket_cross_check as a genuine independent oracle. The
+# prior strict-xfail placeholder is removed.
 
 
 # ---------------------------------------------------------------------------

@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-last_updated: "2026-06-22T07:10:42.192Z"
+status: ready_to_plan
+last_updated: 2026-06-22T17:19:53.391Z
 last_activity: 2026-06-22 -- Phase 03 execution started
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 15
-  completed_plans: 12
+  completed_plans: 15
   percent: 43
+stopped_at: Phase 03 complete (3/3) — ready to discuss Phase 4
 ---
 
 # Project State
@@ -20,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-20)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
-**Current focus:** Phase 03 — harden-the-calc (verified 8/8; 2 operator-pending human-UAT items)
+**Current focus:** Phase 4 — the eval (the proof)
 
 ## Current Position
 
-Phase: 03 (harden-the-calc) — VERIFIED (human_needed)
-Plan: 3 of 3 complete
-Status: Phase 03 verified 8/8 must-haves; 3 code-review rounds applied; awaiting human-UAT (03-HUMAN-UAT.md)
-Last activity: 2026-06-22 -- Phase 03 executed + 3 code-review rounds + verified (human_needed)
+Phase: 4
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-06-22
 
 Progress: [██████████] 100%
 
@@ -35,7 +36,7 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 21
+- Total plans completed: 24
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -46,6 +47,7 @@ Progress: [██████████] 100%
 | 01 | 3 | - | - |
 | 02.1 | 5 | - | - |
 | 2 | 4 | - | - |
+| 03 | 3 | - | - |
 
 **Recent Trend:**
 

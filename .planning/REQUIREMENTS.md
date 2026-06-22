@@ -18,14 +18,14 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 
 ### Payroll Calculation
 
-- [ ] **CALC-01**: Gross pay computes hourly × rate with FLSA overtime at 1.5× for hours worked over 40 in the week (paid-leave hours excluded from the 40-hour threshold)
-- [ ] **CALC-02**: Salary gross computes as annual ÷ pay periods, plus added vacation/sick/holiday pay
-- [ ] **CALC-03**: 401k pre-tax deduction computes as a percent of gross and reduces the federal taxable base but NOT the FICA base
-- [ ] **CALC-04**: FICA computes Social Security at 6.2% up to the current-year wage base ($184,500 for 2026, verified against SSA — caps employee SS tax at $11,439/yr), honoring the employee's static YTD SS wages (FOUND-06) so the cap is respected, and Medicare at 1.45% (no cap). The Additional Medicare 0.9% over $200k YTD is NOT modeled (never triggers in a weekly demo) and is disclaimed in the README
-- [ ] **CALC-05**: Federal withholding computes via the real IRS Pub 15-T 2026 percentage method (Worksheet 1A, all three filing statuses + the Step-2-checkbox branch), standard method only (OBBBA disclaimed)
-- [ ] **CALC-06**: Tax constants live in a dated, year-keyed module (source + retrieval date in header); a golden-value test suite asserts hand-computed 2026 paystubs to the penny using `Decimal`
-- [ ] **CALC-07**: Net pay computes as gross − pre-tax − FICA − federal withholding
-- [ ] **CALC-08**: A reconciliation check confirms net + taxes + deductions ties to the run total and flags any arithmetic drift — this is an arithmetic backstop only, NOT the correctness oracle for the tax math (CALC-06 golden tests are the oracle; stale tables and wrong Pub 15-T logic still tie out internally)
+- [x] **CALC-01**: Gross pay computes hourly × rate with FLSA overtime at 1.5× for hours worked over 40 in the week (paid-leave hours excluded from the 40-hour threshold)
+- [x] **CALC-02**: Salary gross computes as annual ÷ pay periods, plus added vacation/sick/holiday pay
+- [x] **CALC-03**: 401k pre-tax deduction computes as a percent of gross and reduces the federal taxable base but NOT the FICA base
+- [x] **CALC-04**: FICA computes Social Security at 6.2% up to the current-year wage base ($184,500 for 2026, verified against SSA — caps employee SS tax at $11,439/yr), honoring the employee's static YTD SS wages (FOUND-06) so the cap is respected, and Medicare at 1.45% (no cap). The Additional Medicare 0.9% over $200k YTD is NOT modeled (never triggers in a weekly demo) and is disclaimed in the README
+- [x] **CALC-05**: Federal withholding computes via the real IRS Pub 15-T 2026 percentage method (Worksheet 1A, all three filing statuses + the Step-2-checkbox branch), standard method only (OBBBA disclaimed)
+- [x] **CALC-06**: Tax constants live in a dated, year-keyed module (source + retrieval date in header); a golden-value test suite asserts hand-computed 2026 paystubs to the penny using `Decimal`
+- [x] **CALC-07**: Net pay computes as gross − pre-tax − FICA − federal withholding
+- [x] **CALC-08**: A reconciliation check confirms net + taxes + deductions ties to the run total and flags any arithmetic drift — this is an arithmetic backstop only, NOT the correctness oracle for the tax math (CALC-06 golden tests are the oracle; stale tables and wrong Pub 15-T logic still tie out internally)
 
 ### Ingest & Orchestration
 
@@ -149,14 +149,14 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CLAR-02 | Phase 2 | Complete |
 | CLAR-03 | Phase 2 | Complete |
 | DEMO-01 | Phase 2 | Complete |
-| CALC-01 | Phase 3 | Pending |
-| CALC-02 | Phase 3 | Pending |
-| CALC-03 | Phase 3 | Pending |
-| CALC-04 | Phase 3 | Pending |
-| CALC-05 | Phase 3 | Pending |
-| CALC-06 | Phase 3 | Pending |
-| CALC-07 | Phase 3 | Pending |
-| CALC-08 | Phase 3 | Pending |
+| CALC-01 | Phase 3 | Complete |
+| CALC-02 | Phase 3 | Complete |
+| CALC-03 | Phase 3 | Complete |
+| CALC-04 | Phase 3 | Complete |
+| CALC-05 | Phase 3 | Complete |
+| CALC-06 | Phase 3 | Complete |
+| CALC-07 | Phase 3 | Complete |
+| CALC-08 | Phase 3 | Complete |
 | EVAL-01 | Phase 4 | Pending |
 | EVAL-02 | Phase 4 | Pending |
 | EVAL-03 | Phase 4 | Pending |

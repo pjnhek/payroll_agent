@@ -1,9 +1,17 @@
 ---
 phase: 03-harden-the-calc
 verified: 2026-06-22T08:12:54Z
-status: human_needed
+status: passed
+resolved: 2026-06-22T08:55:00Z
 score: 8/8 must-haves verified
 overrides_applied: 0
+human_uat_resolution: >
+  Both operator-pending human-UAT items resolved 2026-06-22 (see 03-HUMAN-UAT.md, status: passed).
+  (1) Thomas Bergmann over-ceiling fixture verified via paycheckcity.com pre-tax-401k =
+  $881.39 (penny-exact with engine) + Worksheet 1A trace; skip removed, fixture asserts $881.39.
+  (2) MFJ Standard independent oracle restored: 5 cells transcribed verbatim from the published
+  Pub 15-T 2026 weekly MFJ Standard wage-bracket table, all cross-check to the whole dollar;
+  strict-xfail placeholder removed. Final suite: 313 passed, 12 skipped, 0 xfailed, 0 failed.
 human_verification:
   - test: "Resolve the Thomas Bergmann over-ceiling federal withholding fixture"
     expected: >

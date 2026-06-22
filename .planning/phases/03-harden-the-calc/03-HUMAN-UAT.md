@@ -1,14 +1,14 @@
 ---
-status: partial
+status: passed
 phase: 03-harden-the-calc
 source: [03-VERIFICATION.md]
 started: 2026-06-22T08:15:30Z
-updated: 2026-06-22T08:40:00Z
+updated: 2026-06-22T08:55:00Z
 ---
 
 ## Current Test
 
-[Item 2 awaiting human testing]
+[all items resolved]
 
 ## Tests
 
@@ -27,19 +27,20 @@ skip removed. Provenance: one penny-exact online oracle + full Worksheet 1A hand
 
 ### 2. MFJ Standard wage-bracket independent cross-check
 expected: 4–6 "Married Filing Jointly, Standard (Step-2 unchecked)" weekly wage-bracket
-cells transcribed VERBATIM from the published IRS Pub 15-T 2026 p.14 MFJ Standard column
-(NOT computed from the engine). Add them to `_WAGE_BRACKET_FIXTURES` in
-tests/test_federal_withholding.py and delete the strict-xfail placeholder
-`test_mfj_standard_wage_bracket_oracle_unresolved`. This restores an independent oracle
-for the MFJ Standard column (currently covered only by the D-04 golden matrix / James Okafor).
-result: [pending]
+cells transcribed VERBATIM from the published IRS Pub 15-T 2026 MFJ Standard column
+(NOT computed from the engine), added to `_WAGE_BRACKET_FIXTURES`, xfail placeholder removed.
+result: RESOLVED 2026-06-22 — operator transcribed 5 cells from the published weekly MFJ
+Standard wage-bracket table: [795-805]→$18, [1005-1015]→$39, [1705-1715]→$121,
+[1865-1875]→$141, [1915-1925]→$147. All 5 cross-check against the engine to the whole
+dollar (ROUND_HALF_UP). Added to Column 2 of `_WAGE_BRACKET_FIXTURES`; strict-xfail
+placeholder removed. MFJ Standard now has a genuine independent oracle.
 
 ## Summary
 
 total: 2
-passed: 1
+passed: 2
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 

@@ -224,7 +224,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
-| 3. Harden the Calc | 3/3 | Complete   | 2026-06-22 |
+| 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
