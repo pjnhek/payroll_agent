@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: ready_to_plan
-last_updated: 2026-06-22T04:35:35.281Z
+status: planning
+last_updated: "2026-06-22T04:56:34.911Z"
 last_activity: 2026-06-22
 progress:
   total_phases: 7
@@ -11,7 +11,6 @@ progress:
   total_plans: 12
   completed_plans: 12
   percent: 43
-stopped_at: Phase 2 complete (4/4) — ready to discuss Phase 02.1
 ---
 
 # Project State
@@ -137,6 +136,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T03:51:48.297Z
-Stopped at: 02.1-05 complete (8a171af, c92936d, 439b693): DEMO-01 reframed (unknown-shorthand hero + collision_safety.json + constraint-safe seed pair Daniel Reyes e0000007), all residual tests swept to deterministic source/resolved+Decision shapes, CLAUDE.md/REQUIREMENTS.md/PROJECT.md/ROADMAP.md rewritten + eval taxonomy set, final grep-clean acceptance passed. Full mocked suite GREEN (195 passed). Phase 2.1 COMPLETE (all 5 plans). Next: Phase 3 (Harden the Calc — real Pub 15-T 2026). Wave 3 live-DB checkpoint already resolved per environment notes.
-Resume file: None
+Last session: 2026-06-22T04:56:34.901Z
+Stopped at: Phase 3 context gathered
+Resume file: .planning/phases/03-harden-the-calc/03-CONTEXT.md
