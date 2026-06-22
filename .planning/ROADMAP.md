@@ -14,7 +14,7 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Thin Foundation** - Contracts, minimal schema for the slice, and seed data for one happy-path + one name-mismatch case (completed 2026-06-21)
-- [ ] **Phase 2: Walking Skeleton** - First end-to-end proof: messy fixture flows through the four gated judgment stages to a code-gated decision (calc thin, net pre-federal)
+- [x] **Phase 2: Walking Skeleton** - First end-to-end proof: messy fixture flows through the four gated judgment stages to a code-gated decision (calc thin, net pre-federal) (completed 2026-06-22)
 - [x] **Phase 2.1: Deterministic Decisioning** *(INSERTED)* - Replace the confidence-threshold gate with deterministic resolution + collision safety + alias read-side; never guesses on a money-moving decision; LLM kept for extraction + clarification suggestion only (completed 2026-06-22)
 - [ ] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny
 - [ ] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart
@@ -156,7 +156,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
 
   1. A run detail view shows three columns left-to-right — the raw cleaned inbound email body (leftmost, mandatory), the LLM's `extracted_data`, then the computed paystubs — plus the decision object's reasons, so the operator verifies the LLM's *reading* against what the client actually sent (DASH-02, the honest gate).
-  2. A runs list shows every run with a status badge; a pending run exposes Approve-and-send and Reject controls (the single operator gate), guarded by `SELECT ... FOR UPDATE` against double-approval (FOUND-04).
+  2. A runs list shows every run with a status badge; a pending run exposes Approve-and-send and Reject controls (the single operator gate), guarded by `SELECT ... FOR UPDATE` against double-approval (FOUND-04). **⚠ MUST READ `.planning/backlog.md` → "Atomic status claim":** the orchestrator's resume/approve status guards are currently load-then-set (NOT atomic) — a known CR-02 residual found 3× in review. Build the atomic-claim helper (`UPDATE … WHERE status=? RETURNING` / `FOR UPDATE`) HERE and reuse it for approve/reject, resume, and re-trigger so this criterion and #4 are actually race-safe.
   3. On approval the run advances `approved` → `sent` → `reconciled`, sending an LLM-drafted confirmation email with paystub PDFs generated on demand from run data in memory (reportlab, BytesIO — nothing persisted to disk).
   4. Outbound sends are idempotent — retrying an approval or re-triggering an errored run never sends a duplicate clarification or confirmation (CLAR-04) — and a stuck/errored run surfaces an `error` status on the dashboard, re-triggerable idempotently from the start of the run (INGEST-05, drop-if-tight: "nothing silently hangs").
   5. An eval view renders the latest summary with headline metrics and a per-category breakdown chart, and a "Send test email" button fires a fixture through the whole pipeline from the page (demo trigger and live-email fallback).
@@ -209,7 +209,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
-| 2. Walking Skeleton | 3/4 | In Progress|  |
+| 2. Walking Skeleton | 4/4 | Complete    | 2026-06-22 |
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |

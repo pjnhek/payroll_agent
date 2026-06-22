@@ -31,3 +31,42 @@ nickname resolves at Layer 1 (deterministic, confidence 1.0) with no clarificati
 
 **Related:** the confidence-rubric change (Phase 2, 2026-06-21) that makes `llm_nickname` gate
 at 0.75 is what makes this valuable — without learning, every nickname re-asks forever.
+*(Superseded note: 2.1 removed the confidence rubric entirely — the alias-learning value now
+rests on the deterministic `source="none"` clarify path instead, but the idea is unchanged.)*
+
+---
+
+## Atomic status claim — close the resume/approve race (Phase 5 idempotency)
+
+**Captured:** 2026-06-22 (Codex review round 3 of Phase 2.1 — independently rediscovered the
+known CR-02 residual).
+**Suggested home:** **Phase 5 (Dashboard & Delivery)** — it is already scoped here via
+**FOUND-04** (`SELECT ... FOR UPDATE` against double-approval), **CLAR-04** (idempotent sends),
+and **INGEST-05** (idempotent re-trigger). This is the implementation detail of those three.
+
+**Problem (HIGH, found 3× now — overnight code-review CR-02, then Codex 2.1 round 3):** the
+run status guards are **load-then-set, not atomic**. In `app/pipeline/orchestrator.py`
+`resume_pipeline`, two distinct clarification replies can BOTH read `status == awaiting_reply`,
+BOTH set `EXTRACTING`, and BOTH run stages / send / replace line items → double-resume. The
+operator approve/reject path (`app/main.py`) has the same race → double-pay / double-send. The
+initial run claim is similarly unguarded. The in-code comment in `resume_pipeline` already
+documents this as the accepted Phase-2 minimum, deferred here.
+
+**Fix:** an atomic claim helper in `app/db/repo.py` —
+`UPDATE payroll_runs SET status = %s WHERE id = %s AND status = %s RETURNING id` (claim succeeds
+only if the row was still in the expected status), or `SELECT ... FOR UPDATE` inside the
+transaction. Use it for **(a)** resume (claim `awaiting_reply → extracting`), **(b)** approve/reject
+(claim the pending status), and **(c)** the initial run claim. A losing concurrent caller gets no
+row back and drops cleanly (logs a late/duplicate, does not re-run). This is exactly the
+FOUND-04 `FOR UPDATE` guard Phase 5 already promises.
+
+**Why not in 2.1:** 2.1 was a decisioning re-architecture; this is concurrency/idempotency work
+that belongs with the Phase 5 operator gate (where approve/reject and re-trigger are built), so
+the claim helper is written once and used across all three paths. Pulling it into 2.1 would have
+been scope creep into Phase 5. The current Phase-2 status-precondition removes the WIDE window;
+the atomic close is the Phase 5 deliverable.
+
+**Acceptance sketch (for whoever plans Phase 5):** two concurrent approvals of the same run
+result in exactly ONE `approved → sent → reconciled` advance and ONE outbound send; two
+concurrent clarification replies resume the run exactly once; a re-triggered errored run cannot
+double-process. Tested with a concurrency/locking test against the live (or a transactional) DB.
