@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Awaiting human — live-DB name_matches DROP (local + Supabase) + remove DECISION_* from .env
-last_updated: "2026-06-22T03:34:16.304Z"
+status: completed
+last_updated: "2026-06-22T03:52:41.837Z"
 last_activity: 2026-06-22
 progress:
   total_phases: 7
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 11
-  percent: 29
+  completed_plans: 12
+  percent: 43
 ---
 
 # Project State
@@ -24,18 +24,18 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 
 ## Current Position
 
-Phase: 02.1 (deterministic-decisioning) — EXECUTING
-Plan: 02.1-04 complete (suggestion-only clarification call); next: 02.1-05 (DEMO-01 reframe + remaining downstream suites)
-Status: 02.1-04 done — suggestion-only call wired after decide, walled off from the decision; test_suggest 8/8 + test_clarify 15/15 + test_orchestrator_states 6/6 green. STILL PENDING (Wave 3): blocking human checkpoint — live-DB name_matches DROP (local + Supabase) + remove DECISION_* from .env
+Phase: 02.1 (deterministic-decisioning) — COMPLETE (all 5 plans)
+Plan: 02.1-05 complete (DEMO-01 reframe + final test/live-LLM sweep + doc rewrite + grep-clean acceptance); Phase 2.1 done
+Status: 02.1-05 done — gate_block_hero reframed (unknown-shorthand-clarify-with-suggestion) + new collision_safety.json + constraint-safe seed collision pair (Daniel Reyes e0000007 sharing "D. Reyes"); all residual tests swept to source/resolved + deterministic Decision; CLAUDE.md/REQUIREMENTS.md/PROJECT.md/ROADMAP.md rewritten to deterministic decisioning + eval taxonomy. Full mocked suite GREEN (195 passed); app/ + tests/ + thesis docs grep-clean of confidence/model_action/0.8. Wave 3 live-DB checkpoint already resolved (per environment notes).
 Last activity: 2026-06-22
 
-Progress: [█████████░] 92%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 3
+- Total plans completed: 12
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -61,6 +61,7 @@ Progress: [█████████░] 92%
 | Phase 02.1 P02 | 5 | 2 tasks | 5 files |
 | Phase 02.1 P03 (Tasks 1-2; Task 3 = human checkpoint) | 7m | 2 of 3 tasks tasks | 12 files files |
 | Phase 02.1 P04 | 5m | 2 tasks | 7 files |
+| Phase 02.1 P05 | 14min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,8 @@ Recent decisions affecting current work:
 - [Phase 02.1]: [Phase 02.1 P03]: orchestrator wired to the pure stages (decide/reconcile called with no llm; no m.confidence stamp; branches solely on final_action); repo INSERT + schema.sql drop match_confidence; bootstrap drops the dead name_matches on EVERY apply (default path + _DROP_ORDER front) for the live-DB migration; config two-tier (extraction+draft), mid/decision tier removed from Settings/client/.env.example (D-21-05/06). Live-DB DROP + human .env edit = PENDING blocking checkpoint (Task 3).
 - [Phase 02.1]: [Phase 02.1 P04]: Suggestion-only call (LLM-05/D-21-05) — a cheap draft-tier call maps an unresolved name to the likely roster employee for the clarification email ONLY; wired strictly after decide() inside _clarify, degrades to {} on any failure, structurally walled off from decide (decide never imports suggest; a test asserts the suggested id never leaks into the persisted Decision).
 - [Phase 02.1]: [Phase 02.1 P04]: compose_clarification gains suggestions= threaded into BOTH the draft prompt and the deterministic _template_body floor so the 'did you mean David Reyes?' hero survives a total draft failure (WR-03); a suggested name must be an exact roster full_name or it is dropped.
+- [Phase ?]: [Phase 02.1 P05]: DEMO-01 reframed deterministic — gate_block_hero = unknown-shorthand 'David Reyez' resolves to source=none -> request_clarification (suggestion call names David Reyes); NEW collision_safety.json + constraint-safe seed pair (Daniel Reyes e0000007 shares 'D. Reyes' alias with David Reyes; DISTINCT full_names so UNIQUE holds). Never guesses on a money-moving decision (D-21-01/02).
+- [Phase ?]: [Phase 02.1 P05]: Final sweep — all residual tests on deterministic source/resolved+Decision shapes (no confidence/model_action/match_type/0.8); CLAUDE.md/REQUIREMENTS.md/PROJECT.md/ROADMAP.md rewritten to deterministic auditable decisioning + learning loop (WRITE side P5); eval taxonomy=exact/stored-alias/first-time-alias/typo/collision/unknown. Mocked suite GREEN (195); app/+docs grep-clean. Phase 2.1 COMPLETE.
 
 ### Pending Todos
 
@@ -131,6 +134,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T03:34:16.297Z
-Stopped at: 02.1-04 complete (eda5949, e698b17): suggestion-only clarification call wired after decide, walled off from the decision; test_suggest 8/8 + test_clarify 15/15 + test_orchestrator_states 6/6 green. Next: 02.1-05 (DEMO-01 reframe + remaining downstream suites). STILL PENDING: Wave 3 blocking human checkpoint (live-DB name_matches DROP + .env DECISION_* removal).
+Last session: 2026-06-22T03:51:48.297Z
+Stopped at: 02.1-05 complete (8a171af, c92936d, 439b693): DEMO-01 reframed (unknown-shorthand hero + collision_safety.json + constraint-safe seed pair Daniel Reyes e0000007), all residual tests swept to deterministic source/resolved+Decision shapes, CLAUDE.md/REQUIREMENTS.md/PROJECT.md/ROADMAP.md rewritten + eval taxonomy set, final grep-clean acceptance passed. Full mocked suite GREEN (195 passed). Phase 2.1 COMPLETE (all 5 plans). Next: Phase 3 (Harden the Calc — real Pub 15-T 2026). Wave 3 live-DB checkpoint already resolved per environment notes.
 Resume file: None

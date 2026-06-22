@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Thin Foundation** - Contracts, minimal schema for the slice, and seed data for one happy-path + one name-mismatch case (completed 2026-06-21)
 - [ ] **Phase 2: Walking Skeleton** - First end-to-end proof: messy fixture flows through the four gated judgment stages to a code-gated decision (calc thin, net pre-federal)
-- [ ] **Phase 2.1: Deterministic Decisioning** *(INSERTED)* - Replace the confidence-threshold gate with deterministic resolution + collision safety + alias read-side; never guesses on a money-moving decision; LLM kept for extraction + clarification suggestion only
+- [x] **Phase 2.1: Deterministic Decisioning** *(INSERTED)* - Replace the confidence-threshold gate with deterministic resolution + collision safety + alias read-side; never guesses on a money-moving decision; LLM kept for extraction + clarification suggestion only (completed 2026-06-22)
 - [ ] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny
 - [ ] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart
 - [ ] **Phase 5: Dashboard & Delivery** - Operator gate UI (raw email beside extracted beside computed), runs/eval views, confirmation email + on-demand PDFs, idempotency + error path
@@ -114,7 +114,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4)*
 
-- [ ] 02.1-05-PLAN.md — reframe DEMO-01 fixtures (hero + collision-safety) + finish the residual test/live-LLM sweep + rewrite CLAUDE.md/REQUIREMENTS.md/PROJECT.md + eval taxonomy; final grep-clean acceptance
+- [x] 02.1-05-PLAN.md — reframe DEMO-01 fixtures (hero + collision-safety) + finish the residual test/live-LLM sweep + rewrite CLAUDE.md/REQUIREMENTS.md/PROJECT.md + eval taxonomy; final grep-clean acceptance
 
 ### Phase 3: Harden the Calc
 
@@ -210,7 +210,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 3/4 | In Progress|  |
-| 2.1 Deterministic Decisioning *(INSERTED)* | 4/5 | In Progress|  |
+| 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete   | 2026-06-22 |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |
