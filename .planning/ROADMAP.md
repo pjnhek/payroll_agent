@@ -98,7 +98,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 02.1-01-PLAN.md — re-shape the shared contracts: NameMatchResult → source/resolved, Decision → deterministic 4 fields + resolutions, drop PaystubLineItem.match_confidence, delete NameReconciliationResponse
+- [x] 02.1-01-PLAN.md — re-shape the shared contracts: NameMatchResult → source/resolved, Decision → deterministic 4 fields + resolutions, drop PaystubLineItem.match_confidence, delete NameReconciliationResponse
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -210,7 +210,7 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Thin Foundation | 3/3 | Complete    | 2026-06-21 |
 | 2. Walking Skeleton | 3/4 | In Progress|  |
-| 2.1 Deterministic Decisioning *(INSERTED)* | 0/5 | Not started | - |
+| 2.1 Deterministic Decisioning *(INSERTED)* | 1/5 | In Progress|  |
 | 3. Harden the Calc | 0/TBD | Not started | - |
 | 4. The Eval | 0/TBD | Not started | - |
 | 5. Dashboard & Delivery | 0/TBD | Not started | - |

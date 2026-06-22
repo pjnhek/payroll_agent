@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-last_updated: "2026-06-21T10:48:28.914Z"
-last_activity: 2026-06-21
+status: completed
+last_updated: "2026-06-22T01:46:23.885Z"
+last_activity: 2026-06-22
 progress:
-  total_phases: 6
-  completed_phases: 1
-  total_plans: 7
-  completed_plans: 6
-  percent: 17
+  total_phases: 7
+  completed_phases: 2
+  total_plans: 12
+  completed_plans: 8
+  percent: 29
 ---
 
 # Project State
@@ -19,17 +19,17 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-06-20)
 
-**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — and every LLM judgment call (name match, process-vs-clarify) is gated by code so a low-confidence match can never reach a real payroll calculation.
-**Current focus:** Phase 02 — walking-skeleton
+**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
+**Current focus:** Phase 02.1 — deterministic-decisioning
 
 ## Current Position
 
-Phase: 02 (walking-skeleton) — EXECUTING
-Plan: 4 of 4
-Status: PAUSED at checkpoint — Plan 02-04 Tasks 1-2 complete; Task 3 (LIVE hero exit gate, D-A4-01a) is a pending human-verify checkpoint
-Last activity: 2026-06-21
+Phase: 02.1 (deterministic-decisioning) — EXECUTING
+Plan: 1 of 5 complete (next: 02.1-02)
+Status: Plan 02.1-01 complete (Wave 1, contract reshape) — contracts now deterministic + confidence-free; downstream waves (02.1-02..05) rewrite the consumers
+Last activity: 2026-06-22
 
-Progress: [█████████░] 93%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
@@ -57,6 +57,7 @@ Progress: [█████████░] 93%
 | Phase 02 P02 | 38 | 4 tasks | 25 files |
 | Phase 02 P03 | 24 | 3 tasks | 14 files |
 | Phase 02 P04 (Tasks 1-2; Task 3 = human checkpoint) | 8 | 2 of 3 tasks | 6 files |
+| Phase 02.1 P01 | 4 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,7 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 2 P04]: reply routing happens in the webhook BEFORE first ingest, gated on the inbound carrying an in_reply_to/references — find_awaiting_reply_for_header (awaiting_reply only) for resume, FIX-5 sender revalidation against the run's business, find_any_run_for_header for late-reply log (FIX 10); no-header inbounds fall through unchanged.
 - [Phase ?]: [Phase 2 P04]: resume_pipeline re-extracts over (original cleaned body via load_source_email + reply body) so a partial reply is lossless (FIX 4 + FIX C), passes the code-owned run_id into extract (FIX A), overwrites extracted_data + replaces line items; the four stages are factored into a shared _run_stages() so first-run and resume share the identical gate path (DRY).
 - [Phase ?]: [Phase 2 P04]: the live-vs-mock provenance marker (FIX 12) is a structured LOG field source="live"/"mock" derived from Settings.allow_live_llm — never a key in the extra=forbid Decision and never a schema column (an always-runs guard test pins this).
+- [Phase ?]: [Phase 02.1 P01]: Contracts reshaped deterministic — NameMatchResult=source(exact|alias|none)+explicit resolved bool; Decision=final_action/gate_reasons/unresolved_names/missing_fields+resolutions:list[NameMatchResult] (folded into decision JSONB, no name_matches table); PaystubLineItem drops match_confidence; reconcile.py/NameReconciliationResponse deleted. No confidence anywhere (D-21-01/04/05/06).
 
 ### Pending Todos
 
@@ -120,6 +122,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-21T10:59:23Z
-Stopped at: PAUSED at Plan 02-04 Task 3 checkpoint (LIVE hero exit gate, D-A4-01a — human-verify). Tasks 1-2 complete and committed (47f83f1, c7138f7); live-test scaffolding committed (94cfc41). Mocked suite 159 passed.
-Resume file: .planning/phases/02-walking-skeleton/02-04-SUMMARY.md (see "Pending Human Checkpoint")
+Last session: 2026-06-22T01:45:15.479Z
+Stopped at: Completed Plan 02.1-01 (Wave 1, contract reshape). Tasks 1-2 committed (f844b0b, 783160e). Contracts now deterministic + confidence-free; app/models/ grep-clean; test_models_contracts.py 37 passed. Expected: downstream test collection (test_reconcile/test_clarify/test_orchestrator_states) breaks until Waves 02.1-02..05 rewrite the consumers.
+Resume file: .planning/phases/02.1-deterministic-decisioning/02.1-01-SUMMARY.md
