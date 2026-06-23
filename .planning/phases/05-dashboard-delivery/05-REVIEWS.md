@@ -1,11 +1,11 @@
 ---
 phase: 5
-reviewers: [codex, codex-round2]
+reviewers: [codex, codex-round2, codex-round3]
 reviewed_at: 2026-06-22T23:17:02Z
 round2_reviewed_at: 2026-06-22T23:40:00Z
 plans_reviewed: [05-01-PLAN.md, 05-02-PLAN.md, 05-03-PLAN.md, 05-04-PLAN.md, 05-05-PLAN.md, 05-06-PLAN.md, 05-07-PLAN.md]
 codex_model: default (codex-cli 0.135.0)
-overall_risk: MEDIUM-HIGH (round 2 — original HIGHs mostly closed; 3 NEW HIGH defects found: invalid DDL syntax, send_state read-guard not wired, non-exclusive received→received CAS)
+overall_risk: NOT-READY (round 3 — all 9 round-2 findings + COMPUTING RESOLVED; 1 NEW HIGH: send_state guard + uq_email_run_purpose interact → insert collides on reserved/failed row, needs ON CONFLICT DO UPDATE)
 round1_status: addressed via reviews-mode replan (commit 1a8f066) — see round-2 verification below
 ---
 
@@ -199,3 +199,50 @@ clean fix for #6 is to add stale/in-flight recovery and decide `sent` terminalit
 ## Updated Risk Assessment
 
 **Overall risk: MEDIUM-HIGH.** The major prior idempotency holes are mostly addressed: purpose-aware confirmation/clarification guards, no `outbound-pending` direction value, stale recovery coverage, fresh demo Message-IDs, and fake-LLM timeout compatibility are all materially better. I would not drop this to MEDIUM yet because Plan 03’s DDL can fail outright, the new `send_state` model does not yet define real reserve/sent/failed behavior, and the alias learning plan remains internally inconsistent around collision detection and resume binding.
+
+---
+
+# Cross-AI Plan Review — Phase 5 — ROUND 3 (verify round-2 fixes)
+
+> After the round-2 fixes (commits 623f41b, 110f8d6) and the internal-checker COMPUTING fix
+> (commit 86bb27b), Codex re-reviewed. Verdict: all 9 round-2 findings + the COMPUTING blocker
+> are RESOLVED. ONE new HIGH found — an INTERACTION between two round-2 fixes:
+> filtering the already-sent guard to send_state='sent' (so reserved/failed don't count) means
+> _deliver no longer skips on a reserved/failed row, but send_outbound then INSERTs a new
+> (run_id, purpose) row that collides with the new uq_email_run_purpose UNIQUE constraint.
+> Fix: the send path must UPSERT (ON CONFLICT (run_id, purpose) DO UPDATE), not plain INSERT.
+> Plus MEDIUM NEW-2 (single-token resume bind assumes exactly one resolved match — breaks on
+> realistic multi-employee runs; needs pre-vs-post resolved-id diff) and LOW NEW-3 (05-06 still
+> names some non-existent top-level summary.json fields; use nested .decision/.extraction paths).
+
+## Codex Round-3 Review
+
+## Round-2 Findings Resolution Table
+
+| Finding | Status | Evidence |
+|---|---:|---|
+| HIGH R2-1: invalid `ALTER TABLE ... ADD CONSTRAINT IF NOT EXISTS` | RESOLVED | Plan 03 Task 1 now requires a `DO $$` block guarded by `pg_constraint` for `uq_email_run_purpose`; verification explicitly greps that `ADD CONSTRAINT IF NOT EXISTS` is absent. |
+| HIGH R2-2: purpose-only send guard skipped on reserved/failed rows | RESOLVED for read guard | Plan 03 Task 1 changes `get_outbound_message_id(run_id, purpose)` to filter `direction='outbound' AND purpose=%s AND send_state='sent'`; `send_state` is nullable with no default. See new HIGH issue below for the write/retry side. |
+| HIGH R2-3: stale `received → received` CAS no-op | RESOLVED | Plan 05 Task 2 now claims stale `RECEIVED → EXTRACTING`, and all other stale in-flight states `→ RECEIVED`; it also adds `test_two_concurrent_stale_retriggers_only_one_wins`. |
+| PARTIAL R2-4: capture collision used `deterministic_match is None` | RESOLVED | Plan 07 Task 2 now counts `candidate_ids = exact_ids | alias_ids`; `len > 1` excludes colliders like `D. Reyes`, and tests explicitly assert collision despite `deterministic_match` returning `None`. |
+| PARTIAL R2-5: resume binding matched original token against corrected submitted names | RESOLVED in intended direction | Plan 07 Task 2 now specifies direct single-token binding: one `None` alias candidate is bound to the resolved employee id after resume, with no submitted-name matching. See new MEDIUM issue for multi-employee resume coverage. |
+| MEDIUM R2-6: Plan 01 vs Plan 07 alias-capture test conflict | RESOLVED | Plan 01 now has three distinct stubs: multi-token no capture, single zero-candidate capture, single colliding token no capture. Plan 07 matches the same single-token-only rule. |
+| MEDIUM R2-7: DASH-04 drill-in rendered `—` instead of raw fixture body | RESOLVED | Plan 06 Task 2 enriches each `summary["per_fixture"]` row by reading `eval/fixtures/<fixture_path>` and storing `raw_body`; template uses `fixture.raw_body`, not `—`. |
+| MEDIUM R2-8: inbound rows got `send_state='sent'` by default | RESOLVED | Plan 03 DDL makes `send_state TEXT CHECK (...)` nullable, no default; inbound rows keep `send_state=NULL`. |
+| LOW R2-9: `load_line_items` listed nonexistent column and omitted `created_at` | RESOLVED | Plan 05 Task 1 explicit SELECT excludes `additional_medicare_not_modeled` and includes `created_at`. |
+| Internal checker: `RunStatus.COMPUTING` does not exist | RESOLVED | Plans now use `RunStatus.COMPUTED`; remaining `COMPUTING` references are warnings saying it is not valid. |
+
+## New Issues
+
+**HIGH NEW-1: Sent-only guard plus `UNIQUE(run_id, purpose)` can still strand retries.**  
+Plan 03 correctly makes `get_outbound_message_id` ignore `reserved`/`failed`, but the same plan adds `uq_email_run_purpose UNIQUE(run_id, purpose)`. Plan 05’s gateway path is still described as an insert into `email_messages`, not an update/upsert of an existing non-sent row. If a `reserved` or `failed` row exists, `_deliver` will not skip, then `send_outbound` will try to insert another `(run_id, purpose)` row and hit the unique constraint. Fix by either making the send path reuse/update non-sent rows with `ON CONFLICT (run_id, purpose) DO UPDATE ...`, or changing the uniqueness model, then add a test with existing `reserved` and `failed` rows.
+
+**MEDIUM NEW-2: Plan 07 resume binding assumes exactly one resolved match after resume.**  
+In normal multi-employee payroll, post-resume reconciliation may include several resolved employees: already-resolved original employees plus the corrected one. Plan 07 says to bind only if there is exactly one resolved match, so alias learning can silently skip in realistic runs. Fix by comparing pre-resume vs post-resume matched employee ids, or otherwise identifying the single newly resolved employee, and add a test with one already-resolved employee plus one corrected alias.
+
+**LOW NEW-3: Plan 06 eval table still names some nonexistent top-level fields.**  
+The plan correctly notes `per_fixture` has nested `extraction` and `decision`, but the template instructions still mention top-level `expected_decision`, `actual_decision`, and `extraction_f1`. Use `fixture.decision.expected_final_action`, `fixture.decision.final_action`, and `fixture.extraction.f1`.
+
+## Updated Risk Assessment
+
+Round-2 findings are materially closed, but the revised plan set is **not ready to execute as-is** because NEW-1 is a HIGH execution defect in the idempotent send-state design. After adding the non-sent-row retry/update path and its tests, the residual risk drops to medium, mostly around optional Plan 07 alias learning.
