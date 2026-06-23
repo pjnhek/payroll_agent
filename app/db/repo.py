@@ -76,9 +76,14 @@ EMPLOYEE_COLS = (
 )
 
 # Explicit column list for reading a run (only what callers need; no SELECT *).
+# CR-02 fix: updated_at is included so load_run() returns it as a tz-aware
+# datetime (the column is TIMESTAMPTZ — psycopg returns tz-aware datetimes).
+# Without it, the retrigger handler's stale-run check always evaluated to False
+# (run.get("updated_at") was always None) and the stale-state recovery branch
+# for RECEIVED/EXTRACTING/COMPUTED/SENT was permanently disabled.
 RUN_COLS = (
     "id, business_id, source_email_id, status, extracted_data, decision,"
-    " reconciliation, error_reason, pay_period_start, pay_period_end"
+    " reconciliation, error_reason, pay_period_start, pay_period_end, updated_at"
 )
 
 # Terminal run statuses (WR-04): once a run reaches one of these, an error must NOT
