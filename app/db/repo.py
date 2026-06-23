@@ -471,6 +471,41 @@ def set_alias_candidates(
             )
 
 
+def update_known_alias(
+    employee_id: uuid.UUID,
+    new_alias: str,
+    conn=None,
+) -> bool:
+    """Idempotently append new_alias to employees.known_aliases (D-01).
+
+    Caller MUST have already called _safe_to_learn_alias() — this function does
+    NOT re-check collision; it only deduplicates the JSONB array.
+
+    Uses a conditional UPDATE with `NOT (known_aliases @> to_jsonb(ARRAY[%s::text]))`
+    in the WHERE clause so the alias is only appended when absent. Returns True if the
+    alias was actually added, False if it was already present (idempotent: safe to call
+    twice without creating a double-add, D-01 idempotency).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            row = c.execute(
+                """
+                UPDATE employees
+                SET known_aliases = (
+                    SELECT jsonb_agg(DISTINCT elem)
+                    FROM jsonb_array_elements_text(
+                        known_aliases || to_jsonb(ARRAY[%s::text])
+                    ) elem
+                )
+                WHERE id = %s
+                  AND NOT (known_aliases @> to_jsonb(ARRAY[%s::text]))
+                RETURNING id
+                """,
+                (new_alias, str(employee_id), new_alias),
+            ).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Email / threading
 # ---------------------------------------------------------------------------
