@@ -656,6 +656,27 @@ def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str |
     return row[0] if row else None
 
 
+def load_outbound_emails(run_id: uuid.UUID, conn=None) -> list[dict]:
+    """Read all outbound email rows for a run (UAT #1 — run detail sent-emails section).
+
+    Returns rows with the fields needed for display: direction, purpose, subject,
+    body_text, message_id, created_at. Ordered oldest-first so confirmation/
+    clarification appear in send order. Read-only; never mutates run state.
+
+    Explicit column list (no SELECT *) per repo discipline. Parameterized SQL only.
+    """
+    sql = (
+        "SELECT direction, purpose, subject, body_text, message_id, created_at"
+        " FROM email_messages"
+        " WHERE run_id = %s AND direction = 'outbound'"
+        " ORDER BY created_at"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(run_id),))
+            return cur.fetchall() or []
+
+
 def _pad_references(references_header: str | None) -> str:
     """Normalize a References header to a single-space-delimited, space-PADDED string.
 
