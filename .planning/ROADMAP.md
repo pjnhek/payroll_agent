@@ -190,7 +190,7 @@ Plans:
   4. Outbound sends are idempotent — retrying an approval or re-triggering an errored run never sends a duplicate clarification or confirmation (CLAR-04) — and a stuck/errored run surfaces an `error` status on the dashboard, re-triggerable idempotently from the start of the run (INGEST-05, drop-if-tight: "nothing silently hangs").
   5. An eval view renders the latest summary with headline metrics and a per-category breakdown chart, and a "Send test email" button fires a fixture through the whole pipeline from the page (demo trigger and live-email fallback).
 
-**Plans**: 7 plans
+**Plans**: 8 plans
 Plans:
 
 **Wave 0** *(test stubs — run concurrently)*
@@ -264,9 +264,10 @@ Plans:
 
 - [ ] 06-03-PLAN.md — D-08a local pooler pre-check + D-09/D-09a thin Render deploy + Supabase standup (autonomous:false)
 
-**Wave 3** *(blocked on Wave 2)*
+**Wave 3** *(blocked on Wave 2 — concurrent)*
 
 - [ ] 06-04-PLAN.md — Real Resend gateway: verify(), two-step parse_inbound, D-13c send_outbound; /webhook/inbound route to async Request
+- [ ] 06-08-PLAN.md — Landing page (GET /) + binding (POST /demo/bind, atomic single-owner) + composer (POST /demo/compose, real pipeline) + thread view + alias rationale (CHANGE-5 through CHANGE-11)
 
 **Wave 4** *(blocked on Wave 3 — BLOCKING human checkpoint)*
 
