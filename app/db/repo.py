@@ -238,9 +238,13 @@ def load_source_email(run_id: uuid.UUID, conn=None) -> str | None:
 # Explicit column list for rebuilding an InboundEmail from the source email row
 # (no SELECT * — InboundEmail is extra="forbid"). The stored body_text is already
 # cleaned (FIX C), so the rebuilt InboundEmail carries the cleaned body unchanged.
+# Every column is qualified with the `em.` alias: load_inbound_email JOINs
+# payroll_runs (which also has `id`, `created_at`), so a bare `id` is ambiguous
+# (psycopg AmbiguousColumn). `em.id` still returns a result column named `id`, so
+# the InboundEmail(**row) construction is unchanged.
 _INBOUND_COLS = (
-    "id, message_id, in_reply_to, references_header, subject, from_addr,"
-    " to_addr, body_text, created_at"
+    "em.id, em.message_id, em.in_reply_to, em.references_header, em.subject,"
+    " em.from_addr, em.to_addr, em.body_text, em.created_at"
 )
 
 

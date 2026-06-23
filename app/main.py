@@ -632,9 +632,15 @@ def demo_send_test(background_tasks: BackgroundTasks) -> RedirectResponse:
 
         run_id = repo.create_run(business_id=business_id, source_email_id=email_id)
         background_tasks.add_task(_run_pipeline, run_id)
+        # Success: land the operator on the run they just fired so the demo shows
+        # the freshly-created run immediately. Each click creates a distinct run
+        # (fresh Message-ID), so consecutive clicks redirect to distinct URLs.
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
     except Exception:
         # DB unavailable: still redirect to /runs rather than returning 500.
         # The run will not be created but the operator can see the (empty) list.
         logger.debug("demo send-test: DB unavailable — redirecting without creating run")
 
+    # Fallback (duplicate Message-ID, unknown sender, or DB error): no specific run
+    # to show — land on the triage queue.
     return RedirectResponse(url="/runs", status_code=303)
