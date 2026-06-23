@@ -493,7 +493,12 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
     run["business_name"] = biz_name if biz_name else "Payroll Run"
     start = run.get("pay_period_start")
     end = run.get("pay_period_end")
-    run["pay_period_label"] = f"{start} to {end}" if start and end else ""
+    if start and end:
+        run["pay_period_label"] = f"{start} to {end}"
+    elif start:
+        run["pay_period_label"] = str(start)
+    else:
+        run["pay_period_label"] = ""
 
     # Step 1 — Purpose-aware already-sent guard (finding #1, CLAR-04):
     # Only a row with purpose='confirmation' AND send_state='sent' counts as proof-of-
