@@ -252,7 +252,33 @@ The project uses **uv** (not pip/requirements.txt) — see `CLAUDE.md` Tooling R
 
 `--no-dev` keeps pytest/ruff out of the runtime image. Bind `0.0.0.0:$PORT` (Render injects `$PORT`, default 10000) per the Render gotcha in CLAUDE.md.
 
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+**Wave 1** *(concurrent)*
+
+- [ ] 06-01-PLAN.md — Wave 0 test stubs: resend==2.32.2 + failing gateway/ingest/dashboard tests (no-op-swap invariant guard)
+- [ ] 06-02-PLAN.md — Deploy artifacts: Dockerfile (uv-in-image, multi-stage), render.yaml, keepalive.yml, /health/live + /health/ready routes, config.py Resend fields
+
+**Wave 2** *(blocked on Wave 1 — BLOCKING human checkpoint)*
+
+- [ ] 06-03-PLAN.md — D-08a local pooler pre-check + D-09/D-09a thin Render deploy + Supabase standup (autonomous:false)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 06-04-PLAN.md — Real Resend gateway: verify(), two-step parse_inbound, D-13c send_outbound; /webhook/inbound route to async Request
+
+**Wave 4** *(blocked on Wave 3 — BLOCKING human checkpoint)*
+
+- [ ] 06-05-PLAN.md — D-09b email round-trip verify gate: Resend account setup + real send→reply→headers-intact confirm (autonomous:false)
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 06-06-PLAN.md — Demo-reset script (D-07) + full README with disclaimer/diagram + remove temp debug logs
+
+**Wave 6** *(blocked on Wave 5 — BLOCKING human checkpoint)*
+
+- [ ] 06-07-PLAN.md — Demo recording (D-04..D-06): all three beats + eval closing shot + README recording link (autonomous:false)
 
 ## Progress
 
@@ -267,4 +293,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 0/TBD | Not started | - |
+| 6. Real Integration & Ship | 0/7 | Not started | - |
