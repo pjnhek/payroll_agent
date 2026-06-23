@@ -428,3 +428,36 @@ def mock_llm(monkeypatch):
     MockOpenAI.calls = []
     monkeypatch.setattr("app.llm.client.OpenAI", MockOpenAI)
     return MockOpenAI
+
+
+# ---------------------------------------------------------------------------
+# 6. seed_roster — Roster with the David+Daniel Reyes collision pair (Plan 05-02)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def seed_roster() -> Roster:
+    """A Roster built from Business 2 seed data, which contains the
+    David Reyes / Daniel Reyes collision pair.
+
+    Both David Reyes (e0000003) and Daniel Reyes (e0000007) carry
+    known_aliases=["D. Reyes"], so submitting "D. Reyes" always gates to
+    request_clarification (the collision-safety invariant, D-21-02).
+
+    Required by: test_alias_write.py (Plan 05-01 Task 1), test_delivery.py
+    (Plan 05-02 Task 2), and any future test needing the collision pair.
+    """
+    from app.db.seed import seed
+
+    result = seed(dry_run=True)
+
+    # Business 2 UUID (b0000002) contains David + Daniel Reyes collision pair.
+    biz2_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    biz2_employees = [e for e in result.employees if e.business_id == biz2_id]
+
+    # Verify the collision pair is present (guard against seed changes).
+    names = {e.full_name for e in biz2_employees}
+    assert "David Reyes" in names, "seed must contain David Reyes (e0000003)"
+    assert "Daniel Reyes" in names, "seed must contain Daniel Reyes (e0000007)"
+
+    return Roster(business_id=biz2_id, employees=biz2_employees)
