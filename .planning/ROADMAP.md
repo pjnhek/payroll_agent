@@ -204,7 +204,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 — two plans run concurrently)*
 
-- [ ] 05-04-PLAN.md — Delivery foundations: generate_paystub_pdf (pure, in-memory) + compose_confirmation (draft-tier + deterministic floor, hard 3s timeout) (HITL-02, HITL-03)
+- [x] 05-04-PLAN.md — Delivery foundations: generate_paystub_pdf (pure, in-memory) + compose_confirmation (draft-tier + deterministic floor, hard 3s timeout) (HITL-02, HITL-03)
 - [ ] 05-05-PLAN.md — Delivery path + hardened routes: _deliver (compose+PDF+send+status) + approve/reject/retrigger in main.py using claim_status + 303 POST-redirect-GET (HITL-02, HITL-03, CLAR-04, INGEST-05, DASH-03, FOUND-04)
 
 **Wave 3** *(blocked on Wave 2)*
@@ -266,5 +266,5 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
-| 5. Dashboard & Delivery | 3/7 | In Progress|  |
+| 5. Dashboard & Delivery | 4/7 | In Progress|  |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
