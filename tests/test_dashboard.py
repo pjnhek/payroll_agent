@@ -216,6 +216,46 @@ def test_runs_list_has_no_meta_refresh():
 # ---------------------------------------------------------------------------
 
 
+def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
+    """UAT regression: viewing a run while it is still in-flight (received/extracting/
+    computed) must render 200, NOT 500.
+
+    Root cause this guards: run_detail.html's status-poll <script> only renders when
+    the run is in-flight, and it did `{{ run.id | tojson }}` on a raw uuid.UUID, which
+    Jinja2's tojson cannot serialize → TypeError → 500. A settled run skips the script
+    block, which is why "view while processing" 500'd but "refresh after it finished" worked.
+    """
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    inflight_run = {
+        "id": run_id,  # a real uuid.UUID — the exact thing that broke tojson
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "extracting",  # in-flight → status-poll script renders
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: inflight_run)
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    response = client.get(f"/runs/{run_id}")
+    assert response.status_code == 200, (
+        f"GET /runs/{{id}} for an in-flight run must render 200, not {response.status_code} "
+        "(run.id | tojson must not crash on a UUID)"
+    )
+    # The poll script must be present (run is in-flight) and carry the run id as a JSON string.
+    assert "/status" in response.text
+    assert str(run_id) in response.text
+
+
 def test_run_detail_has_no_meta_refresh():
     """UAT #3/#4: GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
 

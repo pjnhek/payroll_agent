@@ -12,7 +12,7 @@
 {% if run.status in in_flight_statuses %}
 <script>
 (function() {
-  var RUN_ID       = {{ run.id | tojson }};
+  var RUN_ID       = {{ run.id | string | tojson }};
   var IN_FLIGHT    = new Set({{ in_flight_statuses | tojson }});
   var MAX_ATTEMPTS = 30;
   var attempts     = 0;
