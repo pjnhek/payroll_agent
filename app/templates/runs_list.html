@@ -40,12 +40,19 @@
 {% else %}
 <div style="margin-top: 32px;">
   <p style="font-size: 20px; font-weight: 600; color: #111827; margin-bottom: 8px;">No payroll runs yet</p>
-  <p style="color: #6B7280;">Use the Send Test Email button on the eval page to fire a demo fixture through the pipeline.</p>
+  <p style="color: #6B7280;">Use the Send Test Email button below to fire a demo fixture through the pipeline.</p>
 </div>
 {% endif %}
 
+{# UAT #6: demo send-test with business/fixture picker #}
 <div style="margin-top: 48px;">
-  <form method="post" action="/demo/send-test">
+  <form method="post" action="/demo/send-test" style="display: inline-flex; align-items: center; gap: 12px;">
+    <label for="fixture_key_runs" style="font-size: 12px; font-weight: 600; color: #6B7280;">Demo scenario</label>
+    <select id="fixture_key_runs" name="fixture_key" class="demo-select">
+      {% for key, meta in demo_fixtures.items() %}
+      <option value="{{ key }}">{{ meta.label }}</option>
+      {% endfor %}
+    </select>
     <button type="submit" class="btn-approve">Send Test Email</button>
   </form>
 </div>
