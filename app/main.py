@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -64,7 +65,14 @@ STALE_THRESHOLD = timedelta(minutes=5)
 # UAT #3: in-flight statuses — a run in any of these states is still processing.
 # Templates receive an `auto_refresh` boolean driven from this constant so no status
 # string is ever hardcoded in the HTML. Terminal statuses never trigger auto-refresh.
-IN_FLIGHT_STATUSES: frozenset[str] = frozenset({"received", "extracting", "computed"})
+# IN-02 (REVIEW-2): awaiting_reply is included so the detail page keeps polling across the
+# simulate-reply (and real-reply) transition — the badge advances awaiting_reply →
+# extracting → … → needs_approval live, then the run-detail poll reloads once on settle to
+# surface the resumed run's data. A run parked at awaiting_reply (no reply yet) simply polls
+# with an unchanged badge until the 30-attempt cap, which is harmless.
+IN_FLIGHT_STATUSES: frozenset[str] = frozenset(
+    {"received", "extracting", "computed", "awaiting_reply"}
+)
 
 # UAT #6: curated allowlist of demo fixtures mapped to their seeded business.
 # Only fixtures whose from_addr resolves via repo.find_business_by_sender are
@@ -625,7 +633,12 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
         filing_status=emp.filing_status if emp else None,
         hourly_rate=emp.hourly_rate if emp else None,
     )
-    safe_name = emp_name.replace(" ", "_")
+    # CR-01 (REVIEW-2): sanitize the filename to a safe charset before embedding it in the
+    # Content-Disposition header. emp_name can be an LLM-extracted submitted_name (when the
+    # matched employee was removed from the roster post-run), so a raw value could carry a
+    # double-quote or CRLF and break/inject the header. Collapse anything outside
+    # [A-Za-z0-9._-] to '_'.
+    safe_name = re.sub(r"[^\w.\-]", "_", emp_name) or "employee"
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -721,6 +734,9 @@ def simulate_reply(
     # uq_message_id unique constraint dedupes if somehow the same synthetic ID
     # appears twice — that is not possible with uuid4 but is handled gracefully).
     try:
+        # IN-01 (REVIEW-2): link the synthetic reply row to its run for a complete audit
+        # trail. Routing/resume keys off the RFC header chain (not this column), so this
+        # is purely for traceability — a join-based audit query now sees the reply.
         repo.insert_inbound_email(
             message_id=email.message_id,
             in_reply_to=email.in_reply_to,
@@ -729,7 +745,7 @@ def simulate_reply(
             from_addr=email.from_addr,
             to_addr=email.to_addr,
             body_text=cleaned,
-            run_id=None,
+            run_id=run_id,
         )
     except Exception:
         logger.debug("simulate-reply: insert_inbound_email failed for run %s", run_id)
@@ -737,11 +753,20 @@ def simulate_reply(
 
     # Hand off to the real reply-routing path — all guards (FIX-5 spoof check,
     # late-reply detection) execute exactly as they would for a real inbound.
-    _route_reply(email, cleaned, background_tasks)
-
-    logger.info(
-        "simulate-reply: synthetic reply submitted for run %s (demo-only)", run_id
-    )
+    # WR-01 (REVIEW-2): _route_reply returns a JSONResponse when it did NOT resume
+    # (spoof-mismatch or late-reply) and None when it scheduled the resume. Surface the
+    # non-resume outcome instead of unconditionally logging success.
+    handled = _route_reply(email, cleaned, background_tasks)
+    if handled is not None:
+        logger.warning(
+            "simulate-reply: reply NOT resumed for run %s (route returned a response — "
+            "spoof-mismatch or late-reply); run stays at awaiting_reply",
+            run_id,
+        )
+    else:
+        logger.info(
+            "simulate-reply: synthetic reply submitted for run %s (demo-only)", run_id
+        )
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

@@ -256,6 +256,53 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
     assert str(run_id) in response.text
 
 
+def test_paystub_pdf_content_disposition_sanitized(monkeypatch):
+    """CR-01 (REVIEW-2) security regression: the paystub PDF Content-Disposition filename
+    must be sanitized — a submitted_name containing a double-quote or CRLF must not break
+    or inject the header. emp_name falls back to item.submitted_name when the employee was
+    removed from the roster post-run, and submitted_name is LLM-extracted.
+    """
+    from decimal import Decimal
+    from datetime import datetime, timezone
+
+    from app.db import repo as _repo
+    from app.models.contracts import PaystubLineItem
+    from app.models.roster import Roster
+
+    run_id = uuid.uuid4()
+    emp_id = uuid.uuid4()
+    malicious = 'Bad "Name"\r\nX-Injected: evil'
+    item = PaystubLineItem(
+        id=uuid.uuid4(), run_id=run_id, employee_id=emp_id, submitted_name=malicious,
+        hours_regular=Decimal("40"), hours_overtime=Decimal("0"), hours_vacation=Decimal("0"),
+        hours_sick=Decimal("0"), hours_holiday=Decimal("0"), gross_pay=Decimal("720.00"),
+        pretax_401k=Decimal("0"), fica_ss=Decimal("44.64"), fica_medicare=Decimal("10.44"),
+        federal_withholding=Decimal("28.41"), state_withholding=None, net_pay=Decimal("636.51"),
+        created_at=datetime.now(tz=timezone.utc),
+    )
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [item])
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: {"id": run_id, "business_id": uuid.uuid4()})
+    # Empty roster → emp is None → route falls back to item.submitted_name (the malicious value)
+    monkeypatch.setattr(
+        _repo,
+        "load_roster_for_business",
+        lambda bid, conn=None: Roster(business_id=uuid.uuid4(), employees=[]),
+    )
+    monkeypatch.setattr(_repo, "load_business_name", lambda bid, conn=None: "Coastal Cleaning Co.")
+
+    response = client.get(f"/runs/{run_id}/pdf/{emp_id}")
+    assert response.status_code == 200
+    cd = response.headers.get("content-disposition", "")
+    # The security property: no CRLF (no header injection / split) and the filename stays a
+    # single well-formed quoted-string (no embedded `"` breaking out). Harmless leftover
+    # letters/hyphens inside the quotes are fine — only the dangerous chars are neutralized.
+    assert "\r" not in cd and "\n" not in cd, "CRLF must not reach the Content-Disposition header"
+    assert cd.count('"') == 2, f"filename must remain a single well-formed quoted-string; got {cd!r}"
+    assert ":" not in cd.split('filename="', 1)[1], (
+        f"no colon (header-field delimiter) inside the filename; got {cd!r}"
+    )
+
+
 def test_run_detail_inflight_poll_reloads_on_settle(monkeypatch):
     """UAT: when a run viewed mid-flight SETTLES, the detail page must reload once so
     the extracted-data + paystub columns (rendered server-side, empty at first load)

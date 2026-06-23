@@ -38,14 +38,16 @@ def main() -> None:
 
         elif mode == "--fail-stuck":
             minutes = int(args[1]) if len(args) > 1 else 10
-            placeholders = ",".join(["%s"] * len(IN_FLIGHT))
+            # WR-02 (REVIEW-2): no f-string SQL — `= ANY(%s::text[])` takes the status
+            # list as a single bound array parameter (honors the project's
+            # "NEVER f-string SQL" discipline).
             rows = c.execute(
-                f"UPDATE payroll_runs SET status='error', "
-                f"error_reason=COALESCE(error_reason,'stuck-in-flight (manual reset)') "
-                f"WHERE status IN ({placeholders}) "
-                f"AND updated_at < now() - (%s || ' minutes')::interval "
-                f"RETURNING id",
-                (*IN_FLIGHT, str(minutes)),
+                "UPDATE payroll_runs SET status='error', "
+                "error_reason=COALESCE(error_reason,'stuck-in-flight (manual reset)') "
+                "WHERE status = ANY(%s::text[]) "
+                "AND updated_at < now() - (%s || ' minutes')::interval "
+                "RETURNING id",
+                (list(IN_FLIGHT), str(minutes)),
             ).fetchall()
             print(f"Marked {len(rows)} stuck run(s) (older than {minutes}m) as 'error'.")
             print("After:")
