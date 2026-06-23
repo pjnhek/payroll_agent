@@ -304,6 +304,203 @@ def test_run_detail_has_no_meta_refresh():
         )
 
 
+# ---------------------------------------------------------------------------
+# Tests for POST /runs/{run_id}/simulate-reply
+# ---------------------------------------------------------------------------
+
+
+def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
+    """POST /runs/{id}/simulate-reply on a non-awaiting run → 303, no crash.
+
+    When the run is not in awaiting_reply status, the route must return a 303
+    redirect without calling _route_reply or any pipeline code.
+    """
+    from app.db import repo as _repo
+    from app.main import _route_reply as _rr
+
+    run_id = uuid.uuid4()
+    non_awaiting_run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "received",  # not awaiting_reply
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: non_awaiting_run)
+
+    # _route_reply must NOT be called; track any call via a spy.
+    route_reply_calls = []
+    import app.main as _main
+
+    monkeypatch.setattr(
+        _main,
+        "_route_reply",
+        lambda email, cleaned, bt: route_reply_calls.append(1) or None,
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "some reply"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, (
+        f"non-awaiting simulate-reply must 303; got {response.status_code}"
+    )
+    assert len(route_reply_calls) == 0, "_route_reply must NOT be called for non-awaiting run"
+
+
+def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch):
+    """POST /runs/{id}/simulate-reply with no clarification Message-ID → 303 no-op."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    awaiting_run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "awaiting_reply",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: awaiting_run)
+    # No clarification outbound row → get_outbound_message_id returns None
+    monkeypatch.setattr(
+        _repo,
+        "get_outbound_message_id",
+        lambda rid, purpose=None, conn=None: None,
+    )
+
+    import app.main as _main
+    route_reply_calls = []
+    monkeypatch.setattr(
+        _main,
+        "_route_reply",
+        lambda email, cleaned, bt: route_reply_calls.append(1) or None,
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "some reply"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert len(route_reply_calls) == 0, "_route_reply must NOT be called when no clarification mid"
+
+
+def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
+    """POST /runs/{id}/simulate-reply on awaiting_reply run → _route_reply called
+    with in_reply_to == clarification Message-ID and from_addr == source inbound sender.
+
+    This is the core contract: the synthetic reply carries the right RFC threading
+    headers so _route_reply finds the awaiting_reply run AND the FIX-5 spoof guard
+    passes (from_addr == business contact email).
+    """
+    from datetime import datetime, timezone
+
+    from app.db import repo as _repo
+    from app.models.contracts import InboundEmail
+
+    run_id = uuid.uuid4()
+    source_email_id = uuid.uuid4()
+    clar_mid = "<clar-abc123@payroll-agent.local>"
+    client_addr = "payroll@coastalcleaning.example"
+
+    awaiting_run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": source_email_id,
+        "status": "awaiting_reply",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    source_inbound = InboundEmail(
+        id=source_email_id,
+        message_id="<original-001@client.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Payroll hours",
+        from_addr=client_addr,
+        to_addr="agent@payroll-agent.local",
+        body_text="Jame Okafor 40 hours.",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: awaiting_run)
+    monkeypatch.setattr(
+        _repo,
+        "get_outbound_message_id",
+        lambda rid, purpose=None, conn=None: clar_mid,
+    )
+    monkeypatch.setattr(
+        _repo, "load_inbound_email", lambda rid, conn=None: source_inbound
+    )
+    # insert_inbound_email must succeed (return a valid id, inserted=True)
+    monkeypatch.setattr(
+        _repo,
+        "insert_inbound_email",
+        lambda **kw: (uuid.uuid4(), True),
+    )
+
+    # Spy on _route_reply to capture the synthetic InboundEmail it receives.
+    captured = {}
+    import app.main as _main
+
+    def spy_route_reply(email, cleaned, bt):
+        captured["email"] = email
+        captured["cleaned"] = cleaned
+        return None  # simulate: not matched (so simulate-reply 303s cleanly)
+
+    monkeypatch.setattr(_main, "_route_reply", spy_route_reply)
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "Sorry — I meant James Okafor. Please process."},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, (
+        f"simulate-reply must 303; got {response.status_code}"
+    )
+    assert "email" in captured, "_route_reply must be called for awaiting_reply run"
+
+    synthetic = captured["email"]
+    # Core contract: in_reply_to and references_header == clarification Message-ID
+    assert synthetic.in_reply_to == clar_mid, (
+        f"synthetic reply in_reply_to must == clarification mid; got {synthetic.in_reply_to!r}"
+    )
+    assert synthetic.references_header == clar_mid, (
+        f"synthetic reply references_header must == clarification mid; "
+        f"got {synthetic.references_header!r}"
+    )
+    # from_addr == business contact email (FIX-5 spoof guard will pass)
+    assert synthetic.from_addr == client_addr, (
+        f"synthetic reply from_addr must == source inbound sender; got {synthetic.from_addr!r}"
+    )
+    # reply_body flows through as body_text (cleaned)
+    assert "James Okafor" in captured["cleaned"], (
+        "reply_body text must appear in cleaned body passed to _route_reply"
+    )
+    # subject is prefixed with "Re: "
+    assert synthetic.subject.startswith("Re: "), (
+        f"synthetic reply subject must start with 'Re: '; got {synthetic.subject!r}"
+    )
+
+
 @pytest.mark.integration
 def test_send_test_mints_fresh_message_id_each_click():
     """UAT #2 / finding MEDIUM: two consecutive POST /demo/send-test calls must
