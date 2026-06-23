@@ -2,77 +2,68 @@
 phase: 6
 reviewers: [codex]
 reviewed_at: 2026-06-23
-review_round: 4
+review_round: 5
 plans_reviewed: [06-01-PLAN.md, 06-02-PLAN.md, 06-03-PLAN.md, 06-04-PLAN.md, 06-05-PLAN.md, 06-06-PLAN.md, 06-07-PLAN.md]
 codex_cli_version: codex-cli 0.135.0
-overall_risk: HIGH until the demo-routing fix is tightened (1 HIGH remains); then MEDIUM
-prior_rounds: round-1, round-2, round-3 — all superseded by this file
+overall_risk: HIGH until the outbound Resend auth omission is patched; then MEDIUM
+prior_rounds: rounds 1-4 (superseded). HIGH trend: 6 → 4 → 2 → 1 → 1.
 ---
 
-# Cross-AI Plan Review — Phase 6 (Round 4)
+# Cross-AI Plan Review — Phase 6 (Round 5)
 
-> Round 1 (6 HIGH) + Round 2 (4 HIGH) + Round 3 (2 HIGH) all incorporated and re-verified PASSED.
-> Fourth independent Codex pass (user-requested, since round 3 still had HIGHs). Codex confirmed
-> Round-3 HIGH #1 (schema) fully resolved; found ONE new HIGH introduced by the round-3 demo fix.
+> Round-4 HIGH (multi-business demo misrouting) is RESOLVED (Codex verified seed names + fixture file).
+> Fifth independent Codex pass. One new HIGH (a live-path auth gap), 3 cheap MEDIUMs, 1 LOW (accepted).
 
-## Codex Review (Round 4)
+## Codex Review (Round 5)
 
 ### Summary
-- **Round-3 HIGH #1 (schema mismatch): RESOLVED.** 06-04 WAIVE path — `update_email_message_sent`/`update_email_message_state` set only `send_state` keyed by the synthetic `message_id`; Resend provider id logged only. Codex independently confirmed `email_messages` has no `provider_message_id` or `updated_at`.
-- **Round-3 HIGH #2 (/demo/send-test identity): PARTIALLY resolved — not execution-ready.** 06-06 correctly adds the hero fixture and fixes its `.example` sender, BUT the preferred GLOBAL `DEMO_CONTACT_EMAIL` override can break the multi-business recording path (Beat 1 `coastal_exact` vs Beat 2 Metro Deli). One remaining HIGH.
+Round-4 HIGH resolved: per-fixture `business_name` + DB `contact_email` lookup fixes the multi-business demo routing (verified seed business names + `eval/fixtures/04_unknown_shorthand_metro.json` exist). One remaining HIGH/blocker; plans not execution-ready until patched.
 
 ### Strengths
-- 06-04 much stronger: schema-safe updates, failed-send flip, attachment forwarding, signature behavior, canonical prod/dev split, SDK smoke check — all explicit.
-- 06-05 correctly treats A5 as a blocking human gate, not polish.
-- 06-06/06-07 now treat the demo path as a first-class deliverable (reset + pre-recording smoke tests).
+- D-13 inbound dedup explicit before pipeline enqueue (06-04 Task 2).
+- D-17 unsigned public webhook surface materially closed (unsigned Resend AND unsigned canonical → 400 in prod).
+- D-13c send ordering clear: reserved before provider call, failed on exception, sent only after success.
+- PDF attachments explicitly carried into resend.Emails.send.
+- Human gates correctly placed for Render/Supabase + real email threading.
+- Demo routing has the right multi-business tests (06-06) + smoke checks (06-07).
 
 ### Concerns
-- **HIGH — 06-06/06-07: global `DEMO_CONTACT_EMAIL` can misroute other fixtures.** 06-06 Task 1 overrides `fixture_data["from_addr"]` from a SINGLE `DEMO_CONTACT_EMAIL`. 06-07 records Beat 1 with `coastal_exact` (Coastal) and Beat 2 with the Metro Deli clarify fixture. If `DEMO_CONTACT_EMAIL` = the Metro real sender, `coastal_exact` routes to Metro Deli while its body contains Coastal employees (and vice versa). Tests only prove the hero fixture, not that the full three-beat set still routes to the correct businesses. **[VERIFIED by orchestrator: `_DEMO_FIXTURES` (main.py:82) carries only label+path, NO business identity; fixtures span 3 businesses — coastal_exact/coastal_multi→Coastal payroll@coastalcleaning.example, metro_alias→Metro hr@metrodeli.example, summit_exact→Summit. A single global override misroutes the others.]**
-- **MEDIUM — 06-05 A5 Branch B under-specified.** The "store Resend's actual RFC Message-ID and re-route" branch mostly describes a manual row update after observing a reply; it doesn't clearly change FUTURE `send_outbound` behavior, and the referenced outbound `WEBHOOK_DEBUG` evidence may not exist (the debug guard logs INBOUND fetches). OK as a human gate, but Branch B needs a real mini-plan if it fires — or an explicit fall back to the D-03a subject-token (already spec'd, deferred) when the provider-assigned RFC id can't be known before replies arrive.
-- **MEDIUM — stale 06-PATTERNS.md reintroduces the schema bug.** 06-PATTERNS.md still shows the old `provider_message_id`/`updated_at` send pattern, and 06-04 tells executors to read it. The plan overrides it clearly (not HIGH), but it's a footgun.
-- **LOW — 06-06 reset mentions `alias_audit` but the schema may not have that table.** The detailed task sequence omits it; remove it or use conditional deletion.
-
-### Suggestions
-- Change `_DEMO_FIXTURES` to include `business_name`/`business_id`, then override `from_addr` from THAT fixture's current `businesses.contact_email`, not one global env var.
-- Add tests: `coastal_exact` routes to Coastal after Metro's contact is swapped; the hero fixture routes to Metro after the swap; all recording fixtures route to their expected business.
-- For A5 Branch B: define an actual code remediation, or explicitly fall back to D-03a subject token if the provider RFC id can't be known before replies arrive.
-- Update 06-PATTERNS.md to remove the stale provider-id persistence snippet.
+- **HIGH — outbound Resend auth omission (06-04 Task 1).** `resend.api_key = get_settings().resend_api_key` is set only inside the Resend INBOUND parse path. It is NOT set before `resend.Emails.send`. The recording path uses `/demo/send-test`, which can send clarification/confirmation OUTBOUND without ever running the inbound parse path first. Unless the SDK is proven to auto-load `RESEND_API_KEY`, outbound sends fail live → the demo breaks. Fix: set `resend.api_key = get_settings().resend_api_key` at the START of `send_outbound`, plus a test that `Emails.send` sees the configured key. **[VERIFIED by orchestrator: the gateway is currently a stub — no `resend` import or api_key anywhere in app/; the auth setup is entirely new plan work, so single-path setup is a real risk to guard.]**
+- **MEDIUM — stale A5 remediation wording (06-04 T-06-04-10).** Still says A5 remediation = "store Resend's returned RFC id in email_messages.message_id," contradicting 06-05 Branch B (which chose the D-03a subject-token fallback, NOT storing Resend's id). Remove the stale 06-04 wording.
+- **MEDIUM — A5 evidence-source inconsistency (06-05).** Says `LOG_WEBHOOK_DEBUG_IDS` logs only header keys/IDs, but later tells the operator to find `in_reply_to=` in that log line. Make the DB `SELECT in_reply_to ... WHERE direction='inbound'` the PRIMARY A5 evidence, or log a sanitized `in_reply_to` explicitly.
+- **MEDIUM — stray `paystubs` table name (06-06).** One must-have mentions `paystubs` in the reset deletion order, but the schema has only `paystub_line_items` (later task text is correct). Remove the stray `paystubs` reference. **[VERIFIED: schema.sql has paystub_line_items at :110; no `paystubs` table.]**
+- **MEDIUM/LOW — "verify first" literalness (06-04).** Parses JSON before signature verification for signed Resend payloads. It still blocks before pipeline work (not thesis-critical), but to literally satisfy "verify first": if no svix headers + prod flag false → 400 before JSON parse; if svix headers present → verify raw body before parsing.
+- **LOW — D-14 single-turn scope.** Acceptable for Phase 6; keep the multi-turn full-chain gap documented. (Already accepted/documented in prior rounds.)
 
 ### Risk Assessment
-**HIGH until the demo routing fix is tightened** — the remaining blocker can break the final recording path (a core Phase 6 deliverable). After replacing the global sender override with per-fixture business-contact resolution, risk drops to **MEDIUM** (remaining uncertainty is live-provider behavior behind explicit human gates).
+HIGH because the outbound Resend auth omission can break the live demo path. After that fix → MEDIUM (real-provider uncertainty + human-gated A5). Round-4 multi-business misrouting resolved.
 
 ---
 
 ## Orchestrator Triage (Claude Code)
 
-The remaining HIGH is real and is a defect in the ROUND-3 fix itself (a single global override can't serve a multi-business demo) — VERIFIED against main.py:82 + seed.py (3 businesses, fixtures carry no business id). Driving Pass 4. The 2 MEDIUMs + 1 LOW are cheap and worth folding in.
+Round-4 HIGH confirmed closed. The new HIGH is real and VERIFIED (gateway is a stub today; the resend auth setup is new plan work, and the demo's outbound-only path means inbound-path-only key-setting genuinely fails live). The 3 MEDIUMs are cheap consistency fixes; the "verify-first" item is a defensible tightening; the LOW is already accepted. Driving Pass 5 — the fixes are small and well-specified.
 
-**REAL — fix in Pass 4:**
-1. **HIGH — per-fixture business-contact resolution (06-06 main.py + tests).** Replace the global `DEMO_CONTACT_EMAIL`-overrides-everything approach with per-fixture identity:
-   - Tag each `_DEMO_FIXTURES` entry with its `business_name` (or business_id) — coastal_exact/coastal_multi→Coastal, metro_alias→Metro Deli, summit_exact→Summit.
-   - At demo-send time, resolve `from_addr` from THAT fixture's business's CURRENT `businesses.contact_email` (look it up by name/id), NOT a single global env var. So after 06-05 swaps ONE business's contact to the real round-trip sender, that business's fixtures use the real sender and ALL OTHER fixtures keep resolving to their own seeded contacts. Every beat routes to the correct business.
-   - The clarify beat (D-06 beat 2) is the Metro Deli unknown-shorthand path — the committed fixture today is `metro_alias` / `02_stored_alias_metro.json` (NOTE: there is no committed `gate_block_hero` file; either add one or use the existing Metro clarify fixture and drop the gate_block_hero name — the executor advisory already allows the closest Metro fixture). Make the plan name the REAL fixture, not a nonexistent key.
-   - Tests: coastal_exact routes to Coastal AND the Metro hero fixture routes to Metro, BOTH after the identity swap (prove the multi-business set is correct, not just one fixture). demo_reset preserves the swapped identity. Add the validation rows.
-   - Update 06-07's pre-recording smoke test to verify EACH beat's fixture routes to its intended business (not just the hero).
+**REAL — fix in Pass 5:**
+1. **HIGH — resend.api_key on the outbound path (06-04 Task 1).** Set `resend.api_key = get_settings().resend_api_key` at the START of `send_outbound` (not only in parse_inbound). Cleanest: set it once at module import / gateway init, OR at the top of BOTH parse_inbound and send_outbound (defensive, idempotent). Add a test asserting that calling send_outbound configures `resend.api_key` before `resend.Emails.send` is invoked (mock send, assert key set). This is the live-demo-critical fix.
+2. **MEDIUM — stale A5 remediation in 06-04 T-06-04-10.** Rewrite that threat row's remediation to match 06-05 Branch B: A5 failure → D-03a subject-token fallback (NOT storing Resend's id in message_id). One source of truth for the A5 remediation.
+3. **MEDIUM — A5 evidence source (06-05).** Make the DB `SELECT in_reply_to FROM email_messages WHERE direction='inbound' ORDER BY created_at DESC LIMIT 1` the PRIMARY/canonical A5 evidence. If LOG_WEBHOOK_DEBUG_IDS is also referenced, either drop the "find in_reply_to= in the log" instruction (it logs keys/IDs, not the value) or have it log a sanitized in_reply_to explicitly. One consistent evidence path.
+4. **MEDIUM — stray `paystubs` (06-06).** Replace the `paystubs` mention in the reset must-have with `paystub_line_items` (the real table). VERIFIED: schema has paystub_line_items, no paystubs.
+5. **MEDIUM/LOW — verify-before-parse (06-04).** Tighten the route: if a payload has no svix headers and the prod flag is false → 400 BEFORE json.loads; if svix headers present → verify the raw body BEFORE parsing. Keeps "verify first" literal (defense-in-depth; the current order already blocks before pipeline work, so this is a polish-grade hardening — apply if cheap).
 
-**MEDIUM — fold in:**
-2. **A5 Branch B real remediation (06-05).** Make Branch B concrete: if Resend overwrites our Message-ID, either (a) a small code change so send_outbound stores Resend's returned RFC id in email_messages.message_id going forward (and a one-time UPDATE for the in-flight thread), re-verify; OR (b) explicitly fall back to the pre-spec'd D-03a subject-token anchor (it's already locked in CONTEXT for exactly this "headers don't survive" case) — state which, with steps. Also fix the evidence pointer: the LOG_WEBHOOK_DEBUG_IDS guard logs INBOUND fetches, so A5's "did our outbound Message-ID survive" is observed from the REPLY's In-Reply-To (inbound), which is correct — make 06-05 say that precisely, not "outbound WEBHOOK_DEBUG."
-3. **Stale 06-PATTERNS.md (footgun).** Update 06-PATTERNS.md to remove the old provider_message_id/updated_at send-pattern snippet so an executor reading it can't reintroduce the schema bug 06-04 just waived. (06-PATTERNS is a planning artifact — safe to edit.)
-
-**LOW:**
-4. **06-06 reset alias_audit.** Confirm whether an `alias_audit` table exists in schema.sql; if not, remove it from the reset ordering or make the delete conditional (IF EXISTS / catch). Don't reference a nonexistent table.
+**Accepted / no action:**
+- LOW (D-14 single-turn) — already documented; no change.
 
 ## Consensus Summary
-Single reviewer (Codex, 4 rounds) + orchestrator triage, code-verified.
+Single reviewer (Codex, 5 rounds) + orchestrator triage, code-verified.
 
 ### Convergence trend
-- Round 1: 6 HIGH (broad mechanical) → Round 2: 4 HIGH (live-integration semantics) → Round 3: 2 HIGH (narrow, schema/demo) → Round 4: **1 HIGH** (a defect in the round-3 demo fix: global vs per-fixture identity).
-- 6 → 4 → 2 → 1. Each round narrower and more concrete; round-4's HIGH is a regression introduced by round-3's own fix, now pinpointed. One more targeted pass should close it.
+6 → 4 → 2 → 1 → 1 HIGH. The count plateaued at 1, but each round's HIGH is a DIFFERENT, narrower, newly-exposed issue (round-4 = demo misrouting; round-5 = outbound auth) — not the same blocker recurring. This is the deep-review tail: each fixed layer exposes the next thinner one. Round-5's HIGH is a one-line auth fix + test. The remaining surface after Pass 5 is genuinely live-provider behavior that only the human deploy/round-trip gates (D-09/D-09b) can settle — not plannable away.
 
-### Agreed Concerns (→ Pass 4)
-1. Global demo-sender override misroutes the multi-business recording — replace with per-fixture business-contact resolution + multi-fixture routing tests.
-2. A5 Branch B needs a concrete remediation (code change or D-03a fallback); fix the evidence-source wording.
-3. Stale 06-PATTERNS.md provider-id snippet; alias_audit table existence in reset.
+### Agreed Concerns (→ Pass 5)
+1. Outbound `resend.api_key` not set on the send path → live demo send fails.
+2. Stale A5 remediation wording (06-04) vs the D-03a decision (06-05).
+3. A5 evidence-source inconsistency; stray `paystubs` table name.
 
 ### Next step
-`/gsd-plan-phase 6 --reviews` (Pass 4) — close the per-fixture routing HIGH + the MEDIUMs. A round-5 Codex review follows if the user wants continued verification; given the monotonic 6→4→2→1 trend, this pass is expected to converge.
+`/gsd-plan-phase 6 --reviews` (Pass 5) — close the outbound-auth HIGH + the consistency MEDIUMs. Whether a round-6 review follows is the user's call; the trend + the nature of the remaining surface suggest the plans are at/near the point where further review yields diminishing returns against the human gates.
