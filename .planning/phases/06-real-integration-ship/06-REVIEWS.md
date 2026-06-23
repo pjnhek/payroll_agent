@@ -2,107 +2,81 @@
 phase: 6
 reviewers: [codex]
 reviewed_at: 2026-06-23
+review_round: 2
 plans_reviewed: [06-01-PLAN.md, 06-02-PLAN.md, 06-03-PLAN.md, 06-04-PLAN.md, 06-05-PLAN.md, 06-06-PLAN.md, 06-07-PLAN.md]
 codex_cli_version: codex-cli 0.135.0
-overall_risk: HIGH (as written)
+overall_risk: HIGH (round-1 HIGHs resolved; new deeper integration HIGHs surfaced)
+prior_round: round-1 06-REVIEWS committed at 9619ffe (superseded by this file)
 ---
 
-# Cross-AI Plan Review — Phase 6
+# Cross-AI Plan Review — Phase 6 (Round 2)
 
-> Requested: Codex review of the 7 Phase-6 plans (post plan-checker pass, post one revision iteration).
-> Codex was given PROJECT.md context, the ROADMAP Phase-6 section, OPS-01..04, the full CONTEXT.md
-> (locked D-01..D-21), and all 7 PLAN.md files, with instructions to be adversarial about the
-> thesis-critical correctness points.
+> Round 1's 9 findings were incorporated (commit f5bacee) + 3 follow-on blockers closed; plan-checker
+> re-verified PASSED. This is the second independent Codex pass on the revised plans.
 
-## Codex Review
+## Codex Review (Round 2)
 
-**Summary**
+### Summary
+Not yet execution-ready. The revised plans are much stronger and the round-1 HIGHs are materially resolved (Docker `.venv/bin/uvicorn`; dual-path fixture preservation; explicit dedup short-circuit; send-failure→failed; reset `--confirm`+FK-safety+reseed; Mermaid+mandatory PNG). But new thesis-critical gaps remain that can break real reply routing, weaken webhook authenticity, or make the live demo fail once the real provider is active.
 
-The plan set is directionally strong and covers the Phase 6 goal: deploy on Render/Supabase, wire Resend behind the email seam, add keep-alive, and produce README/demo artifacts. Codex would NOT approve it as-is. The sequencing and human gates are good, but there are several high-risk implementation holes that could either break the public deploy or, worse, make the real email path fail silently around dedup/threading.
+### Strengths (round-1 fixes confirmed)
+- 06-02 Docker runtime fixed cleanly (builder `uv sync --frozen --no-dev`; runtime `.venv/bin/uvicorn` with `$PORT`).
+- 06-04 separates Resend-envelope parsing from canonical fixture parsing (protects the fixture/dev path).
+- 06-04 dedup is explicit: insert-or-skip before enqueueing pipeline work.
+- 06-04 adds failed-state handling around provider send failures (no more stranded reserved row).
+- 06-06 reset script safer: explicit `--confirm`, FK-aware cleanup, reseed to reset learned aliases.
+- 06-06 README/artifact consistency mostly fixed: Mermaid source + mandatory PNG.
 
-**Strengths**
+### Concerns
+- **HIGH — Public webhook still has an unsigned canonical bypass (06-04 Task 2).** Canonical `InboundEmail` payloads skip signature verification entirely while only Resend-shaped payloads require Svix verify. That leaves `/webhook/inbound` publicly forgeable in prod: an attacker POSTs the canonical shape with a spoofed `from_addr` matching a business contact and bypasses D-17. Fix: gate unsigned canonical POSTs behind `ALLOW_UNSIGNED_FIXTURES=true` too; keep it false and absent from Render; tests enable the flag explicitly.
+- **HIGH — Outbound reply routing may store the wrong Message-ID (06-04 Task 1).** `send_outbound` stores a synthetic `message_id`, sends via Resend, stores the provider id separately, returns the synthetic id. But reply routing matches incoming `In-Reply-To`/`References` against `email_messages.message_id`. If Resend sends with its OWN RFC Message-ID, client replies reference Resend's ID, not the synthetic one in the DB → clarify→reply→resume fails. The A5 human confirmation in 06-05 is too late to compensate for a schema/repo design that assumes synthetic IDs. Fix BEFORE implementation: either (a) set the outbound `Message-ID` header to the synthetic ID and verify Resend preserves it, or (b) add a separate stable internal key and store the ACTUAL outbound RFC Message-ID in `email_messages.message_id`, then route replies on that.
+- **HIGH — Real inbound round-trip will likely stop at `unknown_sender` (06-05 Task 1).** The user sends from a personal email, but production seed data uses `.example` business-contact emails and `find_business_by_sender` is exact-match → the real inbound is logged and stopped, not processed. Same issue hits the live demo: `/demo/send-test` fixtures use `.example` senders, and live `send_outbound` may attempt to email `.example` recipients. Fix: add a production demo sender/recipient setup step (update one seeded business contact email to the exact real sender used for the round-trip; use demo fixtures for that same business).
+- **HIGH — Real confirmation emails may drop PDF attachments (06-04 Task 1).** The `resend.Emails.send` payload includes `from`/`to`/`subject`/`text`/`headers` but NOT `attachments`. Existing `_deliver` passes generated PDF bytes into `gateway.send_outbound`. As written, the confirmation path silently loses paystub PDFs. Fix: add attachment mapping to the Resend send payload + a gateway test asserting PDFs pass through.
+- **MEDIUM — Reply-routing test still too mocked (06-01/06-04).** `test_inbound_reply_routes_to_correct_run` monkeypatches `repo.find_awaiting_reply_for_header` to return a fake run id — proves the route reacts to a mocked match, not that the stored outbound row + normalized headers + SQL predicate + route work together. Add one test that stores an outbound row and posts a reply whose `In-Reply-To` matches it WITHOUT monkeypatching the matcher.
+- **MEDIUM — Durable References chain only partially durable (06-04 Task 1).** Loading the most recent sent outbound `references_header` and appending the new `in_reply_to` does not persist a true per-thread chain including inbound reply headers; multi-turn clarification can lose parts of the chain. Weaker than D-14's "full References chain per thread." (May not break the 60–90s demo.)
+- **MEDIUM — Keepalive workflow hides failure (06-02 Task 2).** `curl -sf ... || echo "Ping failed..."` makes the workflow green even when the ping failed or `RENDER_URL` is missing → OPS-03 silently stops. Fix: fail the workflow on missing URL or failed curl.
+- **MEDIUM — Gateway test assumes fixed SQL order D-14 violates.** `test_send_outbound_reserved_before_sent_ordering` expects `fake_conn.executed[0]/[1]` positions, but D-14 adds a DB READ before the reserved insert. Assert RELATIVE order (reserved insert before provider send; sent/failed update after) instead of absolute positions.
+- **LOW — 06-03 has a Resend/header must-have before Resend exists.** "three threading headers confirmed on manual raw payload logging" is a 06-05 activity; move it out of 06-03 so the thin-deploy gate isn't blocked on impossible evidence.
+- **LOW — Address normalization underspecified.** Real provider `from` may include display names; `parse_inbound` should `email.utils.parseaddr` before `find_business_by_sender`, or real known senders get rejected.
 
-- Good dependency order: thin deploy before provider wiring, then real round-trip, then README/demo.
-- Human checkpoints are correctly marked `autonomous:false` for Supabase/Render and real email verification.
-- The plan correctly elevates D-13 inbound dedup, D-17 signature verification, and D-14 durable threading as thesis-critical.
-- `/health/live` vs `/health/ready` split is the right Render/Supabase design.
-- Demo strategy is pragmatic: prove live email once, record thesis beats through the deterministic dashboard path.
-- README plan has the right audience split and includes the required tax disclaimers.
-
-**Concerns**
-
-- **HIGH — 06-04 may break the fixture path.** Replacing `parse_inbound` with Resend-only two-step parsing conflicts with "fixture path unchanged" and "developable by POSTing JSON fixtures." The route also verifies every `/webhook/inbound` request, so local unsigned JSON fixtures likely start failing unless an explicit fixture/dev path remains.
-- **HIGH — 06-02 Docker runtime likely will not start.** The runtime stage copies `/app` and sets `.venv/bin` on `PATH`, but the CMD uses `uv run ...` without copying the `uv` binary into the runtime image. Either copy uv into runtime or run `uvicorn` directly from the venv (`.venv/bin/uvicorn`).
-- **HIGH — 06-04 outbound threading depends on an unconfirmed Resend ID shape (A5).** The plan stores `resend.Emails.send()["id"]` as `email_messages.message_id` before A5 is confirmed. If that ID is Resend-internal rather than the actual RFC `Message-ID`, reply routing via `In-Reply-To` can break.
-- **HIGH — 06-04 D-14 threading test is too narrow.** Testing that `send_outbound` builds a References header is not enough. There should also be an automated reply-routing test proving an inbound reply whose `In-Reply-To`/`References` points at the outbound chain resumes the correct run.
-- **HIGH — 06-04 does not specify send-failure handling.** Plan writes `send_state='reserved'` before `resend.Emails.send`, then flips to `sent`, but does not require `failed` on provider exception. Can leave runs stuck in `reserved` instead of ERROR/retriggerable.
-- **HIGH — D-13 dedup depends on current repo behavior that is not fully specified.** The plan says "rest of route unchanged" after parsing, but D-13 requires duplicate short-circuit BEFORE any pipeline task. The plan should explicitly require atomic insert-or-skip plus "enqueue background task only if inserted."
-- **MEDIUM — 06-01 intentionally failing tests conflict with no-op-swap/CI stability.** Adding RED tests to the normal suite means `uv run pytest -q -m "not integration and not live_llm"` fails until 06-04. Use `xfail(strict=True)` or isolate RED checks so the branch is not in a globally failing state.
-- **MEDIUM — 06-05 temporary raw logging is unsafe and incomplete.** Asks the human to log raw payload/body in Render logs, but after `parse_inbound` the raw provider headers are already discarded, so A1 is not actually captured. Log only header keys/IDs inside `gateway.py` behind a temporary env flag.
-- **MEDIUM — 06-06 README PNG requirement is internally inconsistent.** Must-haves require committed `docs/architecture.png`, but the task allows accepting Mermaid-only. D-11a requires BOTH Mermaid source and exported PNG/SVG fallback.
-- **MEDIUM — 06-06 demo reset may not fully reset dependent tables.** Deleting only `email_messages` and `payroll_runs` may fail or leave residue if line items/paystubs/alias audit rows reference runs. The reset should inspect FK order or use a deliberate `TRUNCATE ... CASCADE` for demo-owned tables.
-- **LOW — 06-02 `.env.example` misses `RESEND_FROM_ADDR`.** (See note below — the revision routed this field to `app/config.py` + `render.yaml`; the `.env.example` line is worth adding for dev parity.)
-- **LOW — 06-06 new docs files missing from frontmatter.** `docs/architecture.mmd` and `docs/architecture.png` should be listed in `files_modified`.
-
-**Suggestions**
-
-- Preserve dual inbound parsing: canonical fixture `InboundEmail` dicts should still parse locally, while Resend webhook payloads use the two-step fetch.
-- Add explicit duplicate behavior in 06-04: `insert_inbound_email(... ON CONFLICT DO NOTHING RETURNING id)` and enqueue only on returned row.
-- Store provider send ID separately if possible. If schema cannot change, do not assume it is an RFC Message-ID; prove reply routing works through `References`.
-- Add tests for real reply matching using both `In-Reply-To` and `References` token chains.
-- Fix Docker CMD/runtime: copy uv into runtime OR use `.venv/bin/uvicorn`.
-- Add `try/except` around `resend.Emails.send` that marks the outbound row `failed` and raises into the existing ERROR/retry handling.
-- Replace 06-05 manual debug edits with a committed, removable `LOG_WEBHOOK_DEBUG_IDS=true`-style switch that logs IDs/header keys only.
-- Make `scripts/demo_reset.py` require an explicit mode; do not make destructive reset the default no-arg behavior.
-
-**Risk Assessment**
-
-**Overall: HIGH as written.** Right architecture and sequencing, but the Docker runtime issue can fail deployment outright, and the gateway changes risk breaking the fixture path and reply threading. After fixing fixture compatibility, outbound Message-ID/threading proof, send-failure handling, and the Docker CMD, this drops to **MEDIUM/LOW** for a portfolio-grade free-stack ship.
+### Risk Assessment: HIGH
+Close but not execution-ready. The remaining HIGHs can break the public webhook trust boundary, the real clarify→reply→resume loop, the live email round-trip, and PDF delivery — core Phase 6 success criteria, not polish.
 
 ---
 
 ## Orchestrator Triage (Claude Code)
 
-Cross-checking Codex's findings against the *revised* plans (Codex reviewed a snapshot; some details it flags were already partially addressed, and two references are off — there is no plan "06-13", and the `RESEND_FROM_ADDR` field was moved to `config.py`+`render.yaml` in the revision, so `.env.example` parity is a LOW nicety, not the AttributeError gap the plan-checker already closed).
+These round-2 findings are materially DEEPER than round-1 — Codex confirmed the round-1 HIGHs are resolved and found integration-semantics bugs the internal plan-checker structurally can't (it checks plan quality, not live-provider behavior). I judge ALL four HIGHs and three of four MEDIUMs as REAL and actionable. Driving a Pass-2 replan (`/gsd-plan-phase 6 --reviews`).
 
-**Findings I judge REAL and worth a revision pass (the GSD path is `/gsd-plan-phase 6 --reviews`):**
+**REAL — fix in Pass 2:**
+1. **HIGH — Outbound Message-ID identity (06-04).** The strongest finding. Cross-check against `contracts.py`/`repo.py`/the reply-routing code: decide the ownership rule. Cleanest given Resend lets you SET the `Message-ID` header (D-01b/A5): mint the synthetic RFC Message-ID, pass it as the outbound `Message-ID` header to `resend.Emails.send`, store THAT same id in `email_messages.message_id` (what reply routing matches on), and treat Resend's returned provider id as a separate audit value. Promote A5 from "confirm at 06-05" to a *design assumption the plan commits to*, with 06-05 verifying the header survived (not discovering the design was wrong). This removes the "synthetic-vs-provider id" mismatch entirely.
+2. **HIGH — `.example` sender vs real round-trip + demo (06-05/06-06/06-07).** Add an explicit "production demo identity" setup: update one seeded business's contact email to the real sender address used for the D-09b round-trip (and the demo), so `find_business_by_sender` matches. Make it a documented step in 06-05 (round-trip) and ensure the demo-reset/seed (06-06) keeps that identity. Confirm `/demo/send-test` uses a fixture whose sender matches a seeded business.
+3. **HIGH — PDF attachments dropped (06-04).** `send_outbound` must map the paystub PDF bytes `_deliver` passes into the `resend.Emails.send` `attachments` param (base64/content per the resend SDK shape — confirm against RESEARCH.md / the SDK). Add a gateway test asserting attachments are forwarded. This is a HITL-03 regression guard on the real provider.
+4. **HIGH — Unsigned canonical bypass (06-04).** Tighten: ANY unsigned inbound (canonical shape included) is rejected in prod unless `ALLOW_UNSIGNED_FIXTURES=true`. Keep the flag default-False and absent from render.yaml (already enforced). Update the fixture tests + the DASH-05/`/demo/send-test` path to set the flag in the dev/test env. Confirms D-17 covers the whole public surface, not just Resend-shaped payloads.
+5. **MEDIUM — Reply-routing test still mocked (06-01/06-04).** Add a test that inserts a real outbound row (FakeConnection or live-DB integration) and posts a reply whose `In-Reply-To` matches, WITHOUT monkeypatching `find_awaiting_reply_for_header` — exercises the real SQL predicate + header normalization end to end.
+6. **MEDIUM — Positional SQL assertion (06-01).** Change `test_send_outbound_reserved_before_sent_ordering` to assert RELATIVE order (reserved-insert before provider-send; sent/failed-update after), not `executed[0]/[1]` absolute indices — D-14's chain-load read now precedes the reserved insert.
+7. **MEDIUM — Keepalive hides failure (06-02).** Remove the `|| echo` swallow; fail the job on missing `RENDER_URL` or non-2xx (`curl -f` + check the URL is set). OPS-03 must go red when the ping actually fails.
+8. **LOW — 06-03 threading-header must-have (move to 06-05).** The three-headers-confirmed evidence belongs at the round-trip gate, not the thin-deploy gate.
+9. **LOW — parseaddr normalization (06-04).** `parse_inbound` runs `email.utils.parseaddr` on the provider `from` before `find_business_by_sender`.
 
-1. **HIGH — Docker runtime `uv run` without the uv binary (06-02).** Strongest finding. If the runtime stage doesn't carry the `uv` binary, `CMD uv run uvicorn ...` fails at container start → the Render deploy 502s. Fix: either `COPY --from=ghcr.io/astral-sh/uv ... /bin/` into the runtime stage too, or change CMD to `.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}` (no uv needed at runtime — cleaner, smaller). **Verify the current 06-02 CMD/runtime-stage wording before fixing.**
-2. **HIGH — Fixture path vs. signature verify (06-04).** Genuine. If `verify()` runs on every `/webhook/inbound` POST and `parse_inbound` becomes Resend-only, the existing fixture/dev path (POST a JSON `InboundEmail`) breaks — directly violating "fixture path unchanged" (OPS-02) and the no-op-swap invariant. Fix: keep a dev/fixture branch (shape-detect Resend webhook vs. canonical `InboundEmail` dict; skip verify when a dev flag is set or the payload is the canonical shape). **This is the most important correctness/scope finding.**
-3. **HIGH — Send-failure handling (06-04).** Real gap. `reserved`→`sent` without a `reserved`→`failed` on exception strands runs in `reserved`. Fix: `try/except` around `resend.Emails.send` flips to `failed` and raises into the existing ERROR path (mirrors the Phase-5 D-13b delivery error boundary).
-4. **HIGH — Dedup short-circuit must be explicit (06-04).** D-13's whole value is "duplicate does NOT re-run the pipeline." "Rest of route unchanged" is too loose. Fix: make it explicit — `ON CONFLICT DO NOTHING RETURNING id`, enqueue the background pipeline task ONLY if a row was inserted.
-5. **MEDIUM — RED tests poison the mocked suite (06-01).** Adding failing tests to the default suite means the no-op-swap gate (`pytest -m "not integration and not live_llm"` green) is red from Wave 1 → Wave 3. Fix: mark the not-yet-implemented tests `@pytest.mark.xfail(strict=True)` so they flip to a real failure (XPASS) exactly when the feature lands, keeping the suite green in between.
-6. **MEDIUM — A1 logging is in the wrong layer (06-05).** Correct: `parse_inbound` discards raw headers, so logging "after parse" can't capture real sender casing. Fix: log header keys/IDs INSIDE `gateway.py` behind a temporary `LOG_WEBHOOK_DEBUG_IDS` env flag (no PII — keys/IDs only).
-7. **MEDIUM — D-14 needs an end-to-end reply-routing test, not just chain-construction.** Worth adding: an automated test that an inbound reply with `In-Reply-To`/`References` pointing at the outbound chain resumes the correct run (the existing reply-routing code exists from prior phases; assert it still matches).
-8. **MEDIUM — demo-reset FK safety + non-default destructive mode (06-06).** Real: deleting only two tables may FK-fail or orphan rows; and a no-arg destructive default is foot-gun. Fix: explicit `--confirm`/mode flag; reset via FK-ordered deletes or `TRUNCATE ... CASCADE` on demo-owned tables (or just re-run seed, which the research already preferred).
-9. **MEDIUM/LOW — 06-06 PNG must-have consistency + docs files in `files_modified`.** Tighten: D-11a requires BOTH Mermaid source AND a committed PNG (no Mermaid-only escape hatch); add `docs/architecture.mmd` + `docs/architecture.png` to frontmatter.
-
-**Findings I judge already-addressed or off-target (no action):**
-- `.env.example` missing `RESEND_FROM_ADDR` (LOW): the revision put the field in `config.py` (with a default) + `render.yaml`; the AttributeError gap is closed. Adding the `.env.example` line is a nicety, fold into #9 if revising 06-02.
-- "06-13" — no such plan; Codex meant 06-04's D-13 dedup task (covered by #4).
-
----
+**Partially-defer (document, don't over-build):**
+- **MEDIUM — fully-durable multi-turn References chain (06-04).** D-14's "full chain per thread" is stronger than "last sent + append." The demo is single-turn so the current design suffices for the recording, but it's a real gap vs the locked decision. Fix if cheap (persist/accumulate the inbound reply's References too, not just the last outbound); otherwise narrow the D-14 must_have wording to the implemented scope and document the multi-turn limitation explicitly (don't claim full-chain if only last-hop is built). Planner's call on cost.
 
 ## Consensus Summary
-
-Single external reviewer (Codex), so "consensus" = Codex + orchestrator triage agreement.
+Single reviewer (Codex) + orchestrator triage.
 
 ### Agreed Strengths
-- Locked dependency ordering (thin deploy → provider → round-trip → demo) is correct.
-- Human gates (`autonomous:false`) are placed correctly.
-- The thesis-critical trio (D-13 dedup, D-17 verify, D-14 threading) is correctly elevated.
-- Health-route split + pragmatic demo strategy are sound.
+Round-1 HIGHs are resolved (Docker, dual-path, dedup, send-failure, reset, docs). Architecture + sequencing + human gates remain sound.
 
-### Agreed Concerns (highest priority → revise before execute)
-1. Docker runtime won't start (`uv run` with no uv binary) — **deploy-blocking**.
-2. Signature verify breaks the fixture/dev path — **violates no-op-swap + OPS-02 "fixture path unchanged"**.
-3. Send-failure doesn't flip `reserved`→`failed` — **strands runs**.
-4. Dedup short-circuit not explicit — **weakens the highest-value fix**.
-5. RED tests poison the mocked suite between waves — use `xfail(strict=True)`.
-6. A1 logging in the wrong layer; D-14 reply-routing not E2E-tested; demo-reset FK safety.
+### Agreed Concerns (priority → Pass 2)
+1. Outbound Message-ID identity breaks reply routing (clarify→reply→resume) — **thesis-critical**.
+2. `.example` seed senders break the real round-trip + live demo.
+3. PDF attachments dropped on the real send path.
+4. Unsigned canonical webhook bypass = prod forgery hole.
+5. Reply-routing test too mocked; positional SQL assertion; keepalive hides failure.
 
 ### Divergent Views
-None (single reviewer). Two Codex references were stale/mistaken (`.env.example` field already relocated; "06-13" is 06-04's dedup task) — noted, not actioned as-is.
+None (single reviewer). Round-1 findings explicitly marked resolved by Codex.
 
-### Recommended next step
-`/gsd-plan-phase 6 --reviews` — replan incorporating this feedback. The fixture-path fix (#2) and the Docker CMD fix (#1) are the two that would otherwise surface only at the live human deploy gate, which is the most expensive place to discover them.
+### Next step
+`/gsd-plan-phase 6 --reviews` (Pass 2). Per the convergence directive, a 3rd Codex review follows; a Pass-3 replan runs only if that review still shows blockers.
