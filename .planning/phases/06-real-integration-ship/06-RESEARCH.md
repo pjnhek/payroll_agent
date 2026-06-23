@@ -831,22 +831,25 @@ All three can be mocked at the module level in `tests/test_gateway.py` using `un
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Custom Message-ID on Resend outbound sends**
    - What we know: Resend accepts custom `headers` on outbound email sends; threading requires controlling `Message-ID`
    - What's unclear: Whether Resend allows overriding `Message-ID` in the `headers` dict or always mints its own
    - Recommendation: Test during D-09b verify gate; if Resend mints its own, store the Resend-assigned ID from the send response
+   - **RESOLVED:** Confirmed at the D-09b human round-trip gate (06-05, assumption A5); the gateway sets it if Resend allows, otherwise the chain anchors on the inbound message_id.
 
 2. **Bootstrap DDL over 6543 vs 5432**
    - What we know: D-15 says run schema/seed over session mode (5432); psycopg `prepare_threshold=None` is already set
    - What's unclear: Whether the current bootstrap code actually fails on 6543 (it uses `psycopg.connect()` directly, not the pool, so there may be no issue)
    - Recommendation: Test `uv run python -m app.db.bootstrap` against the Supabase 6543 URL during D-08a; if it fails, use 5432 URL for bootstrap only
+   - **RESOLVED:** Confirmed at the D-08a local pooler pre-check (06-03, assumption A4); schema/seed apply over the 5432 session pooler regardless.
 
 3. **Webhook payload `data.message_id` vs `data.email_id`**
    - What we know: Both `email_id` (Resend internal) and `message_id` (RFC) appear in the ReceivedEmail object from the full fetch
    - What's unclear: Whether `message_id` is also in the lightweight webhook payload (before the full fetch) — this would enable pre-fetch dedup
    - Recommendation: Log the raw webhook payload during the D-09b verify round-trip to see the exact shape
+   - **RESOLVED:** Confirmed at the D-09b gate (06-05, assumption A6); the 06-04 dedup keys on the RFC message_id from the full fetch, which is correct for either outcome.
 
 ---
 

@@ -2,7 +2,7 @@
 phase: 6
 slug: real-integration-ship
 status: draft
-nyquist_compliant: false
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-06-23
 ---
@@ -49,10 +49,10 @@ created: 2026-06-23
 | Requirement | Behavior | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |-------------|----------|------------|-----------------|-----------|-------------------|-------------|--------|
 | OPS-02 / D-17 | Forged inbound POST (bad/absent `svix-signature`) → `resend.Webhooks.verify` raises `ValueError` → route returns HTTP 400, pipeline NOT entered | Spoofed inbound payroll email (Spoofing) | Signature verify is step zero on `raw_body = await request.body()`; reject before any extraction | unit (mock `resend.Webhooks.verify` raising) | `uv run pytest tests/test_gateway.py -k "verify or signature" -x -q` | ❌ W0 | ⬜ pending |
-| OPS-02 / D-13 | Duplicate delivery (same RFC `message_id`) → second webhook returns 200 but `decide.py`/pipeline runs exactly ONCE | Duplicate-delivery false-process (Integrity) | Dedup on `email_messages.uq_message_id` via `ON CONFLICT DO NOTHING` BEFORE pipeline; re-run skipped | unit/integration (insert-or-skip) | `uv run pytest tests/test_ingest.py -k "dedup or duplicate" -x -q` | ✅ extend (existing dedup via UNIQUE) | ⬜ pending |
+| OPS-02 / D-13 | Duplicate delivery (same RFC `message_id`) → second webhook returns 200 but `decide.py`/pipeline runs exactly ONCE | Duplicate-delivery false-process (Integrity) | Dedup on `email_messages.uq_message_id` via `ON CONFLICT DO NOTHING` BEFORE pipeline; re-run skipped | unit (mocked: `test_duplicate_delivery_pipeline_runs_once_unit`, no live DB) + integration (`test_duplicate_delivery_pipeline_runs_once`, `@pytest.mark.integration`) | `uv run pytest tests/test_ingest.py -k "dedup or duplicate" -x -q` (unit runs without integration marker) | ✅ extend (existing dedup via UNIQUE) | ⬜ pending |
 | OPS-02 / D-13 | Dedup keys on the RFC `message_id` from the full fetch, NOT the Resend internal `email_id` | Wrong-key dedup miss (Integrity) | Dedup uses the normalized `InboundEmail.message_id` (RFC), set from the fetched headers | unit | `uv run pytest tests/test_gateway.py -k "message_id" -x -q` | ❌ W0 | ⬜ pending |
 | OPS-02 / D-01a / D-18 | Two-step parse: metadata-only `email.received` webhook → `resend.EmailsReceiving.get(email_id)` fetch → normalized `InboundEmail` (typed `message_id`/`in_reply_to`/`references_header`/`body_text`) | Provider blob leak past seam (Tampering) | `parse_inbound` owns BOTH steps + lowercases `ReceivedEmail.headers` before extracting `in-reply-to`/`references`; no raw provider dict downstream | unit (mock `resend.EmailsReceiving.get`) | `uv run pytest tests/test_gateway.py -k "two_step or parse_inbound" -x -q` | ❌ W0 | ⬜ pending |
-| OPS-02 / D-14 / D-13c | Outbound send rebuilds `In-Reply-To`/`References` from the PERSISTED thread row (not the last webhook); `send_state='reserved'` row written BEFORE the `resend.Emails.send` call, flipped to `sent`/`failed` after | Threading corruption on dropped/dup delivery (Integrity); send-without-record (Repudiation) | Durable threading from DB state; crash-safe intent-before-side-effect | unit (mock `resend.Emails.send` + FakeConnection) | `uv run pytest tests/test_gateway.py -k "threading or references or reserved" -x -q` | ❌ W0 | ⬜ pending |
+| OPS-02 / D-14 / D-13c | Outbound send calls `repo.get_outbound_references_chain(run_id)` to LOAD the prior accumulated References chain from DB rows, appends the new `in_reply_to` token to build the full chain, THEN writes `send_state='reserved'` row BEFORE `resend.Emails.send` call, flipped to `sent`/`failed` after | Threading corruption on dropped/dup delivery (Integrity); send-without-record (Repudiation) | Durable threading from DB state — FakeConnection pre-populated with prior outbound row; test asserts accumulated chain contains BOTH prior tokens AND new message_id; crash-safe intent-before-side-effect | unit (mock `resend.Emails.send` + FakeConnection) | `uv run pytest tests/test_gateway.py -k "threading or references or reserved" -x -q` | ❌ W0 | ⬜ pending |
 | OPS-02 | No-op-swap invariant: full existing suite stays green after the real gateway lands; fixture path unchanged | Regression hidden by integration (Integrity) | Real provider isolated to `gateway.py`; every caller + fixture path untouched | full suite | `uv run pytest -q` | ✅ existing suite | ⬜ pending |
 | OPS-01 / D-20 | Liveness route returns 200 with NO DB hit (Render deploy health check must not fail on a Supabase blip) | DoS via health-check flap (Availability) | Liveness is pure; DB dependency isolated to readiness | unit | `uv run pytest tests/test_dashboard.py -k "live or health" -x -q` | ❌ W0 | ⬜ pending |
 | OPS-01 / D-16 / D-20 | Readiness/keep-alive route runs a real `SELECT` and returns 200 when the pool is up | Silent DB-down served as healthy (Availability) | Readiness proves the DB path; the keep-alive cron's target | integration | `uv run pytest tests/test_dashboard.py -k "ready or keepalive" -m integration -x` | ❌ W0 | ⬜ pending |
@@ -76,8 +76,8 @@ created: 2026-06-23
 ## Wave 0 Requirements
 
 - [ ] `uv add resend==2.32.2` — adds the only new runtime package (official resendlabs org; self-contained `Webhooks.verify`, no `svix` dep)
-- [ ] `tests/test_gateway.py` — two-step parse (mock `resend.EmailsReceiving.get`), signature-reject (mock `resend.Webhooks.verify` → `ValueError` → HTTP 400), durable-threading rebuild + `reserved`-before-send ordering, RFC-`message_id`-not-`email_id` dedup key, case-insensitive header normalization
-- [ ] `tests/test_ingest.py` — **EXTEND** with explicit duplicate-delivery dedup (pipeline runs once on repeat `message_id`)
+- [ ] `tests/test_gateway.py` — two-step parse (mock `resend.EmailsReceiving.get`), signature-reject (mock `resend.Webhooks.verify` → `ValueError` → HTTP 400), durable-threading rebuild from DB state (FakeConnection returns prior outbound row; test asserts accumulated chain contains both prior chain AND new message_id) + `reserved`-before-send ordering, RFC-`message_id`-not-`email_id` dedup key, case-insensitive header normalization
+- [ ] `tests/test_ingest.py` — **EXTEND** with TWO dedup tests: `test_duplicate_delivery_pipeline_runs_once_unit` (mocked, no integration marker, runs in default `uv run pytest -q -m "not integration and not live_llm"`) + `test_duplicate_delivery_pipeline_runs_once` (`@pytest.mark.integration`, live DB)
 - [ ] `tests/test_dashboard.py` — **EXTEND** with liveness (no DB, always 200) and readiness (DB `SELECT`, `integration`) health-route tests
 - [ ] `tests/test_readme.py` *(optional)* — assert the locked disclaimer strings are present verbatim in README.md
 - [ ] `tests/conftest.py` — extend shared fixtures (mock Resend SDK seams; a received-email fixture with realistic mixed-case headers)
@@ -105,9 +105,9 @@ created: 2026-06-23
 
 - [ ] All tasks have `<automated>` verify or Wave 0 dependencies
 - [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references (`tests/test_gateway.py`, health-route tests, `resend` package)
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] Wave 0 covers all MISSING references (`tests/test_gateway.py`, health-route tests, `resend` package, split dedup test unit variant, threading DB-rebuild test)
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** pending
