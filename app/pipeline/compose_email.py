@@ -20,7 +20,7 @@ import logging
 
 from app.llm import client as llm_client
 from app.llm.prompts import clarify as clarify_prompt
-from app.models.contracts import Decision
+from app.models.contracts import Decision, PaystubLineItem
 
 logger = logging.getLogger("payroll_agent.compose_email")
 
@@ -141,3 +141,108 @@ def clarification_subject() -> str:
     fallback is a deferred P6 concern. Drop the dead parameter (the honest minimum).
     """
     return _SUBJECT
+
+
+# ---------------------------------------------------------------------------
+# Confirmation email (HITL-02) — approved-run path
+# ---------------------------------------------------------------------------
+
+
+def _confirmation_template_body(
+    paystubs: list[PaystubLineItem],
+    run: dict,
+) -> str:
+    """Deterministic confirmation floor — fires when draft times out or fails (D-10).
+
+    Never strands the send, even on total draft failure. Per UI-SPEC copywriting
+    contract (Confirmation Email Subject / Template Floor body):
+      - Opens: "Your payroll run has been reviewed and approved..."
+      - One line per employee with net pay
+      - Closes: "Please contact us if you have any questions."
+    """
+    lines = [
+        "Your payroll run has been reviewed and approved. "
+        "Please find the paystub PDFs attached.",
+        "",
+    ]
+    for item in paystubs:
+        lines.append(f"- {item.submitted_name}: ${item.net_pay:,.2f} net")
+    lines += ["", "Please contact us if you have any questions."]
+    return "\n".join(lines)
+
+
+def confirmation_subject(run: dict) -> str:
+    """The confirmation email subject line (HITL-02, UI-SPEC Copywriting Contract).
+
+    Format: "Payroll Confirmation — {business_name} — {pay_period_label}"
+    run is a dict from repo.load_run; uses .get() with safe fallbacks so a
+    missing key never raises here.
+    """
+    business_name = run.get("business_name", "Payroll Run")
+    pay_period_label = run.get("pay_period_label", "")
+    return f"Payroll Confirmation — {business_name} — {pay_period_label}"
+
+
+def compose_confirmation(
+    paystubs: list[PaystubLineItem],
+    run: dict,
+    *,
+    llm=llm_client,
+    timeout_s: float = 3.0,
+) -> str:
+    """Draft a confirmation email body for an approved run (HITL-02).
+
+    Mirrors compose_clarification exactly — uses the DRAFT_* tier free-text path;
+    on any LLM error or empty content falls back to _confirmation_template_body so
+    a draft failure never strands the approval (D-10, T-05-11).
+
+    `timeout_s` (D-10b): hard ~3s timeout on the LLM call bounds cold-dyno latency;
+    a timeout exception is caught by the broad except clause and falls to the floor.
+    Passed to llm.call_text as a keyword argument — test fakes must accept **kwargs
+    or the "uses_draft_when_present" test gets a spurious TypeError (T-05-11b).
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a payroll assistant. Write a brief, warm confirmation email "
+                "telling the client their payroll run has been approved. Include the "
+                "per-employee net pay summary. Keep it professional and concise."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Approved payroll run for "
+                + run.get("business_name", "the client")
+                + ".\n\nPer-employee net pay:\n"
+                + "\n".join(
+                    f"- {item.submitted_name}: ${item.net_pay:,.2f} net"
+                    for item in paystubs
+                )
+            ),
+        },
+    ]
+    # D-10 / WR-03 analog: the "draft failure never strands the run" guarantee must
+    # cover BOTH empty content AND an API error (auth/rate-limit/timeout/etc.).
+    # call_text returns None on empty content but RAISES on an API error — unwrapped,
+    # that exception would propagate through _deliver and ERROR the run instead of
+    # falling back to the template floor. Broad except so a timeout also degrades.
+    api_error = False
+    try:
+        body = llm.call_text("draft", messages, temperature=0.3, timeout_s=timeout_s)
+    except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (D-10)
+        # Log the failure TYPE only — no exc_info (traceback can echo PII, D-A1-03).
+        logger.warning(
+            "confirmation draft call failed (%s) — falling back to templated confirmation body",
+            type(exc).__name__,
+        )
+        body = None
+        api_error = True
+    if not body or not body.strip():
+        if not api_error:
+            logger.warning(
+                "confirmation draft returned empty content — using templated confirmation body"
+            )
+        return _confirmation_template_body(paystubs, run)
+    return body

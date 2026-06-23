@@ -156,6 +156,8 @@ def call_text(
     tier: Tier,
     messages: list[dict],
     temperature: float = 0.7,
+    timeout_s: float | None = None,
+    **kwargs,
 ) -> str | None:
     """Free-text (drafting) call — raw string content, NO JSON mode.
 
@@ -163,9 +165,20 @@ def call_text(
     (the clarification email is prose, not a schema). On empty content it returns
     None so the caller falls back to a templated body — a draft failure never
     strands the run (no schema retry, no raise).
+
+    `timeout_s` (D-10b): optional hard timeout in seconds passed to the OpenAI
+    client. compose_confirmation passes `timeout_s=3.0` to bound cold-dyno latency;
+    a TimeoutError propagates to the caller's except-all clause which falls through
+    to the deterministic template floor (D-10b, T-05-10). Fake-LLM stubs in tests
+    must accept **kwargs so passing timeout_s= does not raise TypeError (MEDIUM fix,
+    T-05-11b).
     """
     cfg = _resolve_tier(tier)
-    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
+    # Pass timeout to the OpenAI client if provided (D-10b hard timeout).
+    client_kwargs: dict = {}
+    if timeout_s is not None:
+        client_kwargs["timeout"] = timeout_s
+    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, **client_kwargs)
 
     extra: dict = {}
     if _is_deepseek(cfg.model):
