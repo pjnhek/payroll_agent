@@ -14,7 +14,8 @@ FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
     load_source_email      — the original CLEANED inbound body, NOT re-cleaned (FIX C)
 
   Status / persistence
-    set_status             — the ONE AND ONLY writer of payroll_runs.status
+    two writers: set_status (unguarded forward transitions inside an owned path)
+    and claim_status (atomic guarded claim at every contended gate)
     record_run_error       — the ONE documented exception: writes error_reason AND
                              routes its ERROR transition THROUGH set_status (FIX B,
                              so there is still exactly one status-write path)
@@ -22,11 +23,13 @@ FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
     persist_decision       — Decision JSONB only; takes NO final_status (FIX B)
     persist_reconciliation — list[NameMatchResult] JSONB only (D-A3-05)
     replace_line_items     — DELETE-by-run then insert (idempotency invariant)
+    set_alias_candidates   — write alias_candidates JSONB column (D-04)
 
   Email / threading
-    insert_email_message   — generic append to email_messages (audit log)
-    get_outbound_message_id — read the clarification Message-ID back from the
-                             linked outbound row (the FIX 3 anchor)
+    insert_email_message   — generic append to email_messages (audit log); upserts
+                             on (run_id, purpose) for non-NULL purpose outbound rows
+    get_outbound_message_id — purpose-aware + send_state='sent'-filtered read of the
+                             outbound Message-ID (finding #1 + R2-HIGH fix, CLAR-04)
     find_awaiting_reply_for_header — header-chain match restricted to awaiting_reply
     find_any_run_for_header — SAME header match across ANY status (late-reply
                              observability, FIX 10)
@@ -79,13 +82,15 @@ RUN_COLS = (
 )
 
 # Terminal run statuses (WR-04): once a run reaches one of these, an error must NOT
-# overwrite it. APPROVED/SENT/RECONCILED/REJECTED are finalized human/operator
-# outcomes (clobbering them destroys the approval audit trail); ERROR is already
-# terminal. A late/duplicate-reply resume (cf. CR-02) that hits an exception must not
-# be able to flip a human-approved run to ERROR.
+# overwrite it. SENT/RECONCILED/REJECTED are finalized human/operator outcomes
+# (clobbering them destroys the approval audit trail); ERROR is already terminal.
+# NOTE: APPROVED is intentionally NOT in this set (D-13b critical finding): an
+# approved run that fails delivery must be recoverable — record_run_error must be
+# able to advance it to ERROR so the operator can retrigger. A human re-approves
+# after the delivery failure is fixed; the audit trail is preserved via ERROR +
+# error_reason. Adding APPROVED here would silently swallow delivery failures.
 _TERMINAL_STATUSES = frozenset(
     {
-        RunStatus.APPROVED.value,
         RunStatus.SENT.value,
         RunStatus.RECONCILED.value,
         RunStatus.REJECTED.value,
@@ -265,11 +270,13 @@ def load_inbound_email(run_id: uuid.UUID, conn=None):
 
 
 def set_status(run_id: uuid.UUID, status: RunStatus, conn=None) -> None:
-    """The ONE AND ONLY function that writes payroll_runs.status.
+    """Unguarded status writer — one of two writers on payroll_runs.status (D-12).
 
+    two writers: set_status (unguarded forward transitions inside an owned path)
+    and claim_status (atomic guarded claim at every contended gate).
     Writes the enum .value (never a string literal). record_run_error is the one
-    documented caller that also writes a data column; every other status
-    transition in the system routes through here.
+    documented caller that also writes a data column; every other uncontended
+    status transition in the system routes through here.
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
@@ -277,6 +284,34 @@ def set_status(run_id: uuid.UUID, status: RunStatus, conn=None) -> None:
                 "UPDATE payroll_runs SET status = %s, updated_at = now() WHERE id = %s",
                 (RunStatus(status).value, str(run_id)),
             )
+
+
+def claim_status(
+    run_id: uuid.UUID,
+    expected: RunStatus,
+    new: RunStatus,
+    conn=None,
+) -> bool:
+    """Atomic compare-and-swap on payroll_runs.status (D-12, FOUND-04).
+
+    two writers: set_status (unguarded forward transitions inside an owned path)
+    and claim_status (atomic guarded claim at every contended gate).
+
+    Returns True if the claim succeeded (run was in `expected` and is now `new`).
+    Returns False if the run was NOT in `expected` — caller logs a late/duplicate
+    and drops cleanly (does not re-run the work).
+
+    The SQL uses WHERE id = %s AND status = %s RETURNING id so only one concurrent
+    caller gets a row back; the other gets None and drops cleanly (T-05-01).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            row = c.execute(
+                "UPDATE payroll_runs SET status = %s, updated_at = now() "
+                "WHERE id = %s AND status = %s RETURNING id",
+                (RunStatus(new).value, str(run_id), RunStatus(expected).value),
+            ).fetchone()
+    return row is not None
 
 
 def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
@@ -418,6 +453,24 @@ def replace_line_items(
                 )
 
 
+def set_alias_candidates(
+    run_id: uuid.UUID,
+    candidates: dict,
+    conn=None,
+) -> None:
+    """Write alias_candidates to payroll_runs.alias_candidates JSONB column (D-04).
+
+    Separate column (not a key in reconciliation JSONB) so it is NEVER overwritten
+    by persist_reconciliation on resume (RESEARCH Open Question #1, D-04 decision).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET alias_candidates = %s, updated_at = now() WHERE id = %s",
+                (json.dumps(candidates), str(run_id)),
+            )
+
+
 # ---------------------------------------------------------------------------
 # Email / threading
 # ---------------------------------------------------------------------------
@@ -434,52 +487,111 @@ def insert_email_message(
     from_addr: str | None = None,
     to_addr: str | None = None,
     body_text: str | None = None,
+    purpose: str | None = None,
+    send_state: str | None = None,
     conn=None,
 ) -> uuid.UUID:
-    """Append an email_messages row (the append-only audit log). Returns its id."""
+    """Append an email_messages row (the append-only audit log). Returns its id.
+
+    When purpose is non-NULL (outbound rows with a purpose value), the INSERT
+    upserts on the uq_email_run_purpose constraint (run_id, purpose). This turns a
+    retry over a prior 'reserved' or 'failed' row into an advancement to 'sent'
+    rather than a unique-constraint crash (NEW-1 D-13c sharpening).
+
+    Inbound rows (purpose=NULL) are unaffected: Postgres treats NULLs as distinct
+    in UNIQUE constraints, so inbound rows never conflict.
+    """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
-            row = c.execute(
-                """
-                INSERT INTO email_messages (
-                    run_id, direction, message_id, in_reply_to,
-                    references_header, subject, from_addr, to_addr, body_text
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    str(run_id) if run_id else None,
-                    direction,
-                    message_id,
-                    in_reply_to,
-                    references_header,
-                    subject,
-                    from_addr,
-                    to_addr,
-                    body_text,
-                ),
-            ).fetchone()
+            if purpose is not None:
+                # Outbound path with a purpose: upsert on (run_id, purpose) so a
+                # retry over a reserved/failed row advances to the new send_state
+                # rather than crashing with a unique constraint violation.
+                row = c.execute(
+                    """
+                    INSERT INTO email_messages (
+                        run_id, direction, message_id, in_reply_to,
+                        references_header, subject, from_addr, to_addr, body_text,
+                        purpose, send_state
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (run_id, purpose) DO UPDATE
+                        SET send_state = EXCLUDED.send_state,
+                            message_id = EXCLUDED.message_id,
+                            subject = EXCLUDED.subject,
+                            body_text = EXCLUDED.body_text,
+                            created_at = now()
+                    RETURNING id
+                    """,
+                    (
+                        str(run_id) if run_id else None,
+                        direction,
+                        message_id,
+                        in_reply_to,
+                        references_header,
+                        subject,
+                        from_addr,
+                        to_addr,
+                        body_text,
+                        purpose,
+                        send_state,
+                    ),
+                ).fetchone()
+            else:
+                # Inbound path (purpose=NULL): plain insert with no upsert on purpose
+                # (NULLs are DISTINCT in Postgres UNIQUE constraints).
+                row = c.execute(
+                    """
+                    INSERT INTO email_messages (
+                        run_id, direction, message_id, in_reply_to,
+                        references_header, subject, from_addr, to_addr, body_text,
+                        purpose, send_state
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        str(run_id) if run_id else None,
+                        direction,
+                        message_id,
+                        in_reply_to,
+                        references_header,
+                        subject,
+                        from_addr,
+                        to_addr,
+                        body_text,
+                        purpose,
+                        send_state,
+                    ),
+                ).fetchone()
     # In real Postgres RETURNING always yields a row; the fallback only matters
     # for the offline FakeConnection path where the caller discards the id.
     return uuid.UUID(str(row[0])) if row else uuid.uuid4()
 
 
-def get_outbound_message_id(run_id: uuid.UUID, conn=None) -> str | None:
-    """Read the clarification Message-ID back from the linked outbound row.
+def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str | None:
+    """Purpose-aware and send_state-filtered outbound Message-ID lookup (finding #1 + R2-HIGH).
 
-    The outbound Message-ID lives ONLY on the email_messages(direction='outbound',
-    run_id) row — the single canonical anchor (FIX 3); there is no
-    payroll_runs.clarification_message_id column.
+    Only a row with purpose=X AND send_state='sent' counts as proof-of-delivery.
+    A reserved (pre-send intent, pre-crash) or failed row does NOT match — preventing
+    the delivery guard from skipping a required send after a crash (R2-HIGH: D-13c
+    crash-safe proof-of-send, Codex finding #1 fix, CLAR-04).
+
+    Raises ValueError on an unrecognised purpose value (invalid-purpose guard prevents
+    accidental purpose-blind calls — T-05-09b).
     """
+    if purpose not in ("clarification", "confirmation"):
+        raise ValueError(
+            f"purpose must be 'clarification' or 'confirmation', got {purpose!r}"
+        )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
             """
             SELECT message_id FROM email_messages
             WHERE run_id = %s AND direction = 'outbound'
+              AND purpose = %s AND send_state = 'sent'
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (str(run_id),),
+            (str(run_id), purpose),
         ).fetchone()
     return row[0] if row else None
 

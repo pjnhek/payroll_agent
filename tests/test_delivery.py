@@ -141,10 +141,15 @@ def test_idempotent_confirmation_skips_if_confirmation_outbound_exists(fake_conn
         "get_outbound_message_id(purpose='confirmation') must return the existing "
         "confirmation Message-ID"
     )
-    sql = fake_conn.all_sql()
-    # The SQL query must filter by purpose='confirmation' (not purpose-blind).
-    assert "confirmation" in sql, (
-        "the idempotency query must filter by purpose='confirmation' (CLAR-04 / finding #1)"
+    # The SQL uses parameterized %s placeholders — 'confirmation' appears in the params
+    # tuple, not in the raw SQL string (parameterized-SQL rule).
+    found = any(
+        params and "confirmation" in params
+        for _sql, params in fake_conn.executed
+    )
+    assert found, (
+        "get_outbound_message_id must pass purpose='confirmation' as a SQL param "
+        "(not embedded in the SQL string — CLAR-04 / finding #1)"
     )
 
 
@@ -177,9 +182,15 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(fake_conn):
         "get_outbound_message_id(purpose='clarification') must return the existing "
         "clarification Message-ID"
     )
-    sql = fake_conn.all_sql()
-    assert "clarification" in sql, (
-        "the idempotency query must filter by purpose='clarification' (finding #2)"
+    # The SQL uses parameterized %s placeholders — 'clarification' appears in the params
+    # tuple, not in the raw SQL string (parameterized-SQL rule).
+    found = any(
+        params and "clarification" in params
+        for _sql, params in fake_conn.executed
+    )
+    assert found, (
+        "get_outbound_message_id must pass purpose='clarification' as a SQL param "
+        "(not embedded in the SQL string — finding #2)"
     )
 
 
@@ -196,9 +207,11 @@ def test_retrigger_claims_from_error_state(fake_conn):
     """
     run_id = _run_id()
 
-    # Script: the CAS SELECT returns current status='error' → claim succeeds.
-    fake_conn.script_fetchone(("error",))   # SELECT status ... FOR UPDATE
-    fake_conn.script_fetchone((str(run_id),))  # RETURNING id after UPDATE
+    # claim_status executes a single atomic UPDATE ... WHERE id=%s AND status=%s RETURNING id.
+    # Script a non-None row to simulate a successful claim (run was in ERROR state).
+    # NOTE: claim_status uses parameterized SQL (%s) so the 'error' value is NOT embedded
+    # in the SQL string — it appears in the params tuple. The assertion checks params.
+    fake_conn.script_fetchone((str(run_id),))  # RETURNING id — non-None → claim succeeds
 
     result = claim_status(run_id, RunStatus.ERROR, RunStatus.RECEIVED, conn=fake_conn)
 
@@ -206,9 +219,15 @@ def test_retrigger_claims_from_error_state(fake_conn):
         "claim_status(run_id, ERROR, RECEIVED) must return True when the run is "
         "in error state (INGEST-05 retrigger path)"
     )
-    sql = fake_conn.all_sql()
-    assert "error" in sql.lower(), (
-        "claim_status SQL must reference the expected-status ('error') in the CAS"
+    # Verify that the expected-status value ('error') was passed as a SQL parameter,
+    # not embedded in the SQL string (parameterized-SQL rule).
+    found = any(
+        params and RunStatus.ERROR.value in params and RunStatus.RECEIVED.value in params
+        for _sql, params in fake_conn.executed
+    )
+    assert found, (
+        "claim_status must pass both expected ('error') and new ('received') status "
+        "values as SQL params — parameterized SQL rule"
     )
 
 

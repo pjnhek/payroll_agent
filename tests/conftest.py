@@ -298,9 +298,22 @@ class InMemoryRepo:
             self.outbound.setdefault(str(run_id), []).append(row)
         return uuid.uuid4()
 
-    def get_outbound_message_id(self, run_id, conn=None):
+    def get_outbound_message_id(self, run_id, purpose=None, conn=None):
+        """Purpose-aware outbound Message-ID lookup (mirrors repo.get_outbound_message_id).
+
+        When purpose is provided, filters by purpose to match the real repo's behavior.
+        When purpose is None (legacy test calls without purpose arg), returns the last
+        outbound row for the run — this preserves backward compatibility for test_orchestrator_states
+        and test_demo_fixtures which assert the outbound row exists, not which purpose.
+        """
         rows = self.outbound.get(str(run_id))
-        return rows[-1]["message_id"] if rows else None
+        if not rows:
+            return None
+        if purpose is not None:
+            # Filter to rows with matching purpose and send_state='sent' (mirrors real repo)
+            matching = [r for r in rows if r.get("purpose") == purpose and r.get("send_state") == "sent"]
+            return matching[-1]["message_id"] if matching else None
+        return rows[-1]["message_id"]
 
     # --- header-chain reply routing (CLAR-02/03, Plan 04) ---
     def _header_matches(self, in_reply_to, references_header, row):

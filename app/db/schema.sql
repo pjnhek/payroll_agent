@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     -- CREATE IF NOT EXISTS cannot drop a live table, so the DROP runs in bootstrap.py).
     -- The deterministic shape carries no confidence score (D-21-01).
     reconciliation  JSONB,
+    -- D-04: separate JSONB column for alias candidates so persist_reconciliation can
+    -- never overwrite it on resume. Written by repo.set_alias_candidates in Wave 4.
+    alias_candidates JSONB,
     error_reason    TEXT,       -- D-A1-03 / FIX 7: orchestrator's persisted ERROR reason
     pay_period_start DATE,
     pay_period_end   DATE,
@@ -92,15 +95,16 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ── Idempotent column adds for payroll_runs (Plan 02-01) ──────────────────────
+-- ── Idempotent column adds for payroll_runs (Plan 02-01 / Plan 05-03) ───────────
 -- CREATE TABLE IF NOT EXISTS above is a no-op on an existing (Phase 1) table, so
--- these ALTER ... ADD COLUMN IF NOT EXISTS blocks are what actually add the two
--- new columns when re-applying schema.sql via the non-destructive bootstrap path.
--- Both are no-ops on a fresh CREATE (the columns are already declared inline) and
+-- these ALTER ... ADD COLUMN IF NOT EXISTS blocks are what actually add the new
+-- columns when re-applying schema.sql via the non-destructive bootstrap path.
+-- All are no-ops on a fresh CREATE (the columns are already declared inline) and
 -- on re-runs (IF NOT EXISTS). A new JSONB/TEXT column is invisible to the
 -- status-drift guard, which parses only CHECK (col IN (...)) value sets.
-ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reconciliation JSONB;  -- D-A3-05
-ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_reason   TEXT;   -- D-A1-03
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reconciliation    JSONB;  -- D-A3-05
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_reason      TEXT;   -- D-A1-03
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS alias_candidates  JSONB;  -- D-04 (Plan 05-03)
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
@@ -137,9 +141,46 @@ CREATE TABLE IF NOT EXISTS email_messages (
     from_addr        TEXT,
     to_addr          TEXT,
     body_text        TEXT,
+    -- Plan 05-03: D-13c sharpening (finding #1 + #3, Codex review):
+    -- purpose distinguishes clarification from confirmation; inbound rows keep NULL.
+    purpose          TEXT        CHECK (purpose IN ('clarification','confirmation')),
+    -- send_state is NULLABLE (NOT NOT NULL DEFAULT 'sent'): inbound rows have no send
+    -- lifecycle and must keep NULL — giving them 'sent' would weaken audit semantics
+    -- (R2-MEDIUM/HIGH finding). Outbound rows: 'reserved' before provider call,
+    -- 'sent' on success, 'failed' on error (Phase 6). Phase 5 stub writes 'sent'.
+    send_state       TEXT        CHECK (send_state IN ('reserved','sent','failed')),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_message_id UNIQUE (message_id)
+    CONSTRAINT uq_message_id UNIQUE (message_id),
+    -- uq_email_run_purpose: each run has at most one clarification and one confirmation
+    -- outbound row. Postgres NULL != NULL so inbound rows (purpose=NULL) never conflict.
+    CONSTRAINT uq_email_run_purpose UNIQUE (run_id, purpose)
 );
+
+-- ── Idempotent column adds for email_messages (Plan 05-03) ───────────────────
+-- CREATE TABLE IF NOT EXISTS above is a no-op on an existing table, so these
+-- ALTER ... ADD COLUMN IF NOT EXISTS blocks apply the new columns on a running DB.
+-- Both columns are nullable (no DEFAULT) so existing rows are unaffected.
+ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS purpose
+    TEXT CHECK (purpose IN ('clarification','confirmation'));  -- finding #1, D-13c sharpening
+ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS send_state
+    TEXT CHECK (send_state IN ('reserved','sent','failed'));   -- finding #3, R2-HIGH fix; NULLABLE
+
+-- Idempotent unique-constraint add for (run_id, purpose) on email_messages (Plan 05-03).
+-- NOTE: Postgres does NOT support ADD CONSTRAINT IF NOT EXISTS — the DO $$ pg_constraint
+-- guard is the ONLY correct idempotent pattern for adding a named constraint on an existing
+-- table. Mirror of the fk_payroll_runs_source_email DO $$ block above.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_email_run_purpose'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages
+            ADD CONSTRAINT uq_email_run_purpose UNIQUE (run_id, purpose);
+    END IF;
+END;
+$$;
 
 -- ── 6. eval_results ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS eval_results (

@@ -139,12 +139,15 @@ def test_absent_hours_treated_as_zero_in_calc():
 def test_record_run_error_skips_terminal_run(fake_conn):
     """WR-04 — record_run_error must NOT overwrite a run that is already terminal.
 
-    The FakeConnection replays the status SELECT as 'approved'; record_run_error must
-    then make NO error_reason UPDATE and NO status write (it would otherwise flip an
-    approved/human-finalized run to ERROR, destroying the approval audit trail)."""
+    Uses status='sent' as the canonical terminal example. NOTE: 'approved' was
+    removed from _TERMINAL_STATUSES in Phase 5 Plan 03 (D-13b finding): an approved
+    run that hits a delivery failure MUST be routable to ERROR so the operator can
+    retrigger; leaving 'approved' terminal would silently swallow delivery failures.
+    The genuinely terminal statuses are: sent, reconciled, rejected, error.
+    """
     from app.db import repo
 
-    fake_conn.script_fetchone(("approved",))  # the run is terminal
+    fake_conn.script_fetchone(("sent",))  # sent is a genuine terminal status
     repo.record_run_error(uuid.uuid4(), "boom: a late resume hit an exception", conn=fake_conn)
 
     sql = fake_conn.all_sql()
@@ -153,6 +156,30 @@ def test_record_run_error_skips_terminal_run(fake_conn):
         "a terminal run's error_reason must NOT be overwritten (WR-04)"
     )
     assert "SET status" not in sql, "a terminal run must NOT be flipped to ERROR (WR-04)"
+
+
+def test_record_run_error_processes_approved_run(fake_conn):
+    """D-13b — record_run_error MUST write error_reason for an 'approved' run.
+
+    'approved' was removed from _TERMINAL_STATUSES in Phase 5 Plan 03 so that a
+    delivery failure after approval can advance the run to ERROR — making it
+    retriggerable. Without this, a crashed delivery would leave the run stuck in
+    'approved' with no way to retry (D-13b critical finding).
+    """
+    from app.db import repo
+
+    fake_conn.script_fetchone(("approved",))  # approved is now NON-terminal (D-13b)
+    repo.record_run_error(uuid.uuid4(), "delivery crashed after approval", conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    assert "SET error_reason" in sql, (
+        "an approved run with a delivery failure must write error_reason "
+        "(D-13b: approved is non-terminal, delivery failures must be recoverable)"
+    )
+    assert "SET status" in sql, (
+        "an approved run with a delivery failure must advance to ERROR "
+        "(D-13b: so the operator can retrigger)"
+    )
 
 
 def test_record_run_error_writes_for_non_terminal_run(fake_conn):
