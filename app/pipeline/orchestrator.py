@@ -51,7 +51,7 @@ from app.pipeline.compose_email import (
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
 from app.pipeline.pdf import generate_paystub_pdf
-from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.reconcile_names import _safe_to_learn_alias, reconcile_names
 from app.pipeline.suggest import suggest_employees
 from app.pipeline.validate import validate
 
@@ -138,7 +138,65 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         original_body = repo.load_source_email(run_id) or ""
         combined_email = _combined_context_email(inbound, original_body)
 
+        # D-04 alias binding — PRE-VS-POST DIFF (NEW-2 fix).
+        # Capture the pre-resume resolved employee_id set BEFORE _run_stages so we can
+        # diff against the post-resume set to find the NEWLY-resolved employee.
+        #
+        # The "exactly one resolved match" assumption is wrong for realistic runs: a
+        # multi-employee submission has MANY resolved employees after resume (the
+        # already-resolved originals PLUS the newly-corrected one). Pre-vs-post diff
+        # isolates exactly the one employee that changed from unresolved to resolved.
+        #
+        # Implementation:
+        # STEP A: Load alias_candidates and pre-resume reconciliation BEFORE _run_stages.
+        pre_run_data = repo.load_run(run_id)
+        _pre_candidates = (pre_run_data.get("alias_candidates") or {}) if pre_run_data else {}
+        _pre_reconciliation = (pre_run_data.get("reconciliation") or []) if pre_run_data else []
+        # Build the pre-resume resolved employee_id set (strings for reliable comparison).
+        # reconciliation is stored as JSONB list[dict] with key "matched_employee_id".
+        _pre_resolved_ids: set[str] = set()
+        if isinstance(_pre_reconciliation, list):
+            for _m in _pre_reconciliation:
+                if isinstance(_m, dict) and _m.get("matched_employee_id") is not None:
+                    _pre_resolved_ids.add(str(_m["matched_employee_id"]))
+
+        # STEP B: Run the four judgment stages as normal.
         _run_stages(run_id, combined_email, roster, llm=llm)
+
+        # STEP C: Capture post-resume resolved employee_id set AFTER _run_stages.
+        # _run_stages calls persist_reconciliation which overwrites the reconciliation
+        # column — load_run here gets the freshly-written post-resume reconciliation.
+        _none_tokens = [tok for tok, val in _pre_candidates.items() if val is None]
+        if _none_tokens and _pre_candidates:
+            post_run_data = repo.load_run(run_id)
+            _post_reconciliation = (post_run_data.get("reconciliation") or []) if post_run_data else []
+            _post_resolved_ids: set[str] = set()
+            if isinstance(_post_reconciliation, list):
+                for _m in _post_reconciliation:
+                    if isinstance(_m, dict) and _m.get("matched_employee_id") is not None:
+                        _post_resolved_ids.add(str(_m["matched_employee_id"]))
+
+            # STEP D: Diff and bind.
+            # The NEWLY-resolved employee is in post but NOT in pre.
+            _newly_resolved_ids = _post_resolved_ids - _pre_resolved_ids
+            if len(_newly_resolved_ids) == 1 and len(_none_tokens) == 1:
+                _updated_candidates = dict(_pre_candidates)
+                _updated_candidates[_none_tokens[0]] = str(list(_newly_resolved_ids)[0])
+                repo.set_alias_candidates(run_id, _updated_candidates)
+                logger.info(
+                    "alias candidate bound at resume: %r → %s "
+                    "(pre-vs-post diff, NEW-2)",
+                    _none_tokens[0],
+                    list(_newly_resolved_ids)[0],
+                )
+            else:
+                logger.info(
+                    "alias binding skipped for run %s: %d newly-resolved, "
+                    "%d pending candidates; expected 1 each (NEW-2)",
+                    run_id,
+                    len(_newly_resolved_ids),
+                    len(_none_tokens),
+                )
     except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (resume)
         # PII-safe: exception TYPE only — str(exc) can echo submitted names / prompt
         # text, and `reason` is logged AND persisted to error_reason (review fix —
@@ -232,6 +290,73 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
         repo.set_status(run_id, RunStatus.AWAITING_REPLY)
         return
 
+    # D-04 alias_candidates capture (finding #4 single-token-only + finding #5
+    # capture-time exclusion). This runs AFTER the idempotency guard and BEFORE
+    # send_outbound so that the original token is always captured in the same
+    # transaction boundary as the clarification intent.
+    #
+    # Gate sequence (R2-MEDIUM test-conflict fix):
+    #   1. len(unresolved_names) != 1 → no capture (finding #4 single-token-only)
+    #   2. candidate_ids count > 1 for the token → no capture (finding #5 + R2-HIGH)
+    #   3. candidate_ids count == 1 → already resolves; not a learning target
+    #   4. candidate_ids count == 0 → genuinely unresolved → capture {token: None}
+    #
+    # R2-HIGH COLLISION DETECTION: Do NOT use deterministic_match return value to
+    # infer collision. deterministic_match returns None for BOTH zero candidates (no
+    # match) AND 2+ candidates (collision). A colliding token like "D. Reyes" returns
+    # None yet has 2 candidate_ids. The pre-check MUST count candidate_ids directly.
+    if len(decision.unresolved_names) == 1:
+        candidate_token = decision.unresolved_names[0]
+        from app.pipeline.reconcile_names import _norm
+        norm_token = _norm(candidate_token)
+        exact_ids = [
+            emp.id for emp in roster.employees if _norm(emp.full_name) == norm_token
+        ]
+        alias_ids = [
+            emp.id
+            for emp in roster.employees
+            if any(_norm(a) == norm_token for a in emp.known_aliases)
+        ]
+        candidate_ids = set(exact_ids) | set(alias_ids)
+
+        if len(candidate_ids) > 1:
+            # COLLISION: token matches 2+ employees — ambiguous at capture time.
+            # Excluded per finding #5 + D-04 (colliders excluded AT emit time, not
+            # just at write time). R2-HIGH: candidate_ids count is the only reliable
+            # collision signal — deterministic_match None is insufficient.
+            logger.info(
+                "alias candidate %r excluded at capture: %d candidates "
+                "(collision, finding #5, D-04, R2-HIGH)",
+                candidate_token,
+                len(candidate_ids),
+            )
+        elif len(candidate_ids) == 1:
+            # Token already resolves uniquely to one employee — NOT an unresolved
+            # alias the system needs to learn (it already works without the alias).
+            logger.info(
+                "alias candidate %r skipped at capture: already resolves uniquely "
+                "(not an unresolved alias, not a learning target)",
+                candidate_token,
+            )
+        else:
+            # Zero candidates: token is GENUINELY UNRESOLVED — eligible for alias learning.
+            # Capture {original_token: None}; resolved_employee_id filled at resume.
+            candidates = {candidate_token: None}
+            repo.set_alias_candidates(run_id, candidates)
+            logger.info(
+                "alias candidate captured for run %s: %r "
+                "(single-token, genuinely unresolved, D-04 timing)",
+                run_id,
+                candidate_token,
+            )
+    else:
+        logger.info(
+            "alias capture skipped for run %s: %d unresolved names "
+            "(single-token-only rule, finding #4)",
+            run_id,
+            len(decision.unresolved_names),
+        )
+
     # Like compose below: only pass `llm` when injected (a test mock). When llm is
     # None (production), suggest_employees binds its own default client — passing
     # llm=None would force the cheap call onto a None client and silently degrade
@@ -261,6 +386,83 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
     repo.set_status(run_id, RunStatus.AWAITING_REPLY)  # CLAR-01 pause
 
 
+def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster) -> None:
+    """Write any unambiguous, non-colliding alias candidates to employees.known_aliases.
+
+    Called in _deliver BEFORE set_status(SENT) (D-13b ordering — PATTERNS.md line 611).
+    Must be wrapped in try/except at the call site: any internal exception is logged and
+    swallowed so an alias-learning failure NEVER strands or fails a successfully-sent run
+    (D-13b defensive isolation).
+
+    For each token → employee_id_str in alias_candidates:
+    - Skip if employee_id_str is None (never got resolved — name wasn't clarified).
+    - Call _safe_to_learn_alias (D-01b collision guard) — skip if False.
+    - Call update_known_alias (D-01 idempotent JSONB append).
+    - BATCH-SAFE: refresh current_roster after each accepted alias write so the NEXT
+      iteration validates against the updated roster (MEDIUM finding — prevents multiple
+      candidates in one approval batch from interacting unsafely).
+    """
+    import uuid as _uuid
+    run_data = repo.load_run(run_id)
+    if run_data is None:
+        return
+    alias_candidates = run_data.get("alias_candidates") or {}
+    if not alias_candidates:
+        return
+
+    current_roster = roster  # start with the roster already loaded by _deliver
+    for token, employee_id_str in alias_candidates.items():
+        if employee_id_str is None:
+            # Never resolved (no clarification reply that identified this employee).
+            logger.info(
+                "alias write skipped for %r: no resolved employee_id (never clarified)",
+                token,
+            )
+            continue
+
+        try:
+            employee_id = _uuid.UUID(str(employee_id_str))
+        except (ValueError, AttributeError):
+            logger.warning(
+                "alias write skipped for %r: invalid employee_id_str %r",
+                token,
+                employee_id_str,
+            )
+            continue
+
+        target_employee = next(
+            (e for e in current_roster.employees if e.id == employee_id), None
+        )
+        if target_employee is None:
+            logger.info(
+                "alias write skipped for %r → %s: employee not found in roster",
+                token,
+                employee_id,
+            )
+            continue
+
+        if not _safe_to_learn_alias(token, target_employee, current_roster):
+            logger.info(
+                "alias write skipped for %r → %s: collision guard fired (D-01b)",
+                token,
+                employee_id,
+            )
+            continue
+
+        written = repo.update_known_alias(employee_id, token)
+        if written:
+            logger.info("alias learned: %r → %s", token, employee_id)
+            # BATCH-SAFE: refresh the roster after each accepted write so the next
+            # iteration validates against the updated roster state (MEDIUM finding).
+            current_roster = repo.load_roster_for_business(run["business_id"])
+        else:
+            logger.info(
+                "alias write no-op for %r → %s: already present (idempotent)",
+                token,
+                employee_id,
+            )
+
+
 def _deliver(run_id: uuid.UUID, run: dict) -> None:
     """Compose + send the confirmation email + per-employee PDFs.
 
@@ -274,8 +476,9 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
     A purpose-blind lookup would incorrectly skip the confirmation if a clarification
     had been sent earlier — purpose='confirmation' scopes the check correctly.
 
-    NOTE: _write_aliases_if_safe is NOT called here — that hook is added exclusively
-    by Plan 07 (Wave 4). Adding it here would cause an ImportError until that plan ships.
+    D-01/D-02 alias write: _write_aliases_if_safe is called BEFORE set_status(SENT)
+    (PATTERNS.md line 611 ordering), wrapped in try/except (D-13b defensive isolation —
+    alias write failure logs a warning and never strands or fails a sent run).
     """
     # Step 1 — Purpose-aware already-sent guard (finding #1, CLAR-04):
     # Only a row with purpose='confirmation' AND send_state='sent' counts as proof-of-
@@ -332,7 +535,20 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
         send_state="sent",
     )
 
-    # Steps 8-9 — Advance the run: SENT → RECONCILED (both sequential in this
+    # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias candidates.
+    # MUST be called BEFORE set_status(SENT) (PATTERNS.md line 611 ordering, D-13b).
+    # Wrapped in try/except so an alias-learning failure NEVER strands or fails the run
+    # (D-13b defensive isolation — alias write is independently droppable, D-15).
+    try:
+        _write_aliases_if_safe(run_id, run, roster)
+    except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
+        logger.warning(
+            "alias write skipped for run %s: %s (run continues to SENT)",
+            run_id,
+            type(alias_exc).__name__,
+        )
+
+    # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential in this
     # synchronous call; RECONCILED is the only terminal-success status).
     repo.set_status(run_id, RunStatus.SENT)
     repo.set_status(run_id, RunStatus.RECONCILED)

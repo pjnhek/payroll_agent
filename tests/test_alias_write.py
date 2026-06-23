@@ -258,7 +258,7 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "get_outbound_message_id",
-        lambda run_id, conn=None: existing_mid,
+        lambda run_id, purpose=None, conn=None: existing_mid,
         raising=False,
     )
 
@@ -564,4 +564,366 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
         "Comment: Wave 4 implementation target: finding #5 + R2-HIGH; "
         "candidate_ids count > 1 excludes at capture time (NOT deterministic_match "
         "is None — that is ambiguous)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Group 4: D-04 timing test + pre-vs-post diff binding (NEW-2 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_clarify_captures_alias_candidates_before_send(monkeypatch):
+    """D-04 timing test: set_alias_candidates must be called BEFORE send_outbound.
+
+    When _clarify runs with a single genuinely unresolved token, it must:
+    1. Call set_alias_candidates with {token: None} BEFORE gateway.send_outbound.
+    2. The call is ordered: set_alias_candidates first, then send_outbound.
+
+    This verifies that the D-04 timing constraint is respected — the alias candidate
+    is captured before the clarification is sent.
+    """
+    import app.email.gateway as gateway_mod
+    import app.db.repo as repo_mod
+    from app.pipeline.orchestrator import _clarify
+    from app.models.contracts import InboundEmail
+    from datetime import datetime, timezone
+
+    call_log: list[str] = []
+
+    def _fake_set_alias_candidates(run_id, candidates, conn=None):
+        call_log.append("set_alias_candidates")
+
+    def _fake_send_outbound(**kw):
+        call_log.append("send_outbound")
+        return f"<{uuid.uuid4()}@payroll-agent.local>"
+
+    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+    monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
+    )
+
+    run_id = uuid.uuid4()
+    email = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<orig@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="hours",
+        from_addr="hr@test.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="Dave Reyez 38 hours.",
+        created_at=datetime.now(timezone.utc),
+    )
+    # ONE genuinely unresolved token ("Dave Reyez" has zero candidates in the roster)
+    decision = Decision(
+        final_action="request_clarification",
+        gate_reasons=["Dave Reyez: unresolved"],
+        unresolved_names=["Dave Reyez"],
+        missing_fields=[],
+        resolutions=[
+            NameMatchResult(
+                submitted_name="Dave Reyez",
+                matched_employee_id=None,
+                source="none",
+                resolved=False,
+                reason="no roster match",
+            )
+        ],
+    )
+    roster, _david, _daniel = _make_roster()
+    # "Dave Reyez" has zero candidates in the D-01b roster — genuinely unresolved
+
+    _clarify(run_id, email, decision, roster, llm=None)
+
+    # Verify set_alias_candidates was called with the right payload
+    assert "set_alias_candidates" in call_log, (
+        "set_alias_candidates must be called for a single genuinely unresolved token "
+        "(D-04 timing test)"
+    )
+    assert "send_outbound" in call_log, (
+        "send_outbound must be called after set_alias_candidates (D-04 timing)"
+    )
+    # Verify ordering: set_alias_candidates before send_outbound
+    sac_index = call_log.index("set_alias_candidates")
+    send_index = call_log.index("send_outbound")
+    assert sac_index < send_index, (
+        "set_alias_candidates must be called BEFORE send_outbound (D-04 timing "
+        "constraint — alias candidate captured before the clarification is sent)"
+    )
+
+
+def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypatch):
+    """NEW-2 fix: pre-vs-post diff binding correctly handles multi-employee runs.
+
+    Setup:
+    - alias_candidates = {"Dave Reyez": None} (the single captured token)
+    - PRE-resume reconciliation: maria already resolved + Dave Reyez unresolved
+      pre_resolved_ids = {str(maria.id)}
+    - POST-resume reconciliation: maria + david both resolved
+      post_resolved_ids = {str(maria.id), str(david.id)}
+
+    Expected: repo.set_alias_candidates is called with {"Dave Reyez": str(david.id)}
+    The diff (post minus pre) = {str(david.id)} — the newly-resolved employee.
+
+    Verification that "exactly one resolved match" would have FAILED here: there are
+    2 resolved employees post-resume (maria + david), so any "count resolved == 1"
+    check would silently no-op on a real multi-employee run.
+    """
+    import app.db.repo as repo_mod
+    from app.pipeline.orchestrator import resume_pipeline
+    from app.models.contracts import InboundEmail
+    from datetime import datetime, timezone
+
+    _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    _david_id = uuid.UUID("e0000003-0000-0000-0000-000000000003")
+    _maria_id = uuid.UUID("e0000099-0000-0000-0000-000000000099")
+
+    # alias_candidates: the single captured token (Dave Reyez → None, awaiting resolution)
+    _alias_candidates = {"Dave Reyez": None}
+
+    # Pre-resume reconciliation: maria resolved, Dave Reyez unresolved
+    _pre_reconciliation = [
+        {
+            "submitted_name": "Maria Perez",
+            "matched_employee_id": str(_maria_id),
+            "source": "exact",
+            "resolved": True,
+            "reason": "exact match",
+        },
+        {
+            "submitted_name": "Dave Reyez",
+            "matched_employee_id": None,
+            "source": "none",
+            "resolved": False,
+            "reason": "no roster match",
+        },
+    ]
+
+    # Post-resume reconciliation: both maria and david resolved
+    _post_reconciliation = [
+        {
+            "submitted_name": "Maria Perez",
+            "matched_employee_id": str(_maria_id),
+            "source": "exact",
+            "resolved": True,
+            "reason": "exact match",
+        },
+        {
+            "submitted_name": "Dave Reyez",
+            "matched_employee_id": str(_david_id),
+            "source": "alias",
+            "resolved": True,
+            "reason": "known alias",
+        },
+    ]
+
+    # Track load_run call count to return different data pre/post.
+    # Call sequence in resume_pipeline:
+    #   call 1: load_run for metadata (business_id) — returns pre-reconciliation
+    #   call 2: pre_run_data = load_run (pre-snapshot before _run_stages) — returns pre-reconciliation
+    #   call 3: post_run_data = load_run (post-snapshot after _run_stages) — returns post-reconciliation
+    _load_run_calls = [0]
+    _set_alias_candidates_calls: list = []
+
+    def _fake_load_run(run_id, conn=None):
+        _load_run_calls[0] += 1
+        if _load_run_calls[0] <= 2:
+            # Calls 1 and 2 (metadata + pre-snapshot): return pre-reconciliation
+            return {
+                "id": str(run_id),
+                "business_id": str(_biz_id),
+                "status": "extracting",
+                "alias_candidates": _alias_candidates,
+                "reconciliation": _pre_reconciliation,
+                "extracted_data": None,
+                "decision": None,
+                "error_reason": None,
+                "source_email_id": None,
+                "pay_period_start": None,
+                "pay_period_end": None,
+            }
+        else:
+            # Call 3+ (post-snapshot after _run_stages): return post-reconciliation
+            return {
+                "id": str(run_id),
+                "business_id": str(_biz_id),
+                "status": "awaiting_approval",
+                "alias_candidates": _alias_candidates,
+                "reconciliation": _post_reconciliation,
+                "extracted_data": None,
+                "decision": None,
+                "error_reason": None,
+                "source_email_id": None,
+                "pay_period_start": None,
+                "pay_period_end": None,
+            }
+
+    def _fake_set_alias_candidates(run_id, candidates, conn=None):
+        _set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
+
+    from app.models.roster import Roster as _Roster
+    _empty_roster = _Roster(business_id=_biz_id, employees=[])
+
+    monkeypatch.setattr(repo_mod, "load_run", _fake_load_run, raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "claim_status",
+        lambda *a, **kw: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: _empty_roster,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "load_source_email",
+        lambda *a, **kw: "original body",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
+    )
+
+    # Mock _run_stages to simulate the post-resume state without running actual stages
+    import app.pipeline.orchestrator as orch_mod
+    monkeypatch.setattr(
+        orch_mod,
+        "_run_stages",
+        lambda *a, **kw: None,
+        raising=False,
+    )
+
+    run_id = uuid.uuid4()
+    inbound = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<reply@test.example>",
+        in_reply_to="<orig@test.example>",
+        references_header="<orig@test.example>",
+        subject="Re: hours",
+        from_addr="hr@test.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="I meant David Reyes",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    resume_pipeline(run_id, inbound, llm=None)
+
+    # Verify set_alias_candidates was called with the bound employee_id
+    assert len(_set_alias_candidates_calls) == 1, (
+        "set_alias_candidates must be called once at resume to bind the token "
+        "to the newly-resolved employee (NEW-2 pre-vs-post diff fix). "
+        "With 2 resolved employees post-resume (maria + david), 'exactly one "
+        "resolved match' check would have silently no-oped — diff correctly "
+        "isolates the NEWLY-resolved employee."
+    )
+    bound = _set_alias_candidates_calls[0]["candidates"]
+    assert "Dave Reyez" in bound, "token 'Dave Reyez' must be in the bound candidates"
+    assert bound["Dave Reyez"] == str(_david_id), (
+        f"'Dave Reyez' must be bound to david.id ({_david_id}), got {bound['Dave Reyez']!r}. "
+        "The diff (post minus pre) = {{str(david.id)}} isolates the newly-resolved employee."
+    )
+
+
+def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
+    """NEW-2 fix: alias binding is skipped when no new employee is resolved.
+
+    Setup:
+    - alias_candidates = {"Dave Reyez": None}
+    - PRE-resume reconciliation: maria resolved (pre_resolved_ids = {str(maria.id)})
+    - POST-resume reconciliation: same — maria still resolved, Dave Reyez still unresolved
+      (the reply did not resolve any new employee)
+    - newly_resolved_ids = post minus pre = {} (empty)
+
+    Expected: repo.set_alias_candidates is NOT called (no binding to do).
+    """
+    import app.db.repo as repo_mod
+    from app.pipeline.orchestrator import resume_pipeline
+    from app.models.contracts import InboundEmail
+    from datetime import datetime, timezone
+
+    _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    _maria_id = uuid.UUID("e0000099-0000-0000-0000-000000000099")
+
+    _alias_candidates = {"Dave Reyez": None}
+    _same_reconciliation = [
+        {
+            "submitted_name": "Maria Perez",
+            "matched_employee_id": str(_maria_id),
+            "source": "exact",
+            "resolved": True,
+            "reason": "exact match",
+        },
+        {
+            "submitted_name": "Dave Reyez",
+            "matched_employee_id": None,
+            "source": "none",
+            "resolved": False,
+            "reason": "no roster match",
+        },
+    ]
+
+    _set_alias_candidates_calls: list = []
+
+    def _fake_load_run(run_id, conn=None):
+        return {
+            "id": str(run_id),
+            "business_id": str(_biz_id),
+            "status": "extracting",
+            "alias_candidates": _alias_candidates,
+            "reconciliation": _same_reconciliation,
+            "extracted_data": None,
+            "decision": None,
+            "error_reason": None,
+            "source_email_id": None,
+            "pay_period_start": None,
+            "pay_period_end": None,
+        }
+
+    def _fake_set_alias_candidates(run_id, candidates, conn=None):
+        _set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
+
+    from app.models.roster import Roster as _Roster
+    _empty_roster = _Roster(business_id=_biz_id, employees=[])
+
+    monkeypatch.setattr(repo_mod, "load_run", _fake_load_run, raising=False)
+    monkeypatch.setattr(repo_mod, "claim_status", lambda *a, **kw: True, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: _empty_roster, raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "load_source_email", lambda *a, **kw: "original body", raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
+    )
+
+    import app.pipeline.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_run_stages", lambda *a, **kw: None, raising=False)
+
+    run_id = uuid.uuid4()
+    inbound = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<reply@test.example>",
+        in_reply_to="<orig@test.example>",
+        references_header="<orig@test.example>",
+        subject="Re: hours",
+        from_addr="hr@test.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="I meant someone else",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    resume_pipeline(run_id, inbound, llm=None)
+
+    assert len(_set_alias_candidates_calls) == 0, (
+        "set_alias_candidates must NOT be called when no new employee was resolved "
+        "by the reply (newly_resolved_ids = post minus pre = empty). "
+        "The binding is skipped — no partial/incorrect bind (NEW-2 fix)."
     )
