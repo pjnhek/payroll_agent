@@ -27,7 +27,18 @@ findings:
   warning: 3
   info: 2
   total: 6
-status: issues_found
+resolved:
+  critical: 1   # CR-01 Content-Disposition sanitized (commit 17525ee) + regression test
+  warning: 2    # WR-01 + WR-02 fixed (17525ee); WR-03 deferred -> todo 260623-06
+  info: 2       # IN-01 + IN-02 fixed (17525ee)
+status: resolved
+resolution_note: >
+  CR-01 fixed (filename sanitized via re.sub, regression test guards CRLF/quote injection),
+  WR-01 (simulate-reply checks _route_reply return), WR-02 (no f-string SQL in --fail-stuck),
+  IN-01 (synthetic reply linked to run_id), IN-02 (awaiting_reply added to IN_FLIGHT_STATUSES)
+  all fixed and verified. Full suite 405 passed / 0 failed. WR-03 (NEEDS_CLARIFICATION dead
+  status — pre-existing, not introduced this phase) deferred to todo 260623-06 because the
+  fix touches the status enum/schema and risks the schema-drift CI guard.
 ---
 
 # Phase 05: Code Review Report (Round 2)
