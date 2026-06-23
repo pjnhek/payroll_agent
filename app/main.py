@@ -623,6 +623,7 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
         run.get("pay_period_end"),
         business_name=repo.load_business_name(run["business_id"]),
         filing_status=emp.filing_status if emp else None,
+        hourly_rate=emp.hourly_rate if emp else None,
     )
     safe_name = emp_name.replace(" ", "_")
     return StreamingResponse(
