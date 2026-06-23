@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Payroll Agent</title>
   <link rel="stylesheet" href="/static/style.css">
+  {# UAT #3: auto-refresh every 2s while a run is in-flight. Child templates
+     set {% set auto_refresh = true %} — or the route passes auto_refresh=True.
+     Only emitted when in-flight; terminal runs never trigger a reload. #}
+  {% if auto_refresh %}
+  <meta http-equiv="refresh" content="2">
+  {% endif %}
 </head>
 <body>
   <nav>

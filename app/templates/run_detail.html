@@ -122,6 +122,31 @@
   </div>
 </div>
 
+{# --- Sent emails section (UAT #1) --- #}
+{% if outbound_emails %}
+<div style="margin-top: 32px;">
+  <p class="column-label" style="font-size: 14px; margin-bottom: 12px;">Sent Emails</p>
+  {% for msg in outbound_emails %}
+  <div class="sent-email-card">
+    <div class="sent-email-header">
+      {% if msg.purpose == 'confirmation' %}
+      <span class="badge badge-good">confirmation</span>
+      {% elif msg.purpose == 'clarification' %}
+      <span class="badge badge-pending">clarification</span>
+      {% else %}
+      <span class="badge badge-neutral">{{ msg.purpose or 'outbound' }}</span>
+      {% endif %}
+      <span class="sent-email-subject">{{ msg.subject or '(no subject)' }}</span>
+      <span style="font-size: 12px; color: #6B7280; margin-left: auto;">
+        {{ msg.created_at.strftime('%Y-%m-%d %H:%M') if msg.created_at else '' }}
+      </span>
+    </div>
+    <pre class="sent-email-body">{{ msg.body_text or '' }}</pre>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {# --- Operator controls --- #}
 {% if run.status == 'awaiting_approval' %}
 <div style="margin-top: 16px; display: inline-flex; gap: 8px;">

@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -60,6 +60,36 @@ from app.models.status import RunStatus
 # updated_at is older than this threshold may be claimed by retrigger for a fresh start.
 # Fresh in-flight runs (recently updated) are never force-restarted.
 STALE_THRESHOLD = timedelta(minutes=5)
+
+# UAT #3: in-flight statuses — a run in any of these states is still processing.
+# Templates receive an `auto_refresh` boolean driven from this constant so no status
+# string is ever hardcoded in the HTML. Terminal statuses never trigger auto-refresh.
+IN_FLIGHT_STATUSES: frozenset[str] = frozenset({"received", "extracting", "computed"})
+
+# UAT #6: curated allowlist of demo fixtures mapped to their seeded business.
+# Only fixtures whose from_addr resolves via repo.find_business_by_sender are
+# listed here — unknown senders are rejected by the webhook (INGEST-03 / T-05-22).
+# Server validates the posted fixture_key against this dict; unknown keys fall
+# back to Coastal to prevent SSRF via an arbitrary client-supplied path.
+_DEMO_FIXTURES: dict[str, dict] = {
+    "coastal_exact": {
+        "label": "Coastal Cleaning Co. — exact match",
+        "path": "eval/fixtures/01_exact_match_coastal.json",
+    },
+    "metro_alias": {
+        "label": "Metro Deli — stored alias",
+        "path": "eval/fixtures/02_stored_alias_metro.json",
+    },
+    "summit_exact": {
+        "label": "Summit Tech — exact match",
+        "path": "eval/fixtures/12_exact_process_summit.json",
+    },
+    "coastal_multi": {
+        "label": "Coastal Cleaning Co. — multi-employee",
+        "path": "eval/fixtures/10_multi_employee_coastal.json",
+    },
+}
+_DEMO_FIXTURE_DEFAULT_KEY = "coastal_exact"
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -432,7 +462,17 @@ def runs_list(request: Request):
         # before the pool is warmed up.
         logger.debug("load_all_runs unavailable — rendering empty list")
         runs = []
-    return templates.TemplateResponse(request, "runs_list.html", {"runs": runs})
+    # UAT #3: auto-refresh while any run in the list is in-flight.
+    auto_refresh = any(r.get("status") in IN_FLIGHT_STATUSES for r in runs)
+    return templates.TemplateResponse(
+        request,
+        "runs_list.html",
+        {
+            "runs": runs,
+            "demo_fixtures": _DEMO_FIXTURES,
+            "auto_refresh": auto_refresh,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +498,14 @@ def run_detail(request: Request, run_id: uuid.UUID):
         logger.debug("load_inbound_email/load_line_items unavailable for run %s", run_id)
         raw_email = None
         paystubs = []
+    # UAT #1: load outbound emails (confirmation / clarification) sent for this run.
+    try:
+        outbound_emails = repo.load_outbound_emails(run_id)
+    except Exception:
+        logger.debug("load_outbound_emails unavailable for run %s", run_id)
+        outbound_emails = []
+    # UAT #3: auto-refresh while this run is in an in-flight state.
+    auto_refresh = run.get("status") in IN_FLIGHT_STATUSES
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -465,6 +513,8 @@ def run_detail(request: Request, run_id: uuid.UUID):
             "run": run,
             "raw_email": raw_email,
             "paystubs": paystubs,
+            "outbound_emails": outbound_emails,
+            "auto_refresh": auto_refresh,
         },
     )
 
@@ -496,7 +546,14 @@ def eval_view(request: Request):
             else:
                 fixture["raw_body"] = "‹fixture file missing›"
 
-    return templates.TemplateResponse(request, "eval.html", {"summary": summary})
+    return templates.TemplateResponse(
+        request,
+        "eval.html",
+        {
+            "summary": summary,
+            "demo_fixtures": _DEMO_FIXTURES,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -556,23 +613,32 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
 # DASH-05: POST /demo/send-test — fire demo fixture with FRESH Message-ID per click
 # ---------------------------------------------------------------------------
 
-# Path to the canonical demo fixture (first fixture — exact match, Coastal Cleaning).
-# Using eval/fixtures/01_exact_match_coastal.json: its from_addr matches the seed
-# business contact_email so the webhook sender-match will succeed.
-_DEMO_FIXTURE_PATH = Path("eval/fixtures/01_exact_match_coastal.json")
-
 
 @app.post("/demo/send-test")
-def demo_send_test(background_tasks: BackgroundTasks) -> RedirectResponse:
-    """DASH-05: Fire the demo fixture through the pipeline with a fresh Message-ID.
+def demo_send_test(
+    background_tasks: BackgroundTasks,
+    fixture_key: str = Form(default=_DEMO_FIXTURE_DEFAULT_KEY),
+) -> RedirectResponse:
+    """DASH-05: Fire a curated demo fixture through the pipeline with a fresh Message-ID.
+
+    UAT #6: accepts an optional fixture_key form field selecting among the
+    _DEMO_FIXTURES allowlist. Any unknown / missing key falls back to the default
+    (Coastal Cleaning exact match). The client NEVER supplies a file path — the
+    server resolves the path from the allowlist (T-05-22 SSRF guard).
 
     The fixture's original Message-ID is OVERRIDDEN with a fresh uuid4-based
     synthetic ID per click. The uq_message_id UNIQUE constraint on email_messages
     would silently drop a second click if the same ID is reused (MEDIUM finding fix,
     T-05-22b). Each click creates a distinct run visible in the runs list.
     """
-    if _DEMO_FIXTURE_PATH.exists():
-        fixture_data = json.loads(_DEMO_FIXTURE_PATH.read_text())
+    # Server-side allowlist validation — never trust the client-supplied path.
+    if fixture_key not in _DEMO_FIXTURES:
+        fixture_key = _DEMO_FIXTURE_DEFAULT_KEY
+    fixture_meta = _DEMO_FIXTURES[fixture_key]
+    fixture_path = Path(fixture_meta["path"])
+
+    if fixture_path.exists():
+        fixture_data = json.loads(fixture_path.read_text())
     else:
         # Fallback: build a minimal fixture from the seed business contact_email
         fixture_data = {
@@ -632,10 +698,10 @@ def demo_send_test(background_tasks: BackgroundTasks) -> RedirectResponse:
 
         run_id = repo.create_run(business_id=business_id, source_email_id=email_id)
         background_tasks.add_task(_run_pipeline, run_id)
-        # Success: land the operator on the run they just fired so the demo shows
-        # the freshly-created run immediately. Each click creates a distinct run
-        # (fresh Message-ID), so consecutive clicks redirect to distinct URLs.
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        # UAT #2 fix: redirect to /runs queue so the operator can watch the
+        # new run appear and advance through statuses (CX improvement).
+        # Each click still creates a distinct run (fresh Message-ID per click).
+        return RedirectResponse(url="/runs", status_code=303)
     except Exception:
         # DB unavailable: still redirect to /runs rather than returning 500.
         # The run will not be created but the operator can see the (empty) list.

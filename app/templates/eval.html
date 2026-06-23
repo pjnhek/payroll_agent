@@ -3,81 +3,94 @@
 <h1>Eval Results</h1>
 
 {% if summary %}
-{# --- Section 1: Headline metrics --- #}
-<dl style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin-bottom: 32px;">
-  <div>
-    <dt style="font-size: 12px; font-weight: 600; color: #6B7280;">Extraction F1</dt>
-    <dd style="font-size: 28px; font-weight: 600; color: #111827; margin: 0;">{{ "%.0f" | format(summary.extraction_overall_f1 * 100) }}%</dd>
-  </div>
-  <div>
-    {% set cm = summary.confusion_matrix %}
-    {% set total = cm.true_process + cm.false_process + cm.false_clarify + cm.true_clarify %}
-    {% set correct = cm.true_process + cm.true_clarify %}
-    <dt style="font-size: 12px; font-weight: 600; color: #6B7280;">Decision Accuracy</dt>
-    <dd style="font-size: 28px; font-weight: 600; color: #111827; margin: 0;">{{ "%.0f" | format((correct / total * 100) if total > 0 else 0) }}%</dd>
-  </div>
-  <div>
-    <dt style="font-size: 12px; font-weight: 600; color: #6B7280;">False Process Rate</dt>
-    <dd style="font-size: 28px; font-weight: 600; color: #111827; margin: 0;">{{ "%.0f" | format(summary.false_process_rate * 100) }}%</dd>
-  </div>
-</dl>
-<p style="font-size: 14px; color: #6B7280; margin-bottom: 32px;">
-  Eval run: {{ summary.generated_at }} — Models: {{ summary.extraction_model_id }}
-</p>
 
-{# --- Section 2: Chart --- #}
-<div style="margin-bottom: 32px;">
+{# --- Section 1: Headline metrics (UI-SPEC §eval.html) --- #}
+<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl);">
+  <dl class="metric-strip">
+    <div>
+      <dt class="metric-label">Extraction F1</dt>
+      <dd class="metric-value">{{ "%.0f" | format(summary.extraction_overall_f1 * 100) }}%</dd>
+    </div>
+    <div>
+      {% set cm = summary.confusion_matrix %}
+      {% set total = cm.true_process + cm.false_process + cm.false_clarify + cm.true_clarify %}
+      {% set correct = cm.true_process + cm.true_clarify %}
+      <dt class="metric-label">Decision Accuracy</dt>
+      <dd class="metric-value">{{ "%.0f" | format((correct / total * 100) if total > 0 else 0) }}%</dd>
+    </div>
+    <div>
+      <dt class="metric-label">False Process Rate</dt>
+      <dd class="metric-value">{{ "%.0f" | format(summary.false_process_rate * 100) }}%</dd>
+    </div>
+  </dl>
+  <p class="metric-meta">Eval run: {{ summary.generated_at }} — Models: {{ summary.extraction_model_id }}</p>
+</div>
+
+{# --- Section 2: Chart (UI-SPEC §eval.html) --- #}
+<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl); text-align: center;">
   <img src="/eval/chart.svg" alt="Per-category eval chart" style="max-width: 100%; height: auto;">
 </div>
 
-{# --- Section 3: Per-fixture drill-in table --- #}
+{# --- Section 3: Per-fixture drill-in --- #}
 {% if summary.per_fixture %}
-<h2 style="font-size: 20px; font-weight: 600; margin-bottom: 16px;">Fixture Drill-in</h2>
-<table>
-  <thead>
-    <tr>
-      <th>Fixture</th>
-      <th>Category</th>
-      <th>Raw Input</th>
-      <th>Expected Decision</th>
-      <th>Actual Decision</th>
-      <th>Extraction F1</th>
-      <th>Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for fixture in summary.per_fixture %}
-    <tr>
-      <td style="font-size: 12px; color: #6B7280;">{{ fixture.fixture_id }}</td>
-      <td><span class="badge badge-neutral">{{ fixture.fixture_category }}</span></td>
-      <td>
-        <code class="fixture-raw">{{ fixture.raw_body | truncate(200) }}</code>
-      </td>
-      <td>{{ fixture.decision.expected_final_action }}</td>
-      <td>{{ fixture.decision.final_action }}</td>
-      <td>{{ "%.0f" | format(fixture.extraction.f1 * 100) }}%</td>
-      <td>
-        {% if fixture.decision.final_action == fixture.decision.expected_final_action %}
-        <span class="badge badge-good">PASS</span>
-        {% else %}
-        <span class="badge badge-bad">FAIL</span>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl);">
+  <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin-top: 0; margin-bottom: var(--space-md);">Fixture Drill-in</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Fixture</th>
+        <th>Category</th>
+        <th>Raw Input</th>
+        <th>Expected Decision</th>
+        <th>Actual Decision</th>
+        <th>Extraction F1</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for fixture in summary.per_fixture %}
+      <tr>
+        <td style="font-size: 12px; color: #6B7280;">{{ fixture.fixture_id }}</td>
+        <td><span class="badge badge-neutral">{{ fixture.fixture_category }}</span></td>
+        <td>
+          <code class="fixture-raw">{{ fixture.raw_body | truncate(200) }}</code>
+        </td>
+        <td style="color: #6B7280;">{{ fixture.decision.expected_final_action }}</td>
+        <td style="color: #111827;">{{ fixture.decision.final_action }}</td>
+        <td>{{ "%.0f" | format(fixture.extraction.f1 * 100) }}%</td>
+        <td>
+          {% if fixture.decision.final_action == fixture.decision.expected_final_action %}
+          <span class="badge badge-good">PASS</span>
+          {% else %}
+          <span class="badge badge-bad">FAIL</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
 
 {% else %}
-{# --- No eval results --- #}
-<h2 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">No eval results available</h2>
-<p style="color: #6B7280;">Run the eval locally: uv run python eval/run_eval.py</p>
+
+{# --- No eval results (graceful fallback) --- #}
+<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl);">
+  <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin-top: 0; margin-bottom: var(--space-sm);">No eval results available</h2>
+  <p style="color: #6B7280; margin: 0;">Run the eval locally: <code>uv run python eval/run_eval.py</code></p>
+</div>
+
 {% endif %}
 
-{# --- Send Test Email button --- #}
-<div style="margin-top: 48px;">
-  <form method="post" action="/demo/send-test">
+{# --- UAT #6: Send Test Email with fixture picker (UI-SPEC DASH-05) --- #}
+<div style="margin-top: var(--space-2xl);">
+  <form method="post" action="/demo/send-test" style="display: inline-flex; align-items: center; gap: 12px;">
+    <label for="fixture_key_eval" style="font-size: 12px; font-weight: 600; color: #6B7280;">Demo scenario</label>
+    <select id="fixture_key_eval" name="fixture_key" class="demo-select">
+      {% for key, meta in demo_fixtures.items() %}
+      <option value="{{ key }}">{{ meta.label }}</option>
+      {% endfor %}
+    </select>
     <button type="submit" class="btn-approve">Send Test Email</button>
   </form>
 </div>
