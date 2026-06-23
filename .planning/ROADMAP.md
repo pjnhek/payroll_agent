@@ -266,5 +266,5 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
-| 5. Dashboard & Delivery | 7/7 | Complete   | 2026-06-23 |
+| 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |

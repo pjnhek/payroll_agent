@@ -52,22 +52,22 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [x] **CLAR-01**: When `final_action` is request_clarification, the LLM drafts a clarification email (cheap model) and the system auto-sends it; the outbound Message-ID is stored on the run and status moves to `awaiting_reply`
 - [x] **CLAR-02**: A client reply is routed to its run via the RFC In-Reply-To/References header chain (subject/provider-thread are only fallbacks)
 - [x] **CLAR-03**: A matched reply re-enters the pipeline at extraction and resumes the run, with idempotent re-entrancy (overwrite `extracted_data`, replace line items by run, match only runs in `awaiting_reply`; a header match to a sent/reconciled run is logged as a late reply, not resumed)
-- [ ] **CLAR-04**: Outbound sends are idempotent — retrying an approval or re-triggering an errored run (INGEST-05) never sends a duplicate clarification or confirmation email (guard on already-sent state per run)
+- [x] **CLAR-04**: Outbound sends are idempotent — retrying an approval or re-triggering an errored run (INGEST-05) never sends a duplicate clarification or confirmation email (guard on already-sent state per run)
 - [x] **EMAIL-01**: The stub email gateway records every outbound clarification/confirmation with a synthetic Message-ID in `email_messages` and supports injecting a fixture reply, so the full clarify → reply → resume loop and DEMO-01 are exercisable with zero real email
 
 ### Human-in-the-Loop & Delivery
 
 - [x] **HITL-01**: A computed run pauses at `awaiting_approval`; the operator approves or rejects from the dashboard
-- [ ] **HITL-02**: On approval, a confirmation email (LLM-drafted) is sent to the client with paystub PDFs generated on demand; status advances through `approved` → `sent` → `reconciled`
-- [ ] **HITL-03**: Paystub PDFs generate on demand from run data in memory (reportlab, BytesIO) — nothing is persisted to disk or a storage bucket
+- [x] **HITL-02**: On approval, a confirmation email (LLM-drafted) is sent to the client with paystub PDFs generated on demand; status advances through `approved` → `sent` → `reconciled`
+- [x] **HITL-03**: Paystub PDFs generate on demand from run data in memory (reportlab, BytesIO) — nothing is persisted to disk or a storage bucket
 
 ### Dashboard
 
-- [ ] **DASH-01**: A runs list shows every payroll run with a status badge
-- [ ] **DASH-02**: A run detail view shows THREE columns left-to-right: (1) the **raw cleaned inbound email body** (from INGEST-02) as the leftmost column, (2) the LLM's `extracted_data`, and (3) the computed paystubs — plus the decision object's reasons. The raw body is mandatory and leftmost: without it the operator gate verifies arithmetic against the LLM's own reading (which agree by construction) instead of verifying the LLM's reading against what the client actually sent, so an extraction error (e.g. 40 misread as 44, a dropped employee) would pass the gate invisibly
-- [ ] **DASH-03**: A pending run's detail view shows Approve-and-send and Reject controls (the operator gate)
-- [ ] **DASH-04**: An eval view renders the latest eval summary with the headline metrics and a per-category breakdown chart (clean / typo / missing / unknown / nickname / vague); drilling into a fixture shows its raw email body beside the expected vs actual extraction/decision so a miss is inspectable, not just counted
-- [ ] **DASH-05**: A "Send test email" button fires a fixture through the whole pipeline from the page (demo trigger and live-email fallback)
+- [x] **DASH-01**: A runs list shows every payroll run with a status badge
+- [x] **DASH-02**: A run detail view shows THREE columns left-to-right: (1) the **raw cleaned inbound email body** (from INGEST-02) as the leftmost column, (2) the LLM's `extracted_data`, and (3) the computed paystubs — plus the decision object's reasons. The raw body is mandatory and leftmost: without it the operator gate verifies arithmetic against the LLM's own reading (which agree by construction) instead of verifying the LLM's reading against what the client actually sent, so an extraction error (e.g. 40 misread as 44, a dropped employee) would pass the gate invisibly
+- [x] **DASH-03**: A pending run's detail view shows Approve-and-send and Reject controls (the operator gate)
+- [x] **DASH-04**: An eval view renders the latest eval summary with the headline metrics and a per-category breakdown chart (clean / typo / missing / unknown / nickname / vague); drilling into a fixture shows its raw email body beside the expected vs actual extraction/decision so a miss is inspectable, not just counted
+- [x] **DASH-05**: A "Send test email" button fires a fixture through the whole pipeline from the page (demo trigger and live-email fallback)
 
 ### Eval (the proof)
 
@@ -162,14 +162,14 @@ Which phases cover which requirements. Populated during roadmap creation.
 | EVAL-03 | Phase 4 | Complete |
 | EVAL-04 | Phase 4 | Complete |
 | EVAL-05 | Phase 4 | Complete |
-| DASH-01 | Phase 5 | Pending |
-| DASH-02 | Phase 5 | Pending |
-| DASH-03 | Phase 5 | Pending |
-| DASH-04 | Phase 5 | Pending |
-| DASH-05 | Phase 5 | Pending |
-| HITL-02 | Phase 5 | Pending |
-| HITL-03 | Phase 5 | Pending |
-| CLAR-04 | Phase 5 | Pending |
+| DASH-01 | Phase 5 | Complete |
+| DASH-02 | Phase 5 | Complete |
+| DASH-03 | Phase 5 | Complete |
+| DASH-04 | Phase 5 | Complete |
+| DASH-05 | Phase 5 | Complete |
+| HITL-02 | Phase 5 | Complete |
+| HITL-03 | Phase 5 | Complete |
+| CLAR-04 | Phase 5 | Complete |
 | INGEST-05 | Phase 5 | Complete |
 | FOUND-04 | Phase 5 | Complete |
 | OPS-01 | Phase 6 | Pending |
