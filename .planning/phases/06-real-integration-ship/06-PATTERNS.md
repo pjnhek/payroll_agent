@@ -118,16 +118,25 @@ def send_outbound(
     return message_id
 ```
 
-**D-13c crash-safe ordering to activate** (real provider replaces the stub body):
+**D-13c crash-safe ordering to activate — SCHEMA-SAFE VERSION (HIGH-1 WAIVE, 06-04):**
+
+IMPORTANT: email_messages has NO `provider_message_id` column and NO `updated_at` column.
+The Resend-returned provider id (`response["id"]`) is LOGGED ONLY — it is NOT written to the DB.
+The flip-to-sent UPDATE sets ONLY `send_state`, keyed by the synthetic `message_id`.
+The function returns the SYNTHETIC message_id (the RFC anchor), NOT Resend's provider id.
+
 ```python
 # 1. Write intent row FIRST (send_state='reserved') — the irreversible record
+#    synthetic_message_id is the RFC anchor; the DB dedup UNIQUE is keyed on it.
 repo.insert_email_message(..., send_state="reserved", conn=conn)
 # 2. Make the provider call — the side-effect that can fail
 response = resend.Emails.send({...})
-provider_message_id = response["id"]   # or response.id — confirm SDK shape
-# 3. Flip to 'sent' / update with real provider Message-ID
-repo.update_email_message_sent(message_id_row_id, provider_message_id, conn=conn)
-return provider_message_id
+provider_id = response["id"]   # Resend-internal id — logged only, NOT persisted
+logger.info("send_outbound provider_id=%s synthetic_id=%s", provider_id, synthetic_message_id)
+# 3. Flip to 'sent' — UPDATE sets ONLY send_state, WHERE clause uses synthetic_message_id
+#    DO NOT write provider_id to the DB (column does not exist — would raise ProgrammingError)
+repo.update_email_message_state(synthetic_message_id, "sent", conn=conn)
+return synthetic_message_id   # RFC anchor — callers use this to thread replies
 ```
 
 **Verify method placement** (D-17 — stays in gateway.py per D-18):
@@ -540,27 +549,57 @@ seed values so the demo's Beat 2 (unknown shorthand → clarify) works on every
 take. Beat 3 persists a learned alias to prod — this script undoes that.
 
 Two modes:
-  --reset-demo     purge all runs + email_messages + reset aliases (default; requires PURGE confirm)
-  --reset-aliases  alias reset only (no run/email purge)
+  --confirm        purge all runs + email_messages + reset aliases (DESTRUCTIVE; requires this flag)
+  --reset-aliases  alias reset only (no run/email purge; no --confirm required)
 
-Run: uv run python scripts/demo_reset.py --reset-demo
+Run: uv run python scripts/demo_reset.py --confirm
 """
 import sys
 from app.db import repo
 
 def main() -> None:
-    mode = sys.argv[1] if len(sys.argv) > 1 else "--reset-demo"
-    with repo._conn_ctx(None) as (c, _owns):
-        if mode == "--reset-demo":
-            # Step 1: purge runs (same circular-FK break as reset_stuck_runs.py)
-            ...
-            # Step 2: re-run seed upsert to restore known_aliases to seed values
-            # (re-running seed.py's ON CONFLICT DO UPDATE pattern is the cleanest reset)
-            from app.db.seed import seed
-            seed()   # idempotent upsert; employees already exist, aliases reset
-        elif mode == "--reset-aliases":
+    args = sys.argv[1:]
+    mode = args[0] if args else ""
+
+    if mode == "--confirm":
+        with repo._conn_ctx(None) as (c, _owns):
+            # Step 1: break circular FK
+            c.execute("UPDATE payroll_runs SET source_email_id = NULL")
+            # Step 2: delete child rows in FK-safe order
+            # (NO alias_audit table in schema.sql — only paystub_line_items → email_messages → payroll_runs)
+            c.execute("DELETE FROM paystub_line_items")
+            c.execute("DELETE FROM email_messages")
+            c.execute("DELETE FROM payroll_runs")
+            # Step 3: reset known_aliases via seed() upsert
             from app.db.seed import seed
             seed()
+            # Step 4: re-apply demo contact_email so find_business_by_sender still matches
+            import os
+            demo_email = os.environ.get("DEMO_CONTACT_EMAIL", "")
+            demo_biz   = os.environ.get("DEMO_BUSINESS_NAME", "")
+            if demo_email and demo_biz:
+                c.execute(
+                    "UPDATE businesses SET contact_email = %s WHERE name = %s",
+                    (demo_email, demo_biz),
+                )
+            else:
+                print("WARNING: DEMO_CONTACT_EMAIL or DEMO_BUSINESS_NAME not set — demo identity not restored")
+    elif mode == "--reset-aliases":
+        from app.db.seed import seed
+        seed()
+        import os
+        demo_email = os.environ.get("DEMO_CONTACT_EMAIL", "")
+        demo_biz   = os.environ.get("DEMO_BUSINESS_NAME", "")
+        if demo_email and demo_biz:
+            with repo._conn_ctx(None) as (c, _owns):
+                c.execute(
+                    "UPDATE businesses SET contact_email = %s WHERE name = %s",
+                    (demo_email, demo_biz),
+                )
+    else:
+        print("Usage: uv run python scripts/demo_reset.py --confirm | --reset-aliases")
+        print("  --confirm       DESTRUCTIVE: purge all runs + emails + reset aliases")
+        print("  --reset-aliases Alias reset only (non-destructive)")
 ```
 
 ---
@@ -726,13 +765,23 @@ with get_connection() as conn:
 **Source:** `app/db/supabase.py` line 46 — `kwargs={"prepare_threshold": None}`
 This is already correct for Supavisor transaction mode (port 6543). D-15 adds one nuance: run `schema.sql` + seed over the **session pooler (port 5432)** during D-09a to avoid DDL issues under transaction-mode pooling.
 
-### Crash-Safe Intent-Before-Side-Effect (D-13c — applies to send_outbound)
-**Source:** `app/email/gateway.py` lines 63-70 (stub comment), Phase 5 D-13c decision
+### Crash-Safe Intent-Before-Side-Effect (D-13c — SCHEMA-SAFE VERSION, HIGH-1 WAIVE)
+**Source:** `app/email/gateway.py` lines 63-70 (stub comment), Phase 5 D-13c decision, 06-04 HIGH-1 WAIVE
+
+CRITICAL: email_messages has NO `provider_message_id` or `updated_at` columns.
+The repo helpers set ONLY `send_state` in UPDATE SQL. The provider id is logged, not persisted.
+The function returns the SYNTHETIC message_id (the RFC anchor), not Resend's internal id.
+
 ```python
 # WRITE durable record BEFORE irreversible external call (D-13c pattern)
 repo.insert_email_message(..., send_state="reserved", conn=conn)   # intent row first
 response = resend.Emails.send({...})                                # provider call second
-repo.update_message_to_sent(row_id, response["id"], conn=conn)     # flip to sent after
+provider_id = response["id"]                                        # logged only, NOT persisted
+logger.info("send provider_id=%s", provider_id)
+# Flip to 'sent' — UPDATE email_messages SET send_state='sent' WHERE message_id=synthetic_id
+# DO NOT write provider_id (column does not exist — ProgrammingError at runtime)
+repo.update_email_message_state(synthetic_message_id, "sent", conn=conn)
+return synthetic_message_id   # RFC anchor — NOT the provider id
 ```
 
 ### Error Handling (applies to route handlers)
@@ -774,3 +823,4 @@ For external SDK calls (resend.EmailsReceiving.get, resend.Emails.send, resend.W
 **Files read:** `app/email/gateway.py`, `app/main.py`, `app/config.py`, `app/models/contracts.py`, `app/db/supabase.py`, `app/db/seed.py`, `scripts/reset_stuck_runs.py`, `tests/test_gateway.py`, `tests/test_ingest.py`, `tests/test_dashboard.py`, `tests/conftest.py`, `.github/workflows/eval.yml`, `pyproject.toml`, `.env.example`
 **Files scanned total:** 14
 **Pattern extraction date:** 2026-06-23
+**MEDIUM-3 fix (Round-4):** Stale `provider_message_id`/`updated_at` send-pattern removed from D-13c blocks (both the gateway section and Shared Patterns). The SCHEMA-SAFE VERSION is the authoritative pattern: provider id logged only, NOT persisted; UPDATE sets ONLY send_state WHERE synthetic_message_id; return value is the synthetic message_id (RFC anchor).
