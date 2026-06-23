@@ -1,4 +1,4 @@
-"""FastAPI entrypoint — the thin webhook adapter + crude operator re-entry.
+"""FastAPI entrypoint — the thin webhook adapter + operator gate routes.
 
 This is a THIN HTTP adapter (RESEARCH Architecture map): no business logic, no
 LLM, no calc. It does only the cheap, synchronous, idempotency-critical work, then
@@ -6,10 +6,13 @@ schedules the LLM-heavy pipeline as a FastAPI BackgroundTask and returns 200 fas
 (INGEST-01, D-A1-01).
 
 Endpoints:
-  POST /webhook/inbound       — ingest an InboundEmail, dedupe, sender-match, clean
-                                the body, create the run, schedule run_pipeline
-  POST /runs/{run_id}/approve — crude operator approve (awaiting_approval → approved)
-  POST /runs/{run_id}/reject  — crude operator reject  (awaiting_approval → rejected)
+  POST /webhook/inbound          — ingest an InboundEmail, dedupe, sender-match,
+                                   clean the body, create the run, schedule run_pipeline
+  POST /runs/{run_id}/approve    — hardened approve: CAS claim + _deliver (D-13b error
+                                   boundary) → 303 POST-redirect-GET to run detail
+  POST /runs/{run_id}/reject     — CAS claim → REJECTED → 303
+  POST /runs/{run_id}/retrigger  — claim from ERROR/APPROVED/stale-in-flight → restart
+                                   pipeline in background → 303 (INGEST-05, finding #6)
 
 Webhook flow (RESEARCH §Pattern 1):
   1. parse → InboundEmail via gateway.parse_inbound
@@ -30,15 +33,22 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.db import repo
 from app.email import gateway
 from app.email.clean import clean_body
 from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
+
+# Staleness threshold for stale in-flight state recovery (finding #6, D-13b extension).
+# A run in a recoverable in-flight state (RECEIVED/EXTRACTING/COMPUTED/SENT) whose
+# updated_at is older than this threshold may be claimed by retrigger for a fresh start.
+# Fresh in-flight runs (recently updated) are never force-restarted.
+STALE_THRESHOLD = timedelta(minutes=5)
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -222,32 +232,123 @@ def _run_pipeline(run_id: uuid.UUID) -> None:
 
 
 @app.post("/runs/{run_id}/approve")
-def approve(run_id: uuid.UUID) -> JSONResponse:
-    """Crude operator approve: require awaiting_approval → set APPROVED (HITL-01).
+def approve(
+    run_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+) -> RedirectResponse:
+    """Hardened approve: CAS claim (AWAITING_APPROVAL → APPROVED) + D-13b delivery.
 
-    No confirmation email / PDF / FOR-UPDATE guard — those are HITL-02/03 / FOUND-04
-    = Phase 5. This proves the gate pauses and resumes via the sole set_status writer.
+    Race-safety: claim_status is an atomic CAS — a second concurrent approval loses
+    the claim and 303-redirects without running _deliver a second time (T-05-14,
+    D-12, FOUND-04). Delivery is synchronous and bounded by D-10b timeout in
+    compose_confirmation. On delivery exception: record ERROR (D-13b invariant —
+    APPROVED is NOT terminal, so record_run_error can advance it to ERROR).
+
+    PII-safe error logging (D-A1-03): error_reason = type(exc).__name__ ONLY.
     """
-    return _operator_transition(run_id, RunStatus.APPROVED)
+    from app.pipeline.orchestrator import _deliver
+
+    claimed = repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED)
+    if claimed:
+        run = repo.load_run(run_id)
+        try:
+            _deliver(run_id, run)
+        except Exception as exc:  # noqa: BLE001 — D-13b error boundary
+            # PII-safe: type only — str(exc) may echo model output, submitted names,
+            # or raw email content (D-A1-03). run_id is the correlation key for debug.
+            logger.warning("delivery of run %s failed: %s", run_id, type(exc).__name__)
+            repo.record_run_error(run_id, type(exc).__name__)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
 @app.post("/runs/{run_id}/reject")
-def reject(run_id: uuid.UUID) -> JSONResponse:
-    """Crude operator reject: require awaiting_approval → set REJECTED (HITL-01)."""
-    return _operator_transition(run_id, RunStatus.REJECTED)
+def reject(run_id: uuid.UUID) -> RedirectResponse:
+    """Hardened reject: CAS claim (AWAITING_APPROVAL → REJECTED) → 303.
+
+    claim_status is atomic — a concurrent rejection or approval sees False and no-ops
+    (D-12, FOUND-04). Always 303 to run detail regardless of claim outcome.
+    """
+    repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
-def _operator_transition(run_id: uuid.UUID, target: RunStatus) -> JSONResponse:
-    run = repo.load_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    if run["status"] != RunStatus.AWAITING_APPROVAL.value:
-        raise HTTPException(
-            status_code=409,
-            detail=f"run is {run['status']}, not awaiting_approval",
-        )
-    repo.set_status(run_id, target)
-    return JSONResponse(
-        status_code=200,
-        content={"status": target.value, "run_id": str(run_id)},
+@app.post("/runs/{run_id}/retrigger")
+def retrigger(
+    run_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+) -> RedirectResponse:
+    """Retrigger a run from ERROR, APPROVED, or stale in-flight states (INGEST-05).
+
+    D-13b extension (finding #6): the retrigger path is extended to also claim from
+    stale RECEIVED/EXTRACTING/COMPUTED/SENT states — a worker that died mid-run
+    leaves the run stuck with no recovery UI otherwise.
+
+    Stale guard: in-flight claims require updated_at older than STALE_THRESHOLD
+    (5 minutes). A freshly-started in-flight run is never force-restarted.
+
+    R2-HIGH stale CAS exclusivity (finding #6): the claim target MUST differ from the
+    current status so the conditional UPDATE genuinely changes the row and two
+    concurrent retrigger clicks cannot both win. A stale RECEIVED run → EXTRACTING
+    (not RECEIVED→RECEIVED which is a no-op). All other stale statuses → RECEIVED.
+    This prevents the degenerate case where the conditional UPDATE is a no-op and
+    two concurrent callers both see the same row unchanged and both win.
+
+    NOTE: COMPUTED is the correct post-calculation in-flight status (there is no
+    COMPUTING member in RunStatus).
+
+    The already-sent confirmation guard in _deliver makes retrigger safe for SENT:
+    RECONCILED is the only true terminal-success; a run stranded in SENT (worker died
+    between set_status(SENT) and set_status(RECONCILED)) can be safely re-run from
+    start because _deliver checks get_outbound_message_id(purpose='confirmation')
+    before re-sending.
+    """
+    # Core CAS claims (always safe — purpose-aware already-sent guard in _deliver
+    # prevents duplicate confirmation emails even if the run already sent one).
+    claimed = repo.claim_status(
+        run_id, RunStatus.ERROR, RunStatus.RECEIVED
+    ) or repo.claim_status(
+        run_id, RunStatus.APPROVED, RunStatus.RECEIVED
     )
+
+    if not claimed:
+        # Stale in-flight recovery (finding #6): only claim if updated_at is stale.
+        run = repo.load_run(run_id)
+        if run is not None:
+            updated_at = run.get("updated_at")
+            stale = (
+                updated_at is not None
+                and datetime.now(tz=timezone.utc) - updated_at > STALE_THRESHOLD
+            )
+            stale_statuses = {
+                RunStatus.RECEIVED.value,
+                RunStatus.EXTRACTING.value,
+                RunStatus.COMPUTED.value,
+                RunStatus.SENT.value,
+            }
+            if stale and run["status"] in stale_statuses:
+                # R2-HIGH stale CAS fix: target MUST differ from current status.
+                # RECEIVED→EXTRACTING (not RECEIVED→RECEIVED no-op).
+                # All other stale statuses→RECEIVED (EXTRACTING/COMPUTED/SENT→RECEIVED).
+                # This guarantees the conditional UPDATE actually changes the row so
+                # two concurrent retrigger clicks cannot both win.
+                # NOTE: COMPUTING is NOT a RunStatus member — the valid post-calc
+                # in-flight state is COMPUTED.
+                target = (
+                    RunStatus.EXTRACTING
+                    if run["status"] == RunStatus.RECEIVED.value
+                    else RunStatus.RECEIVED
+                )
+                claimed = repo.claim_status(
+                    run_id, RunStatus(run["status"]), target
+                )
+                if claimed:
+                    logger.info(
+                        "stale run %s (%s) claimed to %s (finding #6, D-13b)",
+                        run_id,
+                        run["status"],
+                        target.value,
+                    )
+
+    if claimed:
+        background_tasks.add_task(_run_pipeline, run_id)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)

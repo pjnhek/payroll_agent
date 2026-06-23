@@ -42,9 +42,15 @@ from app.email import gateway
 from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
 from app.pipeline.calculate import calculate
-from app.pipeline.compose_email import clarification_subject, compose_clarification
+from app.pipeline.compose_email import (
+    clarification_subject,
+    compose_clarification,
+    compose_confirmation,
+    confirmation_subject,
+)
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
+from app.pipeline.pdf import generate_paystub_pdf
 from app.pipeline.reconcile_names import reconcile_names
 from app.pipeline.suggest import suggest_employees
 from app.pipeline.validate import validate
@@ -211,6 +217,21 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
     to decide and NEVER influences final_action. A suggestion failure degrades to
     {} inside suggest_employees, so it can never strand the run.
     """
+    # Finding #2 idempotency guard (CLAR-04): check for an existing clarification row
+    # BEFORE drafting or sending. If one already exists and was sent, skip the send
+    # and restore status to AWAITING_REPLY — prevents duplicate clarification emails
+    # on re-trigger. The purpose='clarification' arg distinguishes this from a
+    # confirmation row (finding #1 complement).
+    existing_clari = repo.get_outbound_message_id(run_id, purpose="clarification")
+    if existing_clari is not None:
+        logger.info(
+            "clarification already sent for run %s — skipping duplicate send "
+            "(finding #2, CLAR-04)",
+            run_id,
+        )
+        repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+        return
+
     # Like compose below: only pass `llm` when injected (a test mock). When llm is
     # None (production), suggest_employees binds its own default client — passing
     # llm=None would force the cheap call onto a None client and silently degrade
@@ -234,8 +255,87 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
         body=body,
         in_reply_to=email.message_id,
         references_header=email.message_id,
+        purpose="clarification",
+        send_state="sent",
     )
     repo.set_status(run_id, RunStatus.AWAITING_REPLY)  # CLAR-01 pause
+
+
+def _deliver(run_id: uuid.UUID, run: dict) -> None:
+    """Compose + send the confirmation email + per-employee PDFs.
+
+    Called synchronously by the approve route. Raises freely — the caller (approve
+    handler) wraps this in the D-13b error boundary (try/except → record_run_error).
+    NEVER catches exceptions internally: a delivery failure must surface to ERROR,
+    not silently strand the run in APPROVED.
+
+    CLAR-04 purpose-aware idempotency guard (finding #1): checks for an existing
+    confirmation row via get_outbound_message_id(run_id, purpose='confirmation').
+    A purpose-blind lookup would incorrectly skip the confirmation if a clarification
+    had been sent earlier — purpose='confirmation' scopes the check correctly.
+
+    NOTE: _write_aliases_if_safe is NOT called here — that hook is added exclusively
+    by Plan 07 (Wave 4). Adding it here would cause an ImportError until that plan ships.
+    """
+    # Step 1 — Purpose-aware already-sent guard (finding #1, CLAR-04):
+    # Only a row with purpose='confirmation' AND send_state='sent' counts as proof-of-
+    # delivery. A reserved/failed row or a clarification row does NOT count.
+    existing = repo.get_outbound_message_id(run_id, purpose="confirmation")
+    if existing is not None:
+        logger.info(
+            "confirmation already sent for run %s (%s) — advancing to SENT+RECONCILED "
+            "without duplicate send (finding #1, CLAR-04)",
+            run_id,
+            existing,
+        )
+        repo.set_status(run_id, RunStatus.SENT)
+        repo.set_status(run_id, RunStatus.RECONCILED)
+        return
+
+    # Step 2 — Load line items (explicit columns, LOW finding fix).
+    paystubs = repo.load_line_items(run_id)
+
+    # Step 3 — Compose the confirmation email body (D-10b hard timeout passed).
+    body = compose_confirmation(paystubs, run, timeout_s=3.0)
+
+    # Step 4 — Load roster for employee full names (needed for PDF header).
+    roster = repo.load_roster_for_business(run["business_id"])
+    emp_by_id = {str(e.id): e for e in roster.employees}
+
+    # Step 5 — Generate per-employee PDFs (pure, in-memory — HITL-03).
+    pdf_attachments: list[tuple[str, bytes]] = []
+    for item in paystubs:
+        emp = emp_by_id.get(str(item.employee_id)) if item.employee_id else None
+        emp_name = emp.full_name if emp else (item.submitted_name or "Employee")
+        pdf_bytes = generate_paystub_pdf(
+            item,
+            emp_name,
+            run.get("pay_period_start"),
+            run.get("pay_period_end"),
+        )
+        pdf_attachments.append((emp_name, pdf_bytes))
+
+    # Step 6 — Load the inbound email for the reply-to address.
+    inbound = repo.load_inbound_email(run_id)
+    to_addr = inbound.from_addr if inbound else ""
+
+    # Step 7 — Send. purpose='confirmation' + send_state='sent' (D-13c real encoding).
+    # Phase 6 live-provider swap writes send_state='reserved' BEFORE the provider call
+    # and flips to 'sent'/'failed' after — no code change needed here; the column exists.
+    gateway.send_outbound(
+        run_id=run_id,
+        to_addr=to_addr,
+        subject=confirmation_subject(run),
+        body=body,
+        attachments=pdf_attachments,
+        purpose="confirmation",
+        send_state="sent",
+    )
+
+    # Steps 8-9 — Advance the run: SENT → RECONCILED (both sequential in this
+    # synchronous call; RECONCILED is the only terminal-success status).
+    repo.set_status(run_id, RunStatus.SENT)
+    repo.set_status(run_id, RunStatus.RECONCILED)
 
 
 def _compute_line_items(run_id, extracted, matches, roster):
