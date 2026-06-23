@@ -18,7 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2.1: Deterministic Decisioning** *(INSERTED)* - Replace the confidence-threshold gate with deterministic resolution + collision safety + alias read-side; never guesses on a money-moving decision; LLM kept for extraction + clarification suggestion only (completed 2026-06-22)
 - [x] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny (completed 2026-06-22)
 - [x] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart (completed 2026-06-22)
-- [ ] **Phase 5: Dashboard & Delivery** - Operator gate UI (raw email beside extracted beside computed), runs/eval views, confirmation email + on-demand PDFs, idempotency + error path
+- [x] **Phase 5: Dashboard & Delivery** - Operator gate UI (raw email beside extracted beside computed), runs/eval views, confirmation email + on-demand PDFs, idempotency + error path (completed 2026-06-23)
 - [ ] **Phase 6: Real Integration & Ship** - Real email provider behind the interface, Docker + Render + Supabase + keep-alive, README with disclaimer + demo recording
 
 ## Phase Details
@@ -209,11 +209,11 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 05-06-PLAN.md — Jinja2 dashboard UI: 4 templates + style.css + GET /runs, /runs/{id}, /eval, /eval/chart.svg, /runs/{id}/pdf/{emp_id}, POST /demo/send-test (DASH-01, DASH-02, DASH-03, DASH-04, DASH-05)
+- [x] 05-06-PLAN.md — Jinja2 dashboard UI: 4 templates + style.css + GET /runs, /runs/{id}, /eval, /eval/chart.svg, /runs/{id}/pdf/{emp_id}, POST /demo/send-test (DASH-01, DASH-02, DASH-03, DASH-04, DASH-05)
 
 **Wave 4** *(blocked on Wave 2 — D-15 independently droppable)*
 
-- [ ] 05-07-PLAN.md — Alias write-side learning loop: _safe_to_learn_alias (D-01b collision guard) + update_known_alias + _clarify capture + resume update + _deliver alias write hook (D-01..D-04, Beat 3)
+- [x] 05-07-PLAN.md — Alias write-side learning loop: _safe_to_learn_alias (D-01b collision guard) + update_known_alias + _clarify capture + resume update + _deliver alias write hook (D-01..D-04, Beat 3)
 
 **UI hint**: yes
 
@@ -266,5 +266,5 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
-| 5. Dashboard & Delivery | 5/7 | In Progress|  |
+| 5. Dashboard & Delivery | 7/7 | Complete   | 2026-06-23 |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
