@@ -1,9 +1,17 @@
 ---
 phase: 05-dashboard-delivery
 verified: 2026-06-22T00:00:00Z
-status: human_needed
+status: passed
 score: 5/5 must-haves verified
+human_verification_status: approved   # builder walked the live flow (multi-employee clarify→simulate-reply→approve), 2026-06-23
 overrides_applied: 0
+post_verification_note: >
+  After this verification ran, an extended UAT + 5 code-review rounds landed further fixes
+  (paystub redesign, vanilla-JS status poll, simulate-reply demo affordance, reload-on-change,
+  Content-Disposition sanitization incl. non-latin-1, approve error-boundary). All 5/5
+  observable truths remain verified against the current code; full suite 409 passed / 0 failed.
+  The builder manually walked the live dashboard flow and approved the human-verification items
+  (see 05-HUMAN-UAT.md, now status: passed) on 2026-06-23.
 human_verification:
   - test: "Open /runs in a browser and trigger a run via the Send Test Email button. Confirm (a) the runs list shows the new run with a status badge, (b) clicking View opens the 3-column run detail showing the raw email leftmost, extracted data in the centre, and either paystubs or a clarification banner on the right, and (c) for a run in awaiting_approval both Approve & Send and Reject buttons are present."
     expected: "All three columns render with real content. The raw email column is the LEFTMOST column. The decision reasons appear in the banner above the grid. Approve & Send and Reject controls are visible only when status is awaiting_approval."
