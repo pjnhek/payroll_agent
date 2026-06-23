@@ -483,26 +483,27 @@ def update_known_alias(
     """Idempotently append new_alias to employees.known_aliases (D-01).
 
     Caller MUST have already called _safe_to_learn_alias() — this function does
-    NOT re-check collision; it only deduplicates the JSONB array.
+    NOT re-check collision; it only deduplicates the TEXT[] array.
 
-    Uses a conditional UPDATE with `NOT (known_aliases @> to_jsonb(ARRAY[%s::text]))`
-    in the WHERE clause so the alias is only appended when absent. Returns True if the
-    alias was actually added, False if it was already present (idempotent: safe to call
+    Uses a conditional UPDATE with `NOT (%s = ANY(known_aliases))` in the WHERE
+    clause so the alias is only appended when absent. Returns True if the alias
+    was actually added, False if it was already present (idempotent: safe to call
     twice without creating a double-add, D-01 idempotency).
+
+    employees.known_aliases is TEXT[] (schema.sql line 32) — native TEXT[] array
+    operators (unnest / ANY) are used, NOT JSONB ops (to_jsonb / jsonb_agg /
+    jsonb_array_elements_text / @>). CR-01 fix.
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             row = c.execute(
                 """
                 UPDATE employees
-                SET known_aliases = (
-                    SELECT jsonb_agg(DISTINCT elem)
-                    FROM jsonb_array_elements_text(
-                        known_aliases || to_jsonb(ARRAY[%s::text])
-                    ) elem
+                SET known_aliases = array(
+                    SELECT DISTINCT unnest(known_aliases || ARRAY[%s::text])
                 )
                 WHERE id = %s
-                  AND NOT (known_aliases @> to_jsonb(ARRAY[%s::text]))
+                  AND NOT (%s = ANY(known_aliases))
                 RETURNING id
                 """,
                 (new_alias, str(employee_id), new_alias),
