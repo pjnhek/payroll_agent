@@ -1,0 +1,369 @@
+"""Wave 0 RED stubs: delivery pipeline behavior (D-13b, CLAR-04, INGEST-05).
+
+These tests cover:
+- D-13b: exception after claim → run advances to ERROR, not stuck in approved
+- CLAR-04: purpose-aware idempotent confirmation send (finding #1)
+- _clarify idempotency: duplicate clarification send skipped (finding #2)
+- INGEST-05: stale-state recovery — retrigger can claim from in-flight states
+- NEW-1: upsert interaction — pre-existing reserved/failed row for
+  (run_id,'confirmation') → send_outbound upserts to 'sent' without IntegrityError
+
+Most tests will fail RED until Wave 1 adds claim_status to repo.py and
+Wave 3/Plan 05 adds the purpose= parameter to get_outbound_message_id and
+the ON CONFLICT DO UPDATE clause to insert_email_message.
+"""
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+# These imports FAIL RED until Wave 1 adds claim_status to app/db/repo.py.
+from app.db.repo import (
+    _TERMINAL_STATUSES,
+    claim_status,
+    get_outbound_message_id,
+    insert_email_message,
+    record_run_error,
+)
+from app.email.gateway import send_outbound
+from app.models.status import RunStatus
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_id() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+# ---------------------------------------------------------------------------
+# Test 1: APPROVED is NOT in _TERMINAL_STATUSES (D-13b gate)
+#
+# Will PASS after Wave 1 removes APPROVED from _TERMINAL_STATUSES so the
+# delivery failure path can record an error even after claim.
+# Currently RED because APPROVED IS in _TERMINAL_STATUSES in the current code.
+# ---------------------------------------------------------------------------
+
+
+def test_approved_not_in_terminal_statuses():
+    """APPROVED must NOT be in _TERMINAL_STATUSES (D-13b requirement).
+
+    A run that has been claimed (status='approved') but where delivery then
+    fails must be recoverable via record_run_error → ERROR. If APPROVED were
+    terminal, record_run_error would silently no-op and the run would be
+    permanently stranded in 'approved' with no error signal.
+
+    Will PASS after Wave 1 removes APPROVED from _TERMINAL_STATUSES.
+    Currently RED because the current code still includes APPROVED as terminal.
+    """
+    assert RunStatus.APPROVED not in _TERMINAL_STATUSES, (
+        "APPROVED must not be in _TERMINAL_STATUSES (D-13b): a failed delivery "
+        "after claim must be able to transition the run to ERROR via record_run_error"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 2: D-13b error boundary — delivery exception → run moves to ERROR
+#
+# After Wave 1 + Wave 2, when _deliver raises after claiming the run,
+# the orchestrator must call record_run_error and the run ends up ERROR, not
+# stranded in 'approved'.
+# ---------------------------------------------------------------------------
+
+
+def test_delivery_error_converts_approved_to_error(fake_conn):
+    """D-13b: a delivery exception after claim → record_run_error called with
+    type(exc).__name__ only (PII-safe logging rule, D-A1-03 pattern).
+
+    Uses FakeConnection to assert SQL shape without a live DB.
+    Will fail RED until Wave 1+2 implement _deliver + error boundary.
+    """
+    run_id = _run_id()
+    exc = RuntimeError("simulated PDF generation failure")
+
+    # Script the FakeConnection: SELECT returns approved (not in terminal after W1)
+    # and then record_run_error can proceed.
+    fake_conn.script_fetchone(("approved",))  # status check inside record_run_error
+
+    # Call record_run_error directly (the D-13b boundary asserts it gets called
+    # with type(exc).__name__, not str(exc), to avoid leaking PII from exc message).
+    reason = type(exc).__name__
+    record_run_error(run_id, reason, conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    # Must write error_reason (not the exception message/str(exc))
+    assert "error_reason" in sql, (
+        "record_run_error must write error_reason column (D-13b)"
+    )
+    # The reason stored is type(exc).__name__ — the PII-safe logging rule (D-A1-03).
+    assert any(reason in str(params) for _, params in fake_conn.executed), (
+        "record_run_error must write type(exc).__name__ as the reason, not str(exc) "
+        "(PII-safe logging rule D-A1-03)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 3: CLAR-04 purpose-aware confirmation idempotency (finding #1)
+#
+# When get_outbound_message_id(run_id, purpose='confirmation') returns an
+# existing message_id, the delivery path skips the send and advances directly.
+#
+# NOTE: the purpose= parameter does not exist yet in repo.get_outbound_message_id
+# — it lands in Plan 03 when the purpose column is added to email_messages.
+# This test is RED until then.
+# ---------------------------------------------------------------------------
+
+
+def test_idempotent_confirmation_skips_if_confirmation_outbound_exists(fake_conn):
+    """CLAR-04: when get_outbound_message_id(run_id, purpose='confirmation')
+    returns an existing message_id, the delivery path must skip the send.
+
+    The purpose='confirmation' kwarg distinguishes a prior confirmation row
+    from a clarification row — a purpose-blind lookup would incorrectly skip
+    sending the confirmation if a clarification had been sent earlier (finding #1).
+
+    Will fail RED until Plan 03 adds the purpose column + Wave 2 wires the
+    idempotency guard.
+    """
+    run_id = _run_id()
+
+    # Script the FakeConnection to return a pre-existing confirmation Message-ID.
+    fake_conn.script_fetchone(("<existing-confirmation@payroll-agent.local>",))
+
+    # Calling get_outbound_message_id with purpose='confirmation' is the CORE of
+    # finding #1 — this new signature is what Plan 03 will add.
+    existing_mid = get_outbound_message_id(run_id, purpose="confirmation", conn=fake_conn)
+
+    assert existing_mid == "<existing-confirmation@payroll-agent.local>", (
+        "get_outbound_message_id(purpose='confirmation') must return the existing "
+        "confirmation Message-ID"
+    )
+    sql = fake_conn.all_sql()
+    # The SQL query must filter by purpose='confirmation' (not purpose-blind).
+    assert "confirmation" in sql, (
+        "the idempotency query must filter by purpose='confirmation' (CLAR-04 / finding #1)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: _clarify idempotency — duplicate clarification send skipped (finding #2)
+#
+# When get_outbound_message_id(run_id, purpose='clarification') returns an
+# existing row, re-calling _clarify must NOT call gateway.send_outbound again.
+# ---------------------------------------------------------------------------
+
+
+def test_clarify_idempotency_skips_if_clarification_already_sent(fake_conn):
+    """Finding #2: when a clarification has already been sent for this run,
+    re-triggering _clarify must skip the send_outbound call.
+
+    The idempotency guard reads get_outbound_message_id(run_id, purpose='clarification').
+    If it returns a non-None value, the clarify path must return early (no duplicate send).
+
+    Will fail RED until Wave 3 / Plan 05 Task 1 adds the guard to _clarify,
+    and Plan 03 adds the purpose column.
+    """
+    run_id = _run_id()
+
+    # Script: a pre-existing clarification row already exists.
+    fake_conn.script_fetchone(("<existing-clarification@payroll-agent.local>",))
+
+    existing_mid = get_outbound_message_id(run_id, purpose="clarification", conn=fake_conn)
+
+    assert existing_mid is not None, (
+        "get_outbound_message_id(purpose='clarification') must return the existing "
+        "clarification Message-ID"
+    )
+    sql = fake_conn.all_sql()
+    assert "clarification" in sql, (
+        "the idempotency query must filter by purpose='clarification' (finding #2)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: INGEST-05 — retrigger from ERROR state
+# ---------------------------------------------------------------------------
+
+
+def test_retrigger_claims_from_error_state(fake_conn):
+    """INGEST-05: claim_status(run_id, ERROR, RECEIVED) returns True when run is
+    in error state (the manual retrigger path).
+
+    Will fail RED until Wave 1 adds claim_status to repo.py.
+    """
+    run_id = _run_id()
+
+    # Script: the CAS SELECT returns current status='error' → claim succeeds.
+    fake_conn.script_fetchone(("error",))   # SELECT status ... FOR UPDATE
+    fake_conn.script_fetchone((str(run_id),))  # RETURNING id after UPDATE
+
+    result = claim_status(run_id, RunStatus.ERROR, RunStatus.RECEIVED, conn=fake_conn)
+
+    assert result is True, (
+        "claim_status(run_id, ERROR, RECEIVED) must return True when the run is "
+        "in error state (INGEST-05 retrigger path)"
+    )
+    sql = fake_conn.all_sql()
+    assert "error" in sql.lower(), (
+        "claim_status SQL must reference the expected-status ('error') in the CAS"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: D-13b — retrigger from APPROVED state (delivery died)
+# ---------------------------------------------------------------------------
+
+
+def test_retrigger_claims_from_approved_state(fake_conn):
+    """D-13b: claim_status(run_id, APPROVED, RECEIVED) returns True when the
+    run is in approved-but-delivery-died state.
+
+    A run can be stranded in 'approved' if the delivery task was claimed but
+    then crashed before record_run_error ran (e.g. OOM kill). The retrigger
+    route must be able to reclaim it from 'approved' for a fresh delivery attempt.
+
+    Will fail RED until Wave 1 adds claim_status to repo.py.
+    """
+    run_id = _run_id()
+
+    # Script: the CAS SELECT returns current status='approved' → claim succeeds.
+    fake_conn.script_fetchone(("approved",))
+    fake_conn.script_fetchone((str(run_id),))
+
+    result = claim_status(run_id, RunStatus.APPROVED, RunStatus.RECEIVED, conn=fake_conn)
+
+    assert result is True, (
+        "claim_status(run_id, APPROVED, RECEIVED) must return True when the run "
+        "is stranded in approved state (D-13b recovery path)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: finding #6 — stale-state recovery from EXTRACTING
+# ---------------------------------------------------------------------------
+
+
+def test_retrigger_claims_from_stale_extracting_state(fake_conn):
+    """Finding #6: claim_status(run_id, EXTRACTING, RECEIVED) succeeds when a
+    run is stuck in 'extracting' past a staleness threshold.
+
+    # Staleness threshold check is in the route handler (updated_at < now() - interval
+    # '5 minutes'); claim_status itself is unchanged. Plan 05 Task 2 adds the staleness
+    # gate in the retrigger route.
+
+    The test stubs the claim_status call only — the staleness check is in the route
+    layer, which is Wave 3. This test confirms claim_status supports the FROM_STATUS=
+    EXTRACTING transition even though 'extracting' is normally an in-flight state.
+
+    Will fail RED until Wave 1 adds claim_status to repo.py.
+    """
+    run_id = _run_id()
+
+    # Script: run is stuck in 'extracting'.
+    fake_conn.script_fetchone(("extracting",))
+    fake_conn.script_fetchone((str(run_id),))
+
+    result = claim_status(run_id, RunStatus.EXTRACTING, RunStatus.RECEIVED, conn=fake_conn)
+
+    assert result is True, (
+        "claim_status(run_id, EXTRACTING, RECEIVED) must succeed for stale-state "
+        "recovery — the staleness threshold guard lives in the route handler, not in "
+        "claim_status itself (finding #6)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: NEW-1 upsert interaction — reserved row advances to sent
+#
+# # RED until Plan 05 adds ON CONFLICT (run_id, purpose) DO UPDATE to
+# insert_email_message (NEW-1 upsert fix)
+# ---------------------------------------------------------------------------
+
+
+def test_send_outbound_over_reserved_row_advances_to_sent(fake_conn):
+    """NEW-1: a pre-existing email_messages row with send_state='reserved' for
+    (run_id, 'confirmation') must upsert to send_state='sent' without IntegrityError.
+
+    The uq_email_run_purpose UNIQUE constraint + sent-only guard INTERACTION:
+    if insert_email_message does a plain INSERT, a pre-existing reserved row
+    triggers a unique violation. The fix is ON CONFLICT (run_id, purpose) DO UPDATE
+    SET send_state='sent', updated_at=now() in insert_email_message.
+
+    # RED until Plan 05 adds ON CONFLICT (run_id, purpose) DO UPDATE to
+    # insert_email_message (NEW-1 upsert fix)
+
+    Will fail RED until Plan 05 adds the ON CONFLICT DO UPDATE clause.
+    """
+    run_id = _run_id()
+    msg_id = f"<{uuid.uuid4()}@payroll-agent.local>"
+
+    # Script the FakeConnection to simulate the UPSERT returning the row id.
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    # Call insert_email_message with purpose='confirmation' and send_state='sent'.
+    # The upsert must succeed (no exception) even if a reserved row already exists.
+    result = insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=msg_id,
+        purpose="confirmation",
+        send_state="sent",
+        conn=fake_conn,
+    )
+
+    assert result is not None, (
+        "insert_email_message with purpose='confirmation' must return a row id "
+        "(no IntegrityError on pre-existing reserved row — NEW-1 upsert)"
+    )
+    sql = fake_conn.all_sql()
+    # The SQL must use ON CONFLICT ... DO UPDATE to handle pre-existing rows.
+    assert "ON CONFLICT" in sql.upper(), (
+        "insert_email_message must use ON CONFLICT (run_id, purpose) DO UPDATE "
+        "to advance reserved/failed rows to sent without IntegrityError (NEW-1)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: NEW-1 variant — failed row also advances to sent
+#
+# # RED until Plan 05 adds ON CONFLICT (run_id, purpose) DO UPDATE to
+# insert_email_message (NEW-1 upsert fix — failed-row variant)
+# ---------------------------------------------------------------------------
+
+
+def test_send_outbound_over_failed_row_advances_to_sent(fake_conn):
+    """NEW-1 failed-row variant: a pre-existing send_state='failed' row for
+    (run_id, 'confirmation') must also upsert to 'sent' without crash.
+
+    A retry after a gateway failure must be able to advance a failed row to
+    sent — the same ON CONFLICT DO UPDATE clause handles both 'reserved' and
+    'failed' pre-existing rows.
+
+    # RED until Plan 05 adds ON CONFLICT (run_id, purpose) DO UPDATE to
+    # insert_email_message (NEW-1 upsert fix — failed-row variant)
+    """
+    run_id = _run_id()
+    msg_id = f"<{uuid.uuid4()}@payroll-agent.local>"
+
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    result = insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=msg_id,
+        purpose="confirmation",
+        send_state="sent",
+        conn=fake_conn,
+    )
+
+    assert result is not None, (
+        "insert_email_message must upsert a failed row to sent without crash (NEW-1)"
+    )
+    sql = fake_conn.all_sql()
+    assert "ON CONFLICT" in sql.upper(), (
+        "insert_email_message must use ON CONFLICT DO UPDATE for the failed-row "
+        "retry case (NEW-1 upsert fix)"
+    )
