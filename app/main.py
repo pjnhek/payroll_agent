@@ -633,12 +633,14 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
         filing_status=emp.filing_status if emp else None,
         hourly_rate=emp.hourly_rate if emp else None,
     )
-    # CR-01 (REVIEW-2): sanitize the filename to a safe charset before embedding it in the
+    # CR-01 (REVIEW-2/3): sanitize the filename to a safe charset before embedding it in the
     # Content-Disposition header. emp_name can be an LLM-extracted submitted_name (when the
     # matched employee was removed from the roster post-run), so a raw value could carry a
-    # double-quote or CRLF and break/inject the header. Collapse anything outside
-    # [A-Za-z0-9._-] to '_'.
-    safe_name = re.sub(r"[^\w.\-]", "_", emp_name) or "employee"
+    # double-quote or CRLF and break/inject the header. The re.ASCII flag is REQUIRED:
+    # without it Python's unicode-aware \w passes through chars above U+00FF (e.g. "ł", "ı"),
+    # which then raise UnicodeEncodeError when Starlette latin-1-encodes the header (500 on
+    # any non-latin-1 employee name). re.ASCII restricts \w to [A-Za-z0-9_], always latin-1 safe.
+    safe_name = re.sub(r"[^\w.\-]", "_", emp_name, flags=re.ASCII) or "employee"
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",

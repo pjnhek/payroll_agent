@@ -256,11 +256,20 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
     assert str(run_id) in response.text
 
 
-def test_paystub_pdf_content_disposition_sanitized(monkeypatch):
-    """CR-01 (REVIEW-2) security regression: the paystub PDF Content-Disposition filename
-    must be sanitized — a submitted_name containing a double-quote or CRLF must not break
-    or inject the header. emp_name falls back to item.submitted_name when the employee was
-    removed from the roster post-run, and submitted_name is LLM-extracted.
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        'Bad "Name"\r\nX-Injected: evil',  # CR-01 REVIEW-2: quote + CRLF header injection
+        "Paweł Łukasiński",                # CR-01 REVIEW-3: non-latin-1 unicode (ł=U+0142)
+        "İrem Çağ",                        # Turkish dotted-I + ç, also above U+00FF
+    ],
+)
+def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
+    """CR-01 (REVIEW-2 + REVIEW-3) security regression: the paystub PDF Content-Disposition
+    filename must be sanitized so it (a) cannot break/inject the header (quote/CRLF) and
+    (b) is always latin-1 encodable — Starlette latin-1-encodes header values, so a unicode
+    name above U+00FF would raise UnicodeEncodeError → 500 without re.ASCII. emp_name falls
+    back to item.submitted_name (LLM-extracted) when the employee was removed post-run.
     """
     from decimal import Decimal
     from datetime import datetime, timezone
@@ -271,7 +280,7 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch):
 
     run_id = uuid.uuid4()
     emp_id = uuid.uuid4()
-    malicious = 'Bad "Name"\r\nX-Injected: evil'
+    malicious = bad_name
     item = PaystubLineItem(
         id=uuid.uuid4(), run_id=run_id, employee_id=emp_id, submitted_name=malicious,
         hours_regular=Decimal("40"), hours_overtime=Decimal("0"), hours_vacation=Decimal("0"),
@@ -298,9 +307,10 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch):
     # letters/hyphens inside the quotes are fine — only the dangerous chars are neutralized.
     assert "\r" not in cd and "\n" not in cd, "CRLF must not reach the Content-Disposition header"
     assert cd.count('"') == 2, f"filename must remain a single well-formed quoted-string; got {cd!r}"
-    assert ":" not in cd.split('filename="', 1)[1], (
-        f"no colon (header-field delimiter) inside the filename; got {cd!r}"
-    )
+    # REVIEW-3: the whole header must be latin-1 encodable (Starlette encodes it that way);
+    # this is the property the re.ASCII flag guarantees. A non-encodable value 500s before
+    # we ever get here, but assert it explicitly so the intent is clear.
+    cd.encode("latin-1")
 
 
 def test_run_detail_inflight_poll_reloads_on_settle(monkeypatch):
