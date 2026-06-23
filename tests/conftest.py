@@ -307,6 +307,18 @@ class InMemoryRepo:
     def replace_line_items(self, run_id, items, conn=None):
         self.line_items[str(run_id)] = list(items)
 
+    def load_line_items(self, run_id, conn=None):
+        """Return stored PaystubLineItem list for a run (mirrors repo.load_line_items)."""
+        return list(self.line_items.get(str(run_id), []))
+
+    def load_all_runs(self, conn=None):
+        """Return all runs as dicts with business_name (mirrors repo.load_all_runs)."""
+        result = []
+        for run in self.runs.values():
+            biz_name = "Test Business"
+            result.append({**run, "business_name": biz_name})
+        return result
+
     def set_alias_candidates(self, run_id, candidates, conn=None):
         """Store alias candidates in the in-memory run dict (D-04, mirrors repo)."""
         run = self.runs.get(str(run_id))
@@ -391,6 +403,8 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "persist_decision",
         "persist_reconciliation",
         "replace_line_items",
+        "load_line_items",
+        "load_all_runs",
         "set_alias_candidates",
         "insert_email_message",
         "get_outbound_message_id",

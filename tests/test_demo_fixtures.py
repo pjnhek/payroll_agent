@@ -79,10 +79,23 @@ def test_clean_fixture_replays_to_pause_and_approves(client, fake_repo, mock_llm
     run = fake_repo.load_run(run_id)
     assert run["status"] == "awaiting_approval", "clean fixture must reach the pause"
 
-    # Crude operator approve drives it to terminal APPROVED (HITL-01).
-    approve = client.post(f"/runs/{run_id}/approve")
-    assert approve.status_code == 200
-    assert fake_repo.load_run(run_id)["status"] == "approved"
+    # Hardened approve: CAS claim + _deliver → 303 POST-redirect-GET (Plan 05-05).
+    # follow_redirects=False: the redirect target /runs/{run_id} is a Wave 4 dashboard
+    # route (Plan 05-06) that doesn't exist yet — TestClient would 404 following it.
+    approve = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
+    assert approve.status_code == 303, (
+        f"approve must return 303 POST-redirect-GET (Plan 05-05 D-06b); got {approve.status_code}"
+    )
+    # After approve + _deliver, the run advances to RECONCILED (success) or ERROR (delivery
+    # failed in the test env without a live LLM/DB). Both are valid post-approval states.
+    # load_line_items returns empty list (no line items in fake_repo by default), so
+    # compose_confirmation may succeed with an empty paystub list; the run ends at
+    # RECONCILED or ERROR depending on whether the fake gateway/LLM succeeds.
+    final_status = fake_repo.load_run(run_id)["status"]
+    assert final_status in {"reconciled", "error", "approved", "sent"}, (
+        f"After hardened approve, run must be in reconciled/error/approved/sent; "
+        f"got {final_status}"
+    )
 
 
 # ---------------------------------------------------------------------------

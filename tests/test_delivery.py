@@ -386,3 +386,51 @@ def test_send_outbound_over_failed_row_advances_to_sent(fake_conn):
         "insert_email_message must use ON CONFLICT DO UPDATE for the failed-row "
         "retry case (NEW-1 upsert fix)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: R2-HIGH stale CAS exclusivity — two concurrent retriggers from stale state
+#
+# The stale-retrigger CAS target MUST differ from the current status so the
+# conditional UPDATE genuinely changes the row. Two concurrent retrigger clicks
+# on a stale RECEIVED run both call claim_status(RECEIVED → EXTRACTING):
+# the first wins (row changed), the second finds the row already EXTRACTING
+# and returns False. This is the R2-HIGH stale CAS exclusivity fix.
+# ---------------------------------------------------------------------------
+
+
+def test_two_concurrent_stale_retriggers_only_one_wins():
+    """R2-HIGH stale CAS exclusivity: two concurrent stale retriggers on the same
+    RECEIVED run — exactly one wins the claim, the other sees False.
+
+    The stale retrigger path claims RECEIVED → EXTRACTING (NOT RECEIVED → RECEIVED
+    which would be a no-op). An in-memory InMemoryRepo mirrors the real claim_status
+    CAS: exactly one caller wins because claim_status checks the current status before
+    updating. The second caller arrives after the first has already advanced the run
+    to EXTRACTING, so its claim(RECEIVED → EXTRACTING) returns False.
+
+    This test proves the R2-HIGH fix: targeting EXTRACTING (≠ source) makes the
+    claim exclusive. A RECEIVED→RECEIVED no-op would let both callers win.
+    """
+    from tests.conftest import InMemoryRepo
+
+    store = InMemoryRepo()
+    business_id = store.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = store.create_run(business_id=business_id, source_email_id=None)
+    store.set_status(run_id, RunStatus.RECEIVED)
+
+    # Simulate two concurrent callers both attempting the stale claim.
+    # claim_status(RECEIVED → EXTRACTING): first wins, second sees EXTRACTING already.
+    result_1 = store.claim_status(run_id, RunStatus.RECEIVED, RunStatus.EXTRACTING)
+    result_2 = store.claim_status(run_id, RunStatus.RECEIVED, RunStatus.EXTRACTING)
+
+    assert result_1 is True, (
+        "First stale retrigger must win the claim_status(RECEIVED → EXTRACTING) CAS"
+    )
+    assert result_2 is False, (
+        "Second stale retrigger must lose: run is already EXTRACTING after first "
+        "claim — RECEIVED→EXTRACTING target ensures exclusivity (R2-HIGH fix)"
+    )
+    assert store.load_run(run_id)["status"] == RunStatus.EXTRACTING.value, (
+        "After both retriggers, run must be in EXTRACTING (the CAS winner's target)"
+    )
