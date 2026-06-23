@@ -1,5 +1,42 @@
 {% extends "base.html" %}
 {% block content %}
+{# UAT #3/#4: vanilla-JS per-row status poll — replaces the blunt meta-refresh.
+   Polls GET /runs/{id}/status every 2s for each in-flight row.
+   Swaps each badge IN PLACE; STOPS polling that row when it settles.
+   Cap: 30 attempts (~60s) per row. Fetch errors silently skipped.
+   The demo-business <select> and scroll position survive — NO full-page reload. #}
+<script>
+(function() {
+  var IN_FLIGHT    = new Set({{ in_flight_statuses | tojson }});
+  var MAX_ATTEMPTS = 30;
+
+  function startPoll(runId) {
+    var attempts = 0;
+    var timer = setInterval(function() {
+      if (attempts >= MAX_ATTEMPTS) { clearInterval(timer); return; }
+      attempts++;
+      fetch('/runs/' + runId + '/status')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+          if (!data) { return; }
+          var badge = document.querySelector('[data-run-id="' + runId + '"] .status-badge');
+          if (badge) {
+            badge.className = 'badge badge-' + data.badge_class + ' status-badge';
+            badge.textContent = data.badge_label;
+          }
+          if (!IN_FLIGHT.has(data.status)) {
+            clearInterval(timer);
+          }
+        })
+        .catch(function() {});
+    }, 2000);
+  }
+
+  document.querySelectorAll('tr[data-run-id][data-in-flight="true"]').forEach(function(row) {
+    startPoll(row.getAttribute('data-run-id'));
+  });
+})();
+</script>
 <h1>Payroll Runs</h1>
 
 {% if runs %}
@@ -15,13 +52,13 @@
   </thead>
   <tbody>
     {% for run in runs %}
-    <tr>
+    <tr data-run-id="{{ run.id }}" data-in-flight="{{ 'true' if run.status in in_flight_statuses else 'false' }}">
       <td style="color: #6B7280; font-size: 12px;">
         {{ run.created_at.strftime('%Y-%m-%d %H:%M') if run.created_at else '—' }}
       </td>
       <td>{{ run.business_name }}</td>
       <td>
-        <span class="badge badge-{{ run.status | badge_class }}">{{ run.status | badge_label }}</span>
+        <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
       </td>
       <td style="color: #6B7280;">
         {% if run.decision and run.decision.gate_reasons %}

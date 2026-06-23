@@ -462,15 +462,13 @@ def runs_list(request: Request):
         # before the pool is warmed up.
         logger.debug("load_all_runs unavailable — rendering empty list")
         runs = []
-    # UAT #3: auto-refresh while any run in the list is in-flight.
-    auto_refresh = any(r.get("status") in IN_FLIGHT_STATUSES for r in runs)
     return templates.TemplateResponse(
         request,
         "runs_list.html",
         {
             "runs": runs,
             "demo_fixtures": _DEMO_FIXTURES,
-            "auto_refresh": auto_refresh,
+            "in_flight_statuses": list(IN_FLIGHT_STATUSES),
         },
     )
 
@@ -478,6 +476,31 @@ def runs_list(request: Request):
 # ---------------------------------------------------------------------------
 # DASH-02/03: GET /runs/{run_id} — run detail 3-column gate
 # ---------------------------------------------------------------------------
+
+
+@app.get("/runs/{run_id}/status")
+def run_status(run_id: uuid.UUID) -> JSONResponse:
+    """Lightweight status poll endpoint for the vanilla-JS badge updater (UAT #3/#4).
+
+    Returns {"status": "<status>", "badge_class": "<class>", "badge_label": "<label>"}.
+    The JS poller in run_detail.html / runs_list.html calls this every 2s per in-flight
+    run, swaps the badge in-place, and stops polling when the status is settled —
+    no full-page reload, no dropdown reset.
+    """
+    try:
+        run = repo.load_run(run_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    status = run.get("status", "")
+    return JSONResponse(
+        content={
+            "status": status,
+            "badge_class": _badge_class_filter(status),
+            "badge_label": _badge_label_filter(status),
+        }
+    )
 
 
 @app.get("/runs/{run_id}")
@@ -504,8 +527,6 @@ def run_detail(request: Request, run_id: uuid.UUID):
     except Exception:
         logger.debug("load_outbound_emails unavailable for run %s", run_id)
         outbound_emails = []
-    # UAT #3: auto-refresh while this run is in an in-flight state.
-    auto_refresh = run.get("status") in IN_FLIGHT_STATUSES
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -514,7 +535,7 @@ def run_detail(request: Request, run_id: uuid.UUID):
             "raw_email": raw_email,
             "paystubs": paystubs,
             "outbound_emails": outbound_emails,
-            "auto_refresh": auto_refresh,
+            "in_flight_statuses": list(IN_FLIGHT_STATUSES),
         },
     )
 
