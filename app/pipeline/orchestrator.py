@@ -479,7 +479,22 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
     D-01/D-02 alias write: _write_aliases_if_safe is called BEFORE set_status(SENT)
     (PATTERNS.md line 611 ordering), wrapped in try/except (D-13b defensive isolation —
     alias write failure logs a warning and never strands or fails a sent run).
+
+    CR-03 fix: run is enriched with business_name (loaded from businesses via
+    load_business_name) and pay_period_label (formatted from pay_period_start /
+    pay_period_end) so confirmation_subject() and compose_confirmation() produce the
+    correct subject line. load_run() stays lean (no JOIN for every caller).
     """
+    # Step 0 — Enrich run dict with fields needed by confirmation helpers (CR-03).
+    # load_run() returns business_id but NOT business_name (no JOIN) and NOT
+    # pay_period_label (non-existent column). Enrich here, scoped to _deliver.
+    run = dict(run)  # shallow copy — do not mutate the caller's dict
+    biz_name = repo.load_business_name(run["business_id"])
+    run["business_name"] = biz_name if biz_name else "Payroll Run"
+    start = run.get("pay_period_start")
+    end = run.get("pay_period_end")
+    run["pay_period_label"] = f"{start} to {end}" if start and end else ""
+
     # Step 1 — Purpose-aware already-sent guard (finding #1, CLAR-04):
     # Only a row with purpose='confirmation' AND send_state='sent' counts as proof-of-
     # delivery. A reserved/failed row or a clarification row does NOT count.

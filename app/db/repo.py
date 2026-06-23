@@ -180,6 +180,21 @@ def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
     return uuid.UUID(str(row[0])) if row else None
 
 
+def load_business_name(business_id: uuid.UUID, conn=None) -> str | None:
+    """Return the display name for a business, or None if not found.
+
+    Used by _deliver (CR-03 fix) to enrich the run dict with business_name
+    before composing the confirmation email. Kept as a thin targeted helper
+    so load_run stays lean (no JOIN for every caller).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT name FROM businesses WHERE id = %s",
+            (str(business_id),),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
 def create_run(
     *,
     business_id: uuid.UUID,

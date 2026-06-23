@@ -319,6 +319,22 @@ class InMemoryRepo:
             result.append({**run, "business_name": biz_name})
         return result
 
+    def load_business_name(self, business_id, conn=None):
+        """Return business name for the given business_id (CR-03 fix, mirrors repo).
+
+        Returns the seeded business name when available, else a safe fallback.
+        """
+        # Reverse-lookup the seeded contact_to_business map for a display name.
+        # The seed stores businesses by contact_email key; we need a name lookup.
+        # For in-memory tests, return a stable placeholder that is NOT the fallback
+        # "Payroll Run" text — this lets regression tests verify real names are used.
+        from app.db.seed import seed as _seed
+        seeded = _seed(dry_run=True)
+        for biz in seeded.businesses:
+            if biz["id"] == business_id or str(biz["id"]) == str(business_id):
+                return biz.get("name") or biz.get("contact_email", "Test Business")
+        return "Test Business"
+
     def set_alias_candidates(self, run_id, candidates, conn=None):
         """Store alias candidates in the in-memory run dict (D-04, mirrors repo)."""
         run = self.runs.get(str(run_id))
@@ -396,6 +412,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "load_source_email",
         "load_inbound_email",
         "load_roster_for_business",
+        "load_business_name",
         "set_status",
         "claim_status",
         "record_run_error",
