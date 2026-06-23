@@ -629,7 +629,7 @@ WHERE id IN (
 
 **Simpler alternative:** Add `--reset-aliases` to the existing script. The most reliable approach is to re-run `uv run python -m app.db.seed` after the purge, since seed uses `ON CONFLICT DO UPDATE` and will reset all aliases to seed values.
 
-### 11. Validation Architecture
+## Validation Architecture
 
 [REQUIRED: nyquist_validation=true in .planning/config.json]
 
