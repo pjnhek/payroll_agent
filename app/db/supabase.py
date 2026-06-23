@@ -44,6 +44,9 @@ def get_pool() -> ConnectionPool:
             # D-04: disable server-side prepared statements on every connection
             # so they do not break under Supavisor transaction-mode pooling.
             kwargs={"prepare_threshold": None},
+            # Short wait timeout so tests and health checks that run without a live
+            # DB fail fast (5s) rather than blocking for the default 30s.
+            timeout=5,
         )
     return _pool
 
