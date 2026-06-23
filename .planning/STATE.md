@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-06-23T01:00:05.378Z"
-last_activity: 2026-06-23 -- Phase 05 execution started
+last_updated: "2026-06-23T01:33:38.102Z"
+last_activity: 2026-06-23
 progress:
   total_phases: 7
   completed_phases: 5
   total_plans: 26
-  completed_plans: 19
+  completed_plans: 22
   percent: 71
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-20)
 ## Current Position
 
 Phase: 05 (dashboard-delivery) — EXECUTING
-Plan: 1 of 7
-Status: Executing Phase 05
-Last activity: 2026-06-23 -- Phase 05 execution started
+Plan: 2 of 7
+Status: Ready to execute
+Last activity: 2026-06-23
 
-Progress: [██████████] 100%
+Progress: [█████████░] 85%
 
 ## Performance Metrics
 
@@ -66,6 +66,7 @@ Progress: [██████████] 100%
 | Phase 02.1 P03 (Tasks 1-2; Task 3 = human checkpoint) | 7m | 2 of 3 tasks tasks | 12 files files |
 | Phase 02.1 P04 | 5m | 2 tasks | 7 files |
 | Phase 02.1 P05 | 14min | 3 tasks | 13 files |
+| Phase 05-dashboard-delivery P03 | 35 | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,10 @@ Recent decisions affecting current work:
 - [Phase 02.1]: [Phase 02.1 P04]: compose_clarification gains suggestions= threaded into BOTH the draft prompt and the deterministic _template_body floor so the 'did you mean David Reyes?' hero survives a total draft failure (WR-03); a suggested name must be an exact roster full_name or it is dropped.
 - [Phase ?]: [Phase 02.1 P05]: DEMO-01 reframed deterministic — gate_block_hero = unknown-shorthand 'David Reyez' resolves to source=none -> request_clarification (suggestion call names David Reyes); NEW collision_safety.json + constraint-safe seed pair (Daniel Reyes e0000007 shares 'D. Reyes' alias with David Reyes; DISTINCT full_names so UNIQUE holds). Never guesses on a money-moving decision (D-21-01/02).
 - [Phase ?]: [Phase 02.1 P05]: Final sweep — all residual tests on deterministic source/resolved+Decision shapes (no confidence/model_action/match_type/0.8); CLAUDE.md/REQUIREMENTS.md/PROJECT.md/ROADMAP.md rewritten to deterministic auditable decisioning + learning loop (WRITE side P5); eval taxonomy=exact/stored-alias/first-time-alias/typo/collision/unknown. Mocked suite GREEN (195); app/+docs grep-clean. Phase 2.1 COMPLETE.
+- [Phase ?]: D-12 closed: claim_status is the second sanctioned status writer; all contended gates use CAS not load-then-set
+- [Phase ?]: D-13b: RunStatus.APPROVED removed from _TERMINAL_STATUSES — delivery failure after approval routes to ERROR for retriggering
+- [Phase ?]: D-13c sharpened NEW-1: insert_email_message upserts on (run_id, purpose) for outbound rows — retry-over-reserved advances to sent instead of crashing on uq_email_run_purpose
+- [Phase ?]: D-05 OT explicit-zero decision: hours_overtime=0 treated same as absent — never silently underpays a weekly employee
 
 ### Pending Todos
 
@@ -138,6 +143,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-22T22:28:31.149Z
-Stopped at: Phase 5 UI-SPEC approved
-Resume file: .planning/phases/05-dashboard-delivery/05-UI-SPEC.md
+Last session: 2026-06-23T01:33:38.095Z
+Stopped at: Completed 05-03-PLAN.md (checkpoint passed)
+Resume file: None

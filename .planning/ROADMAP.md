@@ -200,7 +200,7 @@ Plans:
 
 **Wave 1** *(blocked on Wave 0)*
 
-- [ ] 05-03-PLAN.md — Atomic claim slice: claim_status CAS + _TERMINAL_STATUSES fix + alias_candidates DDL + resume_pipeline CAS refactor + over-40-no-OT validate rule (FOUND-04, D-12, D-05, D-13b prerequisite)
+- [x] 05-03-PLAN.md — Atomic claim slice: claim_status CAS + _TERMINAL_STATUSES fix + alias_candidates DDL + resume_pipeline CAS refactor + over-40-no-OT validate rule (FOUND-04, D-12, D-05, D-13b prerequisite)
 
 **Wave 2** *(blocked on Wave 1 — two plans run concurrently)*
 
@@ -266,5 +266,5 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
-| 5. Dashboard & Delivery | 2/7 | In Progress|  |
+| 5. Dashboard & Delivery | 3/7 | In Progress|  |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |

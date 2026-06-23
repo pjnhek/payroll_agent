@@ -12,7 +12,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [x] **FOUND-01**: Postgres schema exists for all 6 tables (businesses, employees, payroll_runs, paystub_line_items, email_messages, eval_results) with the 11-value `payroll_runs.status` enum
 - [x] **FOUND-02**: `email_messages.message_id` has a unique index so duplicate webhook deliveries cannot create a second run (idempotency)
 - [x] **FOUND-03**: Pydantic v2 contract models exist and are shared by the pipeline and the eval (InboundEmail, Extracted, Decision, PaystubLineItem)
-- [ ] **FOUND-04**: A typed DB access layer (psycopg3, pooler connection) performs atomic status transitions and uses `SELECT ... FOR UPDATE` to prevent double-approval
+- [x] **FOUND-04**: A typed DB access layer (psycopg3, pooler connection) performs atomic status transitions and uses `SELECT ... FOR UPDATE` to prevent double-approval
 - [x] **FOUND-05**: Seed data loads 3+ businesses and their employees (mixed hourly/salary, known aliases, filing statuses) sufficient to exercise every calc path and name-match case
 - [x] **FOUND-06**: Each seeded employee carries the full set of calc inputs — pay frequency / pay periods, wage type + rate or annual salary, W-4 filing status, Step-2 checkbox flag, assumed Step-3/Step-4 values, and a static year-to-date Social Security wages figure (so the SS wage-base cap in CALC-04 is testable and honest)
 
@@ -33,7 +33,7 @@ Requirements for the initial release. Each maps to a roadmap phase (see Traceabi
 - [x] **INGEST-02**: The inbound payload is stored in `email_messages` with Message-ID, In-Reply-To, and References headers; reply quoted-history/signatures are stripped before extraction
 - [x] **INGEST-03**: The sender address is matched to `businesses.contact_email`; an unknown sender is logged and stopped, never guessed
 - [x] **INGEST-04**: An explicit `orchestrator.py` drives the run state machine — it owns the legal `status` transitions and the two pause points (`awaiting_reply`, `awaiting_approval`)
-- [ ] **INGEST-05**: A stuck/errored run surfaces an `error` status on the dashboard and can be re-triggered idempotently **from the start of the run** (the demo requirement is "nothing silently hangs," not mid-pipeline resume; full resume-from-arbitrary-status is deferred to v2). Drop-if-tight.
+- [x] **INGEST-05**: A stuck/errored run surfaces an `error` status on the dashboard and can be re-triggered idempotently **from the start of the run** (the demo requirement is "nothing silently hangs," not mid-pipeline resume; full resume-from-arbitrary-status is deferred to v2). Drop-if-tight.
 
 ### LLM Judgment (the gated decisioning core)
 
@@ -170,8 +170,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | HITL-02 | Phase 5 | Pending |
 | HITL-03 | Phase 5 | Pending |
 | CLAR-04 | Phase 5 | Pending |
-| INGEST-05 | Phase 5 | Pending |
-| FOUND-04 | Phase 5 | Pending |
+| INGEST-05 | Phase 5 | Complete |
+| FOUND-04 | Phase 5 | Complete |
 | OPS-01 | Phase 6 | Pending |
 | OPS-02 | Phase 6 | Pending |
 | OPS-03 | Phase 6 | Pending |
