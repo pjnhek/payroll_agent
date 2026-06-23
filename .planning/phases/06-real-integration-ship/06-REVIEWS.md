@@ -2,59 +2,60 @@
 phase: 6
 reviewers: [codex]
 reviewed_at: 2026-06-23
-review_round: "demo-1"
-scope: interactive-demo expansion (06-08 + gate runbooks); integration plans 06-01..07 converged separately
-plans_reviewed: [06-01-PLAN.md, 06-02-PLAN.md, 06-03-PLAN.md, 06-04-PLAN.md, 06-05-PLAN.md, 06-06-PLAN.md, 06-07-PLAN.md, 06-08-PLAN.md]
+review_round: "demo-2"
+scope: interactive-demo expansion (06-08 + gate runbooks)
 codex_cli_version: codex-cli 0.135.0
-overall_risk: HIGH until outbound-suppression + sender-state decoupling fixed
+overall_risk: MEDIUM-HIGH until schema-apply step + _clarify alias-capture ordering fixed; then MEDIUM/LOW
+prior: demo-round-1 (2 HIGH) — both CONFIRMED RESOLVED by Codex this round
 ---
 
-# Cross-AI Plan Review — Phase 6 Interactive Demo (Round demo-1)
+# Cross-AI Plan Review — Phase 6 Interactive Demo (Round demo-2)
 
 ## Codex Review
 
 ### Summary
-06-03/06-05 runbooks mostly execution-ready (one MEDIUM gap in 06-05 DB-query self-containment). **06-08 is NOT execution-ready** — two HIGH blockers around outbound email and shared sender state, plus a thread-view linkage bug.
+Both demo-round-1 HIGHs RESOLVED: HIGH-1 closed for /demo/compose (record_only=True; orchestrator gates both _clarify + _deliver send sites, writes synthetic outbound rows instead of calling Resend); HIGH-2 closed architecturally (compose routes by _SEED_BUSINESS_IDS; /demo/bind writes only demo_sender_bindings; find_business_by_sender uses the binding as an additive fallback after the stable seed-contact match). NOT fully execution-ready — 2 new HIGH + MEDIUM drift/runbook issues.
 
 ### Strengths
-- Two-path narrative correct; stateless-compose is the right instinct.
-- Business names allowlisted; fixture paths server-side; alias rationale presentation-only.
-- 06-05 A5 gate strong (DB evidence, explicit branch, subject-token fallback).
+- Record-only outbound rows carry the right primitives (synthetic message_id, purpose, send_state='sent') → thread view, simulate-reply, purpose-scoped idempotency work.
+- Additive binding no longer breaks recruiter Path-1 or seed .example senders.
+- Source inbound thread inclusion via source_email_id fixes the half-thread UX.
+- /demo/bind unlinked = correctly a no-auth residual, not HIGH.
+- 06-05 A5 logic conceptually right (DB in_reply_to primary, not debug logs).
 
 ### Concerns
 
-**HIGH — 06-08 Task 2: `/demo/compose` is NOT actually "no email/SMTP".** Compose schedules the real `_run_pipeline`; on clarification/delivery the orchestrator calls `gateway.send_outbound(...)`, which after 06-04 is REAL Resend. Compose stamps seed `.example` senders, so a clarification would try to send real email to `hr@metrodeli.example` — violating the Path-1 "no SMTP" requirement AND the Resend free-tier (sends only to account-owner). Impact: clarify beat can error before `awaiting_reply`; no outbound clarification row → `/simulate-reply` has no clarification message to resume against. **[VERIFIED: pipeline calls gateway.send_outbound on clarify/deliver; 06-04 makes it real Resend.]** Fix: an in-app/demo delivery sink for compose runs — write the outbound `email_messages` row (synthetic Message-ID, `send_state='sent'`) but DO NOT call Resend. Test: compose clarification does NOT call `resend.Emails.send` and still exposes a clarification message + simulate-reply path.
+**HIGH-1 — production schema migration step is missing.** 06-03 applies Supabase schema (Wave 2) BEFORE 06-08 (Wave 3) adds `payroll_runs.record_only` + `demo_sender_bindings`. The DDL is idempotent in schema.sql, but there's no explicit NON-reset re-apply over the 5432 session pooler after 06-08 and before 06-05 uses /demo/bind. Deployed /demo/bind + /demo/compose can fail on missing table/column. **[VERIFIED: 06-03 Step 4 runs bootstrap --reset at the Wave-2 deploy gate, before 06-08's columns exist in code; no post-06-08 DDL apply step exists.]** Fix: add a post-06-08 / pre-06-05 step — `DATABASE_URL=<session-5432> uv run python -m app.db.bootstrap` (NO --reset), then verify record_only + demo_sender_bindings exist.
 
-**HIGH — 06-08: stateless compose still depends on mutable global sender state.** Compose uses `_SEED_CONTACTS[business_name]` → `find_business_by_sender(seed_addr)`. But `/demo/bind` mutates `businesses.contact_email` for the target business to `pjnhek@gmail.com`. Once Metro is bound, `hr@metrodeli.example` NO LONGER resolves to Metro. Also breaks the reply loop: `_route_reply` re-validates the reply `from_addr` via `find_business_by_sender` (the FIX-5 spoof guard) — if bind moved that business off its seed contact, the synthetic reply is spoof-rejected. **[VERIFIED: main.py _route_reply:253 re-resolves from_addr; FIX-5 guard:258 rejects on mismatch; bind mutates businesses.contact_email.]** Impact: operator Path-2 arming BREAKS recruiter Path-1 for the same business, and silently fails the clarify resume. Fix: STOP mutating canonical `businesses.contact_email` for demo binding — use a SEPARATE demo/operator sender-binding (alias/lookup table or route-specific mapping) so seed contacts stay stable; OR make compose create runs by allowlisted business_id and have simulate-reply validate against the run's source email, not current `businesses.contact_email`.
+**HIGH-2 — record-only _clarify placement can skip alias capture (breaks Beat 3).** The action text places the record_only check before the D-04 alias-capture block; if implemented there and returned early, `repo.set_alias_candidates` never runs → Beat 3 ("clarifies once, then learns") silently fails for in-app (record-only) runs. **[VERIFIED: set_alias_candidates (repo.py:480) is the D-04 capture; a record_only early-return before it would skip capture.]** Fix: state explicitly that alias-candidate capture (and clarification drafting) ALWAYS runs; record_only changes ONLY the transport side effect (write synthetic outbound row vs call Resend), placed at the send site, not before capture. Test: a record-only clarification calls set_alias_candidates; then simulate-reply + approve + rerun proves NO second clarification (alias learned).
 
-**MEDIUM — 06-08: thread view misses the original inbound.** Ingest inserts the source inbound `email_messages` row with `run_id=NULL`; the run links it via `payroll_runs.source_email_id`. `load_thread_messages(run_id) WHERE run_id=%s` misses the first/most-important inbound. **[VERIFIED: repo.py joins source via pr.source_email_id:250,281; inbound run_id nullable at ingest.]** Fix: backfill `email_messages.run_id` after `create_run`, OR `load_thread_messages` includes `em.id = payroll_runs.source_email_id OR em.run_id = %s`. Add a repo test for the real source-email linkage.
+**MEDIUM — 06-07 records via /demo/send-test, not /demo/compose; and send-test is not record_only.** The recruiter hero path is /demo/compose (no-SMTP), but 06-07 records the old fixture-button path, which calls real Resend during the take. **[VERIFIED: 06-07 lines 25,32-34 record via /demo/send-test; /demo/send-test is not record_only.]** **USER DECISION: record via /demo/compose (the self-serve hero, record_only), with Path-2 real-email as supporting recorded proof.** Re-point 06-07.
 
-**MEDIUM — 06-08: `/demo/bind` rendered on the public landing page** despite the "unlinked" residual claim. As written, index.html renders the operator bind form on the public page → easier accidental/malicious rebind, compounding the sender-state HIGH. Fix: remove it from the recruiter landing page; keep an unlinked operator URL or a manual runbook step; at minimum 06-05 must require "bind immediately before Path 2 and verify the selected business."
+**MEDIUM — stale contact_email language in 06-07 + 06-VALIDATION.** 06-07's HIGH-1-confirmation + key_links still describe per-fixture `SELECT contact_email FROM businesses` lookups premised on a contact swap; the model is now _SEED_CONTACTS + demo_sender_bindings. (06-VALIDATION bind row already fixed by the orchestrator this round.) Fix: replace 06-07's contact-lookup wording with _SEED_CONTACTS / business_id routing.
 
-**MEDIUM — 06-05 A5 runbook not fully self-contained for DB queries.** It gives SQL but not how to run it post-/clear. Fix: include exact Supabase SQL Editor instructions or copy-paste `uv run python -c` commands using `DATABASE_URL` per A5 query.
+**MEDIUM — 06-05 A5 copy-paste DB commands have broken shell quoting.** The `python -c "... conn.execute("SELECT ...") ..."` examples nest double-quotes → will fail when the operator runs them. **[real bug in the runbook.]** Fix: outer single-quotes around the -c body, or escape the inner SQL quotes.
 
-**LOW — `bind_demo_business` rowcount with FakeConnection.** Plan returns `rowcount >= 1` but FakeConnection has no rowcount. Extend the fake or avoid rowcount assertions.
-
-**LOW — picker/roster update underspecified.** "selecting a business renders that roster" but "no JS needed" — use a GET form with onchange-submit, or render all rosters and toggle.
+**LOW** — public /demo/bind nuisance not abuse (no-auth residual, accepted). Prefer `repo.create_run(..., record_only=True)` directly in /demo/compose over create-then-set_record_only (probably safe before BackgroundTasks.add_task, but cleaner).
 
 ### Risk
-**HIGH** until outbound-suppression + sender-state are fixed — the recruiter clarify path can call real Resend and/or fail the spoof guard after an operator bind, threatening the demo's core correctness.
+MEDIUM-HIGH until the schema-apply step + _clarify alias-capture ordering are fixed; then MEDIUM/LOW (remaining risk in human-gate execution + no-auth constraints).
 
 ---
 
 ## Orchestrator Triage (Claude Code)
 
-Both HIGHs + the thread-view MEDIUM are VERIFIED against real code — they're genuine, and HIGH-2 invalidates my earlier "stateless compose" claim (compose reads `businesses.contact_email` transitively through `find_business_by_sender`, which bind mutates). Root cause of HIGH-2: **demo binding mutating the canonical `businesses.contact_email` was the wrong mechanism.** Driving a Pass.
+Both demo-round-1 HIGHs confirmed closed. The 2 new HIGHs + 3 MEDIUMs are all VERIFIED real. Driving a Pass.
 
 **REAL — fix in the Pass:**
-1. **HIGH-1 — record-only delivery sink for Path-1 compose.** Compose-created (in-app) runs must NOT hit real Resend on clarify/deliver. Add a demo/record-only mode: the pipeline (or a delivery flag on the run) writes the outbound `email_messages` row (synthetic Message-ID, `send_state='sent'`) WITHOUT calling `gateway.send_outbound`'s Resend path. The clarification message must still appear (so the in-page reply + simulate-reply works). Tests: a compose run that clarifies does NOT call `resend.Emails.send`, AND a clarification email_messages row exists + simulate-reply resumes it. Decide the cleanest seam (a run-level `delivery_mode`/`record_only` flag set by /demo/compose and honored where the pipeline would call send_outbound; or a demo gateway shim). Keep Path-2 (real email) on the real Resend send.
-2. **HIGH-2 — decouple operator binding from `businesses.contact_email` (the architectural fix that dissolves the stomp).** STOP rewriting the canonical contact. Instead: (a) compose creates the run by allowlisted **business_id** directly (not by stamping a seed sender that must resolve back), so Path-1 routing never depends on `businesses.contact_email` at all; AND (b) the operator Path-2 binding becomes a SEPARATE sender→business mapping (a small `demo_sender_binding` lookup, or a route-specific operator mapping) that the webhook/_route_reply consults FOR THE OPERATOR EMAIL ONLY — leaving every seed `.example` contact stable. Then: binding Metro for Path-2 never changes what `hr@metrodeli.example` resolves to, recruiter Path-1 for Metro keeps working, and the spoof guard for compose runs validates against the run's own source business_id, not a mutated contact. Update `find_business_by_sender` usage / `_route_reply` so the operator-email binding is an ADDITIVE lookup, not a destructive contact rewrite. Add regression tests: bind Metro then compose Metro (routes to Metro); bind Metro then simulate-reply a Metro compose run (resumes, not spoof-rejected).
-3. **MEDIUM — thread view includes the source inbound.** `load_thread_messages` must include the run's source email: `WHERE em.run_id = %s OR em.id = (SELECT source_email_id FROM payroll_runs WHERE id=%s)` (or backfill run_id after create_run). Add the repo test.
-4. **MEDIUM — /demo/bind off the public landing page.** Remove the bind form from index.html (recruiter UI). Keep `/demo/bind` as an unlinked operator route (reachable directly) — consistent with the user's decision. 06-05 runbook: "bind immediately before Path-2 and verify the selected business resolves."
-5. **MEDIUM — 06-05 A5 self-contained DB queries.** Add copy-paste `uv run python -c "..."` (using DATABASE_URL) or Supabase SQL Editor steps for each A5 check, so the gate stands alone post-/clear.
-6. **LOW — FakeConnection rowcount; picker/roster JS.** Extend the fake or drop rowcount assertions; specify a GET-form onchange-submit (or render-all-and-toggle) for the roster — keep it no-build/vanilla per the stack.
+1. **HIGH-1 — post-06-08 production DDL apply.** Add a step (in 06-08 as a final note AND/OR as a pre-flight in 06-05) instructing: after 06-08 ships, re-apply DDL over the 5432 session pooler WITHOUT --reset (`DATABASE_URL=<session-5432> uv run python -m app.db.bootstrap`), and verify `payroll_runs.record_only` + `demo_sender_bindings` exist before /demo/bind or /demo/compose are exercised live. Since 06-03's --reset apply happens before 06-08's columns exist in code, this non-reset re-apply is mandatory. (bootstrap must be idempotent / additive — confirm it applies new DDL without dropping data; if bootstrap only runs on --reset, add the additive path or a dedicated migrate step.)
+2. **HIGH-2 — _clarify ordering (protect Beat 3).** In 06-08, make explicit: in `_clarify`, the D-04 alias-candidate capture (`repo.set_alias_candidates`) and the clarification draft ALWAYS execute; the `record_only` branch is placed ONLY at the `gateway.send_outbound` transport step (write synthetic outbound row vs real send), AFTER capture. Add a test: a record_only clarification calls set_alias_candidates AND produces a clarification outbound row; then a simulate-reply→approve→rerun shows the alias was learned (no 2nd clarification) — proving Beat 3 works on the in-app path.
+3. **MEDIUM — re-point 06-07 to /demo/compose (USER-CONFIRMED).** The recorded 60-90s demo is driven through the /demo/compose landing page (record_only, no real Resend during the take): pick business → employees → type payroll → thread view (request → clarify 'Dave→David known nickname' → in-page reply → approve → paystubs). Path-2 real-email round-trip is a SEPARATE supporting recorded-proof clip. Update 06-07's success_criteria, key_links, and pre-recording smoke test to use /demo/compose (and the in-page reply for the clarify beat), keeping the fixture buttons only as an optional fallback. Watch the 60-90s budget.
+4. **MEDIUM — purge stale contact_email language in 06-07.** Replace per-fixture `SELECT contact_email FROM businesses` premise with _SEED_CONTACTS / business_id routing + the demo_sender_bindings identity model. (06-VALIDATION bind row already corrected.)
+5. **MEDIUM — fix 06-05 A5 shell quoting.** Rewrite the `uv run python -c "..."` A5 evidence commands with correct quoting (outer single-quotes, or escaped inner SQL), so they run as-is post-/clear. Verify each one is copy-paste-safe.
+6. **LOW — create_run(record_only=True) directly** in /demo/compose (cleaner than create-then-set). Apply if trivial.
 
-**Suggestion to adopt:** add body/subject length limits on `/demo/compose` to cap public LLM/DB abuse (cheap guard on a public input that hits the paid-ish LLM + DB).
+## Convergence note
+demo-round-1: 2 HIGH (real-Resend leak on compose; sender-state coupling) → demo-round-2: 2 HIGH (schema-apply gap; alias-capture ordering), both confirmed closed for round-1's issues. The new HIGHs are narrower (a missing migration step; an ordering nuance) and the recording-path MEDIUM is a now-resolved design decision. One more pass should converge.
 
 ## Next step
-Replan (the Pass) to fix HIGH-1 + HIGH-2 + the MEDIUMs, re-verify, then re-review with Codex (round demo-2). HIGH-2's decoupling is the load-bearing fix; HIGH-1's record-only sink makes Path-1 genuinely no-SMTP.
+Pass to fix HIGH-1 + HIGH-2 + the MEDIUMs, re-verify, then Codex demo-round-3.
