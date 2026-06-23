@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Payroll Runs</h1>
+
+{% if runs %}
+<table>
+  <thead>
+    <tr>
+      <th>Created</th>
+      <th>Business</th>
+      <th>Status</th>
+      <th>Summary</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in runs %}
+    <tr>
+      <td style="color: #6B7280; font-size: 12px;">
+        {{ run.created_at.strftime('%Y-%m-%d %H:%M') if run.created_at else '—' }}
+      </td>
+      <td>{{ run.business_name }}</td>
+      <td>
+        <span class="badge badge-{{ run.status | badge_class }}">{{ run.status | badge_label }}</span>
+      </td>
+      <td style="color: #6B7280;">
+        {% if run.decision and run.decision.gate_reasons %}
+          {{ run.decision.gate_reasons[0] }}
+        {% elif run.extracted_data and run.extracted_data.employees %}
+          {{ run.extracted_data.employees | length }} employee{{ 's' if run.extracted_data.employees | length != 1 else '' }}
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td><a href="/runs/{{ run.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div style="margin-top: 32px;">
+  <p style="font-size: 20px; font-weight: 600; color: #111827; margin-bottom: 8px;">No payroll runs yet</p>
+  <p style="color: #6B7280;">Use the Send Test Email button on the eval page to fire a demo fixture through the pipeline.</p>
+</div>
+{% endif %}
+
+<div style="margin-top: 48px;">
+  <form method="post" action="/demo/send-test">
+    <button type="submit" class="btn-approve">Send Test Email</button>
+  </form>
+</div>
+{% endblock %}
