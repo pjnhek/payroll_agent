@@ -147,7 +147,7 @@ metrics:
 - Loads `eval/fixtures/01_exact_match_coastal.json`
 - OVERRIDES message_id: `f"<{uuid.uuid4()}@demo.payroll-agent.local>"` per click (T-05-22b)
 - Calls `repo.insert_inbound_email` / `find_business_by_sender` / `create_run` with full error handling
-- Always returns 303 to `/runs` (even on DB unavailable)
+- Returns 303 to `/runs/{run_id}` (the run just fired) on success; 303 to `/runs` on fallback (duplicate Message-ID, unknown sender, or DB unavailable). [Post-execution correctness pass: success path changed from `/runs` to `/runs/{run_id}` so consecutive demo clicks land on distinct, freshly-created runs — stronger demo UX and satisfies test_send_test_mints_fresh_message_id_each_click. See 05-06-PLAN.md DEVIATION note.]
 
 **supabase.py pool timeout**
 - Added `timeout=5` to `ConnectionPool(...)` — reduces wait from 30s to 5s for tests without live DB
