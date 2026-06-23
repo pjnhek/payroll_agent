@@ -267,6 +267,22 @@ class InMemoryRepo:
 
         self.runs[str(run_id)]["status"] = RunStatus(status).value
 
+    def claim_status(self, run_id, expected, new, conn=None):
+        """Atomic CAS for the in-memory store (mirrors repo.claim_status, D-12).
+
+        Returns True and advances the run's status if the current status matches
+        `expected`. Returns False if the run is not in the expected state.
+        """
+        from app.models.status import RunStatus
+
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return False
+        if run["status"] != RunStatus(expected).value:
+            return False
+        run["status"] = RunStatus(new).value
+        return True
+
     def record_run_error(self, run_id, reason, conn=None):
         from app.db.repo import _TERMINAL_STATUSES
         from app.models.status import RunStatus
@@ -290,6 +306,12 @@ class InMemoryRepo:
 
     def replace_line_items(self, run_id, items, conn=None):
         self.line_items[str(run_id)] = list(items)
+
+    def set_alias_candidates(self, run_id, candidates, conn=None):
+        """Store alias candidates in the in-memory run dict (D-04, mirrors repo)."""
+        run = self.runs.get(str(run_id))
+        if run is not None:
+            run["alias_candidates"] = candidates
 
     # --- email / threading (the FIX 3 outbound Message-ID anchor) ---
     def insert_email_message(self, *, run_id, direction, message_id, conn=None, **kw):
@@ -363,11 +385,13 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "load_inbound_email",
         "load_roster_for_business",
         "set_status",
+        "claim_status",
         "record_run_error",
         "persist_extracted",
         "persist_decision",
         "persist_reconciliation",
         "replace_line_items",
+        "set_alias_candidates",
         "insert_email_message",
         "get_outbound_message_id",
         "find_awaiting_reply_for_header",

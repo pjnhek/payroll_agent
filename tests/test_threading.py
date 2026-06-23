@@ -302,7 +302,7 @@ def test_partial_reply_preserves_hours():
     try:
         for name in (
             "load_run", "load_source_email", "load_roster_for_business",
-            "set_status", "record_run_error", "persist_extracted",
+            "set_status", "claim_status", "record_run_error", "persist_extracted",
             "persist_decision", "persist_reconciliation", "replace_line_items",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
@@ -366,7 +366,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
     try:
         for name in (
             "load_run", "load_source_email", "load_roster_for_business",
-            "set_status", "record_run_error", "persist_extracted",
+            "set_status", "claim_status", "record_run_error", "persist_extracted",
             "persist_decision", "persist_reconciliation", "replace_line_items",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
@@ -671,6 +671,18 @@ class _MiniStore:
         from app.models.status import RunStatus
 
         self.runs[str(run_id)]["status"] = RunStatus(status).value
+
+    def claim_status(self, run_id, expected, new, conn=None):
+        """Atomic CAS for _MiniStore (mirrors repo.claim_status, D-12/FOUND-04)."""
+        from app.models.status import RunStatus
+
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return False
+        if run["status"] != RunStatus(expected).value:
+            return False
+        run["status"] = RunStatus(new).value
+        return True
 
     def record_run_error(self, run_id, reason, conn=None):
         self.runs[str(run_id)]["error_reason"] = reason

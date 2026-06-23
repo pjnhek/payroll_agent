@@ -101,44 +101,37 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
     The webhook is the sole caller and only invokes this after BOTH the header-chain
     match (awaiting_reply only) AND the reply-sender revalidation (FIX 5) have passed.
 
-    Status precondition (CR-02): the "awaiting_reply only" guard in main.py's webhook
-    check is NOT atomic with this mutation — it runs at webhook time, this resume runs
-    later in a BackgroundTask. Between the two, the run's status can change (operator
-    approves the first computed result, a second/re-delivered reply, etc.). So
-    re-assert the precondition HERE, immediately before mutating: if the run is no
-    longer awaiting_reply, this is a late/duplicate reply — log it and RETURN without
-    resuming (do NOT set EXTRACTING, do NOT re-run the gate path). Returning early
-    (vs raising) is deliberate: a late reply is not an error, so it must NOT route
-    through record_run_error and clobber the run's terminal status to ERROR.
-
-    Residual race: this is a status-precondition check, NOT a row-locked
-    (SELECT ... FOR UPDATE) check — repo.py exposes no locked-load helper in Phase 2.
-    A status change landing between this load_run and the set_status below is still
-    theoretically possible; closing it fully (atomic check+transition under a row
-    lock) is deferred to the Phase 5 idempotency work (INGEST-05 / CLAR-04). The
-    precondition is the accepted Phase 2 minimum and removes the wide window.
+    Status gate (CR-02, D-12, FOUND-04): uses repo.claim_status(AWAITING_REPLY →
+    EXTRACTING) — an atomic conditional UPDATE that closes the residual race from
+    Phase 2's load-then-check+set pattern. The prior non-atomic pattern left a window
+    where a second reply (or an operator approval) could arrive between the status load
+    and the EXTRACTING write; claim_status's WHERE status=%s RETURNING id makes the
+    check-and-transition atomic. The losing concurrent caller gets False and drops
+    cleanly — no re-run, no ERROR route.
     """
     try:
-        run = repo.load_run(run_id)
-        if run is None:
-            raise ValueError(f"run {run_id} not found")
-        if run["status"] != RunStatus.AWAITING_REPLY.value:
-            # Late/duplicate reply — the run already advanced past awaiting_reply.
-            # Drop it; do NOT resume (no EXTRACTING, no gate re-run, no ERROR).
+        # Atomic compare-and-swap: claim the run from AWAITING_REPLY → EXTRACTING.
+        # This closes CR-02's residual race (the prior load-then-check+set was non-atomic).
+        # A duplicate or late reply sees claim=False and drops cleanly — no re-run,
+        # no error. D-12, FOUND-04.
+        claimed = repo.claim_status(run_id, RunStatus.AWAITING_REPLY, RunStatus.EXTRACTING)
+        if not claimed:
             logger.info(
-                "resume aborted: run %s is %s, not awaiting_reply — late/duplicate "
-                "reply dropped (CR-02)",
+                "resume aborted: run %s claim failed — late/duplicate reply dropped (CR-02, D-12)",
                 run_id,
-                run["status"],
             )
             return
+
+        # load_run is still needed for business_id and other metadata.
+        run = repo.load_run(run_id)
+        if run is None:
+            raise ValueError(f"run {run_id} not found after claim")
         roster = repo.load_roster_for_business(run["business_id"])
 
         # Rebuild the combined extraction context (original cleaned body + reply body).
         original_body = repo.load_source_email(run_id) or ""
         combined_email = _combined_context_email(inbound, original_body)
 
-        repo.set_status(run_id, RunStatus.EXTRACTING)
         _run_stages(run_id, combined_email, roster, llm=llm)
     except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (resume)
         # PII-safe: exception TYPE only — str(exc) can echo submitted names / prompt

@@ -47,6 +47,25 @@ def _employee_pay_type(
     return None
 
 
+def _employee_pay_periods_per_year(
+    submitted_name: str,
+    matches: list[NameMatchResult],
+    roster: Roster,
+) -> int | None:
+    """Resolve the matched employee's pay_periods_per_year (None if unresolved).
+
+    Mirrors _employee_pay_type exactly — same lookup, different field. Returns None
+    when the name is unresolved (no matched_employee_id) so the OT rule skips it;
+    the gate already blocks unresolved names from reaching a process run.
+    """
+    for m in matches:
+        if m.submitted_name == submitted_name and m.matched_employee_id is not None:
+            for emp in roster.employees:
+                if emp.id == m.matched_employee_id:
+                    return emp.pay_periods_per_year
+    return None
+
+
 def validate(
     extracted: Extracted,
     roster: Roster,
@@ -79,4 +98,45 @@ def validate(
                     ),
                 )
             )
+
+    # D-05: Over-40-no-OT guard.
+    # weekly (ppy=52): regular > 40 with no/zero OT → ambiguous (40+OT or straight time?)
+    # biweekly (ppy=26): regular > 80 with no/zero OT → partial detection; honestly labeled
+    # ppy in (24, 12): period boundaries cross workweeks — no flag (D-05 documented limitation)
+    # Explicit hours_overtime=0 is treated same as absent per D-05 recommended decision:
+    # a client who submits 0 OT for >40 regular hours is in the same ambiguous situation.
+    for emp in extracted.employees:
+        ppy = _employee_pay_periods_per_year(emp.submitted_name, matches, roster)
+        if ppy is None:
+            continue  # unresolved employee: gate already blocks it, no flag here
+        ot = emp.hours_overtime
+        ot_missing = ot is None or ot == 0  # D-05: explicit zero treated same as absent
+        if ppy == 52 and emp.hours_regular is not None and emp.hours_regular > 40 and ot_missing:
+            issues.append(
+                ValidationIssue(
+                    field=f"{emp.submitted_name}.hours_overtime",
+                    issue_type="missing",
+                    message=(
+                        f"weekly employee {emp.submitted_name!r} has "
+                        f"{emp.hours_regular} regular hours with no overtime — "
+                        "is that 40 regular + overtime, or straight time?"
+                    ),
+                )
+            )
+        elif ppy == 26 and emp.hours_regular is not None and emp.hours_regular > 80 and ot_missing:
+            issues.append(
+                ValidationIssue(
+                    field=f"{emp.submitted_name}.hours_overtime",
+                    issue_type="missing",
+                    message=(
+                        f"biweekly employee {emp.submitted_name!r} has "
+                        f"{emp.hours_regular} regular hours with no overtime — >80 over 2 "
+                        "weeks guarantees overtime in at least one week; please provide "
+                        "the regular/overtime split. "
+                        "(Note: partial detection only for biweekly periods.)"
+                    ),
+                )
+            )
+        # ppy in (24, 12): period boundaries cross workweeks — no flag (D-05 documented limitation)
+
     return issues
