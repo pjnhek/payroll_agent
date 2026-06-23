@@ -24,7 +24,20 @@ findings:
   warning: 5
   info: 2
   total: 10
-status: issues_found
+resolved:
+  critical: 3   # CR-01, CR-02, CR-03 fixed in commits 3eb5993, c57756f, bb2f694; regression tests 4e4d741
+  warning: 0    # WR-01..05 deferred (see resolution note below)
+  info: 0
+status: criticals_resolved
+resolution_note: >
+  All 3 Critical findings fixed during phase execution and verified (372 tests pass;
+  CR-01 additionally verified with a live-DB round-trip of update_known_alias on the
+  TEXT[] column). The 5 Warnings and 2 Info findings are deferred to follow-up
+  (candidate 05.1 gap phase / todos): WR-01 reply-threading after crash+retrigger,
+  WR-02 thread-unsafe pool singleton, WR-03 SELECT pr.* full-JSONB on runs-list,
+  WR-04 Content-Disposition header injection via employee name, WR-05 fixture path
+  containment; INFO-01 needs_clarification badge map gap, INFO-02 LLM retry echoes
+  raw ValidationError content.
 ---
 
 # Phase 05: Code Review Report
