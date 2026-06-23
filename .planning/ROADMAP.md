@@ -195,8 +195,8 @@ Plans:
 
 **Wave 0** *(test stubs — run concurrently)*
 
-- [ ] 05-01-PLAN.md — Wave 0 test stubs batch A: test_claim_status.py + test_alias_write.py + extend test_validate.py (D-05 OT rule, D-01b D.Reyes trap, FOUND-04)
-- [ ] 05-02-PLAN.md — Wave 0 test stubs batch B: test_pdf.py + test_compose_confirmation.py + test_delivery.py + test_dashboard.py + conftest extension
+- [x] 05-01-PLAN.md — Wave 0 test stubs batch A: test_claim_status.py + test_alias_write.py + extend test_validate.py (D-05 OT rule, D-01b D.Reyes trap, FOUND-04)
+- [x] 05-02-PLAN.md — Wave 0 test stubs batch B: test_pdf.py + test_compose_confirmation.py + test_delivery.py + test_dashboard.py + conftest extension
 
 **Wave 1** *(blocked on Wave 0)*
 
@@ -266,5 +266,5 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 2.1 Deterministic Decisioning *(INSERTED)* | 5/5 | Complete    | 2026-06-22 |
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
-| 5. Dashboard & Delivery | 0/7 | Not started | - |
+| 5. Dashboard & Delivery | 2/7 | In Progress|  |
 | 6. Real Integration & Ship | 0/TBD | Not started | - |
