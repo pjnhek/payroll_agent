@@ -10,6 +10,7 @@ Coverage:
   - DASH-02 guards: state_withholding None and pretax_401k zero both omit cleanly
   - Optional params: business_name and filing_status accepted without error
   - Deductions reconciliation: _sum_deductions helper is consistent with table rows
+  - UAT #1: hourly_rate threaded in — Rate column renders; salaried path unaffected
 """
 from __future__ import annotations
 
@@ -346,4 +347,77 @@ def test_no_pay_period_at_all_renders():
     """Both pay period dates None -> em-dash label, no crash."""
     item = _minimal_item()
     result = generate_paystub_pdf(item, "Test Employee", None, None)
+    assert result[:4] == b"%PDF"
+
+
+# ---------------------------------------------------------------------------
+# UAT #1: hourly_rate keyword param — Rate column on earnings table
+# ---------------------------------------------------------------------------
+
+
+def test_hourly_rate_does_not_error():
+    """Passing hourly_rate renders without error and returns valid PDF (UAT #1)."""
+    item = _minimal_item()
+    result = generate_paystub_pdf(
+        item,
+        "Test Employee",
+        _PAY_PERIOD_START,
+        _PAY_PERIOD_END,
+        hourly_rate=Decimal("20.00"),
+    )
+    assert isinstance(result, bytes), "generate_paystub_pdf must return bytes"
+    assert result[:4] == b"%PDF", "must produce valid PDF when hourly_rate is provided"
+    assert len(result) > 2_000, "PDF with rate column must exceed 2KB"
+
+
+def test_hourly_rate_with_overtime_does_not_error():
+    """hourly_rate + overtime hours: OT rate (1.5x) shown without crash."""
+    item = _hourly_item_multi_bucket()
+    result = generate_paystub_pdf(
+        item,
+        "Jane Smith",
+        _PAY_PERIOD_START,
+        _PAY_PERIOD_END,
+        hourly_rate=Decimal("25.00"),
+    )
+    assert result[:4] == b"%PDF"
+    assert len(result) > 2_000
+
+
+def test_hourly_rate_none_salaried_path_unaffected():
+    """hourly_rate=None (salaried) omits Rate column cleanly — no fabricated rate."""
+    item = _salaried_item()
+    result = generate_paystub_pdf(
+        item,
+        "Salaried Person",
+        _PAY_PERIOD_START,
+        _PAY_PERIOD_END,
+        hourly_rate=None,
+    )
+    assert result[:4] == b"%PDF"
+    assert len(result) > 0
+
+
+def test_all_optional_params_together():
+    """Passing business_name, filing_status, and hourly_rate all at once renders without error."""
+    item = _hourly_item_multi_bucket()
+    result = generate_paystub_pdf(
+        item,
+        "Jane Smith",
+        _PAY_PERIOD_START,
+        _PAY_PERIOD_END,
+        business_name="Coastal Cleaning Co.",
+        filing_status="Single",
+        hourly_rate=Decimal("18.50"),
+    )
+    assert result[:4] == b"%PDF"
+    assert len(result) > 2_000
+
+
+def test_hourly_rate_omitted_existing_callers_unchanged():
+    """Omitting hourly_rate entirely (existing caller pattern) still works."""
+    item = _minimal_item()
+    result = generate_paystub_pdf(
+        item, "Test Employee", _PAY_PERIOD_START, _PAY_PERIOD_END
+    )
     assert result[:4] == b"%PDF"

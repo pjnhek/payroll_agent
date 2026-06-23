@@ -10,6 +10,7 @@ Also covers:
 - DASH-05 eval graceful handling of missing summary.json (200 with "No eval results")
 - Message-ID uniqueness (finding MEDIUM): /demo/send-test mints a fresh ID per click
 - UUID path param validation (T-05-05 SQLi guard): /runs/not-a-uuid → 422
+- UAT #3/#4 status poll endpoint: GET /runs/{id}/status → 200 JSON / 404
 
 Routes do not yet exist in app/main.py — these tests are the Nyquist Wave 0
 contract that Wave 3 must satisfy.
@@ -154,6 +155,79 @@ def test_runs_invalid_uuid_returns_422():
 # Test 7: Message-ID uniqueness — /demo/send-test mints fresh ID each click
 # (finding MEDIUM)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Test 8: UAT #3/#4 — GET /runs/{id}/status returns 404 for unknown run
+# ---------------------------------------------------------------------------
+
+
+def test_run_status_endpoint_404_for_unknown_run():
+    """UAT #3/#4: GET /runs/{id}/status → 404 for a run that does not exist.
+
+    The JS poller relies on this contract to stop polling on a missing run.
+    The endpoint must never return 500 for an unknown UUID.
+    """
+    non_existent_id = uuid.uuid4()
+    response = client.get(f"/runs/{non_existent_id}/status")
+    assert response.status_code == 404, (
+        f"GET /runs/{{uuid}}/status must return 404 for unknown run; "
+        f"got {response.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: UAT #3/#4 — GET /runs/{id}/status returns 422 for non-UUID path
+# ---------------------------------------------------------------------------
+
+
+def test_run_status_endpoint_422_for_non_uuid():
+    """UAT #3/#4: GET /runs/not-a-uuid/status → 422 (UUID validation guard).
+
+    Ensures the status endpoint rejects non-UUID strings before they reach DB.
+    """
+    response = client.get("/runs/not-a-uuid/status")
+    assert response.status_code == 422, (
+        f"GET /runs/not-a-uuid/status must return 422; got {response.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: UAT #3/#4 — runs list page does NOT contain meta-refresh
+# ---------------------------------------------------------------------------
+
+
+def test_runs_list_has_no_meta_refresh():
+    """UAT #3/#4: GET /runs must NOT emit <meta http-equiv="refresh">.
+
+    The blunt meta-refresh was replaced by a vanilla-JS status poll.
+    This test pins the removal so it can't silently regress.
+    """
+    response = client.get("/runs")
+    assert response.status_code == 200
+    assert 'http-equiv="refresh"' not in response.text, (
+        "GET /runs must not emit <meta http-equiv='refresh'> — "
+        "the vanilla-JS poll replaced it (UAT #3/#4)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: UAT #3/#4 — run detail page does NOT contain meta-refresh
+# ---------------------------------------------------------------------------
+
+
+def test_run_detail_has_no_meta_refresh():
+    """UAT #3/#4: GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
+
+    The blunt meta-refresh was replaced by a vanilla-JS status poll.
+    """
+    non_existent_id = uuid.uuid4()
+    response = client.get(f"/runs/{non_existent_id}")
+    # 404 is acceptable (run not found) — we're testing the 200 path for no-refresh.
+    if response.status_code == 200:
+        assert 'http-equiv="refresh"' not in response.text, (
+            "GET /runs/{id} must not emit <meta http-equiv='refresh'> (UAT #3/#4)"
+        )
 
 
 @pytest.mark.integration

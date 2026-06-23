@@ -195,15 +195,29 @@ def _build_employee_block(
     return table
 
 
-def _build_earnings_table(item: PaystubLineItem, full_width: float) -> Table:
-    """Earnings table: [Earnings | Hours | Amount].
+def _build_earnings_table(
+    item: PaystubLineItem,
+    full_width: float,
+    hourly_rate: Decimal | None = None,
+) -> Table:
+    """Earnings table: [Earnings | Rate | Hours | Amount].
 
     Rows for non-zero hour buckets. Per-bucket dollar splits are not available
     on PaystubLineItem (gross_pay is the total only), so the Amount column is
     blank for individual hour rows and filled only on the TOTAL GROSS footer row.
 
+    When ``hourly_rate`` is provided (hourly employees only):
+      - A "Rate" column is inserted between "Earnings" and "Hours".
+      - Regular row shows the base rate (e.g. "$20.00/hr").
+      - Overtime row shows 1.5× rate (e.g. "$30.00/hr") — computed as
+        ``hourly_rate * Decimal("1.5")``, which is accurate for standard OT.
+      - All other buckets (Vacation, Sick, Holiday) show the base rate.
+    When ``hourly_rate`` is None (salaried or unknown) the Rate column is
+    omitted entirely — nothing is fabricated.
+
     Salaried path: if ALL hour buckets are zero, show a single "Salary" row
-    with gross_pay as the amount (no empty table).
+    with gross_pay as the amount (no empty table). Rate column also omitted
+    for salaried employees.
     """
     HOUR_BUCKETS = [
         ("hours_regular", "Regular"),
@@ -213,30 +227,56 @@ def _build_earnings_table(item: PaystubLineItem, full_width: float) -> Table:
         ("hours_holiday", "Holiday"),
     ]
 
-    header = [["Earnings", "Hours", "Amount"]]
+    show_rate = hourly_rate is not None
+    ot_rate = (hourly_rate * Decimal("1.5")).quantize(Decimal("0.01")) if show_rate else None
+
+    if show_rate:
+        header = [["Earnings", "Rate", "Hours", "Amount"]]
+    else:
+        header = [["Earnings", "Hours", "Amount"]]
 
     all_zero = all(getattr(item, field) == 0 for field, _ in HOUR_BUCKETS)
 
     if all_zero:
-        # Salaried: single salary row with gross amount
-        body_rows = [["Salary", "", _fmt(item.gross_pay)]]
-        total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay)]]
+        # Salaried: single salary row with gross amount; no rate shown
+        if show_rate:
+            body_rows = [["Salary", "", "", _fmt(item.gross_pay)]]
+            total_row = [["TOTAL GROSS", "", "", _fmt(item.gross_pay)]]
+        else:
+            body_rows = [["Salary", "", _fmt(item.gross_pay)]]
+            total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay)]]
     else:
         body_rows = []
         for field, label in HOUR_BUCKETS:
             val = getattr(item, field)
             if val != 0:
-                body_rows.append([label, str(val), ""])
+                if show_rate:
+                    rate_cell = f"${ot_rate}/hr" if label == "Overtime" else f"${hourly_rate}/hr"
+                    body_rows.append([label, rate_cell, str(val), ""])
+                else:
+                    body_rows.append([label, str(val), ""])
         # Total gross row (dollar amount only — individual splits not available)
-        total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay)]]
+        if show_rate:
+            total_row = [["TOTAL GROSS", "", "", _fmt(item.gross_pay)]]
+        else:
+            total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay)]]
 
     all_rows = header + body_rows + total_row
     num_rows = len(all_rows)
     header_row_idx = 0
     total_row_idx = num_rows - 1
 
-    # Column widths: label wide, hours narrow, amount medium
-    col_widths = [full_width * 0.50, full_width * 0.20, full_width * 0.30]
+    # Column widths: vary by whether Rate column is present
+    if show_rate:
+        # [Earnings | Rate | Hours | Amount]
+        col_widths = [full_width * 0.40, full_width * 0.20, full_width * 0.15, full_width * 0.25]
+        # Right-align Rate, Hours, Amount columns (indices 1, 2, 3)
+        align_start = 1
+    else:
+        # [Earnings | Hours | Amount]
+        col_widths = [full_width * 0.50, full_width * 0.20, full_width * 0.30]
+        # Right-align Hours and Amount columns (indices 1, 2)
+        align_start = 1
 
     table = Table(all_rows, colWidths=col_widths)
     table.setStyle(TableStyle([
@@ -260,8 +300,8 @@ def _build_earnings_table(item: PaystubLineItem, full_width: float) -> Table:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        # Right-align Hours and Amount columns
-        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        # Right-align numeric columns (Rate onward)
+        ("ALIGN", (align_start, 0), (-1, -1), "RIGHT"),
     ]))
     return table
 
@@ -409,6 +449,7 @@ def generate_paystub_pdf(
     *,
     business_name: str | None = None,
     filing_status: str | None = None,
+    hourly_rate: Decimal | None = None,
 ) -> bytes:
     """Pure: data in -> PDF bytes out. No DB, no filesystem write (HITL-03).
 
@@ -420,6 +461,9 @@ def generate_paystub_pdf(
          + pay-period sub-line.
       2. Employee info block — name + filing_status (optional; omitted if not passed).
       3. Earnings table — non-zero hour buckets or single Salary row if all-zero.
+         When hourly_rate is provided, a Rate column is shown (base rate for Regular
+         and most buckets; 1.5× for Overtime). Salaried employees (hourly_rate=None)
+         never show a Rate column — nothing is fabricated (UAT #1).
          Per-bucket dollar splits are NOT shown (not available on PaystubLineItem);
          hours are shown per row; dollar total on TOTAL GROSS row = gross_pay.
       4. Deductions table — Federal, SS, Medicare, State (DASH-02: omit if None/zero),
@@ -430,8 +474,8 @@ def generate_paystub_pdf(
     YTD figures are deliberately excluded (deferred to v2).
     No check / MICR / bank / fabricated fields of any kind.
 
-    Signature adds optional keyword params `business_name` and `filing_status`
-    (both default None) — existing callers are unchanged.
+    Signature adds optional keyword params `business_name`, `filing_status`, and
+    `hourly_rate` (all default None) — existing callers are unchanged.
     """
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -458,7 +502,7 @@ def generate_paystub_pdf(
 
     # 3. Earnings table
     story.append(Paragraph("EARNINGS", _STYLE_SECTION_HEADER))
-    story.append(_build_earnings_table(item, _FULL_WIDTH))
+    story.append(_build_earnings_table(item, _FULL_WIDTH, hourly_rate=hourly_rate))
     story.append(Spacer(1, 10))
 
     # 4. Deductions table

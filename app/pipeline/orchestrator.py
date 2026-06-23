@@ -537,6 +537,7 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
             run.get("pay_period_end"),
             business_name=run.get("business_name"),
             filing_status=emp.filing_status if emp else None,
+            hourly_rate=emp.hourly_rate if emp else None,
         )
         pdf_attachments.append((emp_name, pdf_bytes))
 
