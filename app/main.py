@@ -638,6 +638,113 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
 # ---------------------------------------------------------------------------
 
 
+@app.post("/runs/{run_id}/simulate-reply")
+def simulate_reply(
+    run_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    reply_body: str = Form(default=""),
+) -> RedirectResponse:
+    """Simulate a client email reply to complete an awaiting_reply run in the demo.
+
+    DEMO-ONLY affordance (Phase 6 replaces this with real inbound webhook traffic).
+
+    Constructs a synthetic InboundEmail that mirrors the RFC threading a real client
+    reply would carry (same In-Reply-To / References as the clarification outbound,
+    same from_addr as the original inbound sender), then routes it through the REAL
+    _route_reply path — no logic duplication, no guard bypass.
+
+    The FIX-5 spoof guard passes because from_addr is taken from the run's own
+    source inbound email (the original business contact email), which is the same
+    address find_business_by_sender resolves.
+
+    Guards:
+    - 303 no-op if run.status != 'awaiting_reply' (nothing to reply to)
+    - 303 no-op if no clarification Message-ID exists in outbound rows
+    - 303 no-op if the run's source inbound email cannot be loaded
+    - SSRF-safe: no client-supplied run targeting beyond the path run_id;
+      reply_body is used only as body_text of the synthetic email (no headers)
+    """
+    # Load the run; 404 if missing.
+    try:
+        run = repo.load_run(run_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Guard: only act for awaiting_reply runs.
+    if run.get("status") != RunStatus.AWAITING_REPLY.value:
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    # Look up the clarification outbound Message-ID.
+    try:
+        clar_mid = repo.get_outbound_message_id(run_id, purpose="clarification")
+    except Exception:
+        clar_mid = None
+    if not clar_mid:
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    # Load the run's source inbound email to get the original sender address.
+    # Using from_addr from the original inbound ensures the FIX-5 spoof guard passes
+    # (find_business_by_sender will resolve this address to the same business).
+    try:
+        source_inbound = repo.load_inbound_email(run_id)
+    except Exception:
+        source_inbound = None
+    if source_inbound is None:
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    from_addr = source_inbound.from_addr
+    to_addr = source_inbound.to_addr
+    original_subject = source_inbound.subject or "your payroll question"
+
+    # Build the synthetic reply payload.  Fresh message_id each call so the
+    # uq_message_id UNIQUE constraint never rejects a repeat simulation click.
+    synthetic_message_id = f"<{uuid.uuid4()}@sim-reply.payroll-agent.local>"
+    synthetic_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": synthetic_message_id,
+        "in_reply_to": clar_mid,
+        "references_header": clar_mid,
+        "subject": "Re: " + original_subject,
+        "from_addr": from_addr,
+        "to_addr": to_addr,
+        "body_text": reply_body,
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+    # Route through the SAME entry as the real webhook uses.
+    email = gateway.parse_inbound(synthetic_payload)
+    cleaned = clean_body(email.body_text)
+
+    # Insert the synthetic inbound row (mirrors the real webhook path; the
+    # uq_message_id unique constraint dedupes if somehow the same synthetic ID
+    # appears twice — that is not possible with uuid4 but is handled gracefully).
+    try:
+        repo.insert_inbound_email(
+            message_id=email.message_id,
+            in_reply_to=email.in_reply_to,
+            references_header=email.references_header,
+            subject=email.subject,
+            from_addr=email.from_addr,
+            to_addr=email.to_addr,
+            body_text=cleaned,
+            run_id=None,
+        )
+    except Exception:
+        logger.debug("simulate-reply: insert_inbound_email failed for run %s", run_id)
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    # Hand off to the real reply-routing path — all guards (FIX-5 spoof check,
+    # late-reply detection) execute exactly as they would for a real inbound.
+    _route_reply(email, cleaned, background_tasks)
+
+    logger.info(
+        "simulate-reply: synthetic reply submitted for run %s (demo-only)", run_id
+    )
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
 @app.post("/demo/send-test")
 def demo_send_test(
     background_tasks: BackgroundTasks,

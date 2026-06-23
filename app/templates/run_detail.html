@@ -56,6 +56,16 @@
 {% elif run.status == 'awaiting_reply' %}
 <div class="banner banner-awaiting" style="margin-bottom: 24px;">
   <strong>Awaiting client reply</strong> — A clarification email has been sent. Waiting for the client to respond.
+  <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid #FCD34D;">
+    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply <span style="font-size: 11px; color: #92400E; font-weight: 400;">(demo only — Phase 6 uses real inbound webhook)</span></p>
+    <form method="post" action="/runs/{{ run.id }}/simulate-reply" style="display: flex; flex-direction: column; gap: 8px; max-width: 560px;">
+      <textarea name="reply_body" rows="3" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <button type="submit" class="btn-approve">Simulate client reply</button>
+        <span style="font-size: 12px; color: #92400E;">Edit the textarea above with the corrected name, then click to send.</span>
+      </div>
+    </form>
+  </div>
 </div>
 {% elif run.decision and run.decision.final_action == 'process' %}
 <div class="banner banner-process" style="margin-bottom: 24px;">
