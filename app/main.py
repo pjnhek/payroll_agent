@@ -13,6 +13,12 @@ Endpoints:
   POST /runs/{run_id}/reject     — CAS claim → REJECTED → 303
   POST /runs/{run_id}/retrigger  — claim from ERROR/APPROVED/stale-in-flight → restart
                                    pipeline in background → 303 (INGEST-05, finding #6)
+  GET  /runs                     — DASH-01 operator triage queue (Jinja2)
+  GET  /runs/{run_id}            — DASH-02/03 run detail 3-column gate (Jinja2)
+  GET  /eval                     — DASH-04 eval view (Jinja2)
+  GET  /eval/chart.svg           — serve the committed eval chart SVG
+  GET  /runs/{run_id}/pdf/{emp}  — HITL-03 on-demand paystub PDF (StreamingResponse)
+  POST /demo/send-test           — DASH-05 demo button; mints fresh Message-ID per click
 
 Webhook flow (RESEARCH §Pattern 1):
   1. parse → InboundEmail via gateway.parse_inbound
@@ -31,12 +37,17 @@ no sleeps (RESEARCH §Pattern 1 testability fact).
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from app.db import repo
 from app.email import gateway
@@ -53,6 +64,57 @@ STALE_THRESHOLD = timedelta(minutes=5)
 logger = logging.getLogger("payroll_agent.webhook")
 
 app = FastAPI(title="Payroll Agent")
+
+# ---------------------------------------------------------------------------
+# Jinja2 templates + static files (DASH-01..05)
+# ---------------------------------------------------------------------------
+
+templates = Jinja2Templates(directory="app/templates")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+# Badge class mapping (UI-SPEC Badge Contract)
+_BADGE_CLASS: dict[str, str] = {
+    "received": "neutral",
+    "extracting": "neutral",
+    "computing": "neutral",
+    "awaiting_reply": "neutral",
+    "approved": "neutral",
+    "computed": "neutral",
+    "awaiting_approval": "pending",
+    "sent": "good",
+    "reconciled": "good",
+    "rejected": "bad",
+    "error": "bad",
+}
+
+# Badge label mapping (UI-SPEC Badge Contract copywriting)
+_BADGE_LABEL: dict[str, str] = {
+    "received": "Received",
+    "extracting": "Extracting",
+    "computing": "Computing",
+    "awaiting_reply": "Awaiting Reply",
+    "awaiting_approval": "Needs Approval",
+    "approved": "Approved",
+    "computed": "Computed",
+    "sent": "Sent",
+    "reconciled": "Complete",
+    "rejected": "Rejected",
+    "error": "Error",
+}
+
+
+def _badge_class_filter(status: str) -> str:
+    """Map a payroll_runs.status to a CSS badge class suffix (UI-SPEC Badge Contract)."""
+    return _BADGE_CLASS.get(str(status), "neutral")
+
+
+def _badge_label_filter(status: str) -> str:
+    """Map a payroll_runs.status to its display label (UI-SPEC Copywriting Contract)."""
+    return _BADGE_LABEL.get(str(status), str(status).replace("_", " ").title())
+
+
+templates.env.filters["badge_class"] = _badge_class_filter
+templates.env.filters["badge_label"] = _badge_label_filter
 
 
 @app.post("/webhook/inbound")
@@ -352,3 +414,227 @@ def retrigger(
     if claimed:
         background_tasks.add_task(_run_pipeline, run_id)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# DASH-01: GET /runs — operator triage queue
+# ---------------------------------------------------------------------------
+
+
+@app.get("/runs")
+def runs_list(request: Request):
+    """DASH-01: Render the reverse-chronological runs list with status badges."""
+    try:
+        runs = repo.load_all_runs()
+    except Exception:
+        # DB unavailable (no pool / no connection): render empty list rather than 500.
+        # This keeps the dashboard functional during test runs and Render cold-starts
+        # before the pool is warmed up.
+        logger.debug("load_all_runs unavailable — rendering empty list")
+        runs = []
+    return templates.TemplateResponse(request, "runs_list.html", {"runs": runs})
+
+
+# ---------------------------------------------------------------------------
+# DASH-02/03: GET /runs/{run_id} — run detail 3-column gate
+# ---------------------------------------------------------------------------
+
+
+@app.get("/runs/{run_id}")
+def run_detail(request: Request, run_id: uuid.UUID):
+    """DASH-02/03: Render the 3-column run detail (raw email | extracted | paystubs)
+    with decision banner and operator controls gated by status."""
+    try:
+        run = repo.load_run(run_id)
+    except Exception:
+        logger.debug("load_run unavailable for run %s", run_id)
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        raw_email = repo.load_inbound_email(run_id)
+        paystubs = repo.load_line_items(run_id)
+    except Exception:
+        logger.debug("load_inbound_email/load_line_items unavailable for run %s", run_id)
+        raw_email = None
+        paystubs = []
+    return templates.TemplateResponse(
+        request,
+        "run_detail.html",
+        {
+            "run": run,
+            "raw_email": raw_email,
+            "paystubs": paystubs,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# DASH-04: GET /eval — eval view with headline metrics + chart + per-fixture drill-in
+# ---------------------------------------------------------------------------
+
+
+@app.get("/eval")
+def eval_view(request: Request):
+    """DASH-04: Render the eval view. Hermetic disk read of committed eval artifacts.
+
+    R2-MEDIUM fix: enriches each per_fixture record with raw_body loaded from the
+    committed fixture file at eval/fixtures/<fixture_path>. eval/summary.json does
+    NOT store body_text — the body lives in the fixture files. Rendering '—' does
+    NOT satisfy DASH-04; each fixture's raw body is shown in the drill-in table.
+    """
+    summary_path = Path("eval/summary.json")
+    summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
+
+    if summary is not None and "per_fixture" in summary:
+        fixtures_dir = Path("eval/fixtures")
+        for fixture in summary["per_fixture"]:
+            fixture_file = fixtures_dir / fixture["fixture_path"]
+            if fixture_file.exists():
+                fixture_data = json.loads(fixture_file.read_text())
+                fixture["raw_body"] = fixture_data.get("body_text", "")
+            else:
+                fixture["raw_body"] = "‹fixture file missing›"
+
+    return templates.TemplateResponse(request, "eval.html", {"summary": summary})
+
+
+# ---------------------------------------------------------------------------
+# GET /eval/chart.svg — serve the committed eval chart
+# ---------------------------------------------------------------------------
+
+
+@app.get("/eval/chart.svg")
+def eval_chart():
+    """Serve the committed eval/chart.svg as image/svg+xml."""
+    chart_path = Path("eval/chart.svg")
+    if not chart_path.exists():
+        raise HTTPException(status_code=404, detail="eval/chart.svg not found")
+    return FileResponse(str(chart_path), media_type="image/svg+xml")
+
+
+# ---------------------------------------------------------------------------
+# HITL-03: GET /runs/{run_id}/pdf/{employee_id} — on-demand paystub PDF
+# ---------------------------------------------------------------------------
+
+
+@app.get("/runs/{run_id}/pdf/{employee_id}")
+def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
+    """HITL-03: Stream a per-employee paystub PDF. Generated in-memory; no disk write."""
+    from app.pipeline.pdf import generate_paystub_pdf
+
+    paystubs = repo.load_line_items(run_id)
+    item = next(
+        (p for p in paystubs if str(p.employee_id) == str(employee_id)), None
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Paystub not found")
+
+    run = repo.load_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    roster = repo.load_roster_for_business(run["business_id"])
+    emp = next((e for e in roster.employees if e.id == employee_id), None)
+    emp_name = emp.full_name if emp else item.submitted_name
+
+    pdf_bytes = generate_paystub_pdf(
+        item,
+        emp_name,
+        run.get("pay_period_start"),
+        run.get("pay_period_end"),
+    )
+    safe_name = emp_name.replace(" ", "_")
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="paystub_{safe_name}.pdf"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# DASH-05: POST /demo/send-test — fire demo fixture with FRESH Message-ID per click
+# ---------------------------------------------------------------------------
+
+# Path to the canonical demo fixture (first fixture — exact match, Coastal Cleaning).
+# Using eval/fixtures/01_exact_match_coastal.json: its from_addr matches the seed
+# business contact_email so the webhook sender-match will succeed.
+_DEMO_FIXTURE_PATH = Path("eval/fixtures/01_exact_match_coastal.json")
+
+
+@app.post("/demo/send-test")
+def demo_send_test(background_tasks: BackgroundTasks) -> RedirectResponse:
+    """DASH-05: Fire the demo fixture through the pipeline with a fresh Message-ID.
+
+    The fixture's original Message-ID is OVERRIDDEN with a fresh uuid4-based
+    synthetic ID per click. The uq_message_id UNIQUE constraint on email_messages
+    would silently drop a second click if the same ID is reused (MEDIUM finding fix,
+    T-05-22b). Each click creates a distinct run visible in the runs list.
+    """
+    if _DEMO_FIXTURE_PATH.exists():
+        fixture_data = json.loads(_DEMO_FIXTURE_PATH.read_text())
+    else:
+        # Fallback: build a minimal fixture from the seed business contact_email
+        fixture_data = {
+            "message_id": "",  # will be overridden below
+            "in_reply_to": None,
+            "references_header": None,
+            "subject": "Demo payroll run",
+            "from_addr": "payroll@coastalcleaning.example",
+            "to_addr": "agent@payroll-agent.local",
+            "body_text": "Maria Chen 40 regular hours. Thanks!",
+        }
+
+    # MEDIUM finding fix: mint a fresh synthetic Message-ID per click so the
+    # uq_message_id UNIQUE constraint cannot silently drop a repeat click.
+    fresh_message_id = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
+    fixture_data["message_id"] = fresh_message_id
+
+    # Build the InboundEmail payload from the fixture, stripping non-model keys.
+    # InboundEmail requires: id, message_id, in_reply_to, references_header,
+    # subject, from_addr, to_addr, body_text, created_at.
+    inbound_payload = {
+        "id": fixture_data.get("id") or str(uuid.uuid4()),
+        "message_id": fixture_data["message_id"],
+        "in_reply_to": fixture_data.get("in_reply_to"),
+        "references_header": fixture_data.get("references_header"),
+        "subject": fixture_data.get("subject") or "Demo payroll run",
+        "from_addr": fixture_data.get("from_addr", "payroll@coastalcleaning.example"),
+        "to_addr": fixture_data.get("to_addr", "agent@payroll-agent.local"),
+        "body_text": fixture_data.get("body_text", ""),
+        "created_at": fixture_data.get("created_at") or datetime.now(tz=timezone.utc).isoformat(),
+    }
+    inbound_email = gateway.parse_inbound(inbound_payload)
+
+    cleaned = clean_body(inbound_email.body_text)
+
+    try:
+        email_id, inserted = repo.insert_inbound_email(
+            message_id=inbound_email.message_id,
+            in_reply_to=inbound_email.in_reply_to,
+            references_header=inbound_email.references_header,
+            subject=inbound_email.subject,
+            from_addr=inbound_email.from_addr,
+            to_addr=inbound_email.to_addr,
+            body_text=cleaned,
+            run_id=None,
+        )
+
+        if not inserted:
+            # Collision is extremely unlikely (uuid4 IDs) but if it happens, redirect anyway.
+            logger.warning("demo send-test: unexpected duplicate message_id %s", fresh_message_id)
+            return RedirectResponse(url="/runs", status_code=303)
+
+        business_id = repo.find_business_by_sender(inbound_email.from_addr)
+        if business_id is None:
+            logger.warning("demo send-test: unknown sender %s", inbound_email.from_addr)
+            return RedirectResponse(url="/runs", status_code=303)
+
+        run_id = repo.create_run(business_id=business_id, source_email_id=email_id)
+        background_tasks.add_task(_run_pipeline, run_id)
+    except Exception:
+        # DB unavailable: still redirect to /runs rather than returning 500.
+        # The run will not be created but the operator can see the (empty) list.
+        logger.debug("demo send-test: DB unavailable — redirecting without creating run")
+
+    return RedirectResponse(url="/runs", status_code=303)
