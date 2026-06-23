@@ -13,7 +13,17 @@
 <script>
 (function() {
   var RUN_ID       = {{ run.id | string | tojson }};
-  var IN_FLIGHT    = new Set({{ in_flight_statuses | tojson }});
+  // POLL_WHILE = statuses that can still change on their own (transient processing
+  // states, plus awaiting_reply which advances when a reply arrives). The page keeps
+  // polling while the CURRENT status is one of these.
+  var POLL_WHILE   = new Set({{ in_flight_statuses | tojson }});
+  // INITIAL_STATUS = what THIS page was server-rendered with. We reload on ANY change
+  // from it — because every status has different page content (clarification banner +
+  // simulate-reply form at awaiting_reply; 3-column grid + Approve/Reject at
+  // awaiting_approval; error banner + retrigger at error; etc.). Reloading only on
+  // "leaves the in-flight set" missed the extracting -> awaiting_reply transition, so
+  // the clarification banner never appeared without a manual refresh.
+  var INITIAL_STATUS = {{ run.status | string | tojson }};
   var MAX_ATTEMPTS = 30;
   var attempts     = 0;
   var timer        = null;
@@ -30,14 +40,18 @@
           badge.className = 'badge badge-' + data.badge_class;
           badge.textContent = data.badge_label;
         }
-        if (!IN_FLIGHT.has(data.status)) {
-          // Settled: the run now has extracted_data + paystubs (or a decision
-          // banner / Approve-Reject forms) that were empty when this page first
-          // loaded mid-flight. Those columns render server-side, so do ONE reload
-          // to pull them in. This fires once, on the settling transition — NOT the
-          // every-2s thrash we replaced (UAT #3/#4).
+        if (data.status !== INITIAL_STATUS) {
+          // The status changed from what this page rendered with → the server-rendered
+          // content (banner, forms, columns) is now stale. Do ONE reload to pull the new
+          // state. Loop-safe: the reloaded page re-seeds INITIAL_STATUS to the new status,
+          // so it won't immediately reload again. Fires once per transition — NOT a thrash.
           clearInterval(timer);
           window.location.reload();
+        } else if (!POLL_WHILE.has(data.status)) {
+          // Same status AND it can no longer change on its own (a settled terminal/gate
+          // state we somehow kept polling) → stop. Defensive; normally unreachable since
+          // the script only renders when the initial status is in POLL_WHILE.
+          clearInterval(timer);
         }
       })
       .catch(function() {});  // network blip — skip tick, count toward cap

@@ -347,6 +347,40 @@ def test_run_detail_inflight_poll_reloads_on_settle(monkeypatch):
     )
 
 
+def test_run_detail_poll_reloads_on_status_change_not_just_settle(monkeypatch):
+    """Regression: the run-detail poll must reload on ANY status change from what the page
+    rendered with — NOT only when the status leaves the in-flight set. The earlier
+    "leaves in-flight" logic missed extracting → awaiting_reply (awaiting_reply is itself
+    in-flight), so the clarification banner + simulate-reply form never appeared without a
+    manual refresh. The poll seeds INITIAL_STATUS from the rendered status and compares
+    data.status !== INITIAL_STATUS.
+    """
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    # Render at awaiting_reply (itself an in-flight status now) — the script must STILL
+    # render, seed INITIAL_STATUS to it, and reload on ANY change (e.g. → awaiting_approval).
+    run = {
+        "id": run_id, "business_id": uuid.uuid4(), "source_email_id": uuid.uuid4(),
+        "status": "awaiting_reply", "extracted_data": None, "decision": None,
+        "reconciliation": None, "error_reason": None, "pay_period_start": None,
+        "pay_period_end": None, "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: run)
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    text = client.get(f"/runs/{run_id}").text
+    assert "/status" in text, "awaiting_reply must still render the poll script (it can advance on reply)"
+    assert 'INITIAL_STATUS' in text and '"awaiting_reply"' in text, (
+        "poll must seed INITIAL_STATUS from the rendered status"
+    )
+    assert "data.status !== INITIAL_STATUS" in text and "location.reload()" in text, (
+        "poll must reload on ANY status change from the rendered status, not only on leaving in-flight"
+    )
+
+
 def test_run_detail_has_no_meta_refresh():
     """UAT #3/#4: GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
 
