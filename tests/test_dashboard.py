@@ -256,6 +256,40 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
     assert str(run_id) in response.text
 
 
+def test_run_detail_inflight_poll_reloads_on_settle(monkeypatch):
+    """UAT: when a run viewed mid-flight SETTLES, the detail page must reload once so
+    the extracted-data + paystub columns (rendered server-side, empty at first load)
+    populate automatically — not require a manual refresh. The poll's settle branch
+    must call window.location.reload().
+    """
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    inflight_run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "extracting",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: inflight_run)
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    response = client.get(f"/runs/{run_id}")
+    assert response.status_code == 200
+    assert "location.reload()" in response.text, (
+        "in-flight run-detail poll must reload once on settle so data columns populate"
+    )
+
+
 def test_run_detail_has_no_meta_refresh():
     """UAT #3/#4: GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
 

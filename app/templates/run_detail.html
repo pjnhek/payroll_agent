@@ -31,7 +31,13 @@
           badge.textContent = data.badge_label;
         }
         if (!IN_FLIGHT.has(data.status)) {
-          clearInterval(timer);  // settled — stop polling
+          // Settled: the run now has extracted_data + paystubs (or a decision
+          // banner / Approve-Reject forms) that were empty when this page first
+          // loaded mid-flight. Those columns render server-side, so do ONE reload
+          // to pull them in. This fires once, on the settling transition — NOT the
+          // every-2s thrash we replaced (UAT #3/#4).
+          clearInterval(timer);
+          window.location.reload();
         }
       })
       .catch(function() {});  // network blip — skip tick, count toward cap
