@@ -29,7 +29,7 @@
   var timer        = null;
 
   function poll() {
-    if (attempts >= MAX_ATTEMPTS) { return; }
+    if (attempts >= MAX_ATTEMPTS) { clearInterval(timer); return; }
     attempts++;
     fetch('/runs/' + RUN_ID + '/status')
       .then(function(r) { return r.ok ? r.json() : null; })
