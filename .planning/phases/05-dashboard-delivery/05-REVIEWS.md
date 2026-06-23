@@ -1,11 +1,11 @@
 ---
 phase: 5
-reviewers: [codex, codex-round2, codex-round3]
+reviewers: [codex, codex-round2, codex-round3, codex-round4]
 reviewed_at: 2026-06-22T23:17:02Z
 round2_reviewed_at: 2026-06-22T23:40:00Z
 plans_reviewed: [05-01-PLAN.md, 05-02-PLAN.md, 05-03-PLAN.md, 05-04-PLAN.md, 05-05-PLAN.md, 05-06-PLAN.md, 05-07-PLAN.md]
 codex_model: default (codex-cli 0.135.0)
-overall_risk: NOT-READY (round 3 — all 9 round-2 findings + COMPUTING RESOLVED; 1 NEW HIGH: send_state guard + uq_email_run_purpose interact → insert collides on reserved/failed row, needs ON CONFLICT DO UPDATE)
+overall_risk: READY-TO-EXECUTE (round 4 — all round-3 findings RESOLVED; 0 HIGH, 0 MEDIUM; 1 LOW wording nit fixed; Codex verdict: "these plans are ready to execute")
 round1_status: addressed via reviews-mode replan (commit 1a8f066) — see round-2 verification below
 ---
 
@@ -246,3 +246,35 @@ The plan correctly notes `per_fixture` has nested `extraction` and `decision`, b
 ## Updated Risk Assessment
 
 Round-2 findings are materially closed, but the revised plan set is **not ready to execute as-is** because NEW-1 is a HIGH execution defect in the idempotent send-state design. After adding the non-sent-row retry/update path and its tests, the residual risk drops to medium, mostly around optional Plan 07 alias learning.
+
+---
+
+# Cross-AI Plan Review — Phase 5 — ROUND 4 (convergence check)
+
+> After the round-3 fixes (commit c138e7a) and a passing internal checker, Codex re-reviewed.
+> VERDICT: "Yes, these plans are ready to execute." All 3 round-3 findings RESOLVED;
+> 0 HIGH, 0 MEDIUM new issues; 1 LOW wording nit (05-05 said the outbound insert is currently a
+> 'plain INSERT' — fixed to defer to the actual function shape). Convergence reached:
+> R1 (6 HIGH design holes) → R2 (6 impl bugs) → R3 (1 HIGH + 1 MED + 1 LOW interaction) → R4 (0 HIGH/MED, ready).
+
+## Codex Round-4 Review
+
+## Round-3 Findings Resolution Table
+
+| Round-3 Finding | Status | Evidence |
+|---|---:|---|
+| HIGH NEW-1: `send_state='sent'` guard + `uq_email_run_purpose` collision on reserved/failed rows | RESOLVED | `05-03` documents the interaction explicitly and requires an `ON CONFLICT (run_id, purpose) DO UPDATE` upsert. `05-05` carries it into implementation: `insert_email_message` upserts when `purpose` is non-null, and tests cover both `reserved` and `failed` pre-existing rows advancing to `sent` without `IntegrityError`. Inbound rows remain unaffected because `purpose=NULL`. |
+| MEDIUM NEW-2: alias resume binding assumed exactly one resolved match | RESOLVED | `05-07` replaces the brittle count check with pre-vs-post diff binding: capture `pre_resolved_ids`, run `_run_stages`, load `post_resolved_ids`, bind the single pending token to `post - pre`. It also adds the realistic multi-employee test with Maria already resolved and David newly resolved. |
+| LOW NEW-3: eval template referenced nonexistent flat `summary.json` fields | RESOLVED | `05-06` now uses nested paths: `fixture.decision.expected_final_action`, `fixture.decision.final_action`, and `fixture.extraction.f1`. The verification explicitly greps against `expected_decision`, `actual_decision`, and `extraction_f1` to ensure the bad flat fields are absent. |
+
+## New Issues
+
+- LOW: `05-05` contains one stale implementation note saying the outbound `insert_email_message` path is currently a plain insert, while the provided source-of-truth says it already has `ON CONFLICT (message_id) DO NOTHING`. The behavioral requirement is still correct: add the `(run_id, purpose)` upsert for purpose-bearing outbound sends. This is an execution wording risk, not a design blocker, and the reserved/failed-row tests should catch the important behavior.
+
+No new HIGH or MEDIUM issues found.
+
+## Final Verdict
+
+Yes, these plans are ready to execute.
+
+The three round-3 fixes are now concretely represented in must-haves, implementation steps, and targeted tests. The only remaining concern is a low-risk wording inconsistency around the existing outbound insert shape; it is better handled during execution by reading the actual function and preserving the intended idempotency behavior while adding the required `(run_id, purpose)` upsert.
