@@ -357,7 +357,9 @@ COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Shell form required — Docker exec form does NOT expand $PORT (RESEARCH Pitfall 3)
-CMD ["sh", "-c", "uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+# HIGH-1 (Round 1): run uvicorn directly from the venv — uv is NOT copied into the
+# runtime stage, so `uv run` would fail at container start. PATH includes /app/.venv/bin.
+CMD ["sh", "-c", ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
 ```
 
 **Critical constraints:**
