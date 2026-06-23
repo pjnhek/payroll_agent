@@ -684,6 +684,46 @@ def find_any_run_for_header(
 # ---------------------------------------------------------------------------
 
 
+def load_line_items(run_id: uuid.UUID, conn=None) -> list[PaystubLineItem]:
+    """Return the paystub line items for a run (explicit column list — no SELECT *).
+
+    LOW finding fix: explicit SELECT list matches PaystubLineItem fields.
+    NOTE: additional_medicare_not_modeled is a PaystubLineItem model field (default=False)
+    but is NOT a DB column in paystub_line_items — omitted from the SELECT list and the
+    model uses its Python default (False). Never invent a column that does not exist.
+    """
+    sql = (
+        "SELECT id, run_id, employee_id, submitted_name,"
+        " hours_regular, hours_overtime, hours_vacation, hours_sick, hours_holiday,"
+        " gross_pay, pretax_401k, fica_ss, fica_medicare, federal_withholding,"
+        " state_withholding, net_pay, created_at"
+        " FROM paystub_line_items WHERE run_id = %s ORDER BY employee_id"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(run_id),))
+            rows = cur.fetchall()
+    return [PaystubLineItem(**row) for row in rows]
+
+
+def load_all_runs(conn=None) -> list[dict]:
+    """Return all payroll runs in reverse-chronological order, with business_name.
+
+    Used by the runs-list route (DASH-01). Joins businesses to surface business_name
+    without requiring a second query in the route layer.
+    """
+    sql = (
+        "SELECT pr.*, b.name as business_name"
+        " FROM payroll_runs pr"
+        " JOIN businesses b ON pr.business_id = b.id"
+        " ORDER BY pr.created_at DESC"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql)
+            return cur.fetchall() or []
+
+
 def load_roster_for_business(business_id: uuid.UUID, conn=None) -> Roster:
     """Rebuild a typed Roster (explicit EMPLOYEE_COLS + dict_row, no SELECT *)."""
     # EMPLOYEE_COLS is a trusted module constant; build the statement as a local
