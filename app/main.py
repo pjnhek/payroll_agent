@@ -350,8 +350,13 @@ def approve(
 
     claimed = repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED)
     if claimed:
-        run = repo.load_run(run_id)
         try:
+            # REVIEW-4 WR-01: load_run is INSIDE the D-13b boundary. A transient DB failure
+            # during the load (e.g. pooler blip) must route to ERROR + error_reason like any
+            # other delivery failure — not leave the run silently stuck at APPROVED with a
+            # raw 500 (INGEST-05 "nothing silently hangs"). APPROVED is non-terminal, so
+            # record_run_error can advance it to ERROR and the operator can retrigger.
+            run = repo.load_run(run_id)
             _deliver(run_id, run)
         except Exception as exc:  # noqa: BLE001 — D-13b error boundary
             # PII-safe: type only — str(exc) may echo model output, submitted names,

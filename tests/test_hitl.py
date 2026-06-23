@@ -61,6 +61,38 @@ def test_approve_sets_approved_or_reconciled(client, fake_repo):
     )
 
 
+def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, monkeypatch):
+    """REVIEW-4 WR-01 regression: if repo.load_run raises AFTER the CAS claim (e.g. a
+    transient DB/pooler blip), the approve route must route to ERROR + error_reason via the
+    D-13b boundary — NOT leave the run silently stuck at APPROVED and return a raw 500
+    (INGEST-05 'nothing silently hangs'). The fix moved load_run inside the try/except.
+    """
+    import app.main as main_mod
+
+    run_id = _run_at_awaiting_approval(fake_repo)
+
+    # After the claim flips status to APPROVED, the next load_run (inside _deliver's boundary)
+    # raises. Let the claim's own status write happen via fake_repo; only the route's load_run
+    # raises. Simplest faithful simulation: make load_run raise unconditionally for this test —
+    # the claim_status CAS does not depend on load_run, so the claim still succeeds first.
+    def _boom(rid, conn=None):
+        raise RuntimeError("simulated transient DB failure during load_run")
+
+    monkeypatch.setattr(main_mod.repo, "load_run", _boom)
+
+    r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
+    assert r.status_code == 303, (
+        f"approve must still 303 (not 500) when load_run fails after claim; got {r.status_code}"
+    )
+    # Restore load_run so we can inspect the recorded state.
+    monkeypatch.undo()
+    final = fake_repo.load_run(run_id)
+    assert final["status"] == "error", (
+        f"a load_run failure after claim must route to ERROR, not stay at APPROVED; got {final['status']}"
+    )
+    assert final.get("error_reason"), "ERROR must carry an error_reason (PII-safe exception type)"
+
+
 def test_reject_sets_rejected(client, fake_repo):
     """Reject claims the run and redirects to run detail with 303."""
     run_id = _run_at_awaiting_approval(fake_repo)
