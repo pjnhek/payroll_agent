@@ -30,16 +30,12 @@ Three public functions form the entire provider abstraction:
         unreachable onboarding@resend.dev From address.
         HIGH-3 attachments: list[tuple[str, bytes]] is base64-mapped to Resend's SDK format.
 
-Debug guard: LOG_WEBHOOK_DEBUG_IDS env var enables a one-line info log of header KEY NAMES
-+ email_id + rfc_message_id ONLY — no body content, no PII. TEMPORARY — removed in 06-06.
-(BLOCKER-1)
 """
 from __future__ import annotations
 
 import base64
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from email.utils import parseaddr
@@ -115,7 +111,6 @@ def parse_inbound(raw: dict | str | bytes) -> InboundEmail:
         3. Set resend.api_key (defensive belt-and-suspenders — send_outbound sets it
            independently as its FIRST line per HIGH-1-AUTH).
         4. resend.EmailsReceiving.get(email_id) → ReceivedEmail.
-        4b. LOG_WEBHOOK_DEBUG_IDS debug guard (BLOCKER-1): log header KEY NAMES only.
         5. Normalize headers case-insensitively.
         6. Return InboundEmail with RFC message_id (NOT Resend internal email_id).
         7. LOW-9: strip display names from 'from' field via email.utils.parseaddr.
@@ -155,15 +150,6 @@ def _parse_resend_envelope(data: dict) -> InboundEmail:
 
     # Step 4: fetch the full email (body + headers + RFC message_id)
     email_obj = resend.EmailsReceiving.get(email_id)
-
-    # Step 4b (BLOCKER-1 debug guard): log ONLY header key names + IDs, never body/PII.
-    if os.getenv("LOG_WEBHOOK_DEBUG_IDS"):
-        logger.info(
-            "WEBHOOK_DEBUG header_keys=%s email_id=%s rfc_message_id=%s",
-            list(email_obj.headers.keys()),
-            inner.get("email_id"),
-            email_obj.message_id,
-        )
 
     # Step 5: normalize headers case-insensitively (Pitfall 4 / D-18)
     headers_lower = {k.lower(): v for k, v in email_obj.headers.items()}

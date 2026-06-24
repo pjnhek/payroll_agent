@@ -84,18 +84,27 @@ _DEMO_FIXTURES: dict[str, dict] = {
     "coastal_exact": {
         "label": "Coastal Cleaning Co. — exact match",
         "path": "eval/fixtures/01_exact_match_coastal.json",
+        "business_name": "Coastal Cleaning Co.",
     },
     "metro_alias": {
         "label": "Metro Deli — stored alias",
         "path": "eval/fixtures/02_stored_alias_metro.json",
+        "business_name": "Metro Deli Group",
     },
     "summit_exact": {
         "label": "Summit Tech — exact match",
         "path": "eval/fixtures/12_exact_process_summit.json",
+        "business_name": "Summit Tech Solutions",
     },
     "coastal_multi": {
         "label": "Coastal Cleaning Co. — multi-employee",
         "path": "eval/fixtures/10_multi_employee_coastal.json",
+        "business_name": "Coastal Cleaning Co.",
+    },
+    "unknown_shorthand_metro": {
+        "label": "Metro Deli — unknown shorthand 'Dave Reyes' (clarify + suggest)",
+        "path": "eval/fixtures/04_unknown_shorthand_metro.json",
+        "business_name": "Metro Deli Group",
     },
 }
 _DEMO_FIXTURE_DEFAULT_KEY = "coastal_exact"
@@ -1182,6 +1191,17 @@ def demo_send_test(
     fresh_message_id = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
     fixture_data["message_id"] = fresh_message_id
 
+    # HIGH-1 (R4): resolve from_addr from THIS fixture's business's seed contact via
+    # _SEED_CONTACTS constant. Seed .example contacts are permanently stable (06-08
+    # HIGH-2 never mutates businesses.contact_email), so this constant is always
+    # correct. Each fixture routes to its own business with zero DB coupling and
+    # independent of demo_sender_bindings state.
+    business_name = fixture_meta.get("business_name")
+    from_addr = _SEED_CONTACTS.get(business_name) if business_name else None
+    if from_addr is None:
+        # Fallback for misconfigured fixture or tests: use the fixture file's from_addr
+        from_addr = fixture_data.get("from_addr", "payroll@coastalcleaning.example")
+
     # Build the InboundEmail payload from the fixture, stripping non-model keys.
     # InboundEmail requires: id, message_id, in_reply_to, references_header,
     # subject, from_addr, to_addr, body_text, created_at.
@@ -1191,7 +1211,7 @@ def demo_send_test(
         "in_reply_to": fixture_data.get("in_reply_to"),
         "references_header": fixture_data.get("references_header"),
         "subject": fixture_data.get("subject") or "Demo payroll run",
-        "from_addr": fixture_data.get("from_addr", "payroll@coastalcleaning.example"),
+        "from_addr": from_addr,
         "to_addr": fixture_data.get("to_addr", "agent@payroll-agent.local"),
         "body_text": fixture_data.get("body_text", ""),
         "created_at": fixture_data.get("created_at") or datetime.now(tz=timezone.utc).isoformat(),
