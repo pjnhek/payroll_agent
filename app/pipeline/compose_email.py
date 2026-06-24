@@ -27,6 +27,23 @@ logger = logging.getLogger("payroll_agent.compose_email")
 _SUBJECT = "Quick question before we run your payroll"
 
 
+def _as_reply(subject: str, original_subject: str | None) -> str:
+    """Prefix `Re: <original subject>` so mail clients group the thread (P6).
+
+    Gmail and most clients thread on BOTH the RFC header chain (In-Reply-To /
+    References — already set) AND a matching `Re:`-prefixed subject. Because the
+    bot replies from a different From address (free-tier onboarding@resend.dev),
+    the subject match is what visually coalesces the conversation in the client.
+
+    Uses the original inbound subject when present (the true reply subject); falls
+    back to the bot's own subject otherwise. Never double-prefixes ("Re: Re: ...").
+    """
+    base = (original_subject or "").strip() or subject
+    if base[:3].lower() == "re:":
+        return base
+    return f"Re: {base}"
+
+
 def _template_body(
     decision: Decision,
     suggestions: dict[str, str] | None = None,
@@ -132,14 +149,18 @@ def compose_clarification(
     return body
 
 
-def clarification_subject() -> str:
+def clarification_subject(original_subject: str | None = None) -> str:
     """The clarification email subject (kept here so the orchestrator stays thin).
 
-    WR-05: takes NO arguments. It previously accepted a `decision` it ignored
-    entirely — a misleading signature implying the subject reflected the decision.
-    The subject is a constant in Phase 2; a real provider's subject-based threading
-    fallback is a deferred P6 concern. Drop the dead parameter (the honest minimum).
+    P6 threading: when the original inbound subject is supplied, returns
+    `Re: <original subject>` so the clarification groups into the client's existing
+    thread (the bot's differing From address means the subject match is what
+    visually coalesces the conversation). With no original subject (in-app /
+    Phase-2 callers, tests) it returns the bare clarification subject — backward
+    compatible.
     """
+    if original_subject:
+        return _as_reply(_SUBJECT, original_subject)
     return _SUBJECT
 
 
@@ -171,16 +192,25 @@ def _confirmation_template_body(
     return "\n".join(lines)
 
 
-def confirmation_subject(run: dict) -> str:
+def confirmation_subject(run: dict, original_subject: str | None = None) -> str:
     """The confirmation email subject line (HITL-02, UI-SPEC Copywriting Contract).
 
-    Format: "Payroll Confirmation — {business_name} — {pay_period_label}"
+    Format: "Payroll Confirmation — {business_name} — {pay_period_label}".
     run is a dict from repo.load_run; uses .get() with safe fallbacks so a
     missing key never raises here.
+
+    P6 threading: when the original inbound subject is supplied, the line is
+    prefixed `Re: <original subject>` so the confirmation lands in the client's
+    existing thread (the bot replies from a different From address, so the subject
+    match is what groups the conversation). With no original subject it returns the
+    standalone confirmation subject — backward compatible.
     """
     business_name = run.get("business_name", "Payroll Run")
     pay_period_label = run.get("pay_period_label", "")
-    return f"Payroll Confirmation — {business_name} — {pay_period_label}"
+    standalone = f"Payroll Confirmation — {business_name} — {pay_period_label}"
+    if original_subject:
+        return _as_reply(standalone, original_subject)
+    return standalone
 
 
 def compose_confirmation(

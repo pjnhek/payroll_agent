@@ -279,6 +279,17 @@ def send_outbound(
     _reply_to = get_settings().resend_reply_to
     if _reply_to:
         send_params["reply_to"] = _reply_to
+    else:
+        # No Reply-To on a real send is a silent reply-loss foot-gun: the From is the
+        # free-tier onboarding@resend.dev, which the app cannot receive at, so a client
+        # reply goes to a dead address and never reaches the webhook. Warn loudly so a
+        # misconfigured deploy (RESEND_REPLY_TO unset) is visible rather than silent.
+        logger.warning(
+            "OUTBOUND_SEND has no Reply-To (RESEND_REPLY_TO is empty) — client replies "
+            "to %s will NOT reach the inbound webhook and will be lost. Set RESEND_REPLY_TO "
+            "to the inbound .resend.app address.",
+            send_params.get("from", "the from address"),
+        )
 
     try:
         response = resend.Emails.send(send_params)

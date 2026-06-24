@@ -193,20 +193,30 @@ def test_compose_logs_empty_content_fallback(caplog):
     )
 
 
-def test_clarification_subject_takes_no_args():
-    """WR-05 — clarification_subject() takes NO arguments (the dead `decision` param
-    was dropped). Calling it with an argument is now a TypeError, and it returns the
-    constant subject."""
-    import inspect
-
+def test_clarification_subject_threads_on_original():
+    """clarification_subject() — WR-05 dropped the dead `decision` param; P6 adds an
+    OPTIONAL `original_subject` (used, not ignored) so the clarification threads as a
+    reply. No args → the bare constant subject (backward compatible). With the
+    original subject → `Re: <original>` so mail clients group the thread. Already
+    `Re:`-prefixed input is not double-prefixed."""
     from app.pipeline.compose_email import clarification_subject
 
-    assert inspect.signature(clarification_subject).parameters == {}, (
-        "clarification_subject must take no parameters (WR-05)"
-    )
-    assert isinstance(clarification_subject(), str) and clarification_subject()
-    with pytest.raises(TypeError):
-        clarification_subject(_gated_decision())  # type: ignore[call-arg]
+    # No args: bare constant subject (Phase-2 / in-app callers, unchanged behavior).
+    bare = clarification_subject()
+    assert isinstance(bare, str) and bare
+    assert not bare.lower().startswith("re:")
+
+    # With original inbound subject: threaded as a reply.
+    assert clarification_subject("Payroll hours this week") == "Re: Payroll hours this week"
+
+    # Never double-prefix.
+    assert clarification_subject("Re: Payroll hours this week") == "Re: Payroll hours this week"
+
+    # The dropped `decision` misuse is still wrong — a Decision is not a subject string;
+    # passing one yields a nonsense subject, but the API no longer pretends to accept it
+    # as a meaningful arg (it is positionally the original_subject now). Guard the type
+    # contract: callers pass a str | None, never a Decision.
+    assert clarification_subject(None) == bare
 
 
 def test_compose_source_not_json_mode():

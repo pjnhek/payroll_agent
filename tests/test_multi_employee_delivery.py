@@ -198,10 +198,18 @@ def test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs(
         f"got {len(attachments)}"
     )
 
-    for emp_name, pdf_bytes in attachments:
+    for filename, pdf_bytes in attachments:
         assert pdf_bytes[:4] == b"%PDF", (
-            f"PDF attachment for '{emp_name}' must start with b'%PDF' "
+            f"PDF attachment '{filename}' must start with b'%PDF' "
             f"(got: {pdf_bytes[:8]!r})"
+        )
+        # 06-05 live-gate regression: the attachment filename MUST end in .pdf, or the
+        # recipient's mail client receives an extensionless binary blob it won't open as
+        # a PDF. _deliver builds "paystub_<sanitized-name>.pdf"; a bare name (no ext) is
+        # the bug that shipped the broken attachment in the real round-trip.
+        assert filename.endswith(".pdf"), (
+            f"attachment filename must end in .pdf (mail clients key off the extension); "
+            f"got {filename!r}"
         )
 
 
@@ -257,13 +265,26 @@ def test_deliver_multi_employee_subject_uses_start_only_period(
 
     assert len(captured_subjects) == 1
     subject = captured_subjects[0]
-    # The subject must include the start date, not end with a bare " — " (UAT #7)
-    assert "2026-06-15" in subject, (
-        f"confirmation subject must include pay_period_start when end is None; "
-        f"got: {subject!r}"
+    # P6 threading: this run has an original inbound subject ("Payroll"), so the
+    # confirmation threads as a reply — `Re: Payroll` — which is what groups it into
+    # the client's conversation. The pay-period detail lives in the email body + the
+    # paystub PDF (not lost); the subject's job here is thread-grouping, not metadata.
+    assert subject == "Re: Payroll", (
+        f"confirmation must thread on the original inbound subject; got: {subject!r}"
     )
-    # Must not end in a trailing dash with no date
-    assert not subject.endswith("— "), (
-        f"confirmation subject must not have trailing ' — ' with no date; "
-        f"got: {subject!r}"
+
+    # UAT #7 guard still holds for the STANDALONE subject (no original to thread on):
+    # when pay_period_end is None it uses str(pay_period_start), never a trailing ' — '.
+    # _deliver computes pay_period_label from pay_period_start before calling
+    # confirmation_subject; replicate that enrichment to test the standalone form.
+    from app.pipeline.compose_email import confirmation_subject
+    enriched = {"business_name": "Coastal Cleaning Co.", "pay_period_label": "2026-06-15"}
+    standalone = confirmation_subject(enriched)  # no original_subject → standalone form
+    assert "2026-06-15" in standalone, (
+        f"standalone confirmation subject must include pay_period_start when end is None; "
+        f"got: {standalone!r}"
+    )
+    assert not standalone.endswith("— "), (
+        f"standalone confirmation subject must not have trailing ' — ' with no date; "
+        f"got: {standalone!r}"
     )

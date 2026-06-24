@@ -35,6 +35,7 @@ resume_pipeline share the exact same gate path — the eval-reusable spine is DR
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from app.db import repo
@@ -393,7 +394,7 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
             message_id=synthetic_mid,
             in_reply_to=email.message_id,
             references_header=email.message_id,
-            subject=clarification_subject(),
+            subject=clarification_subject(email.subject),
             from_addr=None,
             to_addr=email.from_addr,
             body_text=body,
@@ -406,7 +407,7 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
     gateway.send_outbound(
         run_id=run_id,
         to_addr=email.from_addr,
-        subject=clarification_subject(),
+        subject=clarification_subject(email.subject),
         body=body,
         in_reply_to=email.message_id,
         references_header=email.message_id,
@@ -569,7 +570,12 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
             filing_status=emp.filing_status if emp else None,
             hourly_rate=emp.hourly_rate if emp else None,
         )
-        pdf_attachments.append((emp_name, pdf_bytes))
+        # The attachment filename MUST end in .pdf — Resend forwards the filename
+        # verbatim, and a name without an extension (e.g. "Maria Chen") arrives as an
+        # unrecognized binary blob the recipient's mail client won't open as a PDF.
+        # Sanitize like the /runs/{id}/pdf download route so both produce the same name.
+        safe_name = re.sub(r"[^\w.\-]", "_", emp_name, flags=re.ASCII) or "employee"
+        pdf_attachments.append((f"paystub_{safe_name}.pdf", pdf_bytes))
 
     # Step 6 — Load the inbound email for the reply-to address.
     inbound = repo.load_inbound_email(run_id)
@@ -589,7 +595,7 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
             message_id=synthetic_mid,
             in_reply_to=inbound.message_id if inbound else None,
             references_header=inbound.message_id if inbound else None,
-            subject=confirmation_subject(run),
+            subject=confirmation_subject(run, inbound.subject if inbound else None),
             from_addr=None,
             to_addr=to_addr,
             body_text=body,
@@ -603,7 +609,7 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
         gateway.send_outbound(
             run_id=run_id,
             to_addr=to_addr,
-            subject=confirmation_subject(run),
+            subject=confirmation_subject(run, inbound.subject if inbound else None),
             body=body,
             attachments=pdf_attachments,
             purpose="confirmation",
