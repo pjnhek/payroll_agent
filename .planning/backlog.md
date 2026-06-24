@@ -29,6 +29,67 @@ Phase 5 operator gate, not the Phase 2 walking skeleton:
 submitted name into the matched employee's `known_aliases`; a subsequent run with the same
 nickname resolves at Layer 1 (deterministic, confidence 1.0) with no clarification.
 
+---
+
+## Field-regression clarification — "did you forget the overtime?"
+
+**Captured:** 2026-06-24 (during Phase 6 ship, scoped against the live resume loop)
+**Suggested home:** A small standalone phase AFTER Phase 6 ships (do not insert into Phase 6 — it
+is the ship/demo spine; this needs design time, not a rushed insert). Owner decision: backlog it.
+
+**Idea:** When a clarification reply silently drops or changes a money-affecting field the original
+submission mentioned (canonical case: original says "Person A: 40 hrs + 2 OT", the bot clarifies a
+name, the client re-replies "40 hrs for Person A" with no OT), the bot should notice the OT
+regression and ask **once** ("Your first email listed 2 hrs overtime for Person A; your reply
+didn't mention it — keep it, or is it 0 now?") before processing. On-thesis: extends "every
+money-moving judgment is a deterministic code gate, never a guess" to "and we catch when a reply
+quietly changes the money."
+
+**Grounded findings (verified against the code 2026-06-24 — read before planning):**
+- Resume **re-extracts over the MERGED original + reply** body (`orchestrator.py:138-139`,
+  `_combined_context_email`), NOT the reply alone. So the original OT text is still in the LLM
+  context on resume — the naive "reply drops OT → wrong paycheck" failure is **largely already
+  prevented** by the merge. The real gap is narrower than it first appears.
+- `extracted_data` is **OVERWRITTEN wholesale on resume** (`orchestrator.py:243`, `persist_extracted`
+  "never appended") — there is NO preserved pre-clarification snapshot, so nothing can compare
+  original-vs-reply today.
+- OT is only treated as a "required/missing" field in two narrow cases (`validate.py:108-139`):
+  weekly employee >40 regular hrs, or biweekly >80, both with no/zero OT. Outside those thresholds
+  a missing OT is silently allowed. D-05 (`validate.py:113`) treats absent and explicit-zero
+  identically for ambiguity — BUT the extractor DOES distinguish `None` from `Decimal("0")`
+  (`contracts.py:76` `hours_overtime: Decimal | None`), so the signal needed for "absent vs
+  intentional zero" exists.
+- `decide.py` (rules at `decide.py:13-31`, impl `86-140`) has no field-regression rule; gate
+  reasons are name-unresolved, missing-required-field, run-level collision only.
+
+**Mechanism (Small–Medium, ~half-to-full day of code):**
+1. At the `awaiting_reply` pause, copy `extracted_data` into a new `pre_clarify_extracted` JSONB
+   cell BEFORE resume overwrites it (one column + one repo write).
+2. Pure helper `detect_field_regression(original, resumed) -> list[FieldDrop]` — deterministic,
+   fully unit-testable; compares OT (and optionally hours) per resolved employee for
+   present→absent or value-changed. Fits the "pure function over facts" spine.
+3. New `field_regression` gate reason in `decide.py` feeding the EXISTING `request_clarification`
+   path — reuses compose_clarification, the suggestion call, the awaiting_reply pause, and resume.
+4. One clarification template line.
+
+**The two design traps (this is where the real work is, NOT code volume):**
+- **Clarify-loop trap:** bot asks about OT → client replies again without restating → bot asks
+  again forever. REQUIRED guard: "already asked about this field on this run → carry the original
+  value forward and process, do NOT re-ask." **Owner decision: clarify ONCE, then carry-forward.**
+  Needs a per-run record of which fields were already clarified (e.g., a flag on the run or a
+  field-set in the decision JSONB).
+- **D-05 absent-vs-explicit-zero:** "client didn't restate OT" (→ clarify once / carry forward)
+  must be distinguished from "client explicitly wrote 0 OT" (→ honor it, never ask). The
+  `None` vs `Decimal("0")` signal exists in the contract; the gate must use it or it will either
+  nag on legitimate corrections or miss real drops.
+
+**Acceptance sketch (for whoever plans it):** original submission has OT=2 for a resolved employee;
+a clarification reply that omits OT triggers exactly ONE clarification asking to confirm keep-2-or-
+make-it-0; if the client confirms 0, process with 0; if the client still doesn't address it on the
+next reply, carry forward the original OT=2 and process (no second clarification). An explicit
+"0 OT" in the reply is honored silently with no clarification. Fully covered by unit tests on the
+pure `detect_field_regression` helper + an integration test of the once-then-carry-forward loop.
+
 **Related:** the confidence-rubric change (Phase 2, 2026-06-21) that makes `llm_nickname` gate
 at 0.75 is what makes this valuable — without learning, every nickname re-asks forever.
 *(Superseded note: 2.1 removed the confidence rubric entirely — the alias-learning value now
