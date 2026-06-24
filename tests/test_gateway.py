@@ -60,7 +60,18 @@ def _decision(action="process") -> Decision:
 # ---------------------------------------------------------------------------
 
 
-def test_send_outbound_generates_rfc_shaped_message_id(fake_conn):
+def test_send_outbound_generates_rfc_shaped_message_id(fake_conn, monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
+    )
     run_id = uuid.uuid4()
     msg_id = gateway.send_outbound(
         run_id=run_id,
@@ -70,9 +81,21 @@ def test_send_outbound_generates_rfc_shaped_message_id(fake_conn):
         conn=fake_conn,
     )
     assert _MSG_ID_RE.match(msg_id), f"Message-ID not RFC-shaped: {msg_id}"
+    get_settings.cache_clear()
 
 
-def test_send_outbound_inserts_outbound_email_messages_row(fake_conn):
+def test_send_outbound_inserts_outbound_email_messages_row(fake_conn, monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
+    )
     run_id = uuid.uuid4()
     msg_id = gateway.send_outbound(
         run_id=run_id,
@@ -81,14 +104,32 @@ def test_send_outbound_inserts_outbound_email_messages_row(fake_conn):
         body="body",
         conn=fake_conn,
     )
-    sql, params = fake_conn.last()
-    assert "email_messages" in str(sql)
+    # Find the INSERT into email_messages among all executed SQL
+    insert_found = None
+    for sql, params in fake_conn.executed:
+        if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
+            insert_found = (sql, params)
+            break
+    assert insert_found is not None, "No INSERT into email_messages found"
+    sql, params = insert_found
     assert "outbound" in str(params)  # direction='outbound'
     assert str(run_id) in str(params)
     assert msg_id in str(params)  # the synthetic anchor lives ON the row
+    get_settings.cache_clear()
 
 
-def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn):
+def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn, monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
+    )
     gateway.send_outbound(
         run_id=uuid.uuid4(),
         to_addr="c@acme.test",
@@ -96,8 +137,15 @@ def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn):
         body="b",
         conn=fake_conn,
     )
-    sql = str(fake_conn.last()[0])
-    assert "%s" in sql, "outbound insert must use %s placeholders"
+    # Check the INSERT SQL uses %s placeholders
+    insert_sql = None
+    for sql, params in fake_conn.executed:
+        if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
+            insert_sql = str(sql)
+            break
+    assert insert_sql is not None, "No INSERT into email_messages found"
+    assert "%s" in insert_sql, "outbound insert must use %s placeholders"
+    get_settings.cache_clear()
 
 
 def test_parse_inbound_validates_canonical_payload():
@@ -590,7 +638,12 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
     parse_inbound must call resend.EmailsReceiving.get(email_id) to retrieve the
     body + headers and return a fully-populated InboundEmail. (OPS-02 / D-01a)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     fake_email_obj = _FakeReceivedEmail(
         message_id="<abc@resend.com>",
@@ -640,7 +693,12 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     others send 'in-reply-to'. The gateway must normalize case-insensitively.
     (OPS-02 / D-18 / Pitfall 4)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     fake_email_obj = _FakeReceivedEmail(
         message_id="<abc@resend.com>",
@@ -684,7 +742,12 @@ def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     The dedup key must be the RFC Message-ID from email_obj.message_id, which is
     the globally-unique RFC value. (OPS-02 / D-13 dedup key correctness)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     rfc_message_id = "<rfc-correct@acme.test>"
     resend_email_id = "re_internal_id_999"
@@ -732,7 +795,12 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
     gateway must run email.utils.parseaddr to extract the bare address before
     passing it to find_business_by_sender. (OPS-02 / D-18 / LOW-9)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     fake_email_obj = _FakeReceivedEmail(
         message_id="<display@resend.com>",
@@ -786,6 +854,12 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     get_outbound_references_chain adds a DB READ before the reserved INSERT, so
     absolute indexing breaks. (OPS-02 / D-13c / MEDIUM-6)
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
     send_calls: list = []
 
     def _fake_send(params):
@@ -839,6 +913,16 @@ def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
     exception must re-raise so the caller knows the send did not succeed.
     (OPS-02 / D-13c / HIGH-3)
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
     def _raise_send(params):
         raise RuntimeError("network error")
 
@@ -889,6 +973,12 @@ def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     asserts the INSERT params include BOTH '<prior@x.test>' AND '<inbound@x.test>'
     in the references_header. (OPS-02 / D-14)
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
     # Pre-seed: a prior outbound row for this run with references_header='<prior@x.test>'
     fake_conn.script_fetchone(("<prior@x.test>",))  # returned by get_outbound_references_chain
 
@@ -1090,3 +1180,201 @@ def test_inbound_reply_routes_to_correct_run_integration():
         f"the outbound clarification Message-ID (real SQL predicate end-to-end); "
         f"got {matched!r}"
     )
+
+
+# ===========================================================================
+# Task 1 (06-04) new tests — HIGH-1-AUTH, HIGH-3 attachments, LOW-9 parseaddr,
+# REPLY-TO TOPOLOGY
+# ===========================================================================
+
+
+def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
+    """HIGH-1-AUTH (R5 — live-demo-critical): send_outbound sets resend.api_key as its
+    FIRST action, even when called from /demo/send-test without a prior parse_inbound.
+
+    Asserts that resend.api_key is updated from a stale/unset value to the configured
+    key before resend.Emails.send is invoked.
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key-123")
+
+    # Pre-seed: get_outbound_references_chain returns None (no prior chain)
+    # and insert_email_message returns a row id
+    fake_conn.script_fetchone(None)   # get_outbound_references_chain → None
+    fake_conn.script_fetchone((str(uuid.uuid4()),))  # insert_email_message → id
+
+    key_at_send_time: list = []
+
+    def _capture_send(params):
+        key_at_send_time.append(resend.api_key)
+        return {"id": "resend-provider-id-001"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    # Set a stale key before calling send_outbound — must be overwritten.
+    resend.api_key = "stale-key"
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Test",
+        body="body",
+        conn=fake_conn,
+    )
+
+    # The api_key must have been set to the configured value BEFORE the send call.
+    assert len(key_at_send_time) == 1, "resend.Emails.send must be called exactly once"
+    assert key_at_send_time[0] == "test-key-123", (
+        f"resend.api_key must equal 'test-key-123' at the time resend.Emails.send is invoked; "
+        f"got {key_at_send_time[0]!r} — send_outbound must set api_key as its FIRST line "
+        "(HIGH-1-AUTH: /demo/send-test calls send_outbound without prior parse_inbound)"
+    )
+    assert resend.api_key == "test-key-123", (
+        "resend.api_key was not updated from the stale value — HIGH-1-AUTH fix missing"
+    )
+    get_settings.cache_clear()
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
+    """HIGH-3 attachments: send_outbound must base64-encode and forward PDF bytes.
+
+    Asserts that resend.Emails.send is called with an 'attachments' key containing
+    the expected filename and base64-encoded PDF content. (OPS-02 / HIGH-3)
+    """
+    import base64 as _b64
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    captured_params: list = []
+
+    def _capture_send(params):
+        captured_params.append(params)
+        return {"id": "resend-attach-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    pdf_bytes = b"%PDF-1.4 fake-pdf-content"
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Payroll Confirmation",
+        body="See attached paystubs.",
+        attachments=[("paystub.pdf", pdf_bytes)],
+        conn=fake_conn,
+    )
+
+    assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
+    send_dict = captured_params[0]
+    assert "attachments" in send_dict, (
+        "resend.Emails.send dict must contain 'attachments' key (HIGH-3 fix)"
+    )
+    attachments = send_dict["attachments"]
+    assert len(attachments) == 1, "exactly one attachment expected"
+    att = attachments[0]
+    assert att["filename"] == "paystub.pdf", (
+        f"attachment filename must be 'paystub.pdf'; got {att['filename']!r}"
+    )
+    expected_content = _b64.b64encode(pdf_bytes).decode()
+    assert att["content"] == expected_content, (
+        f"attachment content must be base64-encoded PDF bytes; "
+        f"got {att['content'][:40]!r}..."
+    )
+    get_settings.cache_clear()
+
+
+def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch):
+    """REPLY-TO TOPOLOGY: send_outbound includes reply_to in the send dict when
+    resend_reply_to is non-empty. The reply_to value is the inbound .resend.app address
+    that the webhook IS connected to (not onboarding@resend.dev). (T-06-04-13)
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("RESEND_REPLY_TO", "payroll@jiodnel.resend.app")
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    captured_params: list = []
+
+    def _capture_send(params):
+        captured_params.append(params)
+        return {"id": "resend-reply-to-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Payroll Question",
+        body="Please reply.",
+        conn=fake_conn,
+    )
+
+    assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
+    send_dict = captured_params[0]
+    assert "reply_to" in send_dict, (
+        "resend.Emails.send dict must contain 'reply_to' key when resend_reply_to is configured "
+        "(REPLY-TO TOPOLOGY: directs client replies to the inbound webhook address)"
+    )
+    assert send_dict["reply_to"] == "payroll@jiodnel.resend.app", (
+        f"reply_to must equal 'payroll@jiodnel.resend.app'; got {send_dict['reply_to']!r}"
+    )
+    get_settings.cache_clear()
+
+
+def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch):
+    """REPLY-TO TOPOLOGY: send_outbound omits reply_to from the send dict when
+    resend_reply_to is empty. Passing an empty string would send a malformed
+    Reply-To header — the key must be absent, not set to ''. (T-06-04-13)
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Ensure resend_reply_to is empty (the default)
+    monkeypatch.delenv("RESEND_REPLY_TO", raising=False)
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    captured_params: list = []
+
+    def _capture_send(params):
+        captured_params.append(params)
+        return {"id": "resend-no-reply-to-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Payroll Confirmation",
+        body="Attached.",
+        conn=fake_conn,
+    )
+
+    assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
+    send_dict = captured_params[0]
+    assert "reply_to" not in send_dict, (
+        f"resend.Emails.send dict must NOT contain 'reply_to' key when resend_reply_to is empty "
+        f"(passing empty string is malformed — key must be absent); "
+        f"got send_dict keys: {list(send_dict.keys())}"
+    )
+    get_settings.cache_clear()
