@@ -275,7 +275,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4)*
 
-- [ ] 06-06-PLAN.md — Demo-reset script (D-07) + full README with disclaimer/diagram + remove temp debug logs
+- [x] 06-06-PLAN.md — Demo-reset script (D-07) + full README with disclaimer/diagram + remove temp debug logs
 
 **Wave 6** *(blocked on Wave 5 — BLOCKING human checkpoint)*
 
@@ -294,4 +294,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 6/8 | In Progress|  |
+| 6. Real Integration & Ship | 7/8 | In Progress|  |
