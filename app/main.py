@@ -283,7 +283,24 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     # else: allow_unsigned=True (dev/test mode) — proceed to parse without verification.
 
     # Step 3: parse (dual-path: shape detection inside gateway.parse_inbound).
-    email = gateway.parse_inbound(raw_body)
+    # Path A (real Resend envelope) does a two-step fetch — resend.EmailsReceiving.get(email_id)
+    # — which calls the Resend API and can fail (bad/insufficient RESEND_API_KEY, API error,
+    # malformed payload). An unhandled raise here returns a raw 500 to Resend, which then
+    # retries the delivery indefinitely and surfaces only as "internal server error" with no
+    # diagnostic. Catch it: log the exception type + a hint, and return a clean 502 so the
+    # failure is legible and Resend backs off. (Verification already happened above — D-17 intact.)
+    try:
+        email = gateway.parse_inbound(raw_body)
+    except Exception as exc:  # noqa: BLE001 — webhook boundary: never leak a raw 500 to Resend
+        logger.error(
+            "inbound parse/fetch failed: %s (likely RESEND_API_KEY invalid or "
+            "EmailsReceiving.get error) — returning 502, no run created",
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": "inbound parse failed", "reason": type(exc).__name__},
+        )
 
     # FIX C: clean the body BEFORE persisting so email_messages.body_text holds the
     # cleaned text (the single cleaned-body source of truth the extraction reads).
