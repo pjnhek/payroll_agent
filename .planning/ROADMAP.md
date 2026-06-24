@@ -271,7 +271,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 — BLOCKING human checkpoint)*
 
-- [ ] 06-05-PLAN.md — D-09b email round-trip verify gate: Resend account setup + real send→reply→headers-intact confirm (autonomous:false)
+- [x] 06-05-PLAN.md — D-09b email round-trip verify gate: Resend account setup + real send→reply→headers-intact confirm (autonomous:false)
 
 **Wave 5** *(blocked on Wave 4)*
 
@@ -294,4 +294,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 5/8 | In Progress|  |
+| 6. Real Integration & Ship | 6/8 | In Progress|  |

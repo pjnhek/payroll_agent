@@ -31,7 +31,31 @@ nickname resolves at Layer 1 (deterministic, confidence 1.0) with no clarificati
 
 ---
 
-## Field-regression clarification — "did you forget the overtime?"
+## Real-email round-trip + A5 threading verification (deferred from 06-05)
+
+**Captured:** 2026-06-24 (06-05 gate closed as Path-1-verified; real-email leg deferred by owner)
+**Suggested home:** A short verification pass before relying on the clarify→reply→resume loop over
+real email (or before a demo that shows Path 2). Code is already wired (06-04); this is a live check.
+
+**What's left:** The Path-2 send→reply→approve round-trip on the deployed stack, and specifically the
+**A5 check** — does the app-minted synthetic Message-ID survive into a real client reply's In-Reply-To
+header? Path 1 (in-app composer, no SMTP) is fully verified and is the demo hero; Path 2 was deferred.
+
+**How to verify (already specced in 06-05-PLAN.md, Steps 3–5):**
+1. Set `LOG_WEBHOOK_DEBUG_IDS=true` in Render env (temporary; remove after — 06-06 removes the code).
+2. Send a real email from the Resend account-owner address TO `payroll@jiodnel.resend.app`.
+3. Reply to the bot's outbound (confirm the reply goes to `payroll@jiodnel.resend.app` via Reply-To).
+4. A5 query: compare newest `inbound` row's `in_reply_to` vs the `outbound` row's `message_id`:
+   `SELECT direction, message_id, in_reply_to FROM email_messages ORDER BY created_at DESC LIMIT 5;`
+   - **Match → A5 PASSES** (Branch A): threading works, nothing more to do.
+   - **No match / NULL → A5 FAILS** (Branch B): implement the D-03a subject-token anchor — embed
+     `[#token]` in the clarification subject + add a subject-token fallback to the reply router that
+     fires ONLY on a header no-match, then re-run. (Pre-specified in CONTEXT.md D-03a.)
+5. Record A1 (header key casing) and A6 (`email_id` vs `rfc_message_id`) from the WEBHOOK_DEBUG log.
+
+**Why deferred is safe:** the resume path matches on RFC headers (address-agnostic), and Path 1 doesn't
+use email at all — so the demo and the deterministic decision spine do not depend on this. It is a
+correctness check for the real-email clarify loop, worth doing once before trusting it in production.
 
 **Captured:** 2026-06-24 (during Phase 6 ship, scoped against the live resume loop)
 **Suggested home:** A small standalone phase AFTER Phase 6 ships (do not insert into Phase 6 — it
