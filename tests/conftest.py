@@ -25,6 +25,9 @@ from datetime import datetime, timezone
 
 import pytest
 
+# Phase 6 Resend SDK mocks — added 06-01
+import resend  # noqa: F401 — imported so the module is available for monkeypatching
+
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
 
@@ -529,3 +532,96 @@ def seed_roster() -> Roster:
     assert "Daniel Reyes" in names, "seed must contain Daniel Reyes (e0000007)"
 
     return Roster(business_id=biz2_id, employees=biz2_employees)
+
+
+# ---------------------------------------------------------------------------
+# 7. Phase 6 Resend SDK mock fixtures (06-01) — clean seams for gateway tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeResendReceivedEmail:
+    """Minimal stand-in for resend.ReceivedEmail.
+
+    Mirrors the shape returned by resend.EmailsReceiving.get(email_id):
+      - message_id (str): the RFC Message-ID
+      - text (str | None): plain-text body
+      - html (str | None): HTML body
+      - headers (dict): flat key->value; keys may be mixed-case per provider (A1)
+
+    The `headers` dict uses mixed-case keys matching real provider output, so tests
+    exercise the case-insensitive extraction path (Pitfall 4 / D-18).
+    """
+
+    def __init__(
+        self,
+        *,
+        message_id: str = "<test-recv@resend.test>",
+        text: str | None = "Maria 40 hours",
+        html: str | None = None,
+        headers: dict | None = None,
+    ) -> None:
+        self.message_id = message_id
+        self.text = text
+        self.html = html
+        # Default: mixed-case keys to exercise the normalization path (A1 assumption).
+        self.headers: dict = headers if headers is not None else {
+            "In-Reply-To": "<prev@x.test>",
+            "References": "<prev@x.test>",
+            "Subject": "Payroll hours",
+        }
+
+
+@pytest.fixture
+def fake_received_email() -> _FakeResendReceivedEmail:
+    """A minimal resend.ReceivedEmail stand-in with mixed-case header keys.
+
+    Exercises the A1 assumption (header key casing from real providers) and the
+    case-insensitive extraction path (Pitfall 4 / D-18 / 06-RESEARCH §1).
+    """
+    return _FakeResendReceivedEmail()
+
+
+@pytest.fixture
+def mock_resend_verify(monkeypatch):
+    """Monkeypatch resend.Webhooks.verify to a no-op (always passes).
+
+    Returns None (the real SDK's success return value) so the code under test
+    sees a valid signature and proceeds. Use this for the happy-path gateway tests.
+    """
+    def _noop_verify(payload_dict):
+        return None  # resend.Webhooks.verify returns None on success
+
+    monkeypatch.setattr(resend.Webhooks, "verify", staticmethod(_noop_verify))
+    return _noop_verify
+
+
+@pytest.fixture
+def mock_resend_verify_reject(monkeypatch):
+    """Monkeypatch resend.Webhooks.verify to always raise ValueError('bad sig').
+
+    Use this for the signature-rejection path (OPS-02 / D-17) — the route must
+    return 400 and abort before any pipeline work when verify raises.
+    """
+    def _reject_verify(payload_dict):
+        raise ValueError("bad sig")
+
+    monkeypatch.setattr(resend.Webhooks, "verify", staticmethod(_reject_verify))
+    return _reject_verify
+
+
+@pytest.fixture
+def mock_resend_send(monkeypatch):
+    """Monkeypatch resend.Emails.send to return a fake send response without hitting the network.
+
+    Returns {"id": "<out-test@resend.com>"} — the shape the real SDK returns on success.
+    Captures all calls in a list for assertion in tests.
+    """
+    calls: list[dict] = []
+
+    def _fake_send(params):
+        calls.append(params)
+        return {"id": "<out-test@resend.com>"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_fake_send))
+    # Return the calls list so tests can assert call count and params.
+    return calls

@@ -14,6 +14,7 @@ dependencies = [
     "reportlab==5.0.0",
     "jinja2==3.1.6",
     "python-multipart==0.0.20",
+    "resend==2.32.2",
 ]
 
 # Dev/test tooling — NOT installed into the runtime Docker image.
