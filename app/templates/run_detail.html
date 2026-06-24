@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Run Detail
-  <span id="run-status-badge" class="badge badge-{{ run.status | badge_class }}" style="font-size: 14px; vertical-align: middle; margin-left: 12px;">{{ run.status | badge_label }}</span>
+  <span id="run-status-badge" class="badge badge-{{ run.status | badge_class }} badge-inline">{{ run.status | badge_label }}</span>
 </h1>
 
 {# UAT #3/#4: vanilla-JS per-run status poll — replaces the blunt meta-refresh.
@@ -37,7 +37,7 @@
         if (!data) { return; }  // fetch error / non-200 — skip tick
         var badge = document.getElementById('run-status-badge');
         if (badge) {
-          badge.className = 'badge badge-' + data.badge_class;
+          badge.className = 'badge badge-' + data.badge_class + ' badge-inline';
           badge.textContent = data.badge_label;
         }
         if (data.status !== INITIAL_STATUS) {
@@ -64,32 +64,32 @@
 
 {# --- Decision reason banner (full-width, above grid) --- #}
 {% if run.status == 'error' %}
-<div class="banner banner-error" style="margin-bottom: 24px;">
+<div class="banner banner-error banner-mb">
   <strong>Error</strong> — {{ run.error_reason }}. Use the Re-trigger button below to restart this run from the beginning.
 </div>
 {% elif run.status == 'awaiting_reply' %}
-<div class="banner banner-awaiting" style="margin-bottom: 24px;">
+<div class="banner banner-awaiting banner-mb">
   <strong>Awaiting client reply</strong> — A clarification email has been sent. Waiting for the client to respond.
-  <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid #FCD34D;">
-    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply <span style="font-size: 11px; color: #92400E; font-weight: 400;">(demo only — Phase 6 uses real inbound webhook)</span></p>
-    <form method="post" action="/runs/{{ run.id }}/simulate-reply" style="display: flex; flex-direction: column; gap: 8px; max-width: 560px;">
+  <div class="banner-divider">
+    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply <span style="font-weight: 400; text-transform: none; letter-spacing: 0;">(demo only — Phase 6 uses real inbound webhook)</span></p>
+    <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer">
       <textarea name="reply_body" rows="3" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
-      <div style="display: flex; align-items: center; gap: 12px;">
+      <div class="form-inline" style="margin-bottom: 0;">
         <button type="submit" class="btn-approve">Simulate client reply</button>
-        <span style="font-size: 12px; color: #92400E;">Edit the textarea above with the corrected name, then click to send.</span>
+        <span class="form-help">Edit the textarea above with the corrected name, then click to send.</span>
       </div>
     </form>
   </div>
 </div>
 {% elif run.decision and run.decision.final_action == 'process' %}
-<div class="banner banner-process" style="margin-bottom: 24px;">
+<div class="banner banner-process banner-mb">
   <strong>Decision: Process</strong> — All names resolved. No validation issues.
 </div>
 {% elif run.decision and run.decision.final_action == 'request_clarification' %}
-<div class="banner banner-clarify" style="margin-bottom: 24px;">
+<div class="banner banner-clarify banner-mb">
   <strong>Decision: Clarification requested</strong>
   {% if run.decision.gate_reasons %}
-  <ul style="margin: 8px 0 0 0; padding-left: 20px;">
+  <ul>
     {% for reason in run.decision.gate_reasons %}
     <li>{{ reason }}</li>
     {% endfor %}
@@ -109,7 +109,7 @@
     {% if raw_email %}
     <pre class="raw-email">{{ raw_email.body_text }}</pre>
     {% else %}
-    <p style="color: #6B7280;">No source email available.</p>
+    <p class="text-muted">No source email available.</p>
     {% endif %}
   </div>
 
@@ -118,7 +118,7 @@
     <p class="column-label">Extracted Data</p>
     {% if run.extracted_data and run.extracted_data.employees %}
       {% for emp in run.extracted_data.employees %}
-      <table style="margin-bottom: 16px;">
+      <table class="subtable">
         <thead>
           <tr>
             <th colspan="2">
@@ -140,19 +140,19 @@
           </tr>
         </thead>
         <tbody>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Regular Hours</td><td>{{ emp.hours_regular if emp.hours_regular is not none else '—' }}</td></tr>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">OT Hours</td><td>{{ emp.hours_overtime if emp.hours_overtime is not none else '—' }}</td></tr>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Vacation</td><td>{{ emp.hours_vacation if emp.hours_vacation is not none else '—' }}</td></tr>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Sick</td><td>{{ emp.hours_sick if emp.hours_sick is not none else '—' }}</td></tr>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Holiday</td><td>{{ emp.hours_holiday if emp.hours_holiday is not none else '—' }}</td></tr>
+          <tr><td class="cell-label">Regular Hours</td><td>{{ emp.hours_regular if emp.hours_regular is not none else '—' }}</td></tr>
+          <tr><td class="cell-label">OT Hours</td><td>{{ emp.hours_overtime if emp.hours_overtime is not none else '—' }}</td></tr>
+          <tr><td class="cell-label">Vacation</td><td>{{ emp.hours_vacation if emp.hours_vacation is not none else '—' }}</td></tr>
+          <tr><td class="cell-label">Sick</td><td>{{ emp.hours_sick if emp.hours_sick is not none else '—' }}</td></tr>
+          <tr><td class="cell-label">Holiday</td><td>{{ emp.hours_holiday if emp.hours_holiday is not none else '—' }}</td></tr>
           {% if emp.contribution_401k_override is not none %}
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">401k Override</td><td>{{ emp.contribution_401k_override }}</td></tr>
+          <tr><td class="cell-label">401k Override</td><td>{{ emp.contribution_401k_override }}</td></tr>
           {% endif %}
         </tbody>
       </table>
       {% endfor %}
     {% else %}
-    <p style="color: #6B7280;">Extraction in progress...</p>
+    <p class="text-muted">Extraction in progress...</p>
     {% endif %}
   </div>
 
@@ -161,41 +161,41 @@
     <p class="column-label">Computed Paystubs</p>
     {% if paystubs %}
       {% for item in paystubs %}
-      <table style="margin-bottom: 16px;">
+      <table class="subtable">
         <thead>
           <tr>
             <th colspan="2">{{ item.submitted_name }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Gross Pay</td><td style="text-align: right;">${{ "%.2f" | format(item.gross_pay | float) }}</td></tr>
+          <tr><td class="cell-label">Gross Pay</td><td class="num">${{ "%.2f" | format(item.gross_pay | float) }}</td></tr>
           {% if item.pretax_401k %}
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Pre-tax 401k</td><td style="text-align: right;">${{ "%.2f" | format(item.pretax_401k | float) }}</td></tr>
+          <tr><td class="cell-label">Pre-tax 401k</td><td class="num">${{ "%.2f" | format(item.pretax_401k | float) }}</td></tr>
           {% endif %}
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Social Security (6.2%)</td><td style="text-align: right;">${{ "%.2f" | format(item.fica_ss | float) }}</td></tr>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Medicare (1.45%)</td><td style="text-align: right;">${{ "%.2f" | format(item.fica_medicare | float) }}</td></tr>
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">Federal Withholding</td><td style="text-align: right;">${{ "%.2f" | format(item.federal_withholding | float) }}</td></tr>
+          <tr><td class="cell-label">Social Security (6.2%)</td><td class="num">${{ "%.2f" | format(item.fica_ss | float) }}</td></tr>
+          <tr><td class="cell-label">Medicare (1.45%)</td><td class="num">${{ "%.2f" | format(item.fica_medicare | float) }}</td></tr>
+          <tr><td class="cell-label">Federal Withholding</td><td class="num">${{ "%.2f" | format(item.federal_withholding | float) }}</td></tr>
           {% if item.state_withholding %}
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600;">State Withholding</td><td style="text-align: right;">${{ "%.2f" | format(item.state_withholding | float) }}</td></tr>
+          <tr><td class="cell-label">State Withholding</td><td class="num">${{ "%.2f" | format(item.state_withholding | float) }}</td></tr>
           {% endif %}
-          <tr><td style="color: #6B7280; font-size: 12px; font-weight: 600; font-weight: 600;"><strong>Net Pay</strong></td><td style="text-align: right;"><strong>${{ "%.2f" | format(item.net_pay | float) }}</strong></td></tr>
+          <tr><td class="cell-label"><strong>Net Pay</strong></td><td class="num"><strong>${{ "%.2f" | format(item.net_pay | float) }}</strong></td></tr>
         </tbody>
       </table>
       {% if item.additional_medicare_not_modeled %}
-      <p style="font-size: 12px; color: #6B7280;">Additional Medicare (0.9% over $200k) not modeled.</p>
+      <p class="form-help">Additional Medicare (0.9% over $200k) not modeled.</p>
       {% endif %}
       <p><a href="/runs/{{ run.id }}/pdf/{{ item.employee_id }}">Download PDF</a></p>
       {% endfor %}
     {% else %}
-    <p style="color: #6B7280;">Calculation in progress...</p>
+    <p class="text-muted">Calculation in progress...</p>
     {% endif %}
   </div>
 </div>
 
 {# --- Sent emails section (UAT #1) --- #}
 {% if outbound_emails %}
-<div style="margin-top: 32px;">
-  <p class="column-label" style="font-size: 14px; margin-bottom: 12px;">Sent Emails</p>
+<div class="mt-xl">
+  <p class="column-label">Sent Emails</p>
   {% for msg in outbound_emails %}
   <div class="sent-email-card">
     <div class="sent-email-header">
@@ -207,7 +207,7 @@
       <span class="badge badge-neutral">{{ msg.purpose or 'outbound' }}</span>
       {% endif %}
       <span class="sent-email-subject">{{ msg.subject or '(no subject)' }}</span>
-      <span style="font-size: 12px; color: #6B7280; margin-left: auto;">
+      <span class="sent-email-time">
         {{ msg.created_at.strftime('%Y-%m-%d %H:%M') if msg.created_at else '' }}
       </span>
     </div>
@@ -219,31 +219,31 @@
 
 {# --- 06-08: Alias-rationale notes (PRESENTATION ONLY; decide.py untouched) --- #}
 {% if alias_rationale_notes %}
-<div style="margin-top: 24px; padding: 12px 16px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 6px;">
-  <p class="column-label" style="font-size: 13px; margin-bottom: 8px;">Name resolutions</p>
+<div class="callout callout-info mt-lg" style="max-width: none;">
+  <p class="column-label" style="margin-bottom: 8px;">Name resolutions</p>
   {% for note in alias_rationale_notes %}
-  <p style="margin: 4px 0; font-size: 13px; color: #1E40AF;">{{ note }}</p>
+  <p style="margin: 4px 0; font-size: 13px;">{{ note }}</p>
   {% endfor %}
 </div>
 {% endif %}
 
 {# --- 06-08: Conversation thread (includes source inbound via OR subquery on source_email_id) --- #}
 {% if thread_messages %}
-<div style="margin-top: 32px;">
-  <p class="column-label" style="font-size: 14px; margin-bottom: 12px;">Conversation thread</p>
+<div class="mt-xl">
+  <p class="column-label">Conversation thread</p>
   {% for msg in thread_messages %}
   <div class="sent-email-card" style="margin-bottom: 12px;">
     <div class="sent-email-header">
       {% if msg.direction == 'inbound' %}
-      <span class="badge badge-neutral" style="text-transform: uppercase;">INBOUND</span>
+      <span class="badge badge-neutral badge-uppercase">INBOUND</span>
       {% else %}
-      <span class="badge badge-neutral" style="text-transform: uppercase;">OUTBOUND</span>
+      <span class="badge badge-neutral badge-uppercase">OUTBOUND</span>
       {% endif %}
       {% if msg.purpose %}
       <span class="badge badge-{% if msg.purpose == 'confirmation' %}good{% elif msg.purpose == 'clarification' %}pending{% else %}neutral{% endif %}" style="margin-left: 6px;">{{ msg.purpose }}</span>
       {% endif %}
       <span class="sent-email-subject" style="margin-left: 8px;">{{ msg.subject or '(no subject)' }}</span>
-      <span style="font-size: 12px; color: #6B7280; margin-left: auto;">
+      <span class="sent-email-time">
         {% if msg.created_at %}
           {% if msg.created_at is string %}
             {{ msg.created_at[:16] }}
@@ -258,9 +258,9 @@
   {% endfor %}
   {# Secondary simulate-reply affordance (bottom of thread) — same action as top banner #}
   {% if run.status == 'awaiting_reply' %}
-  <div style="margin-top: 16px; padding: 12px 16px; border: 1px solid #FCD34D; background: #FFFBEB; border-radius: 6px;">
-    <p class="column-label" style="margin-bottom: 6px; font-size: 12px;">Simulate client reply (from thread view)</p>
-    <form method="post" action="/runs/{{ run.id }}/simulate-reply" style="display: flex; flex-direction: column; gap: 8px; max-width: 480px;">
+  <div class="reply-box">
+    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply (from thread view)</p>
+    <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer" style="max-width: 480px;">
       <textarea name="reply_body" rows="2" class="sim-reply-textarea">I meant &lt;correct full name here&gt;. Please process. Thanks!</textarea>
       <button type="submit" class="btn-approve" style="align-self: flex-start;">Send reply</button>
     </form>
@@ -271,7 +271,7 @@
 
 {# --- Operator controls --- #}
 {% if run.status == 'awaiting_approval' %}
-<div style="margin-top: 16px; display: inline-flex; gap: 8px;">
+<div class="inline-actions">
   <form method="post" action="/runs/{{ run.id }}/approve">
     <button type="submit" class="btn-approve">Approve &amp; Send</button>
   </form>
@@ -284,7 +284,7 @@
 
 {# --- Re-trigger form: show for error, approved, and stale in-flight states --- #}
 {% if run.status in ['error', 'approved', 'received', 'extracting', 'computed', 'sent'] %}
-<div style="margin-top: 16px;">
+<div class="mt-md" style="margin-top: var(--space-md);">
   <form method="post" action="/runs/{{ run.id }}/retrigger">
     <button type="submit" class="btn-retrigger">Re-trigger from Start</button>
   </form>

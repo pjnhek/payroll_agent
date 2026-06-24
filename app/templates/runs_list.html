@@ -53,14 +53,14 @@
   <tbody>
     {% for run in runs %}
     <tr data-run-id="{{ run.id }}" data-in-flight="{{ 'true' if run.status in in_flight_statuses else 'false' }}">
-      <td style="color: #6B7280; font-size: 12px;">
+      <td class="cell-time">
         {{ run.created_at.strftime('%Y-%m-%d %H:%M') if run.created_at else '—' }}
       </td>
       <td>{{ run.business_name }}</td>
       <td>
         <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
       </td>
-      <td style="color: #6B7280;">
+      <td class="text-muted">
         {% if run.decision and run.decision.gate_reasons %}
           {{ run.decision.gate_reasons[0] }}
         {% elif run.extracted_data and run.extracted_data.employees %}
@@ -75,16 +75,16 @@
   </tbody>
 </table>
 {% else %}
-<div style="margin-top: 32px;">
-  <p style="font-size: 20px; font-weight: 600; color: #111827; margin-bottom: 8px;">No payroll runs yet</p>
-  <p style="color: #6B7280;">Use the Send Test Email button below to fire a demo fixture through the pipeline.</p>
+<div class="empty-state">
+  <p class="empty-state__title">No payroll runs yet</p>
+  <p class="text-muted">Use the Send Test Email button below to fire a demo fixture through the pipeline.</p>
 </div>
 {% endif %}
 
 {# UAT #6: demo send-test with business/fixture picker #}
-<div style="margin-top: 48px;">
-  <form method="post" action="/demo/send-test" style="display: inline-flex; align-items: center; gap: 12px;">
-    <label for="fixture_key_runs" style="font-size: 12px; font-weight: 600; color: #6B7280;">Demo scenario</label>
+<div class="mt-2xl">
+  <form method="post" action="/demo/send-test" class="form-inline" style="margin-bottom: 0;">
+    <label for="fixture_key_runs" class="form-help" style="font-weight: 600;">Demo scenario</label>
     <select id="fixture_key_runs" name="fixture_key" class="demo-select">
       {% for key, meta in demo_fixtures.items() %}
       <option value="{{ key }}">{{ meta.label }}</option>

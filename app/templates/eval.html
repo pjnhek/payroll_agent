@@ -5,7 +5,7 @@
 {% if summary %}
 
 {# --- Section 1: Headline metrics (UI-SPEC §eval.html) --- #}
-<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl);">
+<div class="card card-pad section">
   <dl class="metric-strip">
     <div>
       <dt class="metric-label">Extraction F1</dt>
@@ -27,14 +27,14 @@
 </div>
 
 {# --- Section 2: Chart (UI-SPEC §eval.html) --- #}
-<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl); text-align: center;">
+<div class="card card-pad card-center section">
   <img src="/eval/chart.svg" alt="Per-category eval chart" style="max-width: 100%; height: auto;">
 </div>
 
 {# --- Section 3: Per-fixture drill-in --- #}
 {% if summary.per_fixture %}
-<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl);">
-  <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin-top: 0; margin-bottom: var(--space-md);">Fixture Drill-in</h2>
+<div class="card card-pad section">
+  <h2>Fixture Drill-in</h2>
   <table>
     <thead>
       <tr>
@@ -50,13 +50,13 @@
     <tbody>
       {% for fixture in summary.per_fixture %}
       <tr>
-        <td style="font-size: 12px; color: #6B7280;">{{ fixture.fixture_id }}</td>
+        <td class="cell-time">{{ fixture.fixture_id }}</td>
         <td><span class="badge badge-neutral">{{ fixture.fixture_category }}</span></td>
         <td>
           <code class="fixture-raw">{{ fixture.raw_body | truncate(200) }}</code>
         </td>
-        <td style="color: #6B7280;">{{ fixture.decision.expected_final_action }}</td>
-        <td style="color: #111827;">{{ fixture.decision.final_action }}</td>
+        <td class="text-muted">{{ fixture.decision.expected_final_action }}</td>
+        <td>{{ fixture.decision.final_action }}</td>
         <td>{{ "%.0f" | format(fixture.extraction.f1 * 100) }}%</td>
         <td>
           {% if fixture.decision.final_action == fixture.decision.expected_final_action %}
@@ -75,17 +75,17 @@
 {% else %}
 
 {# --- No eval results (graceful fallback) --- #}
-<div class="card" style="padding: var(--space-xl); margin-bottom: var(--space-xl);">
-  <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin-top: 0; margin-bottom: var(--space-sm);">No eval results available</h2>
-  <p style="color: #6B7280; margin: 0;">Run the eval locally: <code>uv run python eval/run_eval.py</code></p>
+<div class="card card-pad section">
+  <h2 style="margin-bottom: var(--space-sm);">No eval results available</h2>
+  <p class="text-muted" style="margin: 0;">Run the eval locally: <code>uv run python eval/run_eval.py</code></p>
 </div>
 
 {% endif %}
 
 {# --- UAT #6: Send Test Email with fixture picker (UI-SPEC DASH-05) --- #}
-<div style="margin-top: var(--space-2xl);">
-  <form method="post" action="/demo/send-test" style="display: inline-flex; align-items: center; gap: 12px;">
-    <label for="fixture_key_eval" style="font-size: 12px; font-weight: 600; color: #6B7280;">Demo scenario</label>
+<div class="mt-2xl">
+  <form method="post" action="/demo/send-test" class="form-inline" style="margin-bottom: 0;">
+    <label for="fixture_key_eval" class="form-help" style="font-weight: 600;">Demo scenario</label>
     <select id="fixture_key_eval" name="fixture_key" class="demo-select">
       {% for key, meta in demo_fixtures.items() %}
       <option value="{{ key }}">{{ meta.label }}</option>
