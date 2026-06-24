@@ -110,6 +110,9 @@ def _clear_settings_cache():
 
 
 def _set_tier_env(monkeypatch, *, prefix, model, base_url="https://example.test", key="sk-test"):
+    # DATABASE_URL has no default in Settings (fails fast on missing). Stub it here so
+    # get_settings() succeeds in test environments that lack a .env file (worktrees, CI).
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
     monkeypatch.setenv(f"{prefix}_MODEL", model)
     monkeypatch.setenv(f"{prefix}_BASE_URL", base_url)
     monkeypatch.setenv(f"{prefix}_API_KEY", key)

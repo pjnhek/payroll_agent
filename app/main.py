@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -98,6 +98,30 @@ _DEMO_FIXTURES: dict[str, dict] = {
     },
 }
 _DEMO_FIXTURE_DEFAULT_KEY = "coastal_exact"
+
+# ---------------------------------------------------------------------------
+# D-06 / CHANGE-5 / HIGH-2: demo routing constants (06-08)
+# ---------------------------------------------------------------------------
+
+# Hardcoded operator email for Path-2 demo binding (D-06 / CHANGE-5 / HIGH-2).
+# bind_demo_business writes demo_sender_bindings for Path-2 routing; never user-supplied.
+DEMO_OPERATOR_EMAIL = "pjnhek@gmail.com"
+
+# Stable seed .example contacts; NEVER mutated by /demo/bind (HIGH-2 fix).
+# Source: app/db/seed.py _BUSINESSES list. These match the seeded contact_email values.
+_SEED_CONTACTS: dict[str, str] = {
+    "Coastal Cleaning Co.": "payroll@coastalcleaning.example",
+    "Metro Deli Group": "hr@metrodeli.example",
+    "Summit Tech Solutions": "finance@summittech.example",
+}
+
+# Stable seed UUIDs; /demo/compose uses these directly — no find_business_by_sender call (HIGH-2 fix).
+# Source: app/db/seed.py _BUSINESSES list (fixed literals, D-11).
+_SEED_BUSINESS_IDS: dict[str, uuid.UUID] = {
+    "Coastal Cleaning Co.": uuid.UUID("b0000001-0000-0000-0000-000000000001"),
+    "Metro Deli Group": uuid.UUID("b0000002-0000-0000-0000-000000000002"),
+    "Summit Tech Solutions": uuid.UUID("b0000003-0000-0000-0000-000000000003"),
+}
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -499,6 +523,238 @@ def retrigger(
 
 
 # ---------------------------------------------------------------------------
+# Helper: build alias-rationale notes from the run's decision resolutions
+# ---------------------------------------------------------------------------
+
+
+def _build_alias_rationale_notes(run: dict, roster_fn) -> list[str]:
+    """Build a list of human-readable alias-rationale notes for source='alias' resolutions.
+
+    Called by run_detail to populate the 'Name resolutions' section. Exception-safe:
+    any parse error or lookup failure returns [] so a bad JSONB never breaks the route.
+
+    Args:
+        run: the run dict (may contain decision JSONB).
+        roster_fn: callable(business_id) -> Roster, used to look up employee full names.
+
+    Returns:
+        List of strings like "Resolved 'Maria' to Maria Chen (known nickname from a prior confirmed run)."
+    """
+    try:
+        decision = run.get("decision")
+        if not decision:
+            return []
+        resolutions = decision.get("resolutions", [])
+        if not resolutions:
+            return []
+
+        business_id = run.get("business_id")
+        roster = roster_fn(business_id) if business_id else None
+        emp_by_id = {}
+        if roster is not None:
+            for emp in roster.employees:
+                emp_by_id[str(emp.id)] = emp
+
+        notes = []
+        for res in resolutions:
+            if res.get("source") != "alias":
+                continue
+            submitted_name = res.get("submitted_name", "")
+            matched_id = res.get("matched_employee_id")
+            if matched_id and str(matched_id) in emp_by_id:
+                full_name = emp_by_id[str(matched_id)].full_name
+            else:
+                full_name = matched_id or "unknown"
+            notes.append(
+                f"Resolved '{submitted_name}' to {full_name} "
+                "(known nickname from a prior confirmed run)."
+            )
+        return notes
+    except Exception:  # noqa: BLE001 — exception-safe; route must never 500 from this
+        return []
+
+
+# ---------------------------------------------------------------------------
+# GET / — recruiter landing page (self-serve demo, Path-1 in-app composer)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/")
+def landing(
+    request: Request,
+    business: str = Query(default=""),
+    bound: str = Query(default=""),
+):
+    """Recruiter landing page with business picker + in-app composer.
+
+    GET /: shows all three businesses; defaults to the first in list.
+    GET /?business=<name>: shows the selected business's roster.
+
+    The /demo/bind form is NOT on this page — it is an unlinked operator URL.
+    The currently-armed binding (if any) is displayed read-only.
+    """
+    try:
+        businesses = repo.list_businesses()
+    except Exception:
+        logger.debug("list_businesses unavailable — rendering empty picker")
+        businesses = []
+
+    # Resolve selected business name: prefer ?business= query param, else first in list.
+    if business in _SEED_CONTACTS:
+        selected_business_name = business
+    elif businesses:
+        selected_business_name = businesses[0]["name"]
+    else:
+        selected_business_name = ""
+
+    # Resolve employees for the selected business (no DB call if name not in seed IDs).
+    employees = []
+    if selected_business_name in _SEED_BUSINESS_IDS:
+        selected_business_id = _SEED_BUSINESS_IDS[selected_business_name]
+        try:
+            roster = repo.load_roster_for_business(selected_business_id)
+            employees = roster.employees
+        except Exception:
+            logger.debug("load_roster_for_business unavailable for %s", selected_business_name)
+
+    # Read-only armed business display (Path-2 state).
+    try:
+        armed_business_id = repo.get_demo_binding(DEMO_OPERATOR_EMAIL)
+    except Exception:
+        armed_business_id = None
+
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "businesses": businesses,
+            "selected_business_name": selected_business_name,
+            "employees": employees,
+            "armed_business_id": armed_business_id,
+            "bound": bound,
+            "demo_operator_email": DEMO_OPERATOR_EMAIL,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /demo/bind — unlinked operator route (NOT on landing page)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/demo/bind")
+def demo_bind(
+    business_name: str = Form(...),
+) -> RedirectResponse:
+    """Operator-only: bind an operator email to a business for Path-2 real-email routing.
+
+    Writes to demo_sender_bindings ONLY — businesses.contact_email is NEVER mutated.
+    Seed .example contacts remain permanently stable.
+
+    SECURITY: business_name validated against _SEED_CONTACTS allowlist; operator_email
+    is the hardcoded DEMO_OPERATOR_EMAIL constant — never user-supplied (T-06-08-02).
+    """
+    if business_name not in _SEED_CONTACTS:
+        return RedirectResponse(url="/", status_code=303)
+
+    success = repo.bind_demo_business(business_name, DEMO_OPERATOR_EMAIL, _SEED_BUSINESS_IDS)
+    if success:
+        return RedirectResponse(url="/?bound=1", status_code=303)
+    return RedirectResponse(url="/", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# POST /demo/compose — in-app recruiter composer (Path-1, no real email)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/demo/compose")
+def demo_compose(
+    background_tasks: BackgroundTasks,
+    business_name: str = Form(...),
+    subject: str = Form(default="Payroll submission"),
+    body: str = Form(default=""),
+) -> RedirectResponse:
+    """Recruiter in-app composer: fires the REAL pipeline for the selected business.
+
+    Routes by stable seed business_id directly (no find_business_by_sender call — HIGH-2
+    fix). Sets record_only=True on create_run directly (LOW-6). The pipeline writes
+    outbound rows WITHOUT calling Resend — the thread view and simulate-reply still work.
+
+    SECURITY:
+    - business_name validated against _SEED_CONTACTS allowlist (T-06-08-02)
+    - body capped at 4000 chars, subject at 200 chars before any DB/LLM touch (T-06-08-08)
+    - from_addr is allowlist-resolved from _SEED_CONTACTS — never user-supplied (T-06-08-02)
+    - body goes to body_text only — no file open, no subprocess, no URL fetch (T-06-08-02)
+    - Jinja2 autoescape handles XSS on subsequent rendering (T-06-08-03)
+    """
+    # Step 1: Validate business_name against allowlist.
+    if business_name not in _SEED_CONTACTS:
+        return RedirectResponse(url="/", status_code=303)
+
+    # Step 2: Length validation (server-side, before DB or LLM touch).
+    if len(body) > 4000 or len(subject) > 200:
+        return RedirectResponse(url="/", status_code=303)
+
+    # Step 3: Resolve business_id from stable seed constant — NO find_business_by_sender call.
+    # This is the HIGH-2 fix: compose routes by the stable seed UUID directly.
+    business_id = _SEED_BUSINESS_IDS[business_name]
+
+    # Step 4: Set from_addr = seed .example contact (stable; never operator email).
+    # Used for thread display and simulate-reply's FIX-5 spoof guard.
+    from_addr = _SEED_CONTACTS[business_name]
+
+    # Step 5: Build InboundEmail payload (mirrors demo_send_test construction).
+    fresh_message_id = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
+    inbound_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": fresh_message_id,
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": subject or "Payroll submission",
+        "from_addr": from_addr,
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": body,
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+    try:
+        # Step 6: Parse, clean, insert inbound email row.
+        email = gateway.parse_inbound(inbound_payload)
+        cleaned = clean_body(email.body_text)
+
+        email_id, inserted = repo.insert_inbound_email(
+            message_id=email.message_id,
+            in_reply_to=email.in_reply_to,
+            references_header=email.references_header,
+            subject=email.subject,
+            from_addr=email.from_addr,
+            to_addr=email.to_addr,
+            body_text=cleaned,
+            run_id=None,
+        )
+        if not inserted:
+            # Shouldn't happen (fresh uuid4 message_id per click), but handle gracefully.
+            logger.warning("demo_compose: duplicate message_id — redirecting to /runs")
+            return RedirectResponse(url="/runs", status_code=303)
+
+        # Step 7: Create run with record_only=True passed directly (LOW-6).
+        run_id = repo.create_run(
+            business_id=business_id,
+            source_email_id=email_id,
+            record_only=True,
+        )
+
+        # Step 8: Schedule pipeline in background; redirect to run detail.
+        background_tasks.add_task(_run_pipeline, run_id)
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    except Exception:
+        logger.exception("demo_compose: failed to create compose run")
+        return RedirectResponse(url="/", status_code=303)
+
+
+# ---------------------------------------------------------------------------
 # DASH-01: GET /runs — operator triage queue
 # ---------------------------------------------------------------------------
 
@@ -579,6 +835,17 @@ def run_detail(request: Request, run_id: uuid.UUID):
     except Exception:
         logger.debug("load_outbound_emails unavailable for run %s", run_id)
         outbound_emails = []
+    # 06-08: load full thread (inbound source row via OR subquery + all outbound rows).
+    try:
+        thread_messages = repo.load_thread_messages(run_id)
+    except Exception:
+        logger.debug("load_thread_messages unavailable for run %s", run_id)
+        thread_messages = []
+    # 06-08: alias-rationale notes for source='alias' resolutions (PRESENTATION ONLY).
+    try:
+        alias_rationale_notes = _build_alias_rationale_notes(run, repo.load_roster_for_business)
+    except Exception:
+        alias_rationale_notes = []
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -587,6 +854,8 @@ def run_detail(request: Request, run_id: uuid.UUID):
             "raw_email": raw_email,
             "paystubs": paystubs,
             "outbound_emails": outbound_emails,
+            "thread_messages": thread_messages,
+            "alias_rationale_notes": alias_rationale_notes,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),
         },
     )

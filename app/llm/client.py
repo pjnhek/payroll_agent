@@ -63,7 +63,14 @@ class _TierConfig:
 
 
 def _resolve_tier(tier: Tier) -> _TierConfig:
-    """Map a tier name to its Settings triple. Never hardcodes a URL/model/key."""
+    """Map a tier name to its Settings triple. Never hardcodes a URL/model/key.
+
+    Tier validity is checked BEFORE get_settings() so an unknown-tier ValueError
+    surfaces clearly (D-21-05) even when no DATABASE_URL is set in the environment.
+    """
+    # Guard first: fail fast on unknown tier before loading settings.
+    if tier not in ("extraction", "draft"):
+        raise ValueError(f"unknown tier: {tier!r}")
     settings = get_settings()
     if tier == "extraction":
         return _TierConfig(
@@ -71,13 +78,12 @@ def _resolve_tier(tier: Tier) -> _TierConfig:
             settings.extraction_model,
             settings.extraction_api_key,
         )
-    if tier == "draft":
-        return _TierConfig(
-            settings.draft_base_url,
-            settings.draft_model,
-            settings.draft_api_key,
-        )
-    raise ValueError(f"unknown tier: {tier!r}")  # pragma: no cover - guard
+    # tier == "draft"
+    return _TierConfig(
+        settings.draft_base_url,
+        settings.draft_model,
+        settings.draft_api_key,
+    )
 
 
 def _is_deepseek(model: str) -> bool:

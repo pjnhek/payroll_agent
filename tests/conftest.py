@@ -211,7 +211,7 @@ class InMemoryRepo:
         return self.contact_to_business.get(from_addr)
 
     def create_run(self, *, business_id, source_email_id, pay_period_start=None,
-                   pay_period_end=None, conn=None):
+                   pay_period_end=None, record_only=False, conn=None):
         rid = uuid.uuid4()
         self.runs[str(rid)] = {
             "id": rid,
@@ -224,6 +224,7 @@ class InMemoryRepo:
             "error_reason": None,
             "pay_period_start": pay_period_start,
             "pay_period_end": pay_period_end,
+            "record_only": record_only,
         }
         return rid
 
@@ -344,6 +345,46 @@ class InMemoryRepo:
         if run is not None:
             run["alias_candidates"] = candidates
 
+    def get_record_only_flag(self, run_id, conn=None):
+        """Return the record_only flag for a run (06-08, mirrors repo.get_record_only_flag).
+
+        Returns False if the run is not found (safe default: live Resend path).
+        All in-memory runs default to record_only=False (they are created via the
+        webhook / demo_send_test path, not the compose path).
+        """
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return False
+        return bool(run.get("record_only", False))
+
+    def load_thread_messages(self, run_id, conn=None):
+        """Return thread messages for a run (06-08, mirrors repo.load_thread_messages).
+
+        For in-memory tests, returns an empty list (no email rows are tracked at this
+        granularity). Tests that need thread messages should monkeypatch directly.
+        """
+        return []
+
+    def list_businesses(self, conn=None):
+        """Return all businesses (06-08, mirrors repo.list_businesses).
+
+        For in-memory tests, returns the seeded businesses list.
+        """
+        from app.db.seed import seed as _seed
+        seeded = _seed(dry_run=True)
+        return [
+            {"id": str(b["id"]), "name": b["name"], "contact_email": b["contact_email"]}
+            for b in seeded.businesses
+        ]
+
+    def get_demo_binding(self, operator_email, conn=None):
+        """Return None (no demo bindings in the in-memory store, 06-08)."""
+        return None
+
+    def bind_demo_business(self, business_name, operator_email, seed_business_ids, conn=None):
+        """No-op in-memory bind (06-08); returns True for any known business_name."""
+        return business_name in seed_business_ids
+
     # --- email / threading (the FIX 3 outbound Message-ID anchor) ---
     def insert_email_message(self, *, run_id, direction, message_id, conn=None, **kw):
         row = {"run_id": run_id, "direction": direction, "message_id": message_id, **kw}
@@ -430,6 +471,12 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "get_outbound_message_id",
         "find_awaiting_reply_for_header",
         "find_any_run_for_header",
+        # 06-08 additions — record_only + demo routing helpers
+        "get_record_only_flag",
+        "load_thread_messages",
+        "list_businesses",
+        "get_demo_binding",
+        "bind_demo_business",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
@@ -494,11 +541,23 @@ def mock_llm(monkeypatch):
 
     Returns the MockOpenAI class; set `mock_llm.script = [json1, json2, ...]` to
     enqueue the structured responses sequential stage calls will consume.
+
+    Also stubs DATABASE_URL so get_settings() does not raise ValidationError in
+    test environments that lack a .env file (worktrees, bare CI, etc.). The stub
+    value is never used for actual DB access — the fake_repo fixture fully patches
+    all repo calls so no psycopg connection is ever opened in the mocked suite.
+    The lru_cache on get_settings() is cleared before and after so per-test env
+    edits take effect cleanly (mirrors test_llm_client.py's clear_settings_cache).
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
     MockOpenAI.script = []
     MockOpenAI.calls = []
     monkeypatch.setattr("app.llm.client.OpenAI", MockOpenAI)
-    return MockOpenAI
+    yield MockOpenAI
+    get_settings.cache_clear()
 
 
 # ---------------------------------------------------------------------------
