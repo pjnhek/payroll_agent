@@ -652,49 +652,46 @@ def test_send_test_mints_fresh_message_id_each_click():
     )
 
 
-# ===========================================================================
-# Phase 6 Wave 0 xfail stubs — health endpoint tests (06-01 Task 2)
+# ---------------------------------------------------------------------------
+# D-20: Health probe routes
 #
-# Both tests are xfail(strict=True) until 06-02 adds the /health/live and
-# /health/ready routes to app/main.py.
-# ===========================================================================
+# 06-01 wrote these as xfail(strict=True) stubs ("fail until the routes exist");
+# 06-02 implemented GET /health/live and /health/ready in app/main.py, so the
+# stubs flip to GREEN — the xfail markers are removed here at merge (the
+# designed XFAIL→XPASS→remove-marker transition). These are now real assertions.
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-02")
 def test_health_live_returns_200_no_db():
-    """GET /health/live → 200 with {"status": "ok"} (no DB required).
+    """D-20 liveness: GET /health/live must return 200 with no DB connection.
 
-    D-20 liveness route: must return 200 with no database connection so Render's
-    deploy health check succeeds even if Supabase is temporarily unavailable.
-    The route must be fast and require no DB hit — Render uses this to verify the
-    container started. (OPS-01 / D-20)
+    This route is the Render deploy healthCheckPath — a Supabase blip during
+    deploy must not fail this check. It touches NO database. (OPS-01 / D-20)
 
-    xfail until 06-02 adds GET /health/live to app/main.py.
+    T-06-02-01: Response body is {"status": "ok"} only.
     """
     response = client.get("/health/live")
     assert response.status_code == 200, (
-        f"GET /health/live must return 200 (D-20 liveness — no DB); got {response.status_code}"
+        f"GET /health/live must return 200 (D-20 liveness); got {response.status_code}"
     )
-    data = response.json()
-    assert data.get("status") == "ok", (
-        f"GET /health/live must return {{\"status\": \"ok\"}}; got {data!r}"
+    assert response.json()["status"] == "ok", (
+        f"GET /health/live must return {{\"status\": \"ok\"}}; got {response.json()}"
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-02")
 @pytest.mark.integration
-def test_health_ready_returns_200_with_db():
-    """GET /health/ready → 200 when the DB is reachable.
+def test_health_ready_returns_200_with_db(seeded_db):
+    """D-20 readiness: GET /health/ready must run a real SELECT and return 200.
 
-    D-20 readiness route: must run a real SELECT against an actual table (not just
-    SELECT 1) so Supabase registers actual DB activity and the free project does not
-    pause. The GitHub Actions keep-alive cron targets this route. (OPS-01 / D-20 / D-16)
-
-    xfail until 06-02 adds GET /health/ready to app/main.py.
-    Marked @pytest.mark.integration because the route requires a live DB connection.
+    This route is the GitHub Actions keep-alive target. It touches the businesses
+    table to register DB activity so Supabase does not pause (D-16). The SELECT
+    hits a real table (not SELECT 1) so Supabase registers activity. (OPS-01 / D-20 / D-16)
+    Requires a live DB — skip-guarded with @pytest.mark.integration.
     """
     response = client.get("/health/ready")
     assert response.status_code == 200, (
-        f"GET /health/ready must return 200 when DB is reachable (D-20 readiness); "
-        f"got {response.status_code}"
+        f"GET /health/ready must return 200 (D-20 readiness); got {response.status_code}"
+    )
+    assert response.json()["status"] == "ready", (
+        f"GET /health/ready must return {{\"status\": \"ready\"}}; got {response.json()}"
     )

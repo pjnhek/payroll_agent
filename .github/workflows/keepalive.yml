@@ -1,0 +1,46 @@
+name: keepalive
+
+# Keep the Render free web service warm and Supabase free project un-paused.
+#
+# Two triggers:
+#   schedule: 2x/week cron (avoids :00 high-load window per RESEARCH.md §8)
+#   workflow_dispatch: REQUIRED — allows manual re-enable after the 60-day
+#     auto-disable on portfolio repos with no pushes (RESEARCH Pitfall 6).
+#     Without workflow_dispatch the user must go into repo settings to re-enable;
+#     with it, a single click re-fires the workflow from the Actions tab.
+#
+# MEDIUM-7 fix (OPS-03): curl uses -f flag (fail-on-non-2xx). A failed ping
+# exits non-zero so the workflow run shows RED — OPS-03 is observable on real
+# outages. No swallow pattern is used in the curl step.
+
+on:
+  schedule:
+    # 10:17 UTC Monday and Thursday — avoids the :00 high-load window
+    - cron: "17 10 * * 1,4"
+  workflow_dispatch:    # manual re-enable after 60-day auto-disable (Pitfall 6)
+
+jobs:
+  ping:
+    name: "Ping Render + Supabase (keep-alive)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate RENDER_URL secret is set
+        # Fail fast if the secret was never configured — surfaces misconfiguration
+        # early rather than silently making curl no-op with an empty URL.
+        run: |
+          if [ -z "$RENDER_URL" ]; then
+            echo "ERROR: RENDER_URL secret is not set in this repo's Actions secrets."
+            echo "Add it at: Settings -> Secrets and variables -> Actions -> New secret"
+            exit 1
+          fi
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
+
+      - name: Ping Render health/ready (wakes service + touches Supabase via SELECT)
+        # /health/ready runs SELECT 1 FROM businesses LIMIT 1 — one ping keeps both
+        # Render warm (inbound HTTP) and Supabase un-paused (real DB query, D-16/D-20).
+        # --max-time 90: Render cold start can take up to 60s; give headroom.
+        # -f: exit non-zero on HTTP 4xx/5xx (OPS-03 requirement, MEDIUM-7 fix).
+        run: curl -f --max-time 90 "$RENDER_URL/health/ready"
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}

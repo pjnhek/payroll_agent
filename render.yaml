@@ -1,0 +1,61 @@
+# Render Blueprint for payroll-agent (OPS-01, D-09).
+# Verified schema: render.com/docs/blueprint-spec, 2026-06-23.
+#
+# Deploy: connect this repo in the Render dashboard and select "Blueprint".
+# Render will prompt for all sync:false secrets before starting the deploy.
+# Never commit real secret values — sync:false is the safety gate.
+
+services:
+  - name: payroll-agent
+    type: web
+    runtime: docker
+
+    # D-20 liveness — no DB hit so a Supabase blip does not fail the deploy.
+    # The readiness route (/health/ready) is the keep-alive cron target (GitHub Actions).
+    healthCheckPath: /health/live
+
+    envVars:
+      # ── Secrets (sync:false — Render prompts at Blueprint creation; never committed) ──
+      - key: DATABASE_URL
+        sync: false        # Supavisor pooler URL: postgresql://...pooler.supabase.com:6543/postgres?sslmode=require
+
+      - key: RESEND_API_KEY
+        sync: false        # Resend API key from resend.com dashboard
+
+      - key: WEBHOOK_SIGNING_SECRET
+        sync: false        # Resend inbound webhook signing secret (from resend.com webhook settings)
+
+      - key: EXTRACTION_API_KEY
+        sync: false        # DeepSeek API key (extraction tier)
+
+      - key: DRAFT_API_KEY
+        sync: false        # Moonshot/Kimi API key (drafting + clarification-suggestion tier)
+
+      # ── Non-secret configuration (plain value: entries — committed) ──────────
+      - key: EXTRACTION_MODEL
+        value: deepseek-v4-flash
+
+      - key: DRAFT_MODEL
+        value: moonshot-v1-8k
+
+      - key: EXTRACTION_BASE_URL
+        value: https://api.deepseek.com
+
+      - key: DRAFT_BASE_URL
+        value: https://api.moonshot.ai/v1
+
+      - key: TAX_YEAR
+        value: "2026"
+
+      - key: ALLOW_LIVE_LLM
+        value: "true"      # prod runs live LLM; CI overrides to false/unset
+
+      - key: RESEND_FROM_ADDR
+        value: onboarding@resend.dev    # free-tier shared sender (no verified domain needed)
+
+      # REPLY-TO TOPOLOGY: Not a secret — this is the inbound .resend.app address that
+      # the Resend inbound webhook is connected to. Client replies go to this address
+      # (not RESEND_FROM_ADDR, which cannot receive replies on the free tier).
+      # Override this value in the Render dashboard to match your own inbound .resend.app address.
+      - key: RESEND_REPLY_TO
+        value: payroll@jiodnel.resend.app    # Not a secret — the inbound .resend.app address; must match the address wired to the Resend inbound webhook

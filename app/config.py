@@ -49,6 +49,23 @@ class Settings(BaseSettings):
     # AND the per-tier API keys are present. Default False so CI stays green/free.
     allow_live_llm: bool = False
 
+    # ── Email provider (Resend, Phase 6) ──────────────────────────────────────
+    # Empty-string defaults: missing keys log a warning but do not fail startup —
+    # the stub fixture path must still work locally without Resend credentials.
+    resend_api_key: str = ""            # RESEND_API_KEY env var
+    webhook_signing_secret: str = ""    # WEBHOOK_SIGNING_SECRET env var
+    resend_from_addr: str = "onboarding@resend.dev"  # shared free-tier sender (no verified domain)
+
+    # BLOCKER-2: False by default (production safe). Setting ALLOW_UNSIGNED_FIXTURES=true
+    # enables the dev-mode bypass that skips webhook signature verification when the
+    # signing secret is absent. MUST NOT be set in render.yaml value: entries.
+    allow_unsigned_fixtures: bool = False
+
+    # REPLY-TO TOPOLOGY (P6): free-tier FROM=onboarding@resend.dev cannot be replied to;
+    # set this to the inbound .resend.app address so client replies route to the webhook.
+    # Omitted from send when empty.
+    resend_reply_to: str = ""           # RESEND_REPLY_TO env var — inbound .resend.app address
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
