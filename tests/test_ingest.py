@@ -62,10 +62,18 @@ def test_clean_is_idempotent():
 
 
 @pytest.fixture
-def client(fake_repo):
+def client(fake_repo, monkeypatch):
+    """TestClient with ALLOW_UNSIGNED_FIXTURES=true so the route's prod-auth
+    gate does not block canonical InboundEmail dict POSTs in mocked tests.
+    (WARNING-1 remediation — 06-04 Task 2)"""
+    from app.config import get_settings
     from app.main import app
 
-    return TestClient(app)
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    yield TestClient(app)
+    get_settings.cache_clear()
 
 
 def _script_clean_run(mock_llm) -> None:
@@ -132,14 +140,20 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     This test has NO @pytest.mark.integration and NO xfail — the existing route +
     repo already handle dedup correctly, so this must pass immediately.
 
-    WARNING-1 (06-04 compatibility): 06-04 Task 2 changes the route to raw Request
-    + json.loads. After 06-04 lands, update this test to POST a canonical
-    InboundEmail dict serialized as raw JSON bytes (Path B shape) if it starts
-    failing. (OPS-02 / D-13)
+    WARNING-1 (06-04 Task 2 remediation): Route now requires ALLOW_UNSIGNED_FIXTURES=true
+    to accept canonical InboundEmail dict POSTs without svix-* signature headers. Set here
+    via monkeypatch so the dedup-unit test stays non-integration and non-xfail. (OPS-02 / D-13)
     """
     from fastapi.testclient import TestClient
     from app.main import app
     from app.db import repo as _repo
+    from app.config import get_settings
+
+    # WARNING-1 remediation: enable unsigned fixture POSTs in dev mode so canonical
+    # dict payloads reach the route logic (prod default would return 400 without svix headers).
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
 
     # Patch repo.insert_inbound_email: first call inserts, second is duplicate.
     call_count = {"n": 0}
@@ -211,6 +225,9 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
         f"run_pipeline must be queued at most ONCE for duplicate deliveries; "
         f"got {len(pipeline_runs)} calls (D-13 dedup gate)"
     )
+
+    # Clean up settings cache after env monkeypatching (WARNING-1 remediation).
+    get_settings.cache_clear()
 
 
 @pytest.mark.integration

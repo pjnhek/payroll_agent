@@ -26,13 +26,19 @@ FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
     set_alias_candidates   — write alias_candidates JSONB column (D-04)
 
   Email / threading
-    insert_email_message   — generic append to email_messages (audit log); upserts
-                             on (run_id, purpose) for non-NULL purpose outbound rows
-    get_outbound_message_id — purpose-aware + send_state='sent'-filtered read of the
-                             outbound Message-ID (finding #1 + R2-HIGH fix, CLAR-04)
+    insert_email_message       — generic append to email_messages (audit log); upserts
+                                 on (run_id, purpose) for non-NULL purpose outbound rows
+    get_outbound_message_id    — purpose-aware + send_state='sent'-filtered read of the
+                                 outbound Message-ID (finding #1 + R2-HIGH fix, CLAR-04)
+    update_email_message_sent  — flip send_state to 'sent' WHERE message_id=synthetic_id
+                                 (06-04 D-13c success path; HIGH-1 schema-verified SQL)
+    update_email_message_state — parameterized flip of send_state WHERE message_id=synthetic_id
+                                 (06-04 HIGH-3 failed-state flip; HIGH-1 schema-verified SQL)
+    get_outbound_references_chain — most-recent sent outbound references_header for a run
+                                 (06-04 D-14 durable threading DB-load helper)
     find_awaiting_reply_for_header — header-chain match restricted to awaiting_reply
-    find_any_run_for_header — SAME header match across ANY status (late-reply
-                             observability, FIX 10)
+    find_any_run_for_header    — SAME header match across ANY status (late-reply
+                                 observability, FIX 10)
 
   Roster
     load_roster_for_business — explicit EMPLOYEE_COLS + dict_row (no SELECT *)
@@ -675,6 +681,60 @@ def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str |
             LIMIT 1
             """,
             (str(run_id), purpose),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def update_email_message_sent(message_id: str, conn=None) -> None:
+    """Flip send_state to 'sent' for the outbound row keyed on SYNTHETIC message_id.
+
+    06-04 D-13c success path. HIGH-1 schema-verified SQL: email_messages has
+    send_state but NO provider_message_id and NO updated_at — the SET clause sets
+    ONLY send_state='sent'. WHERE key is the SYNTHETIC message_id minted by
+    send_outbound (BLOCKER-3: never the Resend provider id). Two %s placeholders:
+    the 'sent' state and the synthetic message_id.
+
+    Delegates to update_email_message_state for parameterized SQL discipline and
+    testability (tests can assert 'sent' appears in the params tuple).
+    """
+    update_email_message_state(message_id, "sent", conn=conn)
+
+
+def update_email_message_state(message_id: str, state: str, conn=None) -> None:
+    """Parameterized flip of send_state for the outbound row keyed on SYNTHETIC message_id.
+
+    06-04 HIGH-3 failed-state flip. HIGH-1 schema-verified SQL: email_messages has
+    send_state but NO updated_at in the SET clause (column does not exist). WHERE key
+    is the SYNTHETIC message_id minted by send_outbound (BLOCKER-3). Two %s placeholders:
+    the new state and the synthetic message_id.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE email_messages SET send_state = %s WHERE message_id = %s",
+                (state, message_id),
+            )
+
+
+def get_outbound_references_chain(run_id: uuid.UUID, conn=None) -> str | None:
+    """Return the references_header of the most-recent sent outbound row for this run.
+
+    06-04 D-14 durable threading DB-load helper. gateway.send_outbound calls this
+    BEFORE the reserved INSERT to load the prior accumulated References chain, then
+    appends the new in_reply_to token. Building from DB state (not ephemeral webhook
+    state) means the chain survives dropped/duplicated deliveries.
+
+    Returns None if no sent outbound row exists for this run (first outbound send).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT references_header FROM email_messages
+            WHERE run_id = %s AND direction = 'outbound' AND send_state = 'sent'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (str(run_id),),
         ).fetchone()
     return row[0] if row else None
 

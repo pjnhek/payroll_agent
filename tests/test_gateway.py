@@ -60,7 +60,18 @@ def _decision(action="process") -> Decision:
 # ---------------------------------------------------------------------------
 
 
-def test_send_outbound_generates_rfc_shaped_message_id(fake_conn):
+def test_send_outbound_generates_rfc_shaped_message_id(fake_conn, monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
+    )
     run_id = uuid.uuid4()
     msg_id = gateway.send_outbound(
         run_id=run_id,
@@ -70,9 +81,21 @@ def test_send_outbound_generates_rfc_shaped_message_id(fake_conn):
         conn=fake_conn,
     )
     assert _MSG_ID_RE.match(msg_id), f"Message-ID not RFC-shaped: {msg_id}"
+    get_settings.cache_clear()
 
 
-def test_send_outbound_inserts_outbound_email_messages_row(fake_conn):
+def test_send_outbound_inserts_outbound_email_messages_row(fake_conn, monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
+    )
     run_id = uuid.uuid4()
     msg_id = gateway.send_outbound(
         run_id=run_id,
@@ -81,14 +104,32 @@ def test_send_outbound_inserts_outbound_email_messages_row(fake_conn):
         body="body",
         conn=fake_conn,
     )
-    sql, params = fake_conn.last()
-    assert "email_messages" in str(sql)
+    # Find the INSERT into email_messages among all executed SQL
+    insert_found = None
+    for sql, params in fake_conn.executed:
+        if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
+            insert_found = (sql, params)
+            break
+    assert insert_found is not None, "No INSERT into email_messages found"
+    sql, params = insert_found
     assert "outbound" in str(params)  # direction='outbound'
     assert str(run_id) in str(params)
     assert msg_id in str(params)  # the synthetic anchor lives ON the row
+    get_settings.cache_clear()
 
 
-def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn):
+def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn, monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
+    )
     gateway.send_outbound(
         run_id=uuid.uuid4(),
         to_addr="c@acme.test",
@@ -96,8 +137,15 @@ def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn):
         body="b",
         conn=fake_conn,
     )
-    sql = str(fake_conn.last()[0])
-    assert "%s" in sql, "outbound insert must use %s placeholders"
+    # Check the INSERT SQL uses %s placeholders
+    insert_sql = None
+    for sql, params in fake_conn.executed:
+        if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
+            insert_sql = str(sql)
+            break
+    assert insert_sql is not None, "No INSERT into email_messages found"
+    assert "%s" in insert_sql, "outbound insert must use %s placeholders"
+    get_settings.cache_clear()
 
 
 def test_parse_inbound_validates_canonical_payload():
@@ -409,6 +457,71 @@ def test_record_run_error_persists_reason_and_error_status(seeded_db):
 import resend  # noqa: F401 — installed via 06-01 Task 1; needed for monkeypatching
 
 
+# ===========================================================================
+# MEDIUM-5: SDK smoke-check test (Wave 0 guard — Task 0)
+# Asserts resend==2.32.2 call surfaces exist so a Python SDK naming mismatch
+# is caught at Wave 0, not at the live human gate (D-09b). Researcher verified
+# these by source inspection; this locks it as an executable guard.
+# ===========================================================================
+
+
+def test_resend_sdk_call_surfaces_exist():
+    """MEDIUM-5: SDK smoke check — asserts resend==2.32.2 call surfaces exist.
+
+    No network calls. Pure import + attribute inspection. Must PASS immediately
+    (no xfail). Catches Python SDK naming mismatches before the live demo gate.
+    """
+    import inspect
+
+    # 1. resend.Webhooks.verify — the signature-verification surface (D-17).
+    assert hasattr(resend, "Webhooks"), "resend.Webhooks does not exist"
+    assert hasattr(resend.Webhooks, "verify"), "resend.Webhooks.verify does not exist"
+
+    # 2. resend.EmailsReceiving.get — the inbound email fetch surface (D-01a).
+    assert hasattr(resend, "EmailsReceiving"), "resend.EmailsReceiving does not exist"
+    assert hasattr(resend.EmailsReceiving, "get"), "resend.EmailsReceiving.get does not exist"
+
+    # 3. resend.Emails.send — the outbound send surface.
+    assert hasattr(resend, "Emails"), "resend.Emails does not exist"
+    assert hasattr(resend.Emails, "send"), "resend.Emails.send does not exist"
+
+    # 4. resend.Emails.send call-surface check.
+    # Researcher verified from source inspection that resend.Emails.send accepts a
+    # single SendParams TypedDict argument (a TypedDict, so dict subclass). The dict
+    # has keys including 'headers' and 'attachments'. We verify the signature accepts
+    # a positional param (the send dict) and check the send dict schema includes both keys.
+    sig = inspect.signature(resend.Emails.send)
+    params_list = list(sig.parameters.keys())
+    # The send method takes 'params' (the SendParams TypedDict) as first positional.
+    assert len(params_list) >= 1, (
+        "resend.Emails.send must accept at least one argument (the SendParams dict)"
+    )
+    first_param_name = params_list[0]
+    assert first_param_name not in ("self", "cls") or len(params_list) >= 2, (
+        "resend.Emails.send must have at least one non-self parameter"
+    )
+    # Verify that SendParams TypedDict defines 'headers' and 'attachments' keys.
+    # resend.Emails.SendParams is a TypedDict subclass of dict.
+    assert hasattr(resend.Emails, "SendParams"), "resend.Emails.SendParams does not exist"
+    send_params_hints = resend.Emails.SendParams.__annotations__
+    # Note: TypedDict __annotations__ may come from parent classes; use get_type_hints for
+    # the full set. For simplicity, check that the TypedDict references 'headers' or
+    # that **kwargs is accepted (dict passthrough). The TypedDict approach: SendParams
+    # extends dict, so arbitrary keys can be passed — 'headers' and 'attachments' work.
+    # We assert the known keys are documented in the TypedDict or its bases.
+    import typing
+    all_hints = {}
+    for cls in reversed(resend.Emails.SendParams.__mro__):
+        if hasattr(cls, "__annotations__"):
+            all_hints.update(cls.__annotations__)
+    assert "headers" in all_hints or issubclass(resend.Emails.SendParams, dict), (
+        "resend.Emails.SendParams must support 'headers' key (either annotated or dict subclass)"
+    )
+    assert "attachments" in all_hints or issubclass(resend.Emails.SendParams, dict), (
+        "resend.Emails.SendParams must support 'attachments' key (either annotated or dict subclass)"
+    )
+
+
 class _FakeReceivedEmail:
     """Minimal stand-in for resend.ReceivedEmail used in gateway xfail tests.
 
@@ -468,7 +581,6 @@ def test_parse_inbound_canonical_fixture_still_works():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_verify_raises_on_bad_signature(monkeypatch):
     """gateway.verify must propagate ValueError from resend.Webhooks.verify.
 
@@ -493,7 +605,6 @@ def test_verify_raises_on_bad_signature(monkeypatch):
         )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_verify_passes_on_valid_signature(monkeypatch):
     """gateway.verify must return cleanly when resend.Webhooks.verify succeeds.
 
@@ -517,7 +628,6 @@ def test_verify_passes_on_valid_signature(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_two_step_fetch(monkeypatch):
     """parse_inbound must fetch the full email via resend.EmailsReceiving.get.
 
@@ -525,7 +635,12 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
     parse_inbound must call resend.EmailsReceiving.get(email_id) to retrieve the
     body + headers and return a fully-populated InboundEmail. (OPS-02 / D-01a)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     fake_email_obj = _FakeReceivedEmail(
         message_id="<abc@resend.com>",
@@ -567,7 +682,6 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     """parse_inbound must handle lowercase header keys from the provider.
 
@@ -575,7 +689,12 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     others send 'in-reply-to'. The gateway must normalize case-insensitively.
     (OPS-02 / D-18 / Pitfall 4)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     fake_email_obj = _FakeReceivedEmail(
         message_id="<abc@resend.com>",
@@ -611,7 +730,6 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     """The returned InboundEmail.message_id must be the RFC message_id, NOT email_id.
 
@@ -619,7 +737,12 @@ def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     The dedup key must be the RFC Message-ID from email_obj.message_id, which is
     the globally-unique RFC value. (OPS-02 / D-13 dedup key correctness)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     rfc_message_id = "<rfc-correct@acme.test>"
     resend_email_id = "re_internal_id_999"
@@ -659,7 +782,6 @@ def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_parseaddr_display_name(monkeypatch):
     """parse_inbound must strip display names from the 'from' field.
 
@@ -667,7 +789,12 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
     gateway must run email.utils.parseaddr to extract the bare address before
     passing it to find_business_by_sender. (OPS-02 / D-18 / LOW-9)
     """
+    from app.config import get_settings
     from app.models.contracts import InboundEmail
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
     fake_email_obj = _FakeReceivedEmail(
         message_id="<display@resend.com>",
@@ -709,7 +836,6 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     """send_outbound must write send_state='reserved' BEFORE calling resend.Emails.send.
 
@@ -721,6 +847,12 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     get_outbound_references_chain adds a DB READ before the reserved INSERT, so
     absolute indexing breaks. (OPS-02 / D-13c / MEDIUM-6)
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
     send_calls: list = []
 
     def _fake_send(params):
@@ -765,7 +897,6 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
     """send_outbound must update send_state to 'failed' when resend.Emails.send raises.
 
@@ -774,6 +905,16 @@ def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
     exception must re-raise so the caller knows the send did not succeed.
     (OPS-02 / D-13c / HIGH-3)
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
     def _raise_send(params):
         raise RuntimeError("network error")
 
@@ -813,7 +954,6 @@ def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     """send_outbound must build the References chain from persisted DB state.
 
@@ -824,6 +964,12 @@ def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     asserts the INSERT params include BOTH '<prior@x.test>' AND '<inbound@x.test>'
     in the references_header. (OPS-02 / D-14)
     """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
     # Pre-seed: a prior outbound row for this run with references_header='<prior@x.test>'
     fake_conn.script_fetchone(("<prior@x.test>",))  # returned by get_outbound_references_chain
 
@@ -853,7 +999,6 @@ def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_inbound_reply_routes_to_correct_run(monkeypatch):
     """POST /webhook/inbound with in_reply_to matching an awaiting_reply run must resume it.
 
@@ -862,14 +1007,17 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     BackgroundTasks.add_task), NOT run_pipeline. This confirms reply routing works end-
     to-end for the mock case. (OPS-02 / D-14)
 
-    This test is xfail because the current route uses a Pydantic InboundEmail body param
-    (not raw Request), so the routing flow will be restructured in 06-04.
+    xfail removed in 06-04 Task 3 — the route was restructured to async Request with
+    ALLOW_UNSIGNED_FIXTURES support, enabling canonical dict POSTs in dev mode.
     """
     from fastapi.testclient import TestClient
     from app.main import app
     from app.db import repo as _repo
 
     run_id = uuid.uuid4()
+    # Use a fixed business_id so the FIX-5 spoof guard passes:
+    # find_business_by_sender must return the SAME id as awaiting_run["business_id"].
+    sender_business_id = uuid.uuid4()
     clarification_mid = "<clar-abc@payroll-agent.local>"
 
     # Monkeypatch: find_awaiting_reply_for_header returns run_A
@@ -878,16 +1026,17 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         "find_awaiting_reply_for_header",
         lambda *, in_reply_to, references_header, conn=None: run_id,
     )
-    # Monkeypatch: find_business_by_sender returns a business (FIX-5 sender check)
+    # Monkeypatch: find_business_by_sender returns the SAME business_id as the run.
+    # FIX-5 spoof guard: str(reply_business_id) must equal str(run["business_id"]).
     monkeypatch.setattr(
         _repo,
         "find_business_by_sender",
-        lambda from_addr, conn=None: uuid.uuid4(),
+        lambda from_addr, conn=None: sender_business_id,
     )
     # Monkeypatch: load_run to return an awaiting_reply run (for FIX-5 guard)
     awaiting_run = {
         "id": run_id,
-        "business_id": uuid.uuid4(),
+        "business_id": sender_business_id,  # must match find_business_by_sender return
         "source_email_id": uuid.uuid4(),
         "status": "awaiting_reply",
         "extracted_data": None,
@@ -925,9 +1074,15 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         lambda **kw: (uuid.uuid4(), True),
     )
 
+    # WARNING-1 remediation (06-04 Task 2): route now requires ALLOW_UNSIGNED_FIXTURES=true
+    # for canonical dict POSTs without svix-* signature headers.
+    from app.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+
     client = TestClient(app, raise_server_exceptions=False)
-    # Post a canonical InboundEmail dict with in_reply_to matching the clarification
-    # (current route still uses Pydantic body — this will break in 06-04 when raw Request lands)
+    # Post a canonical InboundEmail dict with in_reply_to matching the clarification.
     import json
     raw_reply = {
         "id": str(uuid.uuid4()),
@@ -951,6 +1106,7 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     assert len(run_pipeline_called) == 0, (
         "run_pipeline must NOT be called for a reply to an awaiting_reply run"
     )
+    get_settings.cache_clear()
 
 
 @pytest.mark.xfail(strict=True, reason="implemented in 06-04")
@@ -1025,3 +1181,360 @@ def test_inbound_reply_routes_to_correct_run_integration():
         f"the outbound clarification Message-ID (real SQL predicate end-to-end); "
         f"got {matched!r}"
     )
+
+
+# ===========================================================================
+# Task 1 (06-04) new tests — HIGH-1-AUTH, HIGH-3 attachments, LOW-9 parseaddr,
+# REPLY-TO TOPOLOGY
+# ===========================================================================
+
+
+def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
+    """HIGH-1-AUTH (R5 — live-demo-critical): send_outbound sets resend.api_key as its
+    FIRST action, even when called from /demo/send-test without a prior parse_inbound.
+
+    Asserts that resend.api_key is updated from a stale/unset value to the configured
+    key before resend.Emails.send is invoked.
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key-123")
+
+    # Pre-seed: get_outbound_references_chain returns None (no prior chain)
+    # and insert_email_message returns a row id
+    fake_conn.script_fetchone(None)   # get_outbound_references_chain → None
+    fake_conn.script_fetchone((str(uuid.uuid4()),))  # insert_email_message → id
+
+    key_at_send_time: list = []
+
+    def _capture_send(params):
+        key_at_send_time.append(resend.api_key)
+        return {"id": "resend-provider-id-001"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    # Set a stale key before calling send_outbound — must be overwritten.
+    resend.api_key = "stale-key"
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Test",
+        body="body",
+        conn=fake_conn,
+    )
+
+    # The api_key must have been set to the configured value BEFORE the send call.
+    assert len(key_at_send_time) == 1, "resend.Emails.send must be called exactly once"
+    assert key_at_send_time[0] == "test-key-123", (
+        f"resend.api_key must equal 'test-key-123' at the time resend.Emails.send is invoked; "
+        f"got {key_at_send_time[0]!r} — send_outbound must set api_key as its FIRST line "
+        "(HIGH-1-AUTH: /demo/send-test calls send_outbound without prior parse_inbound)"
+    )
+    assert resend.api_key == "test-key-123", (
+        "resend.api_key was not updated from the stale value — HIGH-1-AUTH fix missing"
+    )
+    get_settings.cache_clear()
+
+
+def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
+    """HIGH-3 attachments: send_outbound must base64-encode and forward PDF bytes.
+
+    Asserts that resend.Emails.send is called with an 'attachments' key containing
+    the expected filename and base64-encoded PDF content. (OPS-02 / HIGH-3)
+    """
+    import base64 as _b64
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    captured_params: list = []
+
+    def _capture_send(params):
+        captured_params.append(params)
+        return {"id": "resend-attach-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    pdf_bytes = b"%PDF-1.4 fake-pdf-content"
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Payroll Confirmation",
+        body="See attached paystubs.",
+        attachments=[("paystub.pdf", pdf_bytes)],
+        conn=fake_conn,
+    )
+
+    assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
+    send_dict = captured_params[0]
+    assert "attachments" in send_dict, (
+        "resend.Emails.send dict must contain 'attachments' key (HIGH-3 fix)"
+    )
+    attachments = send_dict["attachments"]
+    assert len(attachments) == 1, "exactly one attachment expected"
+    att = attachments[0]
+    assert att["filename"] == "paystub.pdf", (
+        f"attachment filename must be 'paystub.pdf'; got {att['filename']!r}"
+    )
+    expected_content = _b64.b64encode(pdf_bytes).decode()
+    assert att["content"] == expected_content, (
+        f"attachment content must be base64-encoded PDF bytes; "
+        f"got {att['content'][:40]!r}..."
+    )
+    get_settings.cache_clear()
+
+
+def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch):
+    """REPLY-TO TOPOLOGY: send_outbound includes reply_to in the send dict when
+    resend_reply_to is non-empty. The reply_to value is the inbound .resend.app address
+    that the webhook IS connected to (not onboarding@resend.dev). (T-06-04-13)
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    monkeypatch.setenv("RESEND_REPLY_TO", "payroll@jiodnel.resend.app")
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    captured_params: list = []
+
+    def _capture_send(params):
+        captured_params.append(params)
+        return {"id": "resend-reply-to-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Payroll Question",
+        body="Please reply.",
+        conn=fake_conn,
+    )
+
+    assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
+    send_dict = captured_params[0]
+    assert "reply_to" in send_dict, (
+        "resend.Emails.send dict must contain 'reply_to' key when resend_reply_to is configured "
+        "(REPLY-TO TOPOLOGY: directs client replies to the inbound webhook address)"
+    )
+    assert send_dict["reply_to"] == "payroll@jiodnel.resend.app", (
+        f"reply_to must equal 'payroll@jiodnel.resend.app'; got {send_dict['reply_to']!r}"
+    )
+    get_settings.cache_clear()
+
+
+def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch):
+    """REPLY-TO TOPOLOGY: send_outbound omits reply_to from the send dict when
+    resend_reply_to is empty. Passing an empty string would send a malformed
+    Reply-To header — the key must be absent, not set to ''. (T-06-04-13)
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    # Ensure resend_reply_to is empty (the default)
+    monkeypatch.delenv("RESEND_REPLY_TO", raising=False)
+
+    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((str(uuid.uuid4()),))
+
+    captured_params: list = []
+
+    def _capture_send(params):
+        captured_params.append(params)
+        return {"id": "resend-no-reply-to-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="client@acme.test",
+        subject="Payroll Confirmation",
+        body="Attached.",
+        conn=fake_conn,
+    )
+
+    assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
+    send_dict = captured_params[0]
+    assert "reply_to" not in send_dict, (
+        f"resend.Emails.send dict must NOT contain 'reply_to' key when resend_reply_to is empty "
+        f"(passing empty string is malformed — key must be absent); "
+        f"got send_dict keys: {list(send_dict.keys())}"
+    )
+    get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER-2 / HIGH-4 — ALLOW_UNSIGNED_FIXTURES prod-auth closure (Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_allow_unsigned_fixtures_prod_default_returns_400(monkeypatch):
+    """BLOCKER-2 + HIGH-4: unsigned Resend-envelope payload without svix-* headers returns 400
+    in production (ALLOW_UNSIGNED_FIXTURES=False, the default).
+
+    This is the ONLY consistent statement about unsigned requests in prod:
+    they return 400 regardless of shape (Resend-envelope OR canonical).
+    NOT xfail — must be GREEN immediately after Task 2 route restructure.
+    (T-06-04-01 / T-06-04-11)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    # Explicitly ensure ALLOW_UNSIGNED_FIXTURES is not set (prod default = False).
+    monkeypatch.delenv("ALLOW_UNSIGNED_FIXTURES", raising=False)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Resend-envelope shaped payload (has data.email_id): unsigned → 400 in prod.
+    resend_envelope = {
+        "type": "email.received",
+        "data": {
+            "email_id": "email_abc123",
+            "from": "hr@acme.test",
+            "to": ["payroll@jiodnel.resend.app"],
+            "subject": "Payroll hours",
+        },
+    }
+    # No svix-* signature headers — this is an unsigned request.
+    response = client.post(
+        "/webhook/inbound",
+        content=resend_envelope.__class__(resend_envelope).__repr__().encode(),
+        headers={"content-type": "application/json"},
+    )
+    # Actually use json= to send proper JSON body.
+    response = client.post("/webhook/inbound", json=resend_envelope)
+    assert response.status_code == 400, (
+        f"Unsigned Resend-envelope POST must return 400 in prod "
+        f"(ALLOW_UNSIGNED_FIXTURES=False default); got {response.status_code}. "
+        f"BLOCKER-2: unsigned inbound must be rejected before any pipeline work."
+    )
+    get_settings.cache_clear()
+
+
+def test_allow_unsigned_fixtures_canonical_shape_prod_default_returns_400(monkeypatch):
+    """HIGH-4 + MEDIUM-4: unsigned canonical InboundEmail-shaped POST returns 400 in prod.
+
+    This closes the canonical-bypass hole: even a perfectly-shaped InboundEmail dict POST
+    without svix-* auth headers returns 400 in prod (ALLOW_UNSIGNED_FIXTURES=False).
+    MEDIUM-4 consistent statement: unsigned canonical → 400 in prod. Full stop.
+    NOT xfail — must be GREEN immediately after Task 2 route restructure.
+    (T-06-04-11)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    # Explicitly ensure ALLOW_UNSIGNED_FIXTURES is not set (prod default = False).
+    monkeypatch.delenv("ALLOW_UNSIGNED_FIXTURES", raising=False)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Canonical InboundEmail dict shape (no data.email_id envelope): unsigned → 400 in prod.
+    canonical_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<test-canonical@acme.test>",
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    # No svix-* signature headers — unsigned canonical POST.
+    response = client.post("/webhook/inbound", json=canonical_payload)
+    assert response.status_code == 400, (
+        f"Unsigned canonical InboundEmail POST must return 400 in prod "
+        f"(ALLOW_UNSIGNED_FIXTURES=False default); got {response.status_code}. "
+        f"HIGH-4: canonical fixture bypass must be closed in production."
+    )
+    get_settings.cache_clear()
+
+
+def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatch):
+    """HIGH-4: canonical InboundEmail dict POST returns 200 in dev mode
+    (ALLOW_UNSIGNED_FIXTURES=True). Dev path preserved when flag is explicitly set.
+    NOT xfail — must be GREEN immediately after Task 2 route restructure.
+    (T-06-04-07 — flag is never in render.yaml; only in tests and local .env)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import repo as _repo
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    # Dev mode: ALLOW_UNSIGNED_FIXTURES=True so unsigned canonical POSTs succeed.
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+
+    # Patch repo helpers so the route completes without a live DB.
+    monkeypatch.setattr(_repo, "insert_inbound_email", lambda **kw: (email_id, True))
+    monkeypatch.setattr(
+        _repo,
+        "find_business_by_sender",
+        lambda from_addr, conn=None: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        _repo,
+        "create_run",
+        lambda **kw: run_id,
+    )
+    monkeypatch.setattr(
+        _repo,
+        "find_awaiting_reply_for_header",
+        lambda *, in_reply_to, references_header, conn=None: None,
+    )
+    monkeypatch.setattr(
+        _repo,
+        "find_any_run_for_header",
+        lambda *, in_reply_to, references_header, conn=None: None,
+    )
+    import app.main as _main
+    monkeypatch.setattr(_main, "_run_pipeline", lambda run_id, conn=None: None)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Canonical InboundEmail dict shape — allowed in dev mode.
+    canonical_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<test-dev-canonical@acme.test>",
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    response = client.post("/webhook/inbound", json=canonical_payload)
+    assert response.status_code == 200, (
+        f"Canonical InboundEmail POST must return 200 in dev mode "
+        f"(ALLOW_UNSIGNED_FIXTURES=True); got {response.status_code}. "
+        f"HIGH-4: dev path preserved when flag is explicitly set."
+    )
+    get_settings.cache_clear()

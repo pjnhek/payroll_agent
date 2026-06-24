@@ -450,6 +450,39 @@ class InMemoryRepo:
             return matching[-1]["message_id"] if matching else None
         return rows[-1]["message_id"]
 
+    # --- 06-04 new repo helpers (D-13c crash-safe ordering + D-14 threading) ---
+    def get_outbound_references_chain(self, run_id, conn=None):
+        """Return the references_header of the most recent sent outbound for this run.
+
+        Mirrors repo.get_outbound_references_chain (D-14 durable threading rebuild).
+        Returns None if no sent outbound row exists.
+        """
+        rows = self.outbound.get(str(run_id))
+        if not rows:
+            return None
+        sent = [r for r in rows if r.get("send_state") == "sent"]
+        if not sent:
+            return None
+        return sent[-1].get("references_header")
+
+    def update_email_message_sent(self, message_id, conn=None):
+        """Flip send_state to 'sent' for the outbound row with this synthetic message_id.
+
+        Mirrors repo.update_email_message_sent (D-13c success path, HIGH-1 waive).
+        """
+        self.update_email_message_state(message_id, "sent", conn=conn)
+
+    def update_email_message_state(self, message_id, state, conn=None):
+        """Set send_state on the outbound row with this synthetic message_id.
+
+        Mirrors repo.update_email_message_state (D-13c crash-safe flip, HIGH-3).
+        """
+        for rows in self.outbound.values():
+            for row in rows:
+                if row.get("message_id") == message_id:
+                    row["send_state"] = state
+                    return
+
     # --- header-chain reply routing (CLAR-02/03, Plan 04) ---
     def _header_matches(self, in_reply_to, references_header, row):
         """Mirror the repo SQL: outbound Message-ID == in_reply_to OR is a WHOLE
@@ -518,9 +551,26 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "list_businesses",
         "get_demo_binding",
         "bind_demo_business",
+        # 06-04 additions — D-13c crash-safe ordering + D-14 durable threading
+        "get_outbound_references_chain",
+        "update_email_message_sent",
+        "update_email_message_state",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
+
+    # Patch resend.Emails.send to a no-op in the mocked test context so that
+    # pipeline tests (fake_repo) do not attempt real Resend API calls.
+    # Tests that need to assert send behavior use the explicit mock_resend_send fixture
+    # (or monkeypatch resend.Emails.send directly) — this default no-op just prevents
+    # pool-connection errors from send_outbound calling resend without a live key.
+    monkeypatch.setattr(
+        resend.Emails,
+        "send",
+        staticmethod(lambda params: {"id": "fake-resend-id"}),
+        raising=True,
+    )
+
     return store
 
 
