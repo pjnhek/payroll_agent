@@ -41,10 +41,20 @@ nav {
 }
 
 .nav-brand {
+  /* font-size/color repeated so this wins over the generic `nav a` rule below
+     (both match the brand link; `nav a` is otherwise equally specific). */
   font-size: 20px;
   font-weight: 600;
   color: #111827;
   margin-right: auto;
+  text-decoration: none;
+}
+
+/* `nav a:hover` (0-1-1) would otherwise out-specify a bare `.nav-brand:hover`
+   (0-1-0) and re-add the underline; scope to nav to match its specificity. */
+nav a.nav-brand:hover {
+  color: #2563EB;
+  text-decoration: none;
 }
 
 nav a {
