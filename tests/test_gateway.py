@@ -1347,8 +1347,12 @@ def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch
     get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
     monkeypatch.setenv("RESEND_API_KEY", "test-key")
-    # Ensure resend_reply_to is empty (the default)
-    monkeypatch.delenv("RESEND_REPLY_TO", raising=False)
+    # Force resend_reply_to empty. delenv() is NOT enough: Settings reads .env
+    # (env_file=".env"), so a RESEND_REPLY_TO line in a developer's local .env
+    # (added during the 06-03 deploy) would bleed through and the key would be
+    # present. An explicit empty OS env var overrides the .env value (verified),
+    # making this test deterministic regardless of local .env contents.
+    monkeypatch.setenv("RESEND_REPLY_TO", "")
 
     # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
     fake_conn.script_fetchone(None)
