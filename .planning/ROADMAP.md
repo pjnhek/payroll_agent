@@ -262,7 +262,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 — BLOCKING human checkpoint)*
 
-- [ ] 06-03-PLAN.md — D-08a local pooler pre-check + D-09/D-09a thin Render deploy + Supabase standup (autonomous:false)
+- [x] 06-03-PLAN.md — D-08a local pooler pre-check + D-09/D-09a thin Render deploy + Supabase standup (autonomous:false)
 
 **Wave 3** *(blocked on Wave 2 — concurrent)*
 
@@ -294,4 +294,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 3/8 | In Progress|  |
+| 6. Real Integration & Ship | 4/8 | In Progress|  |
