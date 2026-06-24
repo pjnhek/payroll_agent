@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reconciliation    JSONB;  -- D-A3-05
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_reason      TEXT;   -- D-A1-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS alias_candidates  JSONB;  -- D-04 (Plan 05-03)
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS record_only       BOOLEAN NOT NULL DEFAULT FALSE;  -- 06-08 HIGH-1: compose-created runs skip real Resend send
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
@@ -191,6 +192,18 @@ CREATE TABLE IF NOT EXISTS eval_results (
     value        NUMERIC(8,4)  NOT NULL,
     details      JSONB,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ── demo_sender_bindings: operator email → business mapping for Path-2 demo routing ────
+-- demo_sender_bindings: operator email → business mapping for Path-2 demo routing
+-- (HIGH-2 fix; never modifies businesses.contact_email).
+-- POST /demo/bind UPSERTs here; find_business_by_sender gains an additive fallback
+-- that checks this table when the primary contact_email match returns None.
+-- One row maximum in practice (one operator), enforced by the PRIMARY KEY.
+CREATE TABLE IF NOT EXISTS demo_sender_bindings (
+    operator_email  TEXT        PRIMARY KEY,
+    business_id     UUID        NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+    bound_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ── Deferred FK: payroll_runs.source_email_id → email_messages.id ─────────────

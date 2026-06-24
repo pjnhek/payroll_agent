@@ -171,13 +171,25 @@ def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
 
     An unknown sender returns None so the webhook stops without guessing
     (INGEST-03 access-control seam; T-02-12).
+
+    Additive fallback: if no contact_email match, check demo_sender_bindings for
+    operator-email → business mapping (HIGH-2 fix; never mutates businesses table).
+    This allows Path-2 real-email inbound to route via the operator's Gmail binding
+    without changing any seed contact_email value.
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
             "SELECT id FROM businesses WHERE contact_email = %s",
             (from_addr,),
         ).fetchone()
-    return uuid.UUID(str(row[0])) if row else None
+        if row is not None:
+            return uuid.UUID(str(row[0]))
+        # Additive fallback: check demo_sender_bindings for operator email → business_id
+        binding_row = c.execute(
+            "SELECT business_id FROM demo_sender_bindings WHERE operator_email = %s",
+            (from_addr,),
+        ).fetchone()
+        return uuid.UUID(str(binding_row[0])) if binding_row else None
 
 
 def load_business_name(business_id: uuid.UUID, conn=None) -> str | None:
@@ -201,16 +213,26 @@ def create_run(
     source_email_id: uuid.UUID | None,
     pay_period_start: Any | None = None,
     pay_period_end: Any | None = None,
+    record_only: bool = False,
     conn=None,
 ) -> uuid.UUID:
-    """Open a payroll_runs row (status defaults to 'received'); return its id."""
+    """Open a payroll_runs row (status defaults to 'received'); return its id.
+
+    record_only=True: compose-created (in-app demo) runs that should skip the real
+    Resend provider call. The orchestrator reads this flag at each send_outbound call
+    site (_clarify and _deliver) via get_record_only_flag(). LOW-6: passing
+    record_only=True directly to create_run is cleaner than create-then-set_record_only.
+    Existing callers supply no record_only arg and get the False default — no behavior
+    change for live runs.
+    """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             row = c.execute(
                 """
                 INSERT INTO payroll_runs (
-                    business_id, source_email_id, pay_period_start, pay_period_end
-                ) VALUES (%s, %s, %s, %s)
+                    business_id, source_email_id, pay_period_start, pay_period_end,
+                    record_only
+                ) VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -218,6 +240,7 @@ def create_run(
                     str(source_email_id) if source_email_id else None,
                     pay_period_start,
                     pay_period_end,
+                    record_only,
                 ),
             ).fetchone()
     return uuid.UUID(str(row[0]))
@@ -674,6 +697,129 @@ def load_outbound_emails(run_id: uuid.UUID, conn=None) -> list[dict]:
     with _conn_ctx(conn) as (c, _owns):
         with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(sql, (str(run_id),))
+            return cur.fetchall() or []
+
+
+# ---------------------------------------------------------------------------
+# Demo routing helpers (06-08): demo_sender_bindings + record_only + thread view
+# ---------------------------------------------------------------------------
+
+
+def list_businesses(conn=None) -> list[dict]:
+    """Return all businesses ordered by name for the landing page picker.
+
+    Explicit column list (no SELECT *) per repo discipline. Returns [] on empty.
+    """
+    sql = "SELECT id, name, contact_email FROM businesses ORDER BY name"
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql)
+            return cur.fetchall() or []
+
+
+def bind_demo_business(
+    business_name: str,
+    operator_email: str,
+    seed_business_ids: dict,
+    conn=None,
+) -> bool:
+    """UPSERT operator email → business into demo_sender_bindings (HIGH-2 fix).
+
+    NEVER touches businesses.contact_email. The seed .example contacts are permanently
+    stable. Only demo_sender_bindings is written. The operator_email is the hardcoded
+    DEMO_OPERATOR_EMAIL constant from the call site — never user-supplied.
+
+    Args:
+        business_name: validated against the seed_business_ids allowlist.
+        operator_email: the hardcoded operator email (DEMO_OPERATOR_EMAIL).
+        seed_business_ids: dict[str, UUID] of the three stable seed businesses.
+
+    Returns:
+        True on success, False if business_name is not in the allowlist.
+    """
+    business_id = seed_business_ids.get(business_name)
+    if business_id is None:
+        return False  # unknown business name — allowlist enforced at route layer too
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                """
+                INSERT INTO demo_sender_bindings (operator_email, business_id, bound_at)
+                VALUES (%s, %s, now())
+                ON CONFLICT (operator_email) DO UPDATE
+                    SET business_id = EXCLUDED.business_id,
+                        bound_at    = now()
+                """,
+                (operator_email, str(business_id)),
+            )
+    return True
+
+
+def get_demo_binding(operator_email: str, conn=None) -> "uuid.UUID | None":
+    """Return the business_id bound to operator_email in demo_sender_bindings, or None.
+
+    Used by find_business_by_sender's additive check AND by GET / to display the
+    currently-armed business (read-only — never mutates any state).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT business_id FROM demo_sender_bindings WHERE operator_email = %s",
+            (operator_email,),
+        ).fetchone()
+    return uuid.UUID(str(row[0])) if row else None
+
+
+def set_record_only(run_id: uuid.UUID, conn=None) -> None:
+    """Set record_only = TRUE on a run.
+
+    Ad-hoc repair helper. In normal operation, create_run(record_only=True) is used
+    directly (LOW-6 — no separate UPDATE needed at compose time).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET record_only = TRUE WHERE id = %s",
+                (str(run_id),),
+            )
+
+
+def get_record_only_flag(run_id: uuid.UUID, conn=None) -> bool:
+    """Return the record_only flag for a run.
+
+    Returns False if the run is not found (safe default: live Resend path).
+    Called by the orchestrator at each send_outbound call site (_clarify and _deliver).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT record_only FROM payroll_runs WHERE id = %s",
+            (str(run_id),),
+        ).fetchone()
+    if row is None:
+        return False
+    return bool(row[0])
+
+
+def load_thread_messages(run_id: uuid.UUID, conn=None) -> list[dict]:
+    """Return ALL email_messages rows for a run including the source inbound.
+
+    The source inbound row was inserted with run_id=NULL at ingest — this OR clause
+    captures it via payroll_runs.source_email_id so the full conversation thread
+    (inbound request → clarification → reply → confirmation) appears in the thread view.
+
+    Two %s params: (str(run_id), str(run_id)) — one for the run_id= check and one for
+    the source_email_id subquery. Results are ordered chronologically (ASC).
+    """
+    sql = (
+        "SELECT direction, purpose, subject, body_text, message_id,"
+        " from_addr, to_addr, created_at"
+        " FROM email_messages"
+        " WHERE run_id = %s"
+        "    OR id = (SELECT source_email_id FROM payroll_runs WHERE id = %s)"
+        " ORDER BY created_at ASC"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(run_id), str(run_id)))
             return cur.fetchall() or []
 
 
