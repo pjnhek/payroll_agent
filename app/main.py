@@ -701,6 +701,17 @@ def landing(
     except Exception:
         armed_business_id = None
 
+    # Resolve the armed business_id to its human name HERE (not in the template): a
+    # Jinja `{% set %}` inside a `{% for %}` does not escape the loop scope, so the
+    # template's match always fell back to showing the raw UUID. Match in Python so the
+    # landing page shows "Metro Deli Group", not "b0000002-…".
+    armed_business_name = None
+    if armed_business_id is not None:
+        armed_business_name = next(
+            (b["name"] for b in businesses if str(b["id"]) == str(armed_business_id)),
+            None,
+        )
+
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -709,6 +720,7 @@ def landing(
             "selected_business_name": selected_business_name,
             "employees": employees,
             "armed_business_id": armed_business_id,
+            "armed_business_name": armed_business_name,
             "bound": bound,
             "demo_operator_email": DEMO_OPERATOR_EMAIL,
         },

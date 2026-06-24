@@ -79,13 +79,7 @@ Thanks!</textarea>
 <div class="callout callout-success">
   <p>
     <strong>Operator Path-2 armed for:</strong>
-    {% set armed_name = "" %}
-    {% for biz in businesses %}
-      {% if biz.id | string == armed_business_id | string %}
-        {% set armed_name = biz.name %}
-      {% endif %}
-    {% endfor %}
-    {{ armed_name | e if armed_name else (armed_business_id | string | e) }}
+    {{ (armed_business_name or (armed_business_id | string)) | e }}
     — send from the operator Gmail to trigger a live run.
   </p>
 </div>
