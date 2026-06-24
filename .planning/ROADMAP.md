@@ -267,7 +267,7 @@ Plans:
 **Wave 3** *(blocked on Wave 2 — concurrent)*
 
 - [ ] 06-04-PLAN.md — Real Resend gateway: verify(), two-step parse_inbound, D-13c send_outbound; /webhook/inbound route to async Request
-- [ ] 06-08-PLAN.md — Landing page (GET /) + binding (POST /demo/bind, atomic single-owner) + composer (POST /demo/compose, real pipeline) + thread view + alias rationale (CHANGE-5 through CHANGE-11)
+- [x] 06-08-PLAN.md — Landing page (GET /) + binding (POST /demo/bind, atomic single-owner) + composer (POST /demo/compose, real pipeline) + thread view + alias rationale (CHANGE-5 through CHANGE-11)
 
 **Wave 4** *(blocked on Wave 3 — BLOCKING human checkpoint)*
 
@@ -294,4 +294,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 2/8 | In Progress|  |
+| 6. Real Integration & Ship | 3/8 | In Progress|  |
