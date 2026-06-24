@@ -1,0 +1,14 @@
+graph TD
+    A[Client Email] --> B["POST /webhook/inbound"]
+    B --> C{gateway.verify}
+    C --invalid sig--> X[HTTP 400]
+    C --valid--> D["gateway.parse_inbound\ntwo-step Resend fetch"]
+    D --> E["Dedup on RFC message_id\nON CONFLICT DO NOTHING"]
+    E --duplicate--> Y[200 no pipeline]
+    E --new--> F["extract → reconcile_names → validate"]
+    F --> G{"decide.py\npure code gate"}
+    G --"unresolved/collision/missing"--> H["_clarify → send_outbound\nstatus: awaiting_reply"]
+    H --client replies--> B
+    G --process--> I["_compute_line_items\nstatus: awaiting_approval"]
+    I --> J{"Operator Dashboard\nApprove / Reject"}
+    J --approve--> K["_deliver → send confirmation\nstatus: reconciled"]
