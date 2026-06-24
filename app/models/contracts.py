@@ -96,7 +96,12 @@ class ExtractionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     employees: list[ExtractedEmployee]
-    pay_period_start: date
+    # Nullable for the SAME reason the hours fields are (D-05 / Finding #3): a real
+    # email often states no pay period ("hours for this week"), so the LLM returns
+    # null — that must flow downstream as "didn't say", NOT crash extraction at
+    # parse time. The pay period is informational on the paystub (pdf._period_label
+    # already handles None) and is not a money input. (06-05 live-gate regression.)
+    pay_period_start: date | None = None
     pay_period_end: date | None = None
 
 
@@ -107,7 +112,7 @@ class Extracted(BaseModel):
 
     run_id: UUID
     employees: list[ExtractedEmployee]
-    pay_period_start: date
+    pay_period_start: date | None = None
     pay_period_end: date | None = None
 
 

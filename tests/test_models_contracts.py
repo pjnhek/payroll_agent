@@ -312,6 +312,44 @@ def test_extracted_employee_fully_supplied() -> None:
     assert e.hours_regular == Decimal("40")
 
 
+def test_extraction_payload_nullable_pay_period_start() -> None:
+    """A real email with no stated pay period must NOT crash extraction.
+
+    Regression (06-05 live gate): a casual real email ("hours for this week:
+    Dave Reyes 38") states no date, so the LLM returns pay_period_start=null (or
+    omits it). pay_period_start was a REQUIRED non-nullable date, so the model
+    raised ValidationError → the run errored at parse time before decide() could
+    run. It must be Decimal|None-style nullable like the hours fields: a missing
+    pay period is "didn't say", not a crash. The fixtures always carried a date,
+    so this was invisible until a real email hit the deployed service.
+    """
+    from app.models.contracts import ExtractionPayload
+
+    # LLM returns null for the unstated pay period.
+    p_null = ExtractionPayload.model_validate_json(
+        '{"employees": [{"submitted_name": "Dave Reyes", "hours_regular": "38", '
+        '"hours_overtime": null, "hours_vacation": null, "hours_sick": null, '
+        '"hours_holiday": null, "contribution_401k_override": null}], '
+        '"pay_period_start": null, "pay_period_end": null}'
+    )
+    assert p_null.pay_period_start is None
+    assert p_null.employees[0].submitted_name == "Dave Reyes"
+
+    # LLM omits the key entirely — also tolerated (defaults to None).
+    p_omitted = ExtractionPayload.model_validate_json(
+        '{"employees": [{"submitted_name": "Priya", "hours_regular": null, '
+        '"hours_overtime": null, "hours_vacation": null, "hours_sick": null, '
+        '"hours_holiday": null, "contribution_401k_override": null}]}'
+    )
+    assert p_omitted.pay_period_start is None
+
+    # A supplied date still parses to a real date (no regression).
+    p_dated = ExtractionPayload.model_validate_json(
+        '{"employees": [], "pay_period_start": "2026-06-15", "pay_period_end": null}'
+    )
+    assert str(p_dated.pay_period_start) == "2026-06-15"
+
+
 # ---------------------------------------------------------------------------
 # Roster shapes
 # ---------------------------------------------------------------------------

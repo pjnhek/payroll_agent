@@ -29,7 +29,9 @@ _SYSTEM = (
     "Rules: use the employee's name EXACTLY as the client wrote it in "
     "submitted_name. If the client did not mention a particular hours field for "
     "an employee, set it to null — NEVER 0 and NEVER omit it. Do not invent "
-    "employees who are not named in the email. Hours are decimal strings."
+    "employees who are not named in the email. Hours are decimal strings. "
+    "If the email does not state a pay period / date, set pay_period_start to "
+    "null — do NOT invent or guess a date."
 )
 
 
