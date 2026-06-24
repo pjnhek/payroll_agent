@@ -20,6 +20,7 @@ injects a FakeOpenAI over app.llm.client.OpenAI); it is re-exported here as
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -30,6 +31,46 @@ import resend  # noqa: F401 — imported so the module is available for monkeypa
 
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
+
+
+# ---------------------------------------------------------------------------
+# 0. Live-DB two-factor guard + shared seeded_db fixture (Finding #10)
+#
+# Live-DB integration tests require BOTH DATABASE_URL (a reachable DB) AND
+# ALLOW_DB_RESET=1 (explicit opt-in to the destructive bootstrap --reset). This
+# fixture and the guard constants were copy-pasted into test_seed_roundtrip.py,
+# test_gateway.py, and test_persistence.py; they are promoted here so every test
+# module — including test_dashboard.py's /health/ready check — shares ONE
+# definition (DRY). Module scope means each test module still resets+seeds once.
+# ---------------------------------------------------------------------------
+
+_HAS_DB = bool(os.environ.get("DATABASE_URL"))
+_HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
+
+# Shared skip mark for live-DB tests (two-factor guard).
+_SKIP_LIVE_DB = pytest.mark.skipif(
+    not (_HAS_DB and _HAS_RESET),
+    reason="Live-DB tests require DATABASE_URL and ALLOW_DB_RESET=1 (two-factor guard)",
+)
+
+
+@pytest.fixture(scope="module")
+def seeded_db():
+    """Module-scoped fixture: reset DB, apply schema, seed once.
+
+    Only executes when both DATABASE_URL and ALLOW_DB_RESET=1 are set — the
+    two-factor guard prevents an accidental destructive reset against a real DB.
+    """
+    if not (_HAS_DB and _HAS_RESET):
+        pytest.skip(
+            "DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB fixture"
+        )
+    from app.db.bootstrap import bootstrap
+    from app.db.seed import seed as _seed
+
+    bootstrap(reset=True)
+    _seed()
+    yield
 
 
 # ---------------------------------------------------------------------------

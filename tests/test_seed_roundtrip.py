@@ -308,24 +308,7 @@ _SKIP_LIVE_DB = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def seeded_db():
-    """Module-scoped fixture: reset DB, apply schema, seed once.
-
-    Only executes when both DATABASE_URL and ALLOW_DB_RESET=1 are set —
-    the _SKIP_LIVE_DB mark on every test prevents this fixture from running
-    on test skips, but we also guard explicitly here.
-    """
-    if not (_HAS_DB and _HAS_RESET):
-        pytest.skip(
-            "DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB fixture"
-        )
-    from app.db.bootstrap import bootstrap
-    from app.db.seed import seed as _seed
-
-    bootstrap(reset=True)
-    _seed()
-    yield
+# `seeded_db` is provided by tests/conftest.py (shared two-factor-guarded fixture).
 
 
 @_SKIP_LIVE_DB

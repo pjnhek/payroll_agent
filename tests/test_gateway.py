@@ -326,16 +326,7 @@ def test_insert_inbound_email_uses_on_conflict_do_nothing(fake_conn):
 # ===========================================================================
 
 
-@pytest.fixture(scope="module")
-def seeded_db():
-    if not (_HAS_DB and _HAS_RESET):
-        pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB fixture")
-    from app.db.bootstrap import bootstrap
-    from app.db.seed import seed as _seed
-
-    bootstrap(reset=True)
-    _seed()
-    yield
+# `seeded_db` is provided by tests/conftest.py (shared two-factor-guarded fixture).
 
 
 @_SKIP_LIVE_DB
