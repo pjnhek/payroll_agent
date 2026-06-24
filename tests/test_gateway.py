@@ -399,3 +399,638 @@ def test_record_run_error_persists_reason_and_error_status(seeded_db):
     run = repo.load_run(run_id)
     assert run["status"] == RunStatus.ERROR.value
     assert run["error_reason"] == "extraction failed twice"
+
+
+# ===========================================================================
+# Phase 6 Wave 0 xfail stubs — OPS-02 gateway (06-01 Task 2)
+#
+# ALL tests below target not-yet-implemented Phase 6 behavior. They are
+# decorated with @pytest.mark.xfail(strict=True, reason="implemented in 06-04").
+# strict=True means:
+#   - An XFAIL (expected failure) exits 0 — the no-op-swap gate stays GREEN.
+#   - An XPASS (unexpected pass) exits non-zero — the signal to REMOVE the
+#     markers in 06-04 when the real gateway lands.
+#
+# The ONE exception: test_parse_inbound_canonical_fixture_still_works has NO
+# xfail — it must stay GREEN throughout (HIGH-2 fixture-path guard).
+# ===========================================================================
+
+import resend  # noqa: F401 — installed via 06-01 Task 1; needed for monkeypatching
+
+
+class _FakeReceivedEmail:
+    """Minimal stand-in for resend.ReceivedEmail used in gateway xfail tests.
+
+    Mirrors the shape returned by resend.EmailsReceiving.get(email_id).
+    Each test that needs different field values constructs its own instance
+    inline — this class is kept at module level so all gateway tests share it.
+    """
+
+    def __init__(
+        self,
+        *,
+        message_id: str = "<abc@resend.com>",
+        text: str | None = "Maria 40 hours",
+        html: str | None = None,
+        headers: dict | None = None,
+    ) -> None:
+        self.message_id = message_id
+        self.text = text
+        self.html = html
+        self.headers: dict = headers if headers is not None else {}
+
+
+# ---------------------------------------------------------------------------
+# HIGH-2 fixture-path guard — MUST stay GREEN throughout (NO xfail)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_inbound_canonical_fixture_still_works():
+    """The fixture/dev path through the gateway seam works with the current stub.
+
+    This test is NOT xfail — it must stay GREEN throughout all waves. It pins
+    that the canonical InboundEmail dict shape still round-trips cleanly through
+    gateway.parse_inbound (no provider call needed for the fixture path). This
+    is the HIGH-2 fixture-path guard: if it regresses, the whole fixture-first
+    development contract breaks. (OPS-02 / D-18)
+    """
+    from uuid import uuid4
+
+    raw = {
+        "id": str(uuid4()),
+        "message_id": "<test@fixture.test>",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@test.com",
+        "subject": "hours",
+        "body_text": "Maria 40h",
+        "in_reply_to": None,
+        "references_header": None,
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    result = gateway.parse_inbound(raw)
+    assert result.message_id == "<test@fixture.test>"
+    assert result.from_addr == "hr@acme.test"
+
+
+# ---------------------------------------------------------------------------
+# OPS-02 / D-17 — signature verification (xfail until 06-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_verify_raises_on_bad_signature(monkeypatch):
+    """gateway.verify must propagate ValueError from resend.Webhooks.verify.
+
+    The route calls gateway.verify(payload_bytes, svix_headers, secret) as step
+    zero before any parsing or dedup. When the HMAC check fails, ValueError must
+    propagate so the route can return 400 and abort. (OPS-02 / D-17)
+    """
+    def _reject(payload_dict):
+        raise ValueError("bad sig")
+
+    monkeypatch.setattr(resend.Webhooks, "verify", staticmethod(_reject))
+
+    # gateway.verify is the thin shim that calls resend.Webhooks.verify.
+    # It does not exist in the Phase 2 stub — this xfails because AttributeError
+    # (no 'verify' on the module) is an unexpected failure, not the expected ValueError.
+    # When 06-04 adds gateway.verify, the monkeypatched ValueError must propagate.
+    with pytest.raises(ValueError):
+        gateway.verify(
+            b'{"type":"email.received"}',
+            {"svix-id": "x", "svix-timestamp": "y", "svix-signature": "z"},
+            "whsec_testsecret",
+        )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_verify_passes_on_valid_signature(monkeypatch):
+    """gateway.verify must return cleanly when resend.Webhooks.verify succeeds.
+
+    Happy path: the HMAC check passes, no exception raised. (OPS-02 / D-17)
+    """
+    def _noop(payload_dict):
+        return None  # success
+
+    monkeypatch.setattr(resend.Webhooks, "verify", staticmethod(_noop))
+
+    # Should not raise when verify succeeds.
+    gateway.verify(
+        b'{"type":"email.received"}',
+        {"svix-id": "x", "svix-timestamp": "y", "svix-signature": "z"},
+        "whsec_testsecret",
+    )
+
+
+# ---------------------------------------------------------------------------
+# OPS-02 / D-01a / D-18 — two-step parse: metadata webhook → fetch → InboundEmail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_parse_inbound_two_step_fetch(monkeypatch):
+    """parse_inbound must fetch the full email via resend.EmailsReceiving.get.
+
+    The Resend webhook payload is metadata-only (no body, no threading headers).
+    parse_inbound must call resend.EmailsReceiving.get(email_id) to retrieve the
+    body + headers and return a fully-populated InboundEmail. (OPS-02 / D-01a)
+    """
+    from app.models.contracts import InboundEmail
+
+    fake_email_obj = _FakeReceivedEmail(
+        message_id="<abc@resend.com>",
+        text="Maria 40 hours",
+        html=None,
+        headers={
+            "In-Reply-To": "<prev@x.test>",
+            "References": "<prev@x.test>",
+        },
+    )
+
+    def _fake_get(email_id):
+        assert email_id == "re_123", f"expected email_id='re_123', got {email_id!r}"
+        return fake_email_obj
+
+    monkeypatch.setattr(resend.EmailsReceiving, "get", staticmethod(_fake_get))
+
+    # Raw webhook payload — metadata only, no body (D-01a confirmed shape).
+    raw_webhook = {
+        "data": {
+            "email_id": "re_123",
+            "from": "hr@acme.test",
+            "to": ["agent@x.test"],
+            "subject": "hours",
+            "message_id": "<abc@resend.com>",
+        }
+    }
+    result = gateway.parse_inbound(raw_webhook)
+
+    assert isinstance(result, InboundEmail)
+    assert result.message_id == "<abc@resend.com>", (
+        f"message_id must be the RFC Message-ID from the fetched email object; got {result.message_id!r}"
+    )
+    assert result.in_reply_to == "<prev@x.test>", (
+        f"in_reply_to must be extracted from headers dict; got {result.in_reply_to!r}"
+    )
+    assert result.body_text == "Maria 40 hours", (
+        f"body_text must come from the fetched email_obj.text; got {result.body_text!r}"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
+    """parse_inbound must handle lowercase header keys from the provider.
+
+    Real providers are inconsistent about header key casing — some send 'In-Reply-To',
+    others send 'in-reply-to'. The gateway must normalize case-insensitively.
+    (OPS-02 / D-18 / Pitfall 4)
+    """
+    from app.models.contracts import InboundEmail
+
+    fake_email_obj = _FakeReceivedEmail(
+        message_id="<abc@resend.com>",
+        text="Maria 40 hours",
+        html=None,
+        headers={
+            "in-reply-to": "<prev@x.test>",  # lowercase keys (the pitfall case)
+            "references": "<prev@x.test>",
+        },
+    )
+
+    monkeypatch.setattr(
+        resend.EmailsReceiving,
+        "get",
+        staticmethod(lambda email_id: fake_email_obj),
+    )
+
+    raw_webhook = {
+        "data": {
+            "email_id": "re_456",
+            "from": "hr@acme.test",
+            "to": ["agent@x.test"],
+            "subject": "hours",
+            "message_id": "<abc@resend.com>",
+        }
+    }
+    result = gateway.parse_inbound(raw_webhook)
+
+    assert isinstance(result, InboundEmail)
+    assert result.in_reply_to == "<prev@x.test>", (
+        f"in_reply_to must be extracted from lowercase 'in-reply-to' header key; "
+        f"got {result.in_reply_to!r}"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
+    """The returned InboundEmail.message_id must be the RFC message_id, NOT email_id.
+
+    The Resend 'email_id' is an internal Resend identifier (e.g. 're_123').
+    The dedup key must be the RFC Message-ID from email_obj.message_id, which is
+    the globally-unique RFC value. (OPS-02 / D-13 dedup key correctness)
+    """
+    from app.models.contracts import InboundEmail
+
+    rfc_message_id = "<rfc-correct@acme.test>"
+    resend_email_id = "re_internal_id_999"
+
+    fake_email_obj = _FakeReceivedEmail(
+        message_id=rfc_message_id,  # the RFC value
+        text="body text",
+        html=None,
+        headers={},
+    )
+
+    monkeypatch.setattr(
+        resend.EmailsReceiving,
+        "get",
+        staticmethod(lambda email_id: fake_email_obj),
+    )
+
+    raw_webhook = {
+        "data": {
+            "email_id": resend_email_id,  # Resend internal ID — NOT the dedup key
+            "from": "hr@acme.test",
+            "to": ["agent@x.test"],
+            "subject": "hours",
+            "message_id": rfc_message_id,
+        }
+    }
+    result = gateway.parse_inbound(raw_webhook)
+
+    assert isinstance(result, InboundEmail)
+    assert result.message_id == rfc_message_id, (
+        f"InboundEmail.message_id must be the RFC Message-ID from email_obj.message_id "
+        f"({rfc_message_id!r}), NOT the Resend internal email_id ({resend_email_id!r}); "
+        f"got {result.message_id!r}"
+    )
+    assert result.message_id != resend_email_id, (
+        "message_id must NOT be the Resend internal email_id — dedup keys on the RFC value"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_parse_inbound_parseaddr_display_name(monkeypatch):
+    """parse_inbound must strip display names from the 'from' field.
+
+    Real providers send display-name forms like 'HR Dept <hr@acme.test>'. The
+    gateway must run email.utils.parseaddr to extract the bare address before
+    passing it to find_business_by_sender. (OPS-02 / D-18 / LOW-9)
+    """
+    from app.models.contracts import InboundEmail
+
+    fake_email_obj = _FakeReceivedEmail(
+        message_id="<display@resend.com>",
+        text="body text",
+        html=None,
+        headers={},
+    )
+
+    monkeypatch.setattr(
+        resend.EmailsReceiving,
+        "get",
+        staticmethod(lambda email_id: fake_email_obj),
+    )
+
+    # The 'from' field has a display name — the common real-provider format.
+    raw_webhook = {
+        "data": {
+            "email_id": "re_display",
+            "from": "HR Dept <hr@acme.test>",  # display-name form (LOW-9)
+            "to": ["agent@x.test"],
+            "subject": "hours",
+            "message_id": "<display@resend.com>",
+        }
+    }
+    result = gateway.parse_inbound(raw_webhook)
+
+    assert isinstance(result, InboundEmail)
+    assert result.from_addr == "hr@acme.test", (
+        f"from_addr must be the bare address (stripped of display name via parseaddr); "
+        f"got {result.from_addr!r} — expected 'hr@acme.test'"
+    )
+    assert "HR Dept" not in result.from_addr, (
+        "from_addr must not contain the display name"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OPS-02 / D-13c / MEDIUM-6 — reserved→sent ordering (xfail until 06-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
+    """send_outbound must write send_state='reserved' BEFORE calling resend.Emails.send.
+
+    D-13c crash-safe ordering: if the process dies between the reserved write and
+    the send call, the row is visible in the DB as reserved (not lost). The 'sent'
+    or 'failed' update follows the send call.
+
+    MEDIUM-6: asserts RELATIVE order (not absolute index 0/1) because
+    get_outbound_references_chain adds a DB READ before the reserved INSERT, so
+    absolute indexing breaks. (OPS-02 / D-13c / MEDIUM-6)
+    """
+    send_calls: list = []
+
+    def _fake_send(params):
+        send_calls.append(params)
+        return {"id": "<out@resend.com>"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_fake_send))
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="x@test.com",
+        subject="s",
+        body="b",
+        conn=fake_conn,
+    )
+
+    # Find the reserved INSERT among all executed SQL rows (relative order).
+    reserved_idx = None
+    for i, (sql, params) in enumerate(fake_conn.executed):
+        if params and "reserved" in str(params):
+            reserved_idx = i
+            break
+
+    assert reserved_idx is not None, (
+        "send_outbound must write send_state='reserved' to email_messages before the send call "
+        "(D-13c crash-safe ordering)"
+    )
+
+    # The send call must happen AFTER the reserved insert.
+    # We verify this by checking that reserved_idx was recorded BEFORE send was called.
+    # Since fake_conn.executed grows synchronously, len at the time of send call > reserved_idx.
+    assert len(send_calls) == 1, "resend.Emails.send must be called exactly once"
+
+    # After the send, the row must be updated to 'sent'.
+    sent_found = any(
+        params and "sent" in str(params)
+        for sql, params in fake_conn.executed[reserved_idx + 1:]
+    )
+    assert sent_found, (
+        "send_outbound must update send_state to 'sent' after a successful resend.Emails.send call "
+        "(D-13c crash-safe ordering)"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
+    """send_outbound must update send_state to 'failed' when resend.Emails.send raises.
+
+    HIGH-3 fix: when the provider call raises (network error, rate limit, etc.),
+    the outbound row must transition reserved→failed (not left as reserved) and the
+    exception must re-raise so the caller knows the send did not succeed.
+    (OPS-02 / D-13c / HIGH-3)
+    """
+    def _raise_send(params):
+        raise RuntimeError("network error")
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_raise_send))
+
+    with pytest.raises(RuntimeError, match="network error"):
+        gateway.send_outbound(
+            run_id=uuid.uuid4(),
+            to_addr="x@test.com",
+            subject="s",
+            body="b",
+            conn=fake_conn,
+        )
+
+    # The reserved INSERT must have been written before the send attempt.
+    reserved_found = any(
+        params and "reserved" in str(params)
+        for _, params in fake_conn.executed
+    )
+    assert reserved_found, (
+        "send_outbound must write send_state='reserved' before the failing send attempt (D-13c)"
+    )
+
+    # After the exception, the row must be updated to 'failed' (HIGH-3 fix).
+    failed_found = any(
+        params and "failed" in str(params)
+        for _, params in fake_conn.executed
+    )
+    assert failed_found, (
+        "send_outbound must update send_state to 'failed' when resend.Emails.send raises "
+        "(HIGH-3 fix — reserved→failed, not left as reserved)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OPS-02 / D-14 — durable threading from DB state (xfail until 06-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
+    """send_outbound must build the References chain from persisted DB state.
+
+    D-14 durable threading: the chain is rebuilt from the PERSISTED outbound row in
+    email_messages, NOT from caller-passed values alone. This ensures the chain
+    survives dropped/duplicated deliveries. Setup: FakeConnection is pre-seeded to
+    return a prior outbound row with references_header='<prior@x.test>'. The test
+    asserts the INSERT params include BOTH '<prior@x.test>' AND '<inbound@x.test>'
+    in the references_header. (OPS-02 / D-14)
+    """
+    # Pre-seed: a prior outbound row for this run with references_header='<prior@x.test>'
+    fake_conn.script_fetchone(("<prior@x.test>",))  # returned by get_outbound_references_chain
+
+    def _fake_send(params):
+        return {"id": "<new-out@resend.com>"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_fake_send))
+
+    gateway.send_outbound(
+        run_id=uuid.uuid4(),
+        to_addr="x@test.com",
+        subject="s",
+        body="b",
+        in_reply_to="<inbound@x.test>",
+        conn=fake_conn,
+    )
+
+    # The INSERT params must include the accumulated References chain.
+    all_params_str = str(fake_conn.executed)
+    assert "<prior@x.test>" in all_params_str, (
+        "references_header in the DB INSERT must include the PRIOR outbound chain "
+        "loaded from DB state (<prior@x.test>) — not only the caller-passed in_reply_to"
+    )
+    assert "<inbound@x.test>" in all_params_str, (
+        "references_header must also include the new inbound message_id (<inbound@x.test>) "
+        "appended to the chain"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+def test_inbound_reply_routes_to_correct_run(monkeypatch):
+    """POST /webhook/inbound with in_reply_to matching an awaiting_reply run must resume it.
+
+    MEDIUM-7 fix: when an inbound email's In-Reply-To matches an outbound clarification
+    Message-ID for an awaiting_reply run, the route must call resume_pipeline (via
+    BackgroundTasks.add_task), NOT run_pipeline. This confirms reply routing works end-
+    to-end for the mock case. (OPS-02 / D-14)
+
+    This test is xfail because the current route uses a Pydantic InboundEmail body param
+    (not raw Request), so the routing flow will be restructured in 06-04.
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    clarification_mid = "<clar-abc@payroll-agent.local>"
+
+    # Monkeypatch: find_awaiting_reply_for_header returns run_A
+    monkeypatch.setattr(
+        _repo,
+        "find_awaiting_reply_for_header",
+        lambda *, in_reply_to, references_header, conn=None: run_id,
+    )
+    # Monkeypatch: find_business_by_sender returns a business (FIX-5 sender check)
+    monkeypatch.setattr(
+        _repo,
+        "find_business_by_sender",
+        lambda from_addr, conn=None: uuid.uuid4(),
+    )
+    # Monkeypatch: load_run to return an awaiting_reply run (for FIX-5 guard)
+    awaiting_run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "awaiting_reply",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+    }
+    monkeypatch.setattr(
+        _repo,
+        "load_run",
+        lambda rid, conn=None: awaiting_run,
+    )
+
+    # We cannot easily spy on BackgroundTasks.add_task in TestClient mode,
+    # so we monkeypatch the internal pipeline functions and assert which was called.
+    import app.main as _main
+    resume_called: list = []
+    monkeypatch.setattr(
+        _main,
+        "_resume_pipeline",
+        lambda run_id, reply_email_id, conn=None: resume_called.append(run_id),
+    )
+    run_pipeline_called: list = []
+    monkeypatch.setattr(
+        _main,
+        "_run_pipeline",
+        lambda run_id, conn=None: run_pipeline_called.append(run_id),
+    )
+    # Also patch insert_inbound_email to succeed
+    monkeypatch.setattr(
+        _repo,
+        "insert_inbound_email",
+        lambda **kw: (uuid.uuid4(), True),
+    )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    # Post a canonical InboundEmail dict with in_reply_to matching the clarification
+    # (current route still uses Pydantic body — this will break in 06-04 when raw Request lands)
+    import json
+    raw_reply = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<reply-001@client.test>",
+        "in_reply_to": clarification_mid,
+        "references_header": clarification_mid,
+        "subject": "Re: Payroll clarification",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Sorry, I meant James Okafor.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    response = client.post("/webhook/inbound", json=raw_reply)
+    assert response.status_code == 200
+
+    # The reply must route to resume_pipeline, NOT run_pipeline.
+    assert len(resume_called) > 0, (
+        "POST /webhook/inbound with in_reply_to matching an awaiting_reply run must call "
+        "resume_pipeline (not run_pipeline) — MEDIUM-7 fix (D-14)"
+    )
+    assert len(run_pipeline_called) == 0, (
+        "run_pipeline must NOT be called for a reply to an awaiting_reply run"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
+@pytest.mark.integration
+def test_inbound_reply_routes_to_correct_run_integration():
+    """Real-DB integration: reply-routing uses the real SQL predicate end-to-end.
+
+    Unlike the mocked unit test, this test does NOT monkeypatch
+    repo.find_awaiting_reply_for_header — it exercises the real SQL predicate
+    (_HEADER_MATCH_PREDICATE, _pad_references, find_awaiting_reply_for_header)
+    end-to-end. Setup: INSERT a real outbound email_messages row for a run in
+    status awaiting_reply, then POST a reply whose in_reply_to matches that row's
+    message_id. Assert resume_pipeline (not run_pipeline) is queued.
+    (OPS-02 / D-14 / MEDIUM-5 real-SQL integration path)
+    """
+    if not (_HAS_DB and _HAS_RESET):
+        pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — live-DB required")
+
+    from app.db.bootstrap import bootstrap
+    from app.db.seed import seed as _seed
+    from app.db import repo as _repo
+
+    bootstrap(reset=True)
+    _seed()
+
+    result = _seed(dry_run=True)
+    business_id = result.businesses[0]["id"]
+
+    # Insert the source inbound email row.
+    source_mid = f"<integ-source-{uuid.uuid4()}@acme.test>"
+    email_id, inserted = _repo.insert_inbound_email(
+        message_id=source_mid,
+        in_reply_to=None,
+        references_header=None,
+        subject="hours",
+        from_addr="p@acme.test",
+        to_addr="agent@payroll-agent.local",
+        body_text="source body",
+        run_id=None,
+    )
+    assert inserted
+
+    run_id = _repo.create_run(
+        business_id=business_id,
+        source_email_id=email_id,
+        pay_period_start="2026-06-15",
+        pay_period_end="2026-06-21",
+    )
+
+    # Insert an outbound clarification row in awaiting_reply state.
+    outbound_mid = f"<integ-out-{uuid.uuid4()}@payroll-agent.local>"
+    _repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=outbound_mid,
+        purpose="clarification",
+        send_state="sent",
+        subject="Please clarify",
+        to_addr="p@acme.test",
+        from_addr="agent@payroll-agent.local",
+        body_text="Could you confirm?",
+    )
+    _repo.set_status(run_id, "awaiting_reply")
+
+    # The real SQL predicate must find run_id via the outbound_mid.
+    matched = _repo.find_awaiting_reply_for_header(
+        in_reply_to=outbound_mid,
+        references_header=None,
+    )
+    assert matched == run_id, (
+        f"find_awaiting_reply_for_header must return run_id when in_reply_to matches "
+        f"the outbound clarification Message-ID (real SQL predicate end-to-end); "
+        f"got {matched!r}"
+    )

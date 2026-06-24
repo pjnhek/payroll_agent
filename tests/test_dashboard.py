@@ -650,3 +650,51 @@ def test_send_test_mints_fresh_message_id_each_click():
     assert str(run_a["id"]) != str(run_b["id"]), (
         "Two /demo/send-test clicks must create two DISTINCT run IDs (DASH-05)"
     )
+
+
+# ===========================================================================
+# Phase 6 Wave 0 xfail stubs — health endpoint tests (06-01 Task 2)
+#
+# Both tests are xfail(strict=True) until 06-02 adds the /health/live and
+# /health/ready routes to app/main.py.
+# ===========================================================================
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-02")
+def test_health_live_returns_200_no_db():
+    """GET /health/live → 200 with {"status": "ok"} (no DB required).
+
+    D-20 liveness route: must return 200 with no database connection so Render's
+    deploy health check succeeds even if Supabase is temporarily unavailable.
+    The route must be fast and require no DB hit — Render uses this to verify the
+    container started. (OPS-01 / D-20)
+
+    xfail until 06-02 adds GET /health/live to app/main.py.
+    """
+    response = client.get("/health/live")
+    assert response.status_code == 200, (
+        f"GET /health/live must return 200 (D-20 liveness — no DB); got {response.status_code}"
+    )
+    data = response.json()
+    assert data.get("status") == "ok", (
+        f"GET /health/live must return {{\"status\": \"ok\"}}; got {data!r}"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="implemented in 06-02")
+@pytest.mark.integration
+def test_health_ready_returns_200_with_db():
+    """GET /health/ready → 200 when the DB is reachable.
+
+    D-20 readiness route: must run a real SELECT against an actual table (not just
+    SELECT 1) so Supabase registers actual DB activity and the free project does not
+    pause. The GitHub Actions keep-alive cron targets this route. (OPS-01 / D-20 / D-16)
+
+    xfail until 06-02 adds GET /health/ready to app/main.py.
+    Marked @pytest.mark.integration because the route requires a live DB connection.
+    """
+    response = client.get("/health/ready")
+    assert response.status_code == 200, (
+        f"GET /health/ready must return 200 when DB is reachable (D-20 readiness); "
+        f"got {response.status_code}"
+    )

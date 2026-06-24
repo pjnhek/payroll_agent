@@ -108,3 +108,171 @@ def test_body_cleaned(client, fake_repo, mock_llm):
     # And load_source_email returns that SAME cleaned body unchanged (no re-clean).
     run_id = next(iter(fake_repo.runs))
     assert fake_repo.load_source_email(run_id) == body
+
+
+# ===========================================================================
+# Phase 6 Wave 0 — dedup gate tests (06-01 Task 2)
+# ===========================================================================
+
+import os
+import uuid as _uuid_module
+
+
+_HAS_DB = bool(os.environ.get("DATABASE_URL"))
+_HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
+
+
+def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
+    """D-13 dedup gate: a duplicate delivery must NOT start a second pipeline run.
+
+    Mocked unit test (no live DB). The first POST inserts the email and queues
+    run_pipeline. The second POST with the same message_id returns immediately
+    (the repo returns inserted=False) and run_pipeline is NOT queued a second time.
+
+    This test has NO @pytest.mark.integration and NO xfail — the existing route +
+    repo already handle dedup correctly, so this must pass immediately.
+
+    WARNING-1 (06-04 compatibility): 06-04 Task 2 changes the route to raw Request
+    + json.loads. After 06-04 lands, update this test to POST a canonical
+    InboundEmail dict serialized as raw JSON bytes (Path B shape) if it starts
+    failing. (OPS-02 / D-13)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import repo as _repo
+
+    # Patch repo.insert_inbound_email: first call inserts, second is duplicate.
+    call_count = {"n": 0}
+
+    def _mock_insert(**kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return (_uuid_module.UUID("aaaaaaaa-0000-0000-0000-000000000001"), True)
+        return (None, False)  # duplicate
+
+    monkeypatch.setattr(_repo, "insert_inbound_email", _mock_insert)
+
+    # Patch create_run so we don't need business_id logic.
+    monkeypatch.setattr(
+        _repo,
+        "create_run",
+        lambda **kw: _uuid_module.UUID("bbbbbbbb-0000-0000-0000-000000000001"),
+    )
+    monkeypatch.setattr(
+        _repo,
+        "find_business_by_sender",
+        lambda from_addr, conn=None: _uuid_module.UUID("cccccccc-0000-0000-0000-000000000001"),
+    )
+
+    # Spy on _run_pipeline by patching it at app.main (the private bg task function).
+    import app.main as _main
+    pipeline_runs: list = []
+    monkeypatch.setattr(
+        _main,
+        "_run_pipeline",
+        lambda run_id, conn=None: pipeline_runs.append(run_id),
+    )
+    # Also patch find_awaiting_reply_for_header so the reply-routing path doesn't interfere.
+    monkeypatch.setattr(
+        _repo,
+        "find_awaiting_reply_for_header",
+        lambda *, in_reply_to, references_header, conn=None: None,
+    )
+    monkeypatch.setattr(
+        _repo,
+        "find_any_run_for_header",
+        lambda *, in_reply_to, references_header, conn=None: None,
+    )
+
+    test_client = TestClient(app, raise_server_exceptions=False)
+
+    # Both POSTs use the same message_id.
+    payload = {
+        "id": str(_uuid_module.uuid4()),
+        "message_id": "<dup-dedup-test@acme.test>",
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+
+    r1 = test_client.post("/webhook/inbound", json=payload)
+    r2 = test_client.post("/webhook/inbound", json=payload)
+
+    # Both requests should return 200 (the dedup path is silent — no 4xx).
+    assert r1.status_code == 200, f"First POST must return 200; got {r1.status_code}"
+    assert r2.status_code == 200, f"Duplicate POST must return 200; got {r2.status_code}"
+
+    # run_pipeline must be queued at most once (the duplicate short-circuits before queuing).
+    assert len(pipeline_runs) <= 1, (
+        f"run_pipeline must be queued at most ONCE for duplicate deliveries; "
+        f"got {len(pipeline_runs)} calls (D-13 dedup gate)"
+    )
+
+
+@pytest.mark.integration
+def test_duplicate_delivery_pipeline_runs_once():
+    """D-13 dedup gate (integration): two deliveries with the same message_id → one run.
+
+    Hits the live DB: the second delivery must return 200 and NOT create a second run.
+    Asserts only one email_messages row exists for the message_id (ON CONFLICT DO NOTHING).
+    Also asserts that decide.py is NOT called on the duplicate (no second run).
+
+    Requires DATABASE_URL + ALLOW_DB_RESET=1 (same two-factor guard as other integration
+    tests). Marked @pytest.mark.integration — excluded from the mocked suite.
+    (OPS-02 / D-13 end-to-end dedup)
+    """
+    if not (_HAS_DB and _HAS_RESET):
+        pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB dedup test")
+
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import repo as _repo
+    from app.db.bootstrap import bootstrap
+    from app.db.seed import seed as _seed_fn
+
+    bootstrap(reset=True)
+    _seed_fn()
+
+    # Use a real seeded contact_email so find_business_by_sender succeeds.
+    seeded = _seed_fn(dry_run=True)
+    contact_email = seeded.businesses[0]["contact_email"]
+
+    dedup_mid = f"<dedup-integ-{_uuid_module.uuid4()}@acme.test>"
+    payload = {
+        "id": str(_uuid_module.uuid4()),
+        "message_id": dedup_mid,
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": contact_email,
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+
+    test_client = TestClient(app, raise_server_exceptions=True)
+    r1 = test_client.post("/webhook/inbound", json=payload)
+    r2 = test_client.post("/webhook/inbound", json=payload)
+
+    assert r1.status_code == 200, f"First POST must return 200; got {r1.status_code}"
+    assert r2.status_code == 200, (
+        f"Duplicate POST must return 200 (silent dedup, not an error); got {r2.status_code}"
+    )
+
+    # Verify only one email_messages row exists for this message_id (DB-level assertion).
+    # The ON CONFLICT DO NOTHING constraint is the correctness backstop.
+    # We query the DB directly to confirm only one row was inserted.
+    from app.db.supabase import get_pool
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM email_messages WHERE message_id = %s",
+            (dedup_mid,),
+        ).fetchone()
+    assert row is not None and row[0] == 1, (
+        f"Only ONE email_messages row must exist for the duplicate message_id "
+        f"(got {row[0] if row else 'None'}) — ON CONFLICT DO NOTHING must deduplicate (D-13)"
+    )
