@@ -217,6 +217,58 @@
 </div>
 {% endif %}
 
+{# --- 06-08: Alias-rationale notes (PRESENTATION ONLY; decide.py untouched) --- #}
+{% if alias_rationale_notes %}
+<div style="margin-top: 24px; padding: 12px 16px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 6px;">
+  <p class="column-label" style="font-size: 13px; margin-bottom: 8px;">Name resolutions</p>
+  {% for note in alias_rationale_notes %}
+  <p style="margin: 4px 0; font-size: 13px; color: #1E40AF;">{{ note }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# --- 06-08: Conversation thread (includes source inbound via OR subquery on source_email_id) --- #}
+{% if thread_messages %}
+<div style="margin-top: 32px;">
+  <p class="column-label" style="font-size: 14px; margin-bottom: 12px;">Conversation thread</p>
+  {% for msg in thread_messages %}
+  <div class="sent-email-card" style="margin-bottom: 12px;">
+    <div class="sent-email-header">
+      {% if msg.direction == 'inbound' %}
+      <span class="badge badge-neutral" style="text-transform: uppercase;">INBOUND</span>
+      {% else %}
+      <span class="badge badge-neutral" style="text-transform: uppercase;">OUTBOUND</span>
+      {% endif %}
+      {% if msg.purpose %}
+      <span class="badge badge-{% if msg.purpose == 'confirmation' %}good{% elif msg.purpose == 'clarification' %}pending{% else %}neutral{% endif %}" style="margin-left: 6px;">{{ msg.purpose }}</span>
+      {% endif %}
+      <span class="sent-email-subject" style="margin-left: 8px;">{{ msg.subject or '(no subject)' }}</span>
+      <span style="font-size: 12px; color: #6B7280; margin-left: auto;">
+        {% if msg.created_at %}
+          {% if msg.created_at is string %}
+            {{ msg.created_at[:16] }}
+          {% else %}
+            {{ msg.created_at.strftime('%Y-%m-%d %H:%M') }}
+          {% endif %}
+        {% endif %}
+      </span>
+    </div>
+    <pre class="sent-email-body">{{ (msg.body_text or '')[:300] }}{% if msg.body_text and msg.body_text | length > 300 %}…{% endif %}</pre>
+  </div>
+  {% endfor %}
+  {# Secondary simulate-reply affordance (bottom of thread) — same action as top banner #}
+  {% if run.status == 'awaiting_reply' %}
+  <div style="margin-top: 16px; padding: 12px 16px; border: 1px solid #FCD34D; background: #FFFBEB; border-radius: 6px;">
+    <p class="column-label" style="margin-bottom: 6px; font-size: 12px;">Simulate client reply (from thread view)</p>
+    <form method="post" action="/runs/{{ run.id }}/simulate-reply" style="display: flex; flex-direction: column; gap: 8px; max-width: 480px;">
+      <textarea name="reply_body" rows="2" class="sim-reply-textarea">I meant &lt;correct full name here&gt;. Please process. Thanks!</textarea>
+      <button type="submit" class="btn-approve" style="align-self: flex-start;">Send reply</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
 {# --- Operator controls --- #}
 {% if run.status == 'awaiting_approval' %}
 <div style="margin-top: 16px; display: inline-flex; gap: 8px;">

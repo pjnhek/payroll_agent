@@ -373,6 +373,36 @@ def _clarify(run_id, email, decision, roster, *, llm) -> None:
         compose_kwargs["llm"] = llm
     body = compose_clarification(decision, **compose_kwargs)
 
+    # HIGH-1 record-only branch (06-08) — placed HERE, after alias-candidate capture
+    # (set_alias_candidates above) and body composition, BEFORE gateway.send_outbound.
+    # CRITICAL HIGH-2 ordering: the record_only check MUST come after both the D-04
+    # alias-candidate capture block and the body composition block so they ALWAYS run
+    # unconditionally — this is what makes Beat 3 work on in-app (record_only) runs:
+    # the alias is captured in the clarification step, so the follow-up compose resolves
+    # without a second clarification ("it learned"). A record_only check BEFORE alias
+    # capture would silently break Beat 3 for all in-app runs (HIGH-2 ordering fix).
+    record_only = repo.get_record_only_flag(run_id)
+    if record_only:
+        # Path-1 (in-app compose) record-only delivery: write the outbound row
+        # WITHOUT calling the real Resend provider. uuid is already imported at
+        # module level — do NOT re-import inside the function body.
+        synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
+        repo.insert_email_message(
+            run_id=run_id,
+            direction="outbound",
+            message_id=synthetic_mid,
+            in_reply_to=email.message_id,
+            references_header=email.message_id,
+            subject=clarification_subject(),
+            from_addr=None,
+            to_addr=email.from_addr,
+            body_text=body,
+            purpose="clarification",
+            send_state="sent",
+        )
+        repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+        return
+    # else: live Path-2 run — fall through to the real Resend gateway call (unchanged)
     gateway.send_outbound(
         run_id=run_id,
         to_addr=email.from_addr,
@@ -545,18 +575,40 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
     inbound = repo.load_inbound_email(run_id)
     to_addr = inbound.from_addr if inbound else ""
 
-    # Step 7 — Send. purpose='confirmation' + send_state='sent' (D-13c real encoding).
-    # Phase 6 live-provider swap writes send_state='reserved' BEFORE the provider call
-    # and flips to 'sent'/'failed' after — no code change needed here; the column exists.
-    gateway.send_outbound(
-        run_id=run_id,
-        to_addr=to_addr,
-        subject=confirmation_subject(run),
-        body=body,
-        attachments=pdf_attachments,
-        purpose="confirmation",
-        send_state="sent",
-    )
+    # Step 7 — Send. HIGH-1 record-only branch (06-08): check record_only flag.
+    # record_only=True (compose-created runs): write outbound row WITHOUT calling Resend.
+    # record_only=False (live Path-2 runs): keep calling gateway.send_outbound unchanged.
+    # Steps 8-10 (alias write + SENT + RECONCILED) run unconditionally for BOTH branches.
+    record_only = repo.get_record_only_flag(run_id)
+    if record_only:
+        # Path-1 record-only delivery: write the confirmation outbound row WITHOUT Resend.
+        synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
+        repo.insert_email_message(
+            run_id=run_id,
+            direction="outbound",
+            message_id=synthetic_mid,
+            in_reply_to=inbound.message_id if inbound else None,
+            references_header=inbound.message_id if inbound else None,
+            subject=confirmation_subject(run),
+            from_addr=None,
+            to_addr=to_addr,
+            body_text=body,
+            purpose="confirmation",
+            send_state="sent",
+        )
+        # DO NOT return here — fall through to alias write + status steps below.
+    else:
+        # Phase 6 live-provider swap writes send_state='reserved' BEFORE the provider call
+        # and flips to 'sent'/'failed' after — no code change needed here; the column exists.
+        gateway.send_outbound(
+            run_id=run_id,
+            to_addr=to_addr,
+            subject=confirmation_subject(run),
+            body=body,
+            attachments=pdf_attachments,
+            purpose="confirmation",
+            send_state="sent",
+        )
 
     # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias candidates.
     # MUST be called BEFORE set_status(SENT) (PATTERNS.md line 611 ordering, D-13b).

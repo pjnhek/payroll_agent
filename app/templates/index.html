@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Try it live</h1>
+<p style="color: #374151; margin-bottom: 24px; max-width: 640px;">
+  Select a client business and compose a payroll email — the full extraction, name-resolution,
+  decisioning, and (if needed) clarification pipeline runs in real time. No email client needed.
+</p>
+
+{# ── Business picker (GET reload) ── #}
+<form method="get" action="/" style="margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+  <label for="business-picker" style="font-weight: 600; font-size: 14px; color: #374151;">Client business:</label>
+  <select id="business-picker" name="business"
+          style="padding: 6px 10px; border: 1px solid #D1D5DB; border-radius: 4px; font-size: 14px;"
+          onchange="this.form.submit()">
+    {% for biz in businesses %}
+    <option value="{{ biz.name | e }}"
+      {% if biz.name == selected_business_name %}selected{% endif %}>
+      {{ biz.name | e }}
+    </option>
+    {% endfor %}
+  </select>
+</form>
+
+{# ── Roster table ── #}
+{% if employees %}
+<div style="margin-bottom: 24px;">
+  <p class="column-label" style="margin-bottom: 8px;">{{ selected_business_name | e }} — roster</p>
+  <table style="max-width: 560px;">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Pay Type</th>
+        <th>Filing Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for emp in employees %}
+      <tr>
+        <td>{{ emp.full_name | e }}</td>
+        <td>{{ emp.pay_type | e }}</td>
+        <td>{{ (emp.filing_status or '') | replace('_', ' ') | e }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{# ── Composer form (POST /demo/compose) — separate from the picker GET ── #}
+<div style="margin-bottom: 32px;">
+  <p class="column-label" style="margin-bottom: 12px;">Compose a payroll email</p>
+  <form method="post" action="/demo/compose" style="display: flex; flex-direction: column; gap: 10px; max-width: 560px;">
+    {# Hidden: carries the selected business_name into the POST #}
+    <input type="hidden" name="business_name" value="{{ selected_business_name | e }}">
+    <div>
+      <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 4px;">Subject (max 200 chars)</label>
+      <input type="text" name="subject" maxlength="200"
+             value="Payroll submission — week of {{ '' }}"
+             style="width: 100%; padding: 6px 10px; border: 1px solid #D1D5DB; border-radius: 4px; font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div>
+      <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 4px;">Email body (max 4000 chars)</label>
+      <textarea name="body" rows="5" maxlength="4000"
+                style="width: 100%; padding: 6px 10px; border: 1px solid #D1D5DB; border-radius: 4px; font-size: 14px; font-family: monospace; box-sizing: border-box;">Hi, here are hours for this week:
+
+Maria 40 regular hours.
+James 40 regular, 3 overtime.
+
+Thanks!</textarea>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <button type="submit" class="btn-approve">Run pipeline</button>
+      <span style="font-size: 12px; color: #6B7280;">
+        Fires the REAL extraction + decisioning pipeline against the selected business's roster.
+      </span>
+    </div>
+  </form>
+</div>
+
+{# ── Operator armed-business display (read-only, NOT a form) ── #}
+{% if armed_business_id %}
+<div style="margin-bottom: 24px; padding: 12px 16px; background: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 6px; max-width: 560px;">
+  <p style="margin: 0; font-size: 13px; color: #166534;">
+    <strong>Operator Path-2 armed for:</strong>
+    {% set armed_name = "" %}
+    {% for biz in businesses %}
+      {% if biz.id | string == armed_business_id | string %}
+        {% set armed_name = biz.name %}
+      {% endif %}
+    {% endfor %}
+    {{ armed_name | e if armed_name else (armed_business_id | string | e) }}
+    — send from the operator Gmail to trigger a live run.
+  </p>
+</div>
+{% endif %}
+
+{# ── Bound confirmation ── #}
+{% if bound == "1" %}
+<div style="margin-bottom: 24px; padding: 12px 16px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 6px; max-width: 560px;">
+  <p style="margin: 0; font-size: 13px; color: #1E40AF;">
+    <strong>Binding updated.</strong> The operator Gmail is now armed for Path-2 routing.
+  </p>
+</div>
+{% endif %}
+
+{# ── Path-2 PROOF section (recorded demo) ── #}
+<div style="margin-bottom: 32px; max-width: 640px;">
+  <p class="column-label" style="margin-bottom: 8px;">Real email round-trip (recorded)</p>
+  <p style="font-size: 13px; color: #6B7280; margin: 0 0 8px 0;">
+    <strong>payroll@jiodnel.resend.app</strong> is a real Resend inbound address.
+    The operator sends from Gmail; the pipeline processes the run end-to-end and returns
+    a payroll confirmation email. The video below shows the full round-trip.
+  </p>
+  <div style="width: 100%; max-width: 560px; height: 160px; background: #F3F4F6; border: 1px solid #D1D5DB; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+    <span style="font-size: 13px; color: #9CA3AF;">[ Demo video — 06-07 delivers the asset ]</span>
+  </div>
+</div>
+
+{# ── Navigation ── #}
+<p style="font-size: 14px;">
+  <a href="/runs" style="color: #2563EB; text-decoration: none;">View all runs &rarr;</a>
+  &nbsp;&nbsp;
+  <a href="/eval" style="color: #2563EB; text-decoration: none;">View eval &rarr;</a>
+</p>
+{% endblock %}

@@ -292,6 +292,8 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     monkeypatch.setattr(repo, "load_inbound_email", _fake_load_inbound_email)
     monkeypatch.setattr(repo, "set_status", _fake_set_status)
     monkeypatch.setattr(gw, "send_outbound", _fake_send_outbound)
+    # 06-08: _deliver now checks the record_only flag; stub to False (live path)
+    monkeypatch.setattr(repo, "get_record_only_flag", lambda *a, **kw: False, raising=False)
 
     # Also stub _write_aliases_if_safe (called inside _deliver before SENT).
     import app.pipeline.orchestrator as orch

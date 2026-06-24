@@ -352,6 +352,10 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
     )
+    # 06-08: _clarify now checks the record_only flag; stub to False (live path)
+    monkeypatch.setattr(
+        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
+    )
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -435,6 +439,10 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     )
     monkeypatch.setattr(
         repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
+    )
+    # 06-08: _clarify now checks the record_only flag; stub to False (live path)
+    monkeypatch.setattr(
+        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
     )
 
     run_id = uuid.uuid4()
@@ -521,6 +529,10 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
     )
+    # 06-08: _clarify now checks the record_only flag; stub to False (live path)
+    monkeypatch.setattr(
+        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
+    )
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -604,6 +616,10 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     )
     monkeypatch.setattr(
         repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
+    )
+    # 06-08: _clarify now checks the record_only flag; stub to False (live path)
+    monkeypatch.setattr(
+        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
     )
 
     run_id = uuid.uuid4()
