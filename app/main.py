@@ -155,6 +155,45 @@ templates.env.filters["badge_class"] = _badge_class_filter
 templates.env.filters["badge_label"] = _badge_label_filter
 
 
+# ---------------------------------------------------------------------------
+# D-20: Health probes — liveness (no DB) and readiness (SELECT)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/health/live")
+def health_live() -> JSONResponse:
+    """Liveness probe — no DB hit. Render deploy healthCheckPath target (D-20).
+
+    T-06-02-01: Returns {"status": "ok"} only — no version, no stack, no DB state.
+    A Supabase blip during deploy must NOT fail this check (that is why no DB is
+    touched here). render.yaml points healthCheckPath at this route.
+    """
+    return JSONResponse({"status": "ok"})
+
+
+@app.get("/health/ready")
+def health_ready() -> JSONResponse:
+    """Readiness probe — runs a real SELECT. GitHub Actions keep-alive target (D-16/D-20).
+
+    Touches a real table (businesses) so Supabase free project registers DB activity
+    and does not pause (D-16 / RESEARCH Pitfall 5 / Assumption A7).
+    A bare SELECT 1 without a real table may not count as 'use' in Supabase's pause
+    detection. On DB failure raises 503 — correct for a failed readiness probe.
+
+    T-06-02-02: On failure raises 503 with "database not ready" only — no connection
+    string or stack trace in the response body.
+    """
+    try:
+        from app.db.supabase import get_connection
+
+        with get_connection() as conn:
+            conn.execute("SELECT 1 FROM businesses LIMIT 1")
+        return JSONResponse({"status": "ready"})
+    except Exception as exc:
+        logger.error("readiness probe failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="database not ready")
+
+
 @app.post("/webhook/inbound")
 def inbound(email: InboundEmail, background_tasks: BackgroundTasks) -> JSONResponse:
     """Ingest one inbound email, schedule the pipeline, return 200 fast."""
@@ -597,7 +636,10 @@ def eval_view(request: Request):
 
 @app.get("/eval/chart.svg")
 def eval_chart():
-    """Serve the committed eval/chart.svg as image/svg+xml."""
+    """Serve the committed eval/chart.svg as image/svg+xml.
+
+    # D-21: serves committed eval/chart.svg baked into image; relative path requires WORKDIR=/app (Dockerfile).
+    """
     chart_path = Path("eval/chart.svg")
     if not chart_path.exists():
         raise HTTPException(status_code=404, detail="eval/chart.svg not found")

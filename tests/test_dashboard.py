@@ -650,3 +650,42 @@ def test_send_test_mints_fresh_message_id_each_click():
     assert str(run_a["id"]) != str(run_b["id"]), (
         "Two /demo/send-test clicks must create two DISTINCT run IDs (DASH-05)"
     )
+
+
+# ---------------------------------------------------------------------------
+# D-20: Health probe routes (06-02)
+# ---------------------------------------------------------------------------
+
+
+def test_health_live_returns_200_no_db():
+    """D-20 liveness: GET /health/live must return 200 with no DB connection.
+
+    This route is the Render deploy healthCheckPath — a Supabase blip during
+    deploy must not fail this check. It touches NO database.
+
+    T-06-02-01: Response body is {"status": "ok"} only.
+    """
+    response = client.get("/health/live")
+    assert response.status_code == 200, (
+        f"GET /health/live must return 200 (D-20 liveness); got {response.status_code}"
+    )
+    assert response.json()["status"] == "ok", (
+        f"GET /health/live must return {{\"status\": \"ok\"}}; got {response.json()}"
+    )
+
+
+@pytest.mark.integration
+def test_health_ready_returns_200_with_db(seeded_db):
+    """D-20 readiness: GET /health/ready must run a real SELECT and return 200.
+
+    This route is the GitHub Actions keep-alive target. It touches the businesses
+    table to register DB activity so Supabase does not pause (D-16).
+    Requires a live DB — skip-guarded with @pytest.mark.integration.
+    """
+    response = client.get("/health/ready")
+    assert response.status_code == 200, (
+        f"GET /health/ready must return 200 (D-20 readiness); got {response.status_code}"
+    )
+    assert response.json()["status"] == "ready", (
+        f"GET /health/ready must return {{\"status\": \"ready\"}}; got {response.json()}"
+    )
