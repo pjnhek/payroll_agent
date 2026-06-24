@@ -257,8 +257,8 @@ The project uses **uv** (not pip/requirements.txt) — see `CLAUDE.md` Tooling R
 Plans:
 **Wave 1** *(concurrent)*
 
-- [ ] 06-01-PLAN.md — Wave 0 test stubs: resend==2.32.2 + failing gateway/ingest/dashboard tests (no-op-swap invariant guard)
-- [ ] 06-02-PLAN.md — Deploy artifacts: Dockerfile (uv-in-image, multi-stage), render.yaml, keepalive.yml, /health/live + /health/ready routes, config.py Resend fields
+- [x] 06-01-PLAN.md — Wave 0 test stubs: resend==2.32.2 + failing gateway/ingest/dashboard tests (no-op-swap invariant guard)
+- [x] 06-02-PLAN.md — Deploy artifacts: Dockerfile (uv-in-image, multi-stage), render.yaml, keepalive.yml, /health/live + /health/ready routes, config.py Resend fields
 
 **Wave 2** *(blocked on Wave 1 — BLOCKING human checkpoint)*
 
@@ -294,4 +294,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 0/7 | Not started | - |
+| 6. Real Integration & Ship | 2/8 | In Progress|  |
