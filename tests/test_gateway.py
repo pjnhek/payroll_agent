@@ -1025,6 +1025,9 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     from app.db import repo as _repo
 
     run_id = uuid.uuid4()
+    # Use a fixed business_id so the FIX-5 spoof guard passes:
+    # find_business_by_sender must return the SAME id as awaiting_run["business_id"].
+    sender_business_id = uuid.uuid4()
     clarification_mid = "<clar-abc@payroll-agent.local>"
 
     # Monkeypatch: find_awaiting_reply_for_header returns run_A
@@ -1033,16 +1036,17 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         "find_awaiting_reply_for_header",
         lambda *, in_reply_to, references_header, conn=None: run_id,
     )
-    # Monkeypatch: find_business_by_sender returns a business (FIX-5 sender check)
+    # Monkeypatch: find_business_by_sender returns the SAME business_id as the run.
+    # FIX-5 spoof guard: str(reply_business_id) must equal str(run["business_id"]).
     monkeypatch.setattr(
         _repo,
         "find_business_by_sender",
-        lambda from_addr, conn=None: uuid.uuid4(),
+        lambda from_addr, conn=None: sender_business_id,
     )
     # Monkeypatch: load_run to return an awaiting_reply run (for FIX-5 guard)
     awaiting_run = {
         "id": run_id,
-        "business_id": uuid.uuid4(),
+        "business_id": sender_business_id,  # must match find_business_by_sender return
         "source_email_id": uuid.uuid4(),
         "status": "awaiting_reply",
         "extracted_data": None,
@@ -1080,9 +1084,15 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         lambda **kw: (uuid.uuid4(), True),
     )
 
+    # WARNING-1 remediation (06-04 Task 2): route now requires ALLOW_UNSIGNED_FIXTURES=true
+    # for canonical dict POSTs without svix-* signature headers.
+    from app.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+
     client = TestClient(app, raise_server_exceptions=False)
-    # Post a canonical InboundEmail dict with in_reply_to matching the clarification
-    # (current route still uses Pydantic body — this will break in 06-04 when raw Request lands)
+    # Post a canonical InboundEmail dict with in_reply_to matching the clarification.
     import json
     raw_reply = {
         "id": str(uuid.uuid4()),
@@ -1106,6 +1116,7 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     assert len(run_pipeline_called) == 0, (
         "run_pipeline must NOT be called for a reply to an awaiting_reply run"
     )
+    get_settings.cache_clear()
 
 
 @pytest.mark.xfail(strict=True, reason="implemented in 06-04")
@@ -1376,5 +1387,165 @@ def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch
         f"resend.Emails.send dict must NOT contain 'reply_to' key when resend_reply_to is empty "
         f"(passing empty string is malformed — key must be absent); "
         f"got send_dict keys: {list(send_dict.keys())}"
+    )
+    get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER-2 / HIGH-4 — ALLOW_UNSIGNED_FIXTURES prod-auth closure (Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_allow_unsigned_fixtures_prod_default_returns_400(monkeypatch):
+    """BLOCKER-2 + HIGH-4: unsigned Resend-envelope payload without svix-* headers returns 400
+    in production (ALLOW_UNSIGNED_FIXTURES=False, the default).
+
+    This is the ONLY consistent statement about unsigned requests in prod:
+    they return 400 regardless of shape (Resend-envelope OR canonical).
+    NOT xfail — must be GREEN immediately after Task 2 route restructure.
+    (T-06-04-01 / T-06-04-11)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    # Explicitly ensure ALLOW_UNSIGNED_FIXTURES is not set (prod default = False).
+    monkeypatch.delenv("ALLOW_UNSIGNED_FIXTURES", raising=False)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Resend-envelope shaped payload (has data.email_id): unsigned → 400 in prod.
+    resend_envelope = {
+        "type": "email.received",
+        "data": {
+            "email_id": "email_abc123",
+            "from": "hr@acme.test",
+            "to": ["payroll@jiodnel.resend.app"],
+            "subject": "Payroll hours",
+        },
+    }
+    # No svix-* signature headers — this is an unsigned request.
+    response = client.post(
+        "/webhook/inbound",
+        content=resend_envelope.__class__(resend_envelope).__repr__().encode(),
+        headers={"content-type": "application/json"},
+    )
+    # Actually use json= to send proper JSON body.
+    response = client.post("/webhook/inbound", json=resend_envelope)
+    assert response.status_code == 400, (
+        f"Unsigned Resend-envelope POST must return 400 in prod "
+        f"(ALLOW_UNSIGNED_FIXTURES=False default); got {response.status_code}. "
+        f"BLOCKER-2: unsigned inbound must be rejected before any pipeline work."
+    )
+    get_settings.cache_clear()
+
+
+def test_allow_unsigned_fixtures_canonical_shape_prod_default_returns_400(monkeypatch):
+    """HIGH-4 + MEDIUM-4: unsigned canonical InboundEmail-shaped POST returns 400 in prod.
+
+    This closes the canonical-bypass hole: even a perfectly-shaped InboundEmail dict POST
+    without svix-* auth headers returns 400 in prod (ALLOW_UNSIGNED_FIXTURES=False).
+    MEDIUM-4 consistent statement: unsigned canonical → 400 in prod. Full stop.
+    NOT xfail — must be GREEN immediately after Task 2 route restructure.
+    (T-06-04-11)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    # Explicitly ensure ALLOW_UNSIGNED_FIXTURES is not set (prod default = False).
+    monkeypatch.delenv("ALLOW_UNSIGNED_FIXTURES", raising=False)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Canonical InboundEmail dict shape (no data.email_id envelope): unsigned → 400 in prod.
+    canonical_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<test-canonical@acme.test>",
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    # No svix-* signature headers — unsigned canonical POST.
+    response = client.post("/webhook/inbound", json=canonical_payload)
+    assert response.status_code == 400, (
+        f"Unsigned canonical InboundEmail POST must return 400 in prod "
+        f"(ALLOW_UNSIGNED_FIXTURES=False default); got {response.status_code}. "
+        f"HIGH-4: canonical fixture bypass must be closed in production."
+    )
+    get_settings.cache_clear()
+
+
+def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatch):
+    """HIGH-4: canonical InboundEmail dict POST returns 200 in dev mode
+    (ALLOW_UNSIGNED_FIXTURES=True). Dev path preserved when flag is explicitly set.
+    NOT xfail — must be GREEN immediately after Task 2 route restructure.
+    (T-06-04-07 — flag is never in render.yaml; only in tests and local .env)
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import repo as _repo
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    # Dev mode: ALLOW_UNSIGNED_FIXTURES=True so unsigned canonical POSTs succeed.
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+
+    # Patch repo helpers so the route completes without a live DB.
+    monkeypatch.setattr(_repo, "insert_inbound_email", lambda **kw: (email_id, True))
+    monkeypatch.setattr(
+        _repo,
+        "find_business_by_sender",
+        lambda from_addr, conn=None: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        _repo,
+        "create_run",
+        lambda **kw: run_id,
+    )
+    monkeypatch.setattr(
+        _repo,
+        "find_awaiting_reply_for_header",
+        lambda *, in_reply_to, references_header, conn=None: None,
+    )
+    monkeypatch.setattr(
+        _repo,
+        "find_any_run_for_header",
+        lambda *, in_reply_to, references_header, conn=None: None,
+    )
+    import app.main as _main
+    monkeypatch.setattr(_main, "_run_pipeline", lambda run_id, conn=None: None)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Canonical InboundEmail dict shape — allowed in dev mode.
+    canonical_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<test-dev-canonical@acme.test>",
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": "hr@acme.test",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    response = client.post("/webhook/inbound", json=canonical_payload)
+    assert response.status_code == 200, (
+        f"Canonical InboundEmail POST must return 200 in dev mode "
+        f"(ALLOW_UNSIGNED_FIXTURES=True); got {response.status_code}. "
+        f"HIGH-4: dev path preserved when flag is explicitly set."
     )
     get_settings.cache_clear()

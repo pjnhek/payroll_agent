@@ -50,6 +50,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.config import get_settings
 from app.db import repo
 from app.email import gateway
 from app.email.clean import clean_body
@@ -219,17 +220,68 @@ def health_ready() -> JSONResponse:
 
 
 @app.post("/webhook/inbound")
-def inbound(email: InboundEmail, background_tasks: BackgroundTasks) -> JSONResponse:
-    """Ingest one inbound email, schedule the pipeline, return 200 fast."""
-    # parse_inbound is a near-passthrough in Phase 2 (FastAPI already validated the
-    # body into InboundEmail); route it through the seam so the P6 provider parser
-    # has a single home.
-    email = gateway.parse_inbound(email.model_dump(mode="json"))
+async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    """Ingest one inbound email, schedule the pipeline, return 200 fast.
+
+    Route restructure (06-04 HIGH-2 dual-path + HIGH-4 prod auth closure):
+
+    Security ordering (MEDIUM-5 verify-before-parse):
+      1. Read raw_body bytes first (needed for HMAC verification against the raw payload).
+      2. Check for svix-* signature headers:
+         - If svix-* headers present (Resend-signed webhook): verify BEFORE json.loads.
+           ValueError from verify → 400 before any JSON parsing.
+         - If svix-* headers absent AND allow_unsigned_fixtures=False (prod default):
+           return 400 BEFORE json.loads. No need to parse an unauthorized request body.
+         - If svix-* headers absent AND allow_unsigned_fixtures=True (dev/test mode):
+           proceed to json.loads + parse. Both Resend-envelope and canonical shapes
+           proceed through gateway.parse_inbound (which handles both via shape detection).
+      3. parse_inbound(raw_body): dual-path, shape detection internal to gateway.
+      4. insert_inbound_email: explicit ON CONFLICT DO NOTHING dedup.
+         HIGH-4: pipeline enqueued ONLY if a new row was inserted (not a duplicate).
+      5. Reply routing, sender auth, create_run, background task (unchanged).
+
+    D-17 is NOT weakened: Resend-envelope payloads with bad/absent sig → 400.
+    HIGH-4: canonical-shape POSTs also → 400 in prod (ALLOW_UNSIGNED_FIXTURES=False).
+    """
+    # Step 1: capture raw body bytes (needed for HMAC verification).
+    raw_body: bytes = await request.body()
+
+    settings = get_settings()
+    allow_unsigned = settings.allow_unsigned_fixtures
+
+    # Check for svix signature headers (indicates a Resend-signed webhook).
+    is_signed = (
+        "svix-id" in request.headers
+        and "svix-timestamp" in request.headers
+        and "svix-signature" in request.headers
+    )
+
+    # Step 2: MEDIUM-5 verify-before-parse ordering.
+    if is_signed:
+        # Signed Resend webhook: verify BEFORE json.loads. ValueError → 400.
+        try:
+            gateway.verify(raw_body, dict(request.headers), settings.webhook_signing_secret)
+        except (ValueError, Exception) as exc:
+            logger.warning("webhook signature verification failed: %s", type(exc).__name__)
+            return JSONResponse(status_code=400, content={"error": "invalid signature"})
+        # Signature passed — proceed to parse.
+    elif not allow_unsigned:
+        # Unsigned request in prod (ALLOW_UNSIGNED_FIXTURES=False): reject BEFORE json.loads.
+        # HIGH-4: this closes the canonical-shape bypass in production — ANY unsigned POST
+        # (Resend-envelope OR canonical InboundEmail shape) returns 400.
+        logger.warning("unsigned webhook rejected in production (ALLOW_UNSIGNED_FIXTURES=False)")
+        return JSONResponse(status_code=400, content={"error": "unsigned webhook not allowed"})
+    # else: allow_unsigned=True (dev/test mode) — proceed to parse without verification.
+
+    # Step 3: parse (dual-path: shape detection inside gateway.parse_inbound).
+    email = gateway.parse_inbound(raw_body)
 
     # FIX C: clean the body BEFORE persisting so email_messages.body_text holds the
     # cleaned text (the single cleaned-body source of truth the extraction reads).
     cleaned = clean_body(email.body_text)
 
+    # Step 4: explicit dedup via ON CONFLICT DO NOTHING RETURNING id.
+    # HIGH-4: enqueue pipeline ONLY if a new row was inserted (not a duplicate).
     email_id, inserted = repo.insert_inbound_email(
         message_id=email.message_id,
         in_reply_to=email.in_reply_to,
