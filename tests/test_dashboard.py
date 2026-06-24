@@ -679,6 +679,199 @@ def test_health_live_returns_200_no_db():
     )
 
 
+# ---------------------------------------------------------------------------
+# Tests for 06-06 Task 1: HIGH-1 per-fixture routing fix + demo_reset re-arming
+# ---------------------------------------------------------------------------
+
+
+def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
+    """HIGH-1 (R4) multi-business proof: coastal_exact fixture routes to Coastal
+    Cleaning Co. unconditionally, independent of any demo_sender_bindings state.
+
+    from_addr is now resolved from _SEED_CONTACTS[fixture["business_name"]] —
+    a constant map — NOT from a DB lookup or global DEMO_CONTACT_EMAIL. Seed
+    contacts are permanently stable (06-08 HIGH-2), so the constant is always
+    correct. Each fixture routes to its own business with zero DB coupling.
+    """
+    import uuid as _uuid
+    from fastapi.testclient import TestClient
+    from app.config import get_settings
+    from app.main import app
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+
+    coastal_uuid = _uuid.UUID("b0000001-0000-0000-0000-000000000001")
+    metro_uuid = _uuid.UUID("b0000002-0000-0000-0000-000000000002")
+
+    import app.db.repo as _repo
+    create_run_calls: list = []
+
+    def _fake_find_business_by_sender(from_addr, conn=None):
+        # coastal .example contact resolves to coastal_uuid
+        if from_addr == "payroll@coastalcleaning.example":
+            return coastal_uuid
+        if from_addr == "hr@metrodeli.example":
+            return metro_uuid
+        return None
+
+    def _fake_insert_inbound_email(**kw):
+        return (_uuid.uuid4(), True)
+
+    def _fake_create_run(*, business_id, source_email_id, **kw):
+        rid = _uuid.uuid4()
+        create_run_calls.append({"business_id": business_id, "run_id": rid})
+        return rid
+
+    monkeypatch.setattr(_repo, "find_business_by_sender", _fake_find_business_by_sender)
+    monkeypatch.setattr(_repo, "insert_inbound_email", _fake_insert_inbound_email)
+    monkeypatch.setattr(_repo, "create_run", _fake_create_run)
+
+    import resend as _resend
+    monkeypatch.setattr(_resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True)
+
+    tc = TestClient(app, raise_server_exceptions=False)
+    response = tc.post("/demo/send-test", data={"fixture_key": "coastal_exact"}, follow_redirects=False)
+
+    get_settings.cache_clear()
+
+    assert response.status_code == 303, (
+        f"POST /demo/send-test coastal_exact must return 303; got {response.status_code}"
+    )
+    assert len(create_run_calls) >= 1, "create_run must have been called"
+    assert create_run_calls[0]["business_id"] == coastal_uuid, (
+        f"coastal_exact must route to coastal_uuid ({coastal_uuid}); "
+        f"got {create_run_calls[0]['business_id']}"
+    )
+
+
+def test_demo_send_test_metro_unknown_shorthand_routes_to_metro(monkeypatch):
+    """HIGH-1 (R4) Beat-2 fixture: unknown_shorthand_metro routes to Metro Deli Group.
+
+    from_addr resolves to 'hr@metrodeli.example' via _SEED_CONTACTS because
+    unknown_shorthand_metro has business_name='Metro Deli Group'. The run is
+    created under metro_uuid — not None (not the unknown_sender path).
+    """
+    import uuid as _uuid
+    from fastapi.testclient import TestClient
+    from app.config import get_settings
+    from app.main import app
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+
+    metro_uuid = _uuid.UUID("b0000002-0000-0000-0000-000000000002")
+
+    import app.db.repo as _repo
+    create_run_calls: list = []
+
+    def _fake_find_business_by_sender(from_addr, conn=None):
+        if from_addr == "hr@metrodeli.example":
+            return metro_uuid
+        return None
+
+    def _fake_insert_inbound_email(**kw):
+        return (_uuid.uuid4(), True)
+
+    def _fake_create_run(*, business_id, source_email_id, **kw):
+        rid = _uuid.uuid4()
+        create_run_calls.append({"business_id": business_id, "run_id": rid})
+        return rid
+
+    monkeypatch.setattr(_repo, "find_business_by_sender", _fake_find_business_by_sender)
+    monkeypatch.setattr(_repo, "insert_inbound_email", _fake_insert_inbound_email)
+    monkeypatch.setattr(_repo, "create_run", _fake_create_run)
+
+    import resend as _resend
+    monkeypatch.setattr(_resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True)
+
+    tc = TestClient(app, raise_server_exceptions=False)
+    response = tc.post(
+        "/demo/send-test",
+        data={"fixture_key": "unknown_shorthand_metro"},
+        follow_redirects=False,
+    )
+
+    get_settings.cache_clear()
+
+    assert response.status_code == 303, (
+        f"POST /demo/send-test unknown_shorthand_metro must return 303; got {response.status_code}"
+    )
+    assert len(create_run_calls) >= 1, (
+        "create_run must be called — the unknown_shorthand_metro fixture must route to Metro Deli, "
+        "not fall through to the unknown_sender path"
+    )
+    assert create_run_calls[0]["business_id"] == metro_uuid, (
+        f"unknown_shorthand_metro must route to metro_uuid ({metro_uuid}); "
+        f"got {create_run_calls[0]['business_id']}"
+    )
+
+
+def test_demo_reset_rearming_writes_demo_sender_bindings_not_contact_email():
+    """Unit test: demo_reset.py --confirm re-UPSERTs demo_sender_bindings only.
+
+    Using FakeConnection (from conftest.py), asserts that:
+    1. The re-arming SQL targets demo_sender_bindings (not businesses).
+    2. No 'UPDATE businesses' SQL is executed anywhere — the 06-08 HIGH-2
+       invariant (seed .example contacts are permanently stable) is preserved.
+    """
+    import sys
+    import os
+    import importlib
+    import types
+    from tests.conftest import FakeConnection
+
+    fc = FakeConnection()
+
+    # Script a fetchone for the business_id lookup that demo_reset.py does
+    # when resolving DEMO_BUSINESS_NAME → UUID via _SEED_BUSINESS_IDS constant.
+    # The script calls seed() (dry_run path does nothing to the DB) and then
+    # re-arms via INSERT INTO demo_sender_bindings ... ON CONFLICT DO UPDATE.
+    # We call the re-arming function directly after importing the module.
+
+    # Provide minimal env vars so the module loads cleanly.
+    test_env = {
+        "DEMO_CONTACT_EMAIL": "pjnhek@gmail.com",
+        "DEMO_BUSINESS_NAME": "Coastal Cleaning Co.",
+        "DATABASE_URL": "postgresql://mock-test-stub/mockdb",
+    }
+
+    saved_env = {}
+    for k, v in test_env.items():
+        saved_env[k] = os.environ.get(k)
+        os.environ[k] = v
+
+    try:
+        # Import or reload the module so it picks up test env
+        import scripts.demo_reset as demo_reset_mod
+        importlib.reload(demo_reset_mod)
+
+        # Call the re-arming helper directly with our FakeConnection
+        demo_reset_mod._rearm_demo_identity(fc)
+    finally:
+        for k, saved in saved_env.items():
+            if saved is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = saved
+
+    all_sql = fc.all_sql()
+
+    # Assert the re-arm targets demo_sender_bindings
+    assert "demo_sender_bindings" in all_sql, (
+        "demo_reset._rearm_demo_identity must INSERT INTO demo_sender_bindings; "
+        f"executed SQL:\n{all_sql}"
+    )
+
+    # Assert NO UPDATE businesses SQL was executed (HIGH-2 invariant)
+    assert "UPDATE businesses" not in all_sql, (
+        "demo_reset._rearm_demo_identity must NOT execute 'UPDATE businesses'; "
+        f"executed SQL:\n{all_sql}"
+    )
+
+
 @pytest.mark.integration
 def test_health_ready_returns_200_with_db(seeded_db):
     """D-20 readiness: GET /health/ready must run a real SELECT and return 200.
