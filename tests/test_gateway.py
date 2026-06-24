@@ -581,7 +581,6 @@ def test_parse_inbound_canonical_fixture_still_works():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_verify_raises_on_bad_signature(monkeypatch):
     """gateway.verify must propagate ValueError from resend.Webhooks.verify.
 
@@ -606,7 +605,6 @@ def test_verify_raises_on_bad_signature(monkeypatch):
         )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_verify_passes_on_valid_signature(monkeypatch):
     """gateway.verify must return cleanly when resend.Webhooks.verify succeeds.
 
@@ -630,7 +628,6 @@ def test_verify_passes_on_valid_signature(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_two_step_fetch(monkeypatch):
     """parse_inbound must fetch the full email via resend.EmailsReceiving.get.
 
@@ -685,7 +682,6 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     """parse_inbound must handle lowercase header keys from the provider.
 
@@ -734,7 +730,6 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     """The returned InboundEmail.message_id must be the RFC message_id, NOT email_id.
 
@@ -787,7 +782,6 @@ def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_parse_inbound_parseaddr_display_name(monkeypatch):
     """parse_inbound must strip display names from the 'from' field.
 
@@ -842,7 +836,6 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     """send_outbound must write send_state='reserved' BEFORE calling resend.Emails.send.
 
@@ -904,7 +897,6 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
     """send_outbound must update send_state to 'failed' when resend.Emails.send raises.
 
@@ -962,7 +954,6 @@ def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     """send_outbound must build the References chain from persisted DB state.
 
@@ -1008,7 +999,6 @@ def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_inbound_reply_routes_to_correct_run(monkeypatch):
     """POST /webhook/inbound with in_reply_to matching an awaiting_reply run must resume it.
 
@@ -1017,8 +1007,8 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     BackgroundTasks.add_task), NOT run_pipeline. This confirms reply routing works end-
     to-end for the mock case. (OPS-02 / D-14)
 
-    This test is xfail because the current route uses a Pydantic InboundEmail body param
-    (not raw Request), so the routing flow will be restructured in 06-04.
+    xfail removed in 06-04 Task 3 — the route was restructured to async Request with
+    ALLOW_UNSIGNED_FIXTURES support, enabling canonical dict POSTs in dev mode.
     """
     from fastapi.testclient import TestClient
     from app.main import app
@@ -1249,7 +1239,6 @@ def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
     get_settings.cache_clear()
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
     """HIGH-3 attachments: send_outbound must base64-encode and forward PDF bytes.
 

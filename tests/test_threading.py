@@ -48,10 +48,17 @@ _CLARIFICATION_PLACEHOLDER = "__CLARIFICATION_MESSAGE_ID__"
 
 
 @pytest.fixture
-def client(fake_repo):
+def client(fake_repo, monkeypatch):
+    """TestClient with ALLOW_UNSIGNED_FIXTURES=true so canonical dict POSTs
+    succeed in mocked tests (WARNING-1 remediation — 06-04 Task 2/3)."""
+    from app.config import get_settings
     from app.main import app
 
-    return TestClient(app)
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    yield TestClient(app)
+    get_settings.cache_clear()
 
 
 # ---------------------------------------------------------------------------
