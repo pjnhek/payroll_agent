@@ -1,0 +1,49 @@
+# Docker build context exclusions.
+# Exclude what the runtime image must not contain; keep what it needs.
+#
+# KEEP: app/, eval/chart.svg, eval/summary.json, eval/fixtures/, fixtures/
+#       app/templates/, app/static/, pyproject.toml, uv.lock
+# The eval chart and demo fixtures must be baked into the image (D-21).
+
+# Python environment (builder stage creates a fresh one inside the image)
+.venv/
+
+# Version control
+.git/
+.gitignore
+
+# Tests (dev/test only; not needed at runtime)
+tests/
+
+# Local secrets (NEVER bake into the image)
+.env
+.env.*
+
+# Python bytecode (uv compiles at build time with UV_COMPILE_BYTECODE=1)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Planning and project management artifacts
+.planning/
+
+# Build artifacts from editable install
+payroll_agent.egg-info/
+*.egg-info/
+
+# Scripts (developer tooling; not needed at runtime)
+scripts/
+
+# Editor and OS files
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# CI/CD (not needed in the runtime image)
+.github/
+
+# Extraction caches (large, eval-only; not needed at runtime)
+eval/fixtures/*_extraction.json
