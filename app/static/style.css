@@ -745,27 +745,54 @@ td a:hover {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
-/* --- Proof placeholder (landing-page video slot) --- */
-.proof-placeholder {
+/* --- Demo thumbnail (landing-page video poster → opens Loom) --- */
+.demo-thumb {
+  position: relative;
+  display: block;
   width: 100%;
   max-width: 560px;
-  height: 160px;
-  background: var(--surface-subtle);
-  border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: box-shadow var(--transition), transform var(--transition);
+}
+
+.demo-thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Play-button overlay, centered */
+.demo-thumb__play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 56px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-subtle);
-  font-size: 13px;
-  transition: border-color var(--transition), color var(--transition), background var(--transition);
+  border-radius: 50%;
+  background: rgba(79, 70, 229, 0.92);
+  color: #FFFFFF;
+  font-size: 20px;
+  padding-left: 3px;
+  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.25);
+  transition: background var(--transition), transform var(--transition);
 }
 
-a.proof-placeholder:hover {
-  border-color: var(--accent);
-  border-style: solid;
-  color: var(--accent);
-  background: var(--accent-soft);
+.demo-thumb:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.demo-thumb:hover .demo-thumb__play {
+  background: var(--accent);
+  transform: translate(-50%, -50%) scale(1.06);
 }
 
 /* --- Page-bottom nav links --- */
