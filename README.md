@@ -36,7 +36,7 @@ graph TD
 
 ## Demo
 
-**▶ [Watch the 60–90s demo (Loom)](https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4)**
+**▶ [Watch the demo (Loom)](https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4)**
 
 The recording walks the three thesis beats on the live deployed service, driven entirely from the in-app composer (no email client needed):
 
