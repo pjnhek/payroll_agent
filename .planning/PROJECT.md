@@ -10,6 +10,17 @@ The narrative for the writeup: the manual payroll process from the builder's acc
 
 A messy real-world payroll email goes in; a correct, human-approved payroll comes out — and every money-moving judgment call (name match, process-vs-clarify) is **deterministic, auditable decisioning that never guesses, with a human-confirmation learning loop.** Each submitted name resolves against the roster in pure code (exact / stored-alias / none), collisions always clarify, and the LLM never decides — it only reads (extraction) and suggests a likely employee for the clarification email. The learning loop reads stored aliases now; it writes a newly-confirmed alias at the operator-approval gate (Phase 5). If that deterministic decision flow works, everything else is plumbing.
 
+## Current State
+
+**v1.0 — SHIPPED 2026-06-25.** All 7 phases complete (Foundation → Walking Skeleton → Deterministic Decisioning → Harden the Calc → Eval → Dashboard & Delivery → Real Integration & Ship). The full email-driven pipeline runs end-to-end on a free stack, deployed live and demoed.
+
+- **Live:** https://payroll-agent.onrender.com (FastAPI on Render free + Supabase Postgres + Resend email)
+- **Demo:** https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4
+- **Code:** https://github.com/pjnhek/payroll_agent
+- **Scale:** ~5 days, 361 commits, ~23K lines Python (71 files), 458 mocked tests green.
+
+Deferred to v2 (see `backlog.md` + STATE.md Deferred Items): real-email A5 threading verification, field-regression clarification ("did you forget the OT?"), paystub YTD columns, eval-chart restyle.
+
 ## Requirements
 
 ### Validated

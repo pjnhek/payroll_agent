@@ -5,7 +5,7 @@ milestone_name: milestone
 status: completed
 stopped_at: Phase 6 context gathered
 last_updated: "2026-06-25T00:34:45.986Z"
-last_activity: 2026-06-25 -- Phase 06 marked complete
+last_activity: 2026-06-25 -- v1.0 milestone shipped + archived
 progress:
   total_phases: 7
   completed_phases: 7
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-20)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
-**Current focus:** Phase 6 — real integration & ship
+**Current focus:** v1.0 SHIPPED — deployed live + demo recorded. Next: `/gsd-new-milestone` for v2.
 
 ## Current Position
 
-Phase: 06 — COMPLETE
-Plan: Not started
-Status: Phase 06 complete
-Last activity: 2026-06-25 -- Phase 06 marked complete
+Milestone: v1.0 — ✅ SHIPPED & ARCHIVED (tag v1.0)
+Phase: all 7 complete (1, 2, 2.1, 3, 4, 5, 6)
+Status: Milestone closed; deployed at https://payroll-agent.onrender.com
+Last activity: 2026-06-25 -- v1.0 milestone shipped + archived
 
-Progress: [█████████░] 85%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -137,11 +137,19 @@ None yet.
 
 ## Deferred Items
 
-Items acknowledged and carried forward from previous milestone close:
+Items acknowledged and deferred at the v1.0 milestone close (2026-06-25). All benign —
+intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; none block v1.0.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| quick_task | 260621-11x-fix-order-dependent-test-test-no-db-conn | done (stale pointer) | 2026-06-25 |
+| todo | Phase 05 code-review: deferred Warnings + Info | deferred | 2026-06-25 |
+| todo | Frontend progressive enhancement (no build step) — post-demo polish | deferred-v2 | 2026-06-25 |
+| todo | Paystub YTD columns | deferred-v2 | 2026-06-25 |
+| todo | Eval chart restyle (away from matplotlib look) | deferred-v2 | 2026-06-25 |
+| todo | Fixture 10 category-label vs expected-clarification note | deferred | 2026-06-25 |
+| uat | Phase 03 HUMAN-UAT | passed (no open scenarios) | 2026-06-25 |
+| uat | Phase 05 HUMAN-UAT | passed (no open scenarios) | 2026-06-25 |
 
 ## Session Continuity
 
