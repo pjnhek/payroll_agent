@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Harden the Calc** - Real Pub 15-T 2026 federal withholding + full-fidelity gross/FICA/net, golden-tested to the penny (completed 2026-06-22)
 - [x] **Phase 4: The Eval (the proof)** - Hand-curated fixtures scored over the same production functions, rendered as one legible per-category chart (completed 2026-06-22)
 - [x] **Phase 5: Dashboard & Delivery** - Operator gate UI (raw email beside extracted beside computed), runs/eval views, confirmation email + on-demand PDFs, idempotency + error path (completed 2026-06-23)
-- [ ] **Phase 6: Real Integration & Ship** - Real email provider behind the interface, Docker + Render + Supabase + keep-alive, README with disclaimer + demo recording
+- [x] **Phase 6: Real Integration & Ship** - Real email provider behind the interface, Docker + Render + Supabase + keep-alive, README with disclaimer + demo recording (completed 2026-06-25)
 
 ## Phase Details
 
@@ -279,7 +279,7 @@ Plans:
 
 **Wave 6** *(blocked on Wave 5 — BLOCKING human checkpoint)*
 
-- [ ] 06-07-PLAN.md — Demo recording (D-04..D-06): all three beats + eval closing shot + README recording link (autonomous:false)
+- [x] 06-07-PLAN.md — Demo recording (D-04..D-06): all three beats + eval closing shot + README recording link (autonomous:false)
 
 ## Progress
 
@@ -294,4 +294,4 @@ Phases execute in numeric order: 1 → 2 → 2.1 → 3 → 4 → 5 → 6
 | 3. Harden the Calc | 3/3 | Complete    | 2026-06-22 |
 | 4. The Eval | 4/4 | Complete    | 2026-06-22 |
 | 5. Dashboard & Delivery | 7/7 | Complete    | 2026-06-23 |
-| 6. Real Integration & Ship | 7/8 | In Progress|  |
+| 6. Real Integration & Ship | 8/8 | Complete   | 2026-06-25 |

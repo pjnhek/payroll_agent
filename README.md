@@ -36,9 +36,17 @@ graph TD
 
 ## Demo
 
-[![Demo](docs/demo-thumbnail.png)](https://your-recording-link-here)
+**▶ [Watch the 60–90s demo (Loom)](https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4)**
 
-*(The Render free service may take ~30-60s to wake from sleep. The demo recording is the primary artifact.)*
+The recording walks the three thesis beats on the live deployed service, driven entirely from the in-app composer (no email client needed):
+
+1. **Clean run** — compose payroll → operator approves → confirmation sent.
+2. **Unknown shorthand → clarify** — "Dave Reyes" is ambiguous (David vs Daniel Reyes), so the **code gate** requests clarification; the LLM only suggests the likely employee, it never decides.
+3. **It learned** — after the operator confirms, the same shorthand resolves automatically on the next run — the alias was learned, so it stops asking.
+
+Closing shot: the eval view with **false_process_count = 0** — no run is ever processed on a name the system couldn't resolve.
+
+*(The Render free service may take ~30-60s to wake from sleep; the recording is the primary artifact.)*
 
 ## Eval Chart
 

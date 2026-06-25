@@ -758,6 +758,14 @@ td a:hover {
   justify-content: center;
   color: var(--text-subtle);
   font-size: 13px;
+  transition: border-color var(--transition), color var(--transition), background var(--transition);
+}
+
+a.proof-placeholder:hover {
+  border-color: var(--accent);
+  border-style: solid;
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* --- Page-bottom nav links --- */
