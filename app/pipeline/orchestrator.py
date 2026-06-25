@@ -169,6 +169,8 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         # column — load_run here gets the freshly-written post-resume reconciliation.
         _none_tokens = [tok for tok, val in _pre_candidates.items() if val is None]
         if _none_tokens and _pre_candidates:
+            from app.pipeline.reconcile_names import _norm
+
             post_run_data = repo.load_run(run_id)
             _post_reconciliation = (post_run_data.get("reconciliation") or []) if post_run_data else []
             _post_resolved_ids: set[str] = set()
@@ -177,20 +179,52 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                     if isinstance(_m, dict) and _m.get("matched_employee_id") is not None:
                         _post_resolved_ids.add(str(_m["matched_employee_id"]))
 
-            # STEP D: Diff and bind.
+            # STEP D: Diff and bind — MISNAME GUARD (token-must-match-resolved-name).
             # The NEWLY-resolved employee is in post but NOT in pre.
             _newly_resolved_ids = _post_resolved_ids - _pre_resolved_ids
-            if len(_newly_resolved_ids) == 1 and len(_none_tokens) == 1:
-                _updated_candidates = dict(_pre_candidates)
-                _updated_candidates[_none_tokens[0]] = str(list(_newly_resolved_ids)[0])
-                repo.set_alias_candidates(run_id, _updated_candidates)
-                logger.info(
-                    "alias candidate bound at resume: %r → %s "
-                    "(pre-vs-post diff, NEW-2)",
-                    _none_tokens[0],
-                    list(_newly_resolved_ids)[0],
+            # CRITICAL: count alone ("1 newly-resolved + 1 pending candidate") is NOT
+            # sufficient to learn an alias. If the client MISNAMED someone — wrote
+            # "Maria" but meant a different person, James — the reply corrects it to
+            # "James Okafor", James newly-resolves, and the old count-only rule would
+            # bind {"Maria": james.id}. "Maria" is NOT James's nickname; learning it
+            # would silently misroute every future "Maria". A legitimate alias is one
+            # the client RE-STATED (e.g. "Dave Reyez"), so its resolved entry's
+            # submitted_name still matches the candidate token. Only bind when the
+            # pending token actually appears as the submitted_name of a resolved,
+            # newly-resolved entry — the token must be evidenced, not inferred.
+            _bound = False
+            if len(_none_tokens) == 1 and len(_newly_resolved_ids) == 1:
+                _token = _none_tokens[0]
+                _norm_token = _norm(_token)
+                _newly_id = next(iter(_newly_resolved_ids))
+                _token_resolved_to_newly = any(
+                    isinstance(_m, dict)
+                    and _m.get("resolved") is True
+                    and str(_m.get("matched_employee_id")) == _newly_id
+                    and _norm(_m.get("submitted_name") or "") == _norm_token
+                    for _m in (_post_reconciliation if isinstance(_post_reconciliation, list) else [])
                 )
-            else:
+                if _token_resolved_to_newly:
+                    _updated_candidates = dict(_pre_candidates)
+                    _updated_candidates[_token] = str(_newly_id)
+                    repo.set_alias_candidates(run_id, _updated_candidates)
+                    _bound = True
+                    logger.info(
+                        "alias candidate bound at resume: %r → %s "
+                        "(token matched resolved submitted_name; pre-vs-post diff)",
+                        _token,
+                        _newly_id,
+                    )
+                else:
+                    logger.info(
+                        "alias binding skipped for run %s: candidate token %r was not "
+                        "the submitted_name of the newly-resolved employee — likely a "
+                        "misname/correction to a different person, not a nickname "
+                        "(misname guard, NEW-2)",
+                        run_id,
+                        _token,
+                    )
+            if not _bound and not (len(_none_tokens) == 1 and len(_newly_resolved_ids) == 1):
                 logger.info(
                     "alias binding skipped for run %s: %d newly-resolved, "
                     "%d pending candidates; expected 1 each (NEW-2)",

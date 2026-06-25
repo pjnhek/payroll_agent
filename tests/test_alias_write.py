@@ -943,3 +943,131 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
         "by the reply (newly_resolved_ids = post minus pre = empty). "
         "The binding is skipped — no partial/incorrect bind (NEW-2 fix)."
     )
+
+
+def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
+    """MISNAME GUARD: a corrected misname must NOT be learned as an alias.
+
+    Scenario (the real bug): the client wrote "Maria" but there is NO Maria — they
+    actually meant a DIFFERENT person, James Okafor. They reply "I meant James Okafor,
+    not Maria." On resume, re-extraction REPLACES "Maria" with "James Okafor" (the
+    corrected token), James resolves, and the run proceeds.
+
+    "Maria" is NOT James's nickname — it was a misname. Learning "Maria" → James would
+    silently route every future "Maria" to James (a silent misroute on a money-moving
+    decision). The bind MUST be skipped because the resolved entry's submitted_name
+    ("James Okafor") does NOT match the candidate token ("Maria").
+
+    Contrast with the legit nickname case (test ...binds_newly_resolved_employee): there
+    the reply RE-STATES the shorthand ("Dave Reyez"), so a resolved entry's
+    submitted_name matches the candidate token and learning is correct.
+
+    The OLD (buggy) logic bound on count alone — "1 newly-resolved employee + 1 pending
+    candidate" — and would write {"Maria": james.id}. The fix requires the token to
+    match a resolved submitted_name.
+    """
+    import app.db.repo as repo_mod
+    from app.pipeline.orchestrator import resume_pipeline
+    from app.models.contracts import InboundEmail
+    from datetime import datetime, timezone
+
+    _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    _james_id = uuid.UUID("e0000010-0000-0000-0000-000000000010")
+
+    # Capture phase wrote {"Maria": None} — "Maria" matched no roster employee.
+    _alias_candidates = {"Maria": None}
+
+    # PRE-resume reconciliation: "Maria" unresolved (nothing resolved yet).
+    _pre_reconciliation = [
+        {
+            "submitted_name": "Maria",
+            "matched_employee_id": None,
+            "source": "none",
+            "resolved": False,
+            "reason": "no roster match",
+        },
+    ]
+    # POST-resume reconciliation: the client corrected to a DIFFERENT name. Re-extraction
+    # replaced "Maria" with "James Okafor"; James resolves. "Maria" is GONE from the
+    # submitted names — it was a misname, not a nickname for James.
+    _post_reconciliation = [
+        {
+            "submitted_name": "James Okafor",
+            "matched_employee_id": str(_james_id),
+            "source": "exact",
+            "resolved": True,
+            "reason": "exact match",
+        },
+    ]
+
+    _set_alias_candidates_calls: list = []
+    _load_run_calls = {"n": 0}
+
+    def _fake_load_run(run_id, conn=None):
+        # resume_pipeline calls load_run multiple times: metadata + pre-recon, then
+        # post-recon after _run_stages. Serve pre-recon on the first calls, post-recon
+        # once _run_stages has "run" (3rd call onward).
+        _load_run_calls["n"] += 1
+        recon = _pre_reconciliation if _load_run_calls["n"] < 3 else _post_reconciliation
+        return {
+            "id": str(run_id),
+            "business_id": str(_biz_id),
+            "status": "extracting",
+            "alias_candidates": _alias_candidates,
+            "reconciliation": recon,
+            "extracted_data": None,
+            "decision": None,
+            "error_reason": None,
+            "source_email_id": None,
+            "pay_period_start": None,
+            "pay_period_end": None,
+        }
+
+    def _fake_set_alias_candidates(run_id, candidates, conn=None):
+        _set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
+
+    from app.models.roster import Roster as _Roster
+    _empty_roster = _Roster(business_id=_biz_id, employees=[])
+
+    monkeypatch.setattr(repo_mod, "load_run", _fake_load_run, raising=False)
+    monkeypatch.setattr(repo_mod, "claim_status", lambda *a, **kw: True, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: _empty_roster, raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "load_source_email", lambda *a, **kw: "Maria 40 hours", raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
+    )
+
+    import app.pipeline.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_run_stages", lambda *a, **kw: None, raising=False)
+
+    run_id = uuid.uuid4()
+    inbound = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<reply@test.example>",
+        in_reply_to="<orig@test.example>",
+        references_header="<orig@test.example>",
+        subject="Re: hours",
+        from_addr="hr@test.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="I meant James Okafor, not Maria",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    resume_pipeline(run_id, inbound, llm=None)
+
+    # The bug: old logic bound {"Maria": james.id} on count alone. The fix: the resolved
+    # entry's submitted_name ("James Okafor") != the candidate token ("Maria"), so no bind.
+    bound_to_james = [
+        c for c in _set_alias_candidates_calls
+        if c["candidates"].get("Maria") == str(_james_id)
+    ]
+    assert not bound_to_james, (
+        "MISNAME must NOT be learned: 'Maria' was a misname for James (the client meant "
+        "a different person), not James's nickname. Binding 'Maria' → James would silently "
+        "misroute every future 'Maria'. The resolved submitted_name was 'James Okafor', "
+        "which does not match the candidate token 'Maria' — so the alias must be skipped."
+    )
