@@ -2,8 +2,7 @@
 
 **▶ [Live App (Live & Deployed)](https://payroll-agent.onrender.com/)**
 
-![Screenshot of Live App](<img width="3024" height="1696" alt="Screenshot 2026-06-26 at 11 16 05 AM" src="https://github.com/user-attachments/assets/6a078894-7495-4cb8-b48b-d0c79a607762" />
-)
+![Screenshot of Live App](<img width="3024" height="1696" alt="Screenshot 2026-06-26 at 11 16 05 AM" src="https://github.com/user-attachments/assets/6a078894-7495-4cb8-b48b-d0c79a607762" />)
 
 A messy payroll email goes in; a correct, human-approved payroll comes out.
 Every money-moving judgment call (name match, process-vs-clarify) is gated by
