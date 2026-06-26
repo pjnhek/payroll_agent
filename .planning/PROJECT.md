@@ -21,6 +21,17 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 Deferred to v2 (see `backlog.md` + STATE.md Deferred Items): real-email A5 threading verification, field-regression clarification ("did you forget the OT?"), paystub YTD columns, eval-chart restyle.
 
+## Current Milestone: v2 — Production Hardening
+
+**Goal:** Take the working v1.0 MVP and make its core money-logic and data layer genuinely production-grade — correct under real, messy, concurrent load, not just the demo path. Backend/logic only (cosmetic items deliberately excluded). Scope was discovered via an adversarial audit (`.planning/v2-hardening-audit.md`); every item traces to a real finding with file:line.
+
+**Target features (three rings):**
+- **Money-correctness:** zero-hours silent-$0 gate, unicode (NFC) name normalization, field-regression clarification ("did you forget the OT?").
+- **Data integrity:** atomic multi-write transactions (no half-written run state on crash), webhook dedup race fix (Resend redelivery → no duplicate runs), stuck-run recovery (orphaned in-flight runs recoverable).
+- **Operability + evidence:** richer PII-safe `error_reason`, hot-path indexes + remove `SELECT *`, and a load/concurrency proof test (N concurrent runs / duplicate webhooks / simultaneous approvals → assert no double-approval, lost-update, duplicate-run, or half-write).
+
+**Out of scope:** custom email domain, eval-chart restyle, Additional Medicare surtax (intentional), SS-straddle proxy (accepted limitation).
+
 ## Requirements
 
 ### Validated

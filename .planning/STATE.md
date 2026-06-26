@@ -1,36 +1,36 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: completed
-stopped_at: Phase 6 context gathered
-last_updated: "2026-06-25T00:34:45.986Z"
-last_activity: 2026-06-25 -- v1.0 milestone shipped + archived
+milestone: v2
+milestone_name: Production Hardening
+status: planning
+stopped_at: v2 milestone defined — roadmap created (Phases 7-10)
+last_updated: "2026-06-26T00:00:00.000Z"
+last_activity: 2026-06-26 -- v2 milestone kickoff (audit → requirements → roadmap)
 progress:
-  total_phases: 7
-  completed_phases: 7
-  total_plans: 34
-  completed_plans: 34
-  percent: 100
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-20)
+See: .planning/PROJECT.md (updated 2026-06-26)
 
-**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing), so a name the system can't resolve never reaches a real payroll calculation.
-**Current focus:** v1.0 SHIPPED — deployed live + demo recorded. Next: `/gsd-new-milestone` for v2.
+**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v2 deepens this: correct under real, messy, concurrent load, not just the demo path.**
+**Current focus:** v2 — Production Hardening. Scope from `.planning/v2-hardening-audit.md`. Next: `/gsd-plan-phase 7`.
 
 ## Current Position
 
-Milestone: v1.0 — ✅ SHIPPED & ARCHIVED (tag v1.0)
-Phase: all 7 complete (1, 2, 2.1, 3, 4, 5, 6)
-Status: Milestone closed; deployed at https://payroll-agent.onrender.com
-Last activity: 2026-06-25 -- v1.0 milestone shipped + archived
+Milestone: v2 — Production Hardening (planning → ready to execute)
+Phase: 7 — Money-Correctness Deepening (not started)
+Status: Roadmap created (Phases 7-10, 9 requirements mapped). v1.0 shipped & archived (tag v1.0).
+Last activity: 2026-06-26 -- v2 milestone kickoff
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0% (v2)
 
 ## Performance Metrics
 
