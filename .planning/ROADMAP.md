@@ -34,7 +34,14 @@
   2. Two visually-identical names in different Unicode normalization forms (e.g. "José" NFC vs the NFD decomposition) resolve as a match — `reconcile_names._norm` applies `unicodedata.normalize("NFC", …)` before casefold — with a test asserting the previously-failing NFD case now resolves to the same employee.
   3. A clarification reply that drops or changes a money-affecting field the original submission stated (original "40 + 2 OT", reply "40" with no OT) is detected as a regression and clarifies once ("did you forget the overtime?") before processing; if the regression is still unaddressed after that one round, the original value is carried forward — proven by a test that the clarify-loop guard fires exactly once and never enters an infinite re-clarify loop.
 
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop model) + all Wave 0 failing tests
+- [ ] 07-02-PLAN.md — MONEY-01 `_is_paid` predicate + `any_hours` fix; MONEY-02 NFC `_norm` + eval `_normalize` parity
+- [ ] 07-03-PLAN.md — MONEY-03 pure logic: `detect_field_regression` helper + `validate(prior=)` seam + `decide` Rule 2b
+- [ ] 07-04-PLAN.md — MONEY-03 state machine: schema DDL + repo helpers + orchestrator `_clarify`/`_run_stages`/`resume_pipeline` wiring
+- [ ] 07-05-PLAN.md — Eval fixtures 16/17/18 + integration tests (snapshot_once, loop_guard, confirmed_dropped_no_reflag)
 
 ### Phase 8: Data-Layer Hygiene & Diagnostics
 
@@ -96,7 +103,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 7. Money-Correctness Deepening | 0/TBD | Not started | - |
+| 7. Money-Correctness Deepening | 0/5 | Not started | - |
 | 8. Data-Layer Hygiene & Diagnostics | 0/TBD | Not started | - |
 | 9. Atomic Data Integrity | 0/TBD | Not started | - |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
