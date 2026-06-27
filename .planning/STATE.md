@@ -2,10 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
-status: planning
-stopped_at: v2 milestone defined — roadmap created (Phases 7-10)
-last_updated: "2026-06-26T00:00:00.000Z"
-last_activity: 2026-06-26 -- v2 milestone kickoff (audit → requirements → roadmap)
+status: Roadmap created (Phases 7-10, 9 requirements mapped). v1.0 shipped & archived (tag v1.0).
+last_updated: "2026-06-27T22:23:24.360Z"
+last_activity: 2026-06-26 -- v2 milestone kickoff
 progress:
   total_phases: 4
   completed_phases: 0
@@ -153,6 +152,6 @@ intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; no
 
 ## Session Continuity
 
-Last session: 2026-06-23T18:06:46.972Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-real-integration-ship/06-CONTEXT.md
+Last session: 2026-06-27T22:23:24.350Z
+Stopped at: Phase 7 context gathered
+Resume file: .planning/phases/07-money-correctness-deepening/07-CONTEXT.md
