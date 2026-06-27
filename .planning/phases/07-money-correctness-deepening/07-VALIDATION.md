@@ -1,8 +1,8 @@
 ---
 phase: 7
 slug: money-correctness-deepening
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-06-27
 ---
@@ -22,7 +22,7 @@ created: 2026-06-27
 |----------|-------|
 | **Framework** | pytest (run via `uv run pytest`) |
 | **Config file** | none found — pytest auto-discovers `tests/` |
-| **Quick run command** | `uv run pytest tests/test_validate.py tests/test_reconcile_names.py -q` |
+| **Quick run command** | `uv run pytest tests/test_validate.py tests/test_reconcile.py -q` |
 | **Full suite command** | `uv run pytest -q` |
 | **Eval check** | `uv run python eval/run_eval.py --check` |
 | **Estimated runtime** | ~30 seconds (unit); integration adds DB round-trips |
@@ -31,7 +31,7 @@ created: 2026-06-27
 
 ## Sampling Rate
 
-- **After every task commit:** Run `uv run pytest tests/test_validate.py tests/test_reconcile_names.py -q`
+- **After every task commit:** Run `uv run pytest tests/test_validate.py tests/test_reconcile.py -q`
 - **After every plan wave:** Run `uv run pytest -q`
 - **Before `/gsd-verify-work`:** Full suite green AND `uv run python eval/run_eval.py --check` passes
 - **Max feedback latency:** ~30 seconds
@@ -51,7 +51,7 @@ created: 2026-06-27
 | MONEY-01 | `pay_type=None`/unknown + all-zero hours → fail-safe gate (D-03) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "unknown_pay_type" -x` | ❌ W0 | ⬜ pending |
 | MONEY-01 | Salaried + no hours → NOT gated (D-03: never reaches gate) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "salaried_no_gate" -x` | ❌ W0 | ⬜ pending |
 | MONEY-01 | D-25 predicate-consistency: `OT 2→0` gates identically to `OT 2→absent` | — | N/A | unit | `uv run pytest tests/test_validate.py -k "predicate_consistency" -x` | ❌ W0 | ⬜ pending |
-| MONEY-02 | NFD "José" matches NFC "José" in roster via `_norm` → same `matched_employee_id` (D-07) | — | N/A | unit | `uv run pytest tests/test_reconcile_names.py -k "nfd" -x` | ❌ W0 | ⬜ pending |
+| MONEY-02 | NFD "José" matches NFC "José" in roster via `_norm` → same `matched_employee_id` (D-07) | — | N/A | unit | `uv run pytest tests/test_reconcile.py -k "nfd" -x` | ❌ W0 | ⬜ pending |
 | MONEY-02 | `run_eval.py:_normalize` NFC-normalizes before casefold (C-4 fix — eval scorer parity) | — | N/A | unit | `uv run pytest tests/test_eval_wiring.py -k "nfd" -x` | ❌ W0 | ⬜ pending |
 | MONEY-03 | `detect_field_regression`: `OT=2` snapshot, `OT=None` resumed → returns `FieldDrop` for OT | — | N/A | unit | `uv run pytest tests/test_validate.py -k "detect_regression" -x` | ❌ W0 | ⬜ pending |
 | MONEY-03 | `field_regression` ValidationIssue gates to `request_clarification` via decide (C-1: widened Literal + decide rule) | V5 | Pydantic `extra="forbid"`; JSONB via `json.dumps` | unit | `uv run pytest tests/test_decide.py -k "field_regression" -x` | ❌ W0 | ⬜ pending |
@@ -69,13 +69,13 @@ created: 2026-06-27
 ## Wave 0 Requirements
 
 - [ ] `tests/test_validate.py` — MONEY-01 + MONEY-03 detection tests (zero-hours, partial-week, unknown-pay-type, salaried-no-gate, predicate-consistency, detect-regression, explicit-drop, no-regression)
-- [ ] `tests/test_reconcile_names.py` — MONEY-02 NFD test (verify file exists; create if absent)
-- [ ] `tests/test_decide.py` — `field_regression` issue gates to clarification (verify file exists; create if absent)
-- [ ] `tests/test_eval_wiring.py` — `run_eval.py:_normalize` NFC parity (new file; covers C-4)
-- [ ] `tests/test_resume_pipeline.py` — integration: snapshot-once, loop-guard, confirmed-dropped-no-reflag (new file; needs live DATABASE_URL)
+- [ ] `tests/test_reconcile.py` — MONEY-02 NFD test (file EXISTS — extend it)
+- [ ] `tests/test_decide.py` — `field_regression` issue gates to clarification (NEW file — does not exist yet)
+- [ ] `tests/test_eval_wiring.py` — `run_eval.py:_normalize` NFC parity (file EXISTS — extend it; covers C-4)
+- [ ] `tests/test_resume_pipeline.py` — integration: snapshot-once, loop-guard, confirmed-dropped-no-reflag (NEW file; needs live DATABASE_URL)
 - [ ] `eval/fixtures/` — three new fixtures (zero-hours-hourly, NFD-name, field-drop/carry-forward) + their `_extraction.json`, serialized through `extracted.model_dump_json()` per D-24
 
-*Test files for `decide`/`reconcile_names`/`resume_pipeline` may not exist yet — the planner must confirm existence and create stubs in Wave 0 where missing.*
+*Confirmed against live `tests/` (2026-06-27): `test_validate.py`, `test_reconcile.py`, `test_eval_wiring.py` EXIST (extend them); `test_decide.py` and `test_resume_pipeline.py` are NEW. There is no `test_reconcile_names.py` — the canonical reconcile test file is `test_reconcile.py`.*
 
 ---
 
@@ -89,11 +89,13 @@ created: 2026-06-27
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies (every plan task uses a `uv run` command)
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (new files: `test_decide.py`, `test_resume_pipeline.py`, fixtures 16–18)
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s (unit suite ~30s; integration adds DB round-trips)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+*`wave_0_complete` stays `false` until the RED test scaffolds are actually written in Wave 1 of execution.*
+
+**Approval:** approved 2026-06-27

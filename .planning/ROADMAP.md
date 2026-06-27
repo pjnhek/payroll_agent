@@ -35,12 +35,25 @@
   3. A clarification reply that drops or changes a money-affecting field the original submission stated (original "40 + 2 OT", reply "40" with no OT) is detected as a regression and clarifies once ("did you forget the overtime?") before processing; if the regression is still unaddressed after that one round, the original value is carried forward — proven by a test that the clarify-loop guard fires exactly once and never enters an infinite re-clarify loop.
 
 **Plans**: 5 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop model) + all Wave 0 failing tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 07-02-PLAN.md — MONEY-01 `_is_paid` predicate + `any_hours` fix; MONEY-02 NFC `_norm` + eval `_normalize` parity
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 07-03-PLAN.md — MONEY-03 pure logic: `detect_field_regression` helper + `validate(prior=)` seam + `decide` Rule 2b
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 07-04-PLAN.md — MONEY-03 state machine: schema DDL + repo helpers + orchestrator `_clarify`/`_run_stages`/`resume_pipeline` wiring
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 07-05-PLAN.md — Eval fixtures 16/17/18 + integration tests (snapshot_once, loop_guard, confirmed_dropped_no_reflag)
 
 ### Phase 8: Data-Layer Hygiene & Diagnostics

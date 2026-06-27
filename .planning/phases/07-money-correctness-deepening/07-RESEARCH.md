@@ -550,7 +550,7 @@ def _is_paid(v: Decimal | None) -> bool:
 |----------|-------|
 | Framework | pytest (via `uv run pytest -q`) |
 | Config file | none found (pytest discovers `tests/` automatically) |
-| Quick run command | `uv run pytest tests/test_validate.py tests/test_reconcile_names.py -q` |
+| Quick run command | `uv run pytest tests/test_validate.py tests/test_reconcile.py -q` |
 | Full suite command | `uv run pytest -q` |
 
 ### Phase Requirements → Test Map
@@ -561,7 +561,7 @@ def _is_paid(v: Decimal | None) -> bool:
 | MONEY-01 | Hourly employee with `hours_regular=0` + `hours_holiday=8` (partial week) → NOT gated (D-03 edge) | unit | `uv run pytest tests/test_validate.py -k "partial_week" -x` | ❌ Wave 0 |
 | MONEY-01 | `pay_type=None/unknown` + all-zero hours → treated as "could be hourly" → gate | unit | `uv run pytest tests/test_validate.py -k "unknown_pay_type" -x` | ❌ Wave 0 |
 | MONEY-01 | D-25 predicate-consistency: `OT 2→0` gates identically to `OT 2→absent` | unit | `uv run pytest tests/test_validate.py -k "predicate_consistency" -x` | ❌ Wave 0 |
-| MONEY-02 | NFD "José" matches NFC "José" in roster via `_norm` | unit | `uv run pytest tests/test_reconcile_names.py -k "nfd" -x` | ❌ Wave 0 |
+| MONEY-02 | NFD "José" matches NFC "José" in roster via `_norm` | unit | `uv run pytest tests/test_reconcile.py -k "nfd" -x` | ❌ Wave 0 |
 | MONEY-02 | `run_eval.py:_normalize` matches `_norm` behavior on NFD input | unit | `uv run pytest tests/test_eval_wiring.py -k "nfd" -x` | ❌ Wave 0 |
 | MONEY-03 | `detect_field_regression`: `OT=2` snapshot, `OT=None` resumed → returns `FieldDrop` for OT | unit | `uv run pytest tests/test_validate.py -k "detect_regression" -x` | ❌ Wave 0 |
 | MONEY-03 | D-26 explicit-drop: reply with `OT=0` → `confirmed_dropped`, NO carry-forward | unit | `uv run pytest tests/test_validate.py -k "explicit_drop" -x` | ❌ Wave 0 |
@@ -570,7 +570,7 @@ def _is_paid(v: Decimal | None) -> bool:
 | MONEY-03 | Loop guard: field-regression clarify fires exactly ONCE, then carry-forward | integration | `uv run pytest tests/test_resume_pipeline.py -k "loop_guard" -x` | ❌ Wave 0 |
 | MONEY-01/02/03 | Eval judgment fixtures: three new fixtures score correctly | unit (eval) | `uv run python eval/run_eval.py` | ❌ Wave 0 |
 
-**Note on test file locations:** Existing pattern uses `tests/test_validate.py` for validate tests and `tests/test_reconcile_names.py` likely exists (verify — not confirmed by ls). Integration tests for resume state machine should go in a new `tests/test_resume_pipeline.py` (or extend `tests/test_clarify.py` if it covers resume).
+**Note on test file locations:** Existing pattern uses `tests/test_validate.py` for validate tests and `tests/test_reconcile.py` likely exists (verify — not confirmed by ls). Integration tests for resume state machine should go in a new `tests/test_resume_pipeline.py` (or extend `tests/test_clarify.py` if it covers resume).
 
 ### D-23 Two-Layer Split (mandatory documentation)
 - **Eval layer (unit judgment):** Fixtures + `validate()` + `decide()` called directly prove "given a prior snapshot, does validate detect the drop and gate." This is what `run_eval.py` can certify.
@@ -578,13 +578,13 @@ def _is_paid(v: Decimal | None) -> bool:
 - **CONTEXT.md and docstrings must explicitly state this split** (D-23 compliance).
 
 ### Sampling Rate
-- **Per task commit:** `uv run pytest tests/test_validate.py tests/test_reconcile_names.py -q`
+- **Per task commit:** `uv run pytest tests/test_validate.py tests/test_reconcile.py -q`
 - **Per wave merge:** `uv run pytest -q`
 - **Phase gate:** Full suite green + `uv run python eval/run_eval.py --check` before `/gsd-verify-work`
 
 ### Wave 0 Gaps
 - [ ] `tests/test_validate.py` — add MONEY-01 tests (zero-hours, partial-week, unknown-pay-type, predicate-consistency, explicit-drop, no-regression, detect-regression)
-- [ ] `tests/test_reconcile_names.py` — add MONEY-02 NFD test (verify file exists first)
+- [ ] `tests/test_reconcile.py` — add MONEY-02 NFD test (verify file exists first)
 - [ ] `tests/test_resume_pipeline.py` — integration tests for snapshot-once and loop-guard (new file)
 - [ ] `eval/fixtures/16_*.json` + `_extraction.json` — zero-hours-hourly fixture
 - [ ] `eval/fixtures/17_*.json` + `_extraction.json` — NFD-name fixture
@@ -635,17 +635,15 @@ def _is_paid(v: Decimal | None) -> bool:
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **D-15 interaction — how exactly to short-circuit MONEY-01 for `confirmed_dropped` fields**
-   - What we know: `confirmed_dropped` is recorded in `clarified_fields`; backfill does NOT run for confirmed-dropped fields; MONEY-01 runs inside `validate()` after backfill; a confirmed-dropped field will have `hours_overtime=Decimal("0")` in the resumed extraction → `_is_paid` is False → if all hours are not paid, MONEY-01 fires.
-   - What's unclear: The exact mechanism to prevent MONEY-01 from re-flagging a field that was explicitly confirmed as removed. One clean approach: the backfill step sets confirmed-dropped fields to their original value (so `_is_paid` is True) and the `clarified_fields` outcome record is the authoritative "this was resolved" marker. But then the paystub would contain the original value, not zero — which is wrong for a `confirmed_dropped` case.
-   - Better approach: After the outcome-resolve step, the confirmed-dropped fields are removed from the MONEY-01 check by passing the set of resolved-fields to `validate()`. Or: treat confirmed-dropped employees as "salaried equivalent" in the MONEY-01 gate for those specific fields.
-   - Recommendation: The planner should consult the user on this interaction. The cleanest design is to pass a `resolved_drops: set[tuple[UUID, str]]` (set of `(employee_id, field)` pairs already resolved) into `validate()` and skip MONEY-01 for those pairs.
+1. **D-15 interaction — how exactly to short-circuit MONEY-01 for `confirmed_dropped` fields** — **RESOLVED 2026-06-27 (orchestrator + user decision).**
+   - **Resolution:** Thread a **`resolved_drops: set[tuple[UUID, str]]`** kwarg into `validate()` (alongside `prior=None`), holding the `(employee_id, field)` pairs already resolved as `confirmed_dropped`. Inside the MONEY-01 zero-hours check, **skip any pair present in `resolved_drops`**. `resolved_drops` defaults to an empty set, so fresh runs are an exact no-op. `resume_pipeline` populates the set from the `confirmed_dropped` entries in `clarified_fields` and passes it through `_run_stages`.
+   - **Rejected:** backfilling the original value to make `_is_paid` true — that would put the original (e.g. OT=2) on the paystub the client explicitly told us to remove → overpay + ignores an explicit instruction. The set-skip keeps the paystub correctly at `$0` for the removed field.
+   - Implemented by: Plan 07-03 Task 1 (`validate()` signature) + Plan 07-04 (resume wiring populates the set).
 
-2. **Wave 0 ordering — which tests to write before which code**
-   - TDD throughout (D-30): the failing test must exist before the code.
-   - Suggested Wave 0 order: `_is_paid` predicate test → MONEY-01 zero-hours test → NFC test → `FieldDrop` + `detect_field_regression` test → D-26 explicit-drop test → integration snapshot-once test.
+2. **Wave 0 ordering — which tests to write before which code** — **RESOLVED 2026-06-27.**
+   - **Resolution:** Locked to the plan wave ordering (1→5) with D-30 priority (money-movers first): Wave 1 = `FieldDrop` model + `ValidationIssue` Literal widen + all RED test scaffolds → Wave 2 = `_is_paid` predicate + `any_hours` (MONEY-01) + NFC `_norm` + eval `_normalize` parity (MONEY-02) → Wave 3 = `detect_field_regression` + `validate(prior=, resolved_drops=)` seam + decide Rule 2b (MONEY-03 judgment) → Wave 4 = schema + repo helpers + orchestrator state-machine wiring → Wave 5 = integration tests (snapshot-once, loop-guard, confirmed-dropped) + eval fixtures. Each wave's RED tests flip GREEN before the next wave begins.
 
 ---
 
