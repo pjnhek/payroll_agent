@@ -284,3 +284,44 @@ slots between them. The mixed-issue clarification path (R3-2) and the build-diff
 are real correctness holes too. This is the THIRD external pass finding real money-path bugs in
 the same orchestrator surgery — a strong signal the MONEY-03 state machine needs the split-pipeline
 refactor as its foundation, and is worth re-scoping rather than patching a 4th time in place.
+
+
+═══════════════════════════════════════════════════════════════
+
+# Cross-AI Plan Review — Phase 7 — FINAL (re-scoped to MONEY-01/02)
+
+> Reviewer: **Codex** (codex-cli 0.135.0). Review of the RE-SCOPED Phase 7 (MONEY-01 + MONEY-02
+> only; MONEY-03 → Phase 7.5). Commit 3dd706c. **Verdict: LOW risk — safe + complete to execute,
+> NO HIGH/MEDIUM concerns.** The clean contrast to the three MONEY-03 rounds above: the simple,
+> well-scoped pure-function part reviews clean on the first external pass.
+
+## Codex Review (re-scoped Phase 7)
+
+**Summary**  
+Phase 7 is safe and complete to execute for the reduced MONEY-01/MONEY-02 scope. The plans hit the two authoritative success criteria, keep MONEY-03 implementation out, and include the important C-4 eval normalizer parity fix. I see no HIGH or MEDIUM concerns.
+
+**Success Criteria Coverage**  
+SC1 zero-hours gate: fully covered. `07-01-PLAN.md` adds RED tests for explicit zero hours, zero-vs-absent predicate consistency, partial week, and salaried guard. `07-02-PLAN.md` adds module-level `_is_paid(v) = v is not None and v > 0` and replaces `any_hours is not None` with `_is_paid`.
+
+SC2 NFC name normalization: fully covered. `07-01-PLAN.md` adds the NFD-vs-NFC reconciliation RED test and eval parity RED test. `07-02-PLAN.md` hardens `_norm` to `NFC(casefold(NFC(s)))` and aliases `eval/run_eval.py:_normalize` directly to `_norm`.
+
+**Scope Fence**  
+Clean. No MONEY-03 implementation leaks: no `detect_field_regression`, no `prior=` seam, no schema changes, no resume/loop-guard tests, no `RawFieldDrop`. The allowed scaffolding is correct and harmless: widening `ValidationIssue.issue_type` only permits a future value, and `FieldDrop` is an unused `extra="forbid"` model in Phase 7.
+
+**Concerns**  
+No HIGH/MEDIUM concerns.
+
+LOW: `07-01-PLAN.md`, Task 1 lists scaffold contract “Test A-D” behavior but only verifies it with Python one-liners, not persistent tests. Non-blocking, but adding small `tests/test_models_contracts.py` cases would preserve the Phase 7.5 contract better.
+
+LOW: `07-01-PLAN.md`, Task 2 proves SC1 at the `validate()` issue level, not with a literal `decide()` assertion for `request_clarification`. This is acceptable because `decide.py` already gates on validation issues, but a tiny validate→decide smoke test would make the roadmap wording fully explicit.
+
+**Risk Assessment**  
+LOW. The implementation is limited to two pure-function fixes plus a direct eval normalizer alias. The plans include the right RED tests, edge guards, and scope exclusions, with no persistence or orchestrator state-machine changes.
+
+---
+
+**Orchestrator note:** Both LOW suggestions are optional polish, not gaps —
+(1) persist the FieldDrop/Literal scaffold tests in tests/test_models_contracts.py rather than
+Python one-liner verifies; (2) add a tiny validate()→decide() smoke test for SC1. Neither blocks
+execution; both could be folded in during execute-phase if desired. SC1/SC2 fully covered,
+scope fence clean, C-4 eval parity present.
