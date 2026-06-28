@@ -142,8 +142,8 @@ class FieldDrop(BaseModel):
 
     employee_id: UUID
     field: str
-    original_value: Decimal
-    resumed_value: Decimal | None
+    original_value: Decimal = Field(ge=0)
+    resumed_value: Decimal | None = Field(ge=0)
 
 
 # ---------------------------------------------------------------------------
