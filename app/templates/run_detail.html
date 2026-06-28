@@ -139,12 +139,29 @@
             </th>
           </tr>
         </thead>
+        {# D-7.5-08: provenance badge macro for field-regression outcomes (4 outcomes). #}
+        {# clarified_fields_by_name[emp.submitted_name][field] → outcome string. #}
+        {# Outcomes: carried-forward (silence), confirmed_dropped (client removed), #}
+        {# client_supplied (positive replacement), asked (awaiting reply). #}
+        {%- macro provenance_badge(submitted_name, field) %}
+          {%- set emp_fields = clarified_fields_by_name.get(submitted_name, {}) if clarified_fields_by_name is defined else {} %}
+          {%- set outcome = emp_fields.get(field) %}
+          {%- if outcome == 'carried_forward' %}
+            <span class="badge badge-pending" style="margin-left: 6px; font-size: 11px;">carried-forward</span>
+          {%- elif outcome == 'confirmed_dropped' %}
+            <span class="badge badge-neutral" style="margin-left: 6px; font-size: 11px;">client removed</span>
+          {%- elif outcome == 'client_supplied' %}
+            <span class="badge badge-good" style="margin-left: 6px; font-size: 11px;">client supplied</span>
+          {%- elif outcome == 'asked' %}
+            <span class="badge badge-bad" style="margin-left: 6px; font-size: 11px;">awaiting reply</span>
+          {%- endif %}
+        {%- endmacro %}
         <tbody>
-          <tr><td class="cell-label">Regular Hours</td><td>{{ emp.hours_regular if emp.hours_regular is not none else '—' }}</td></tr>
-          <tr><td class="cell-label">OT Hours</td><td>{{ emp.hours_overtime if emp.hours_overtime is not none else '—' }}</td></tr>
-          <tr><td class="cell-label">Vacation</td><td>{{ emp.hours_vacation if emp.hours_vacation is not none else '—' }}</td></tr>
-          <tr><td class="cell-label">Sick</td><td>{{ emp.hours_sick if emp.hours_sick is not none else '—' }}</td></tr>
-          <tr><td class="cell-label">Holiday</td><td>{{ emp.hours_holiday if emp.hours_holiday is not none else '—' }}</td></tr>
+          <tr><td class="cell-label">Regular Hours</td><td>{{ emp.hours_regular if emp.hours_regular is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_regular') }}</td></tr>
+          <tr><td class="cell-label">OT Hours</td><td>{{ emp.hours_overtime if emp.hours_overtime is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_overtime') }}</td></tr>
+          <tr><td class="cell-label">Vacation</td><td>{{ emp.hours_vacation if emp.hours_vacation is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_vacation') }}</td></tr>
+          <tr><td class="cell-label">Sick</td><td>{{ emp.hours_sick if emp.hours_sick is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_sick') }}</td></tr>
+          <tr><td class="cell-label">Holiday</td><td>{{ emp.hours_holiday if emp.hours_holiday is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_holiday') }}</td></tr>
           {% if emp.contribution_401k_override is not none %}
           <tr><td class="cell-label">401k Override</td><td>{{ emp.contribution_401k_override }}</td></tr>
           {% endif %}
@@ -203,6 +220,8 @@
       <span class="badge badge-good">confirmation</span>
       {% elif msg.purpose == 'clarification' %}
       <span class="badge badge-pending">clarification</span>
+      {% elif msg.purpose == 'clarification_field_regression' %}
+      <span class="badge badge-pending">field-regression-clarification</span>
       {% else %}
       <span class="badge badge-neutral">{{ msg.purpose or 'outbound' }}</span>
       {% endif %}

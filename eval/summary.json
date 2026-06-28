@@ -1,19 +1,19 @@
 {
   "schema_version": "1",
-  "suite_run_id": "e3e4d384-4b83-4a80-97e1-3a3b465a407f",
-  "generated_at": "2026-06-22T20:34:59.406887+00:00",
+  "suite_run_id": "a4516d78-6297-4079-82fe-9a78f9801f08",
+  "generated_at": "2026-06-28T09:34:29.173185+00:00",
   "extraction_model_id": "deepseek-v4-flash",
   "false_process_rate": 0.0,
   "confusion_matrix": {
-    "true_process": 7,
+    "true_process": 8,
     "false_process": 0,
     "false_clarify": 0,
-    "true_clarify": 8,
+    "true_clarify": 10,
     "false_process_rate": 0.0,
     "false_process_precision_rate": 0.0
   },
-  "extraction_overall_f1": 0.9866666666666667,
-  "extraction_overall_field_accuracy": 0.9888888888888889,
+  "extraction_overall_f1": 0.9888888888888889,
+  "extraction_overall_field_accuracy": 0.9907407407407407,
   "per_category_extraction": {
     "exact": {
       "f1": 0.96,
@@ -50,13 +50,25 @@
     "buried-reply": {
       "f1": 1.0,
       "field_accuracy": 1.0
+    },
+    "zero-hours-hourly": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "nfc-normalizer-parity": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
+    },
+    "field-drop-clarify": {
+      "f1": 1.0,
+      "field_accuracy": 1.0
     }
   },
   "per_category_reconciliation": [
     {
       "category": "exact",
-      "correct": 11,
-      "total": 11,
+      "correct": 14,
+      "total": 14,
       "accuracy": 1.0
     },
     {
@@ -135,9 +147,24 @@
       "correct": 1,
       "total": 1,
       "fraction": "1/1"
+    },
+    "zero-hours-hourly": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "nfc-normalizer-parity": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
+    },
+    "field-drop-clarify": {
+      "correct": 1,
+      "total": 1,
+      "fraction": "1/1"
     }
   },
-  "rigor_gate_struct_accuracy": 0.8666666666666667,
+  "rigor_gate_struct_accuracy": 0.8888888888888888,
   "per_fixture": [
     {
       "fixture_id": "f0000001-0000-0000-0000-000000000001",
@@ -668,6 +695,105 @@
         "gate_struct_ok": true,
         "final_action": "process",
         "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000016-0000-0000-0000-000000000016",
+      "fixture_path": "16_zero_hours_hourly_coastal.json",
+      "fixture_category": "zero-hours-hourly",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
+      }
+    },
+    {
+      "fixture_id": "f0000017-0000-0000-0000-000000000017",
+      "fixture_path": "17_nfd_name_coastal.json",
+      "fixture_category": "nfc-normalizer-parity",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria  Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "process",
+        "expected_final_action": "process"
+      }
+    },
+    {
+      "fixture_id": "f0000018-0000-0000-0000-000000000018",
+      "fixture_path": "18_field_drop_clarify_carry_coastal.json",
+      "fixture_category": "field-drop-clarify",
+      "extraction": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "field_accuracy": 1.0,
+        "field_correct": 6,
+        "field_total": 6,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0
+      },
+      "reconciliation": [
+        {
+          "submitted_name": "Maria Chen",
+          "name_category": "exact",
+          "correct": true,
+          "actual_source": "exact",
+          "actual_resolved": true,
+          "actual_matched_employee_id": "e0000001-0000-0000-0000-000000000001",
+          "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+        }
+      ],
+      "decision": {
+        "action_correct": true,
+        "gate_struct_ok": true,
+        "final_action": "request_clarification",
+        "expected_final_action": "request_clarification"
       }
     }
   ]

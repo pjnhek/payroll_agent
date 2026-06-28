@@ -31,7 +31,7 @@ from decimal import Decimal
 from app.models.contracts import InboundEmail, Extracted
 from app.models.roster import Roster, NameMatchResult
 from app.pipeline.reconcile_names import reconcile_names, _norm as _normalize
-from app.pipeline.validate import validate
+from app.pipeline.validate import validate, detect_field_regression
 from app.pipeline.decide import decide
 from app.db.seed import seed
 
@@ -93,10 +93,17 @@ def _load_roster_for_fixture(from_addr: str) -> Roster:
 
 
 def _load_fixture(path: pathlib.Path) -> dict:
-    """Load an eval fixture, validate the InboundEmail input portion."""
+    """Load an eval fixture, validate the InboundEmail input portion.
+
+    Strips eval-only keys (expected, fixture_category, prior_extracted, prior_matches)
+    before InboundEmail validation. The raw dict (including prior_extracted and
+    prior_matches) is returned for use by _score_fixture (D-7.5-10 three-phase path).
+    """
     raw = json.loads(path.read_text())
     # Strip eval-only keys before Pydantic validation (extra="forbid" on InboundEmail).
-    input_fields = {k: v for k, v in raw.items() if k not in ("expected", "fixture_category")}
+    # prior_extracted and prior_matches are MONEY-03 eval keys (D-7.5-10 three-phase path).
+    _eval_keys = {"expected", "fixture_category", "prior_extracted", "prior_matches"}
+    input_fields = {k: v for k, v in raw.items() if k not in _eval_keys}
     InboundEmail.model_validate(input_fields)  # raises ValidationError on schema drift
     return raw
 
@@ -148,10 +155,36 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
     expected_extracted = _expected_to_extracted(raw)     # labeled truth: drives PATH A
     cached_extracted = _load_extraction_cache(fixture_path)  # real model output: drives extraction scoring
 
+    # D-7.5-10 three-phase path: deserialize prior_extracted + prior_matches if present.
+    # Fixtures 16 and 17 have no prior_extracted → else branch fires (no regression possible).
+    # Fixture 18 (MONEY-03 field-drop) has both → detect_field_regression called on raw extracted
+    # BEFORE validate, mirroring the production three-phase ordering (detect → validate → decide).
+    prior_extracted_raw = raw.get("prior_extracted")
+    prior_matches_raw = raw.get("prior_matches")
+
+    prior_extracted: Extracted | None = (
+        Extracted.model_validate(prior_extracted_raw)
+        if prior_extracted_raw is not None else None
+    )
+    prior_matches: list[NameMatchResult] | None = (
+        [NameMatchResult.model_validate(m) for m in prior_matches_raw]
+        if prior_matches_raw is not None else None
+    )
+
     # PATH A -- run deterministic stages on the LABELED expected extraction.
     submitted_names = [e.submitted_name for e in expected_extracted.employees]
     matches: list[NameMatchResult] = reconcile_names(submitted_names, roster)
-    issues = validate(expected_extracted, roster, matches)
+
+    if prior_extracted is not None:
+        # D-7.5-10 three-phase path: detect on raw -> validate with pre-computed drops.
+        # prior_matches=None is safe: detect_field_regression returns [] when prior_matches is None.
+        raw_drops = detect_field_regression(
+            prior_extracted, expected_extracted, prior_matches, matches
+        )
+        issues = validate(expected_extracted, roster, matches, raw_field_drops=raw_drops)
+    else:
+        issues = validate(expected_extracted, roster, matches)
+
     decision = decide(expected_extracted, matches, issues)
 
     # -----------------------------------------------------------------------

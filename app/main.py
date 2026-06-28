@@ -936,6 +936,27 @@ def run_detail(request: Request, run_id: uuid.UUID):
         alias_rationale_notes = _build_alias_rationale_notes(run, repo.load_roster_for_business)
     except Exception:
         alias_rationale_notes = []
+    # D-7.5-08: load clarified_fields for provenance badge rendering in the template.
+    # Provides a submitted_name → {field: outcome} lookup so the template can render
+    # the four outcome badges (carried-forward / client-removed / client-supplied /
+    # awaiting-reply) on field-regression-affected hours rows.
+    try:
+        clarified_fields_by_id = repo.load_clarified_fields(run_id) or {}
+        # Build reconciliation lookup: submitted_name → employee_id_str
+        recon = (run.get("reconciliation") or []) if run else []
+        name_to_emp_id: dict[str, str] = {}
+        for m in recon:
+            if isinstance(m, dict) and m.get("matched_employee_id"):
+                name_to_emp_id[m["submitted_name"]] = str(m["matched_employee_id"])
+        # Build submitted_name → {field: outcome} lookup for template access
+        clarified_fields_by_name: dict[str, dict[str, str]] = {}
+        for submitted_name, emp_id_str in name_to_emp_id.items():
+            field_outcomes = clarified_fields_by_id.get(emp_id_str)
+            if field_outcomes:
+                clarified_fields_by_name[submitted_name] = field_outcomes
+    except Exception:
+        logger.debug("load_clarified_fields unavailable for run %s", run_id)
+        clarified_fields_by_name = {}
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -947,6 +968,7 @@ def run_detail(request: Request, run_id: uuid.UUID):
             "thread_messages": thread_messages,
             "alias_rationale_notes": alias_rationale_notes,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),
+            "clarified_fields_by_name": clarified_fields_by_name,
         },
     )
 

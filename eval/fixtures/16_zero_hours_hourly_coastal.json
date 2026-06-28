@@ -1,0 +1,44 @@
+{
+  "id": "f0000016-0000-0000-0000-000000000016",
+  "message_id": "<eval-16-zero-hours-hourly@coastalcleaning.example>",
+  "in_reply_to": null,
+  "references_header": null,
+  "subject": "Payroll week of 6/22 - Maria Chen zero hours",
+  "from_addr": "payroll@coastalcleaning.example",
+  "to_addr": "agent@payroll-agent.local",
+  "body_text": "Hi,\n\nPlease process payroll for Maria Chen this week. She worked 0 regular hours.\n\nThanks\nDana",
+  "created_at": "2026-06-23T09:00:00Z",
+  "fixture_category": "zero-hours-hourly",
+  "expected": {
+    "extracted": {
+      "employees": [
+        {
+          "submitted_name": "Maria Chen",
+          "hours_regular": "0",
+          "hours_overtime": null,
+          "hours_vacation": null,
+          "hours_sick": null,
+          "hours_holiday": null,
+          "contribution_401k_override": null
+        }
+      ],
+      "pay_period_start": "2026-06-22",
+      "pay_period_end": null
+    },
+    "reconciliation": [
+      {
+        "submitted_name": "Maria Chen",
+        "name_category": "exact",
+        "expected_source": "exact",
+        "expected_resolved": true,
+        "expected_matched_employee_id": "e0000001-0000-0000-0000-000000000001"
+      }
+    ],
+    "decision": {
+      "final_action": "request_clarification",
+      "gate_reasons_contains": ["hours"],
+      "unresolved_names": [],
+      "missing_fields": ["Maria Chen.hours_regular"]
+    }
+  }
+}
