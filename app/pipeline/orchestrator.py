@@ -385,6 +385,21 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             # (under-fill that re-clarifies, never overpay from snapshot restore).
             _unresolvable_asked: set[tuple[str, str]] = set()
 
+            # CR-01 FIX: capture the authoritative reply-derived value for every asked
+            # field at classify time, so we can overwrite raw_extracted (the COMBINED
+            # extraction) with the correct value before _run_stages sees it (STEP 3).
+            # Keys: (emp_id_str, field) — same namespace as newly_classified.
+            # Values: the authoritative paid value the paystub MUST use for that field.
+            #   client_supplied  → the positive Decimal the reply extraction returned
+            #   confirmed_dropped → Decimal('0') (client explicitly zeroed; paired with
+            #                       backfill_skip to block snapshot restore)
+            #   carried_forward  → None (so Phase-2 backfill_extracted fills from snapshot;
+            #                       must force None even if combined extraction carried a
+            #                       possibly-wrong positive value)
+            #   _unresolvable_asked → None (field genuinely absent; prevents combined value
+            #                       from leaking through to the paystub)
+            reply_value_overrides: dict[tuple[str, str], Decimal | None] = {}
+
             # Classify each (emp_id_str, field) with outcome 'asked'.
             newly_classified: set[tuple[str, str]] = set()  # all answered asked fields
             for emp_id_str, field_outcomes in list(clarified.items()):
@@ -409,6 +424,9 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                         # This invariant prevents snapshot-restore overpay on any asked
                         # field that the classify step cannot resolve.
                         _unresolvable_asked.add((emp_id_str, field))
+                        # CR-01 FIX: force None so the combined extraction's value for this
+                        # field cannot leak through to the paystub (money-safe under-fill).
+                        reply_value_overrides[(emp_id_str, field)] = None
                         continue
 
                     raw_val = getattr(raw_emp, field, None)
@@ -416,12 +434,23 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                     if raw_val is not None and raw_val > 0:
                         # Present-positive in raw reply → client supplied a value.
                         clarified[emp_id_str][field] = "client_supplied"
+                        # CR-01 FIX: capture the client's supplied value as the authoritative
+                        # value — overrides whatever the combined extraction returned.
+                        reply_value_overrides[(emp_id_str, field)] = raw_val
                     elif raw_val is not None and raw_val == Decimal("0"):
                         # Explicit Decimal('0') in raw reply → client explicitly zeroed.
                         clarified[emp_id_str][field] = "confirmed_dropped"
+                        # CR-01 FIX: force explicit zero (paired with backfill_skip so
+                        # snapshot value is not restored by backfill_extracted either).
+                        reply_value_overrides[(emp_id_str, field)] = Decimal("0")
                     else:
                         # None/absent in raw reply → client was silent → carry forward.
                         clarified[emp_id_str][field] = "carried_forward"
+                        # CR-01 FIX: force None so backfill_extracted can fill from snapshot
+                        # (carried_forward is NOT in backfill_skip → backfill FIRES → OT=2).
+                        # Must overwrite even if the combined extraction had a value: the
+                        # combined body's positive value would otherwise eclipsed the silence.
+                        reply_value_overrides[(emp_id_str, field)] = None
 
                     newly_classified.add((emp_id_str, field))
 
@@ -454,6 +483,53 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 # carried_forward: NOT added → backfill fires → OT=2 from snapshot → paystub
             # WR-01 absorption: unresolvable asked fields are always backfill-skipped.
             backfill_skip.update(_unresolvable_asked)
+
+            # D-7.5-11 STEP 2.5: CR-01 FIX — reconcile the PAID value from the REPLY
+            # for every answered asked field before passing raw_extracted to _run_stages.
+            #
+            # Problem: raw_extracted is the COMBINED extraction (original body + reply).
+            # The combined body may carry the original section's value for an asked field
+            # (e.g. OT=2 from the original payroll section), eclipsing the reply's answer
+            # (e.g. "0 overtime"). backfill_skip only blocks snapshot RESTORE inside
+            # backfill_extracted — it has no power over a value the combined extraction
+            # already carries. So classify outcome and paid value diverge whenever the two
+            # extractions disagree on an asked field (CR-01 regression).
+            #
+            # Fix: for every (emp_id_str, field) in reply_value_overrides, overwrite
+            # the field in raw_extracted's matching employee so the paid value is the
+            # same value the classify step decided.
+            #
+            # Employee-id mapping nuance: the override map is keyed by emp_id_str from
+            # the REPLY extraction's reconciliation (name_to_id_for_classify). The
+            # COMBINED extraction employees are keyed by submitted_name. We must build
+            # a separate name→id map for the combined extraction's employees to bridge
+            # the two namespaces correctly.
+            if reply_value_overrides:
+                # Build name_to_id_combined from the combined extraction's submitted names.
+                combined_submitted = [e.submitted_name for e in raw_extracted.employees]
+                combined_matches = reconcile_names(combined_submitted, roster)
+                name_to_id_combined: dict[str, str] = {
+                    m.submitted_name: str(m.matched_employee_id)
+                    for m in combined_matches
+                    if m.resolved and m.matched_employee_id is not None
+                }
+                # Build the updated employees list (immutable copy idiom from backfill_extracted).
+                new_employees_combined = []
+                for emp in raw_extracted.employees:
+                    emp_id_combined = name_to_id_combined.get(emp.submitted_name)
+                    emp_dict = emp.model_dump()
+                    if emp_id_combined is not None:
+                        for field in _HOURS_FIELDS:
+                            key = (emp_id_combined, field)
+                            if key in reply_value_overrides:
+                                emp_dict[field] = reply_value_overrides[key]
+                    new_employees_combined.append(ExtractedEmployee(**emp_dict))
+                raw_extracted = Extracted(
+                    run_id=raw_extracted.run_id,
+                    employees=new_employees_combined,
+                    pay_period_start=raw_extracted.pay_period_start,
+                    pay_period_end=raw_extracted.pay_period_end,
+                )
 
             # D-7.5-11 STEP 3: call _run_stages ONCE with TWO DISTINCT sets.
             # - extracted=raw_extracted: combined-body extraction (lossless, retains originals)

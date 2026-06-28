@@ -1370,3 +1370,287 @@ def test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock(fake_repo,
         f"CR-01: after answering OT=0, run must reach AWAITING_APPROVAL; "
         f"got {run['status']!r}"
     )
+
+    # Assertion 4 (CR-01 MONEY-SAFETY — strengthened): paystub OT must be 0, NOT 2.
+    # This is the critical payment assertion: the adversarial mock returns OT=2 from the
+    # combined extraction. Without the CR-01 fix (_run_stages sees raw_extracted with OT=2),
+    # the paystub would be paid at OT=2 even though classify correctly labels it
+    # 'confirmed_dropped'. This assertion pins the money-safe outcome and MUST fail
+    # before the fix and pass after.
+    line_items = fake_repo.load_line_items(run_id)
+    assert line_items, (
+        "CR-01 paystub value assertion: line_items must be computed on a process run"
+    )
+    chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
+    assert chen_items, "paystub item for Maria Chen must exist"
+    ot_paid = chen_items[0].hours_overtime
+    assert ot_paid == Decimal("0"), (
+        f"CR-01 OVERPAY regression pin: paystub OT must be 0 (reply-derived, confirmed_dropped); "
+        f"got {ot_paid!r}. "
+        "Without the fix, the combined extraction's adversarial OT=2 flows to _run_stages → "
+        "paystub OT=2 = OVERPAY, even though classify correctly labels it 'confirmed_dropped'. "
+        "The CR-01 fix overwrites raw_extracted's OT field with the reply-derived value (0) "
+        "so the paid value matches the classify decision."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 18 — test_cr01_divergence_confirmed_dropped_paystub_value
+# ---------------------------------------------------------------------------
+
+def test_cr01_divergence_confirmed_dropped_paystub_value(fake_repo, mock_llm, monkeypatch):
+    """CR-01 divergence regression pin: confirmed_dropped case — paystub must pay OT=0, not 2.
+
+    Drives resume_pipeline with a prompt-inspecting mock where the TWO extractions
+    DISAGREE on the asked field:
+      - Reply-only (classify): OT=0 (client's explicit zero → confirmed_dropped)
+      - Combined (process):   OT=2 (adversarial: original section's value eclipses reply)
+
+    Without the CR-01 raw_extracted-reconcile fix, _run_stages receives raw_extracted
+    with OT=2 (from the combined extraction) → paystub OT=2 = OVERPAY, even though
+    classify correctly labels the outcome 'confirmed_dropped'.
+
+    With the fix: reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = Decimal('0')
+    → raw_extracted is rebuilt with OT=0 before _run_stages → paystub OT=0.
+
+    This test MUST FAIL at base (before the fix) and PASS after.
+    It is the definitive regression pin for the OVERPAY case (CR-01 row 1).
+    """
+    run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
+    _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
+
+    from tests.conftest import _MockCompletions
+
+    def _diverge_zero_vs_two(self, **kwargs):
+        mock_llm.calls.append(kwargs)
+        messages = kwargs.get("messages", [])
+        user_content = messages[1]["content"] if len(messages) > 1 else ""
+        if "ORIGINAL PAYROLL EMAIL:" in user_content:
+            # Combined body call: adversarial — original section returns OT=2
+            content = _extraction_json([{
+                "submitted_name": "Maria Chen",
+                "hours_regular": "40",
+                "hours_overtime": "2",
+            }])
+        else:
+            # Reply-only classify call: OT=0 (client's explicit zero)
+            content = _extraction_json([{
+                "submitted_name": "Maria Chen",
+                "hours_regular": "40",
+                "hours_overtime": "0",
+            }])
+        return type("_R", (), {
+            "choices": [type("_C", (), {
+                "message": type("_M", (), {"content": content})()
+            })()]
+        })()
+
+    monkeypatch.setattr(_MockCompletions, "create", _diverge_zero_vs_two)
+
+    reply = _inbound("Maria Chen 40 regular 0 overtime this week")
+    resume_pipeline(run_id, reply)
+
+    # Assertion 1: classify outcome must be 'confirmed_dropped'
+    clarified = fake_repo.load_clarified_fields(run_id)
+    outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
+    assert outcome == "confirmed_dropped", (
+        f"Test 18: classify must see reply OT=0 → 'confirmed_dropped'; got {outcome!r}"
+    )
+
+    # Assertion 2: run reaches AWAITING_APPROVAL
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
+        f"Test 18: run must reach AWAITING_APPROVAL after answering OT=0; got {run['status']!r}"
+    )
+
+    # Assertion 3 (MONEY-SAFE): paystub OT must be 0 — NOT the combined extraction's 2.
+    # This FAILS before the fix (paystub OT=2 = OVERPAY) and PASSES after (paystub OT=0).
+    line_items = fake_repo.load_line_items(run_id)
+    assert line_items, "Test 18: paystub must be computed on a process run"
+    chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
+    assert chen_items, "Test 18: paystub item for Maria Chen must exist"
+    ot_paid = chen_items[0].hours_overtime
+    assert ot_paid == Decimal("0"), (
+        f"CR-01 DIVERGENCE OVERPAY regression pin: paystub OT must be 0 (reply said 0 = drop); "
+        f"got {ot_paid!r}. "
+        "Reply-only extraction: OT=0. Combined extraction (adversarial): OT=2. "
+        "Without the CR-01 raw_extracted-reconcile fix, _run_stages sees OT=2 from combined → "
+        "paystub OT=2 = OVERPAY even though classify says 'confirmed_dropped'. "
+        "With fix: raw_extracted's OT overwritten to 0 before _run_stages → paystub OT=0."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 19 — test_cr01_divergence_client_supplied_paystub_value
+# ---------------------------------------------------------------------------
+
+def test_cr01_divergence_client_supplied_paystub_value(fake_repo, mock_llm, monkeypatch):
+    """CR-01 divergence regression pin: client_supplied case — paystub must pay OT=5, not 2.
+
+    Drives resume_pipeline with a prompt-inspecting mock where the TWO extractions
+    DISAGREE on the asked field:
+      - Reply-only (classify): OT=5 (client supplied a new amount → client_supplied)
+      - Combined (process):   OT=2 (adversarial: original section's value eclipses reply)
+
+    Without the CR-01 raw_extracted-reconcile fix, _run_stages receives raw_extracted
+    with OT=2 → paystub OT=2 = UNDERPAY (client's supplied OT=5 is discarded).
+
+    With the fix: reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = Decimal('5')
+    → raw_extracted is rebuilt with OT=5 before _run_stages → paystub OT=5.
+
+    This test MUST FAIL at base (before the fix) and PASS after.
+    It is the definitive regression pin for the UNDERPAY case (CR-01 row 2).
+    """
+    run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
+    _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
+
+    from tests.conftest import _MockCompletions
+
+    def _diverge_five_vs_two(self, **kwargs):
+        mock_llm.calls.append(kwargs)
+        messages = kwargs.get("messages", [])
+        user_content = messages[1]["content"] if len(messages) > 1 else ""
+        if "ORIGINAL PAYROLL EMAIL:" in user_content:
+            # Combined body call: adversarial — original section returns OT=2
+            content = _extraction_json([{
+                "submitted_name": "Maria Chen",
+                "hours_regular": "40",
+                "hours_overtime": "2",
+            }])
+        else:
+            # Reply-only classify call: OT=5 (client supplies a different amount)
+            content = _extraction_json([{
+                "submitted_name": "Maria Chen",
+                "hours_regular": "40",
+                "hours_overtime": "5",
+            }])
+        return type("_R", (), {
+            "choices": [type("_C", (), {
+                "message": type("_M", (), {"content": content})()
+            })()]
+        })()
+
+    monkeypatch.setattr(_MockCompletions, "create", _diverge_five_vs_two)
+
+    reply = _inbound("Maria Chen 40 regular 5 overtime hours this week")
+    resume_pipeline(run_id, reply)
+
+    # Assertion 1: classify outcome must be 'client_supplied'
+    clarified = fake_repo.load_clarified_fields(run_id)
+    outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
+    assert outcome == "client_supplied", (
+        f"Test 19: classify must see reply OT=5 → 'client_supplied'; got {outcome!r}"
+    )
+
+    # Assertion 2: run reaches AWAITING_APPROVAL
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
+        f"Test 19: run must reach AWAITING_APPROVAL after answering OT=5; got {run['status']!r}"
+    )
+
+    # Assertion 3 (MONEY-SAFE): paystub OT must be 5 — NOT the combined extraction's 2.
+    # This FAILS before the fix (paystub OT=2 = UNDERPAY) and PASSES after (paystub OT=5).
+    line_items = fake_repo.load_line_items(run_id)
+    assert line_items, "Test 19: paystub must be computed on a process run"
+    chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
+    assert chen_items, "Test 19: paystub item for Maria Chen must exist"
+    ot_paid = chen_items[0].hours_overtime
+    assert ot_paid == Decimal("5"), (
+        f"CR-01 DIVERGENCE UNDERPAY regression pin: paystub OT must be 5 (client-supplied); "
+        f"got {ot_paid!r}. "
+        "Reply-only extraction: OT=5. Combined extraction (adversarial): OT=2. "
+        "Without the CR-01 raw_extracted-reconcile fix, _run_stages sees OT=2 from combined → "
+        "paystub OT=2 = UNDERPAY (client's OT=5 is silently discarded). "
+        "With fix: raw_extracted's OT overwritten to 5 before _run_stages → paystub OT=5."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 20 — test_cr01_divergence_unresolvable_asked_money_safe
+# ---------------------------------------------------------------------------
+
+def test_cr01_divergence_unresolvable_asked_money_safe(fake_repo, mock_llm, monkeypatch):
+    """CR-01 divergence regression pin: _unresolvable_asked case — combined OT=2 must NOT be paid.
+
+    Drives resume_pipeline with a prompt-inspecting mock where:
+      - Reply-only (classify): employee OMITTED (reply doesn't mention Maria Chen at all)
+        → _unresolvable_asked for (CHEN_ID, hours_overtime) → field stays unresolved
+      - Combined (process):   Maria Chen OT=2 (adversarial: original section carries it)
+
+    Without the CR-01 raw_extracted-reconcile fix, raw_extracted carries OT=2 from the
+    combined extraction. _unresolvable_asked adds (CHEN_ID, OT) to backfill_skip (prevents
+    snapshot RESTORE), but the combined value OT=2 is already in raw_extracted and flows
+    directly to _compute_line_items → paystub OT=2. The run reaches AWAITING_APPROVAL
+    with the field still 'asked' and no re-clarification = money paid on an unanswered field.
+
+    With the fix: reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = None
+    → raw_extracted's OT is forced to None before _run_stages.
+    Now the field is genuinely absent: decide→validate sees missing required hours →
+    request_clarification fires OR the run does NOT advance to AWAITING_APPROVAL paying OT=2.
+    Either outcome is money-safe; the critical invariant is that OT=2 is NOT paid on a
+    field still marked 'asked' in clarified_fields.
+
+    This test MUST FAIL at base (paystub OT=2 = paid on unanswered field) and PASS after.
+    It is the definitive regression pin for the unresolvable_asked case (CR-01 row 3).
+    """
+    run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
+    _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
+
+    from tests.conftest import _MockCompletions
+
+    def _diverge_absent_vs_two(self, **kwargs):
+        mock_llm.calls.append(kwargs)
+        messages = kwargs.get("messages", [])
+        user_content = messages[1]["content"] if len(messages) > 1 else ""
+        if "ORIGINAL PAYROLL EMAIL:" in user_content:
+            # Combined body call: adversarial — original section carries Maria Chen OT=2
+            content = _extraction_json([{
+                "submitted_name": "Maria Chen",
+                "hours_regular": "40",
+                "hours_overtime": "2",
+            }])
+        else:
+            # Reply-only classify call: Maria Chen is ABSENT from the reply entirely
+            # → _unresolvable_asked (raw_emp is None for CHEN_ID)
+            content = _extraction_json([])  # empty employees list
+        return type("_R", (), {
+            "choices": [type("_C", (), {
+                "message": type("_M", (), {"content": content})()
+            })()]
+        })()
+
+    monkeypatch.setattr(_MockCompletions, "create", _diverge_absent_vs_two)
+
+    reply = _inbound("(No update for Maria Chen this week)")
+    resume_pipeline(run_id, reply)
+
+    # Assertion 1 (MONEY-SAFE): the run must NOT reach AWAITING_APPROVAL paying OT=2
+    # on a field still 'asked'. Either:
+    #   (a) run is at AWAITING_REPLY (re-clarification fired — the safest outcome), OR
+    #   (b) run is at AWAITING_APPROVAL with paystub OT != 2 (genuinely under-filled).
+    # What is NOT acceptable: AWAITING_APPROVAL with paystub OT=2 (paid on unanswered field).
+    run = fake_repo.load_run(run_id)
+    status = run["status"]
+
+    line_items = fake_repo.load_line_items(run_id)
+    chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
+    ot_paid = chen_items[0].hours_overtime if chen_items else None
+
+    # If the run reached AWAITING_APPROVAL, the paystub OT must NOT be 2 (the
+    # combined extraction's adversarial value for an unanswered asked field).
+    if status == RunStatus.AWAITING_APPROVAL.value:
+        assert ot_paid != Decimal("2"), (
+            f"CR-01 DIVERGENCE UNRESOLVABLE_ASKED regression pin: "
+            f"run reached AWAITING_APPROVAL but paystub OT={ot_paid!r}. "
+            "This is the CR-01 row-3 overpay: combined extraction carries OT=2 for a field "
+            "still 'asked' (unanswered). The field must be genuinely absent (OT=0 or None), "
+            "not paid at OT=2 because the combined extraction eclipsed the unanswered state. "
+            "Without the CR-01 fix, raw_extracted's OT=2 flows to _compute_line_items unchecked. "
+            "With fix: raw_extracted's OT is forced to None → the field is genuinely absent → "
+            "decide/validate routes money-safely."
+        )
+    # If the run is at AWAITING_REPLY — the re-clarification fired — that is also
+    # money-safe (the field was not paid). No further assertion needed for that path.
+    # (Any other status — e.g. ERROR — indicates a pipeline failure, acceptable as
+    #  money-safe but worth noting; we don't assert the exact status here, only that
+    #  OT=2 is never paid on an unanswered field.)
