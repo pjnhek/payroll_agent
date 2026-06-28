@@ -27,6 +27,27 @@ logger = logging.getLogger("payroll_agent.compose_email")
 _SUBJECT = "Quick question before we run your payroll"
 
 
+def _field_regression_lines(gate_reasons: list[str]) -> list[str]:
+    """Extract field-regression lines from gate_reasons using LAST-DOT SPLIT (rsplit).
+
+    Gate-reason format: 'field regression: {submitted_name}.{field_name}'
+    rsplit('.',1) correctly handles dotted submitted names like 'M. Chen.hours_overtime'
+    → ('M. Chen', 'hours_overtime'), NOT ('M', 'Chen.hours_overtime').
+
+    Returns a list of D-7.5-09 wording lines, one per field regression gate_reason.
+    """
+    lines = []
+    for reason in gate_reasons:
+        if reason.startswith("field regression: "):
+            qualified = reason[len("field regression: "):]
+            submitted_name, field_name = qualified.rsplit(".", 1)
+            lines.append(
+                f"  - Reply with the {field_name} hours for {submitted_name},"
+                " or 'none' to confirm zero."
+            )
+    return lines
+
+
 def _as_reply(subject: str, original_subject: str | None) -> str:
     """Prefix `Re: <original subject>` so mail clients group the thread (P6).
 
@@ -90,7 +111,14 @@ def _template_body(
             + ", ".join(decision.missing_fields)
             + "."
         )
-    if not decision.unresolved_names and not decision.missing_fields:
+    # N5 fix: field-regression lines emitted UNCONDITIONALLY (before the fallback gate)
+    # so they appear regardless of whether unresolved_names or missing_fields also exist.
+    # Uses _field_regression_lines() helper with rsplit last-dot split for dotted names.
+    # D-7.5-09 wording: 'Reply with the {field_name} hours for {submitted_name}, or 'none' ...'
+    fr_lines = _field_regression_lines(decision.gate_reasons)
+    lines.extend(fr_lines)
+
+    if not decision.unresolved_names and not decision.missing_fields and not fr_lines:
         # Fall back to the raw gate reasons if the structured lists are empty.
         for reason in decision.gate_reasons:
             lines.append(f"  - {reason}")
@@ -146,6 +174,15 @@ def compose_clarification(
         if not api_error:
             logger.warning("draft returned empty content — using templated clarification body")
         return _template_body(decision, suggestions)
+
+    # Finding 4 fix (HIGH — D-7.5-09 wording lock): the deterministic field-regression
+    # question is APPENDED after the LLM draft body so it is guaranteed to appear on the
+    # real (LLM-draft) path, not only in the _template_body fallback.
+    # _field_regression_lines() uses rsplit last-dot split (handles dotted names like 'M. Chen').
+    fr_lines = _field_regression_lines(decision.gate_reasons)
+    if fr_lines:
+        body = body.rstrip("\n") + "\n\n" + "\n".join(fr_lines)
+
     return body
 
 

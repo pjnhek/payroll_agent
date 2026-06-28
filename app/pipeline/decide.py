@@ -124,6 +124,11 @@ def decide(
     missing = [i.field for i in issues if i.issue_type == "missing"]
     gate_reasons += [f"missing required field: {f}" for f in missing]
 
+    # Rule 2b — field regression detected (D-17, C-1 resolution, MONEY-03).
+    # Regressions feed gate_reasons only — Decision.missing_fields is NOT widened.
+    regressions = [i.field for i in issues if i.issue_type == "field_regression"]
+    gate_reasons += [f"field regression: {f}" for f in regressions]
+
     # Rule 3 — run-level collisions (D-21-02): kept distinct from Rule 1 so a name
     # that is resolved=True can still gate the run on a cross-name collision.
     gate_reasons += check_one_to_one(matches, extracted)
