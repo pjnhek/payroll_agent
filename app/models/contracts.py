@@ -117,6 +117,36 @@ class Extracted(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# FieldDrop — forward-compat scaffolding for Phase 7.5 (MONEY-03)
+# ---------------------------------------------------------------------------
+
+
+class FieldDrop(BaseModel):
+    """Forward-compat scaffolding for Phase 7.5 (MONEY-03). Public field-regression record.
+
+    employee_id is always a real resolved UUID.
+    field is always a bare hours-field name (never qualified with submitted_name),
+    e.g. "hours_overtime".
+
+    resumed_value semantics (D-13/D-14):
+    - resumed_value=None means carried_forward (the reply was silent on this field;
+      the original value should be backfilled).
+    - resumed_value=Decimal('0') means confirmed_dropped (the client explicitly zeroed
+      the field in their reply; honor the removal, do NOT backfill).
+
+    Nothing in Phase 7 emits this type — it is a no-op scaffold. Phase 7.5 builds
+    detect_field_regression on top of it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: UUID
+    field: str
+    original_value: Decimal
+    resumed_value: Decimal | None
+
+
+# ---------------------------------------------------------------------------
 # Decision — the deterministic decision object (D-21-01 / D-21-04 / LLM-07)
 # ---------------------------------------------------------------------------
 

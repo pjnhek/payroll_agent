@@ -205,12 +205,16 @@ class NameMatchResult(BaseModel):
 class ValidationIssue(BaseModel):
     """One field-validation issue produced by the validate stage.
 
-    issue_type Literal covers the 3 legal values from LLM-06
+    issue_type Literal covers the legal values from LLM-06
     (Finding #7 — constrained to known value set).
+
+    "field_regression" is a forward-compat value added for Phase 7.5 (D-17).
+    Nothing in Phase 7 emits it — it is a harmless no-op scaffold so Phase 7.5
+    can reference it without a mid-plan Literal change.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     field: str
-    issue_type: Literal["missing", "out_of_bounds", "non_numeric"]
+    issue_type: Literal["missing", "out_of_bounds", "non_numeric", "field_regression"]
     message: str
