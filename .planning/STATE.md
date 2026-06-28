@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
 status: executing
-last_updated: "2026-06-28T07:45:53.607Z"
-last_activity: 2026-06-28 -- Phase 07.5 planning complete
+last_updated: "2026-06-28T08:02:15.997Z"
+last_activity: 2026-06-28 -- Phase 07.5 execution started
 progress:
   total_phases: 5
   completed_phases: 1
@@ -20,15 +20,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-26)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v2 deepens this: correct under real, messy, concurrent load, not just the demo path.**
-**Current focus:** Phase 07.5 — clarification reply field regression
+**Current focus:** Phase 07.5 — clarification-reply-field-regression
 
 ## Current Position
 
 Milestone: v2 — Production Hardening (planning → ready to execute)
-Phase: 07.5
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-06-28 -- Phase 07.5 planning complete
+Phase: 07.5 (clarification-reply-field-regression) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 07.5
+Last activity: 2026-06-28 -- Phase 07.5 execution started
 
 Progress: [░░░░░░░░░░] 0% (v2)
 

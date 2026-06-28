@@ -65,7 +65,7 @@ Plans:
 **Plans**: 4 plans
 **Wave 1**
 
-- [ ] 07.5-01-PLAN.md — PLAN A: add no-op prior=/resolved_drops= kwargs to _run_stages and validate() (pure structural seam, zero behavior change)
+- [x] 07.5-01-PLAN.md — PLAN A: add no-op prior=/resolved_drops= kwargs to _run_stages and validate() (pure structural seam, zero behavior change)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
