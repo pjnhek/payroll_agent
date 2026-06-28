@@ -122,7 +122,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 7. Money-Correctness Deepening | 2/2 | Complete   | 2026-06-28 |
+| 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
 | 8. Data-Layer Hygiene & Diagnostics | 0/TBD | Not started | - |
 | 9. Atomic Data Integrity | 0/TBD | Not started | - |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
