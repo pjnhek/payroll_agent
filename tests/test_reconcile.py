@@ -227,3 +227,63 @@ def test_reconcile_is_pure_no_llm_no_db():
     assert "from app.db" not in src and "import app.db" not in src
     assert "from app.llm" not in src and "import app.llm" not in src
     assert "NameReconciliation" not in src
+
+
+# ---------------------------------------------------------------------------
+# MONEY-02 RED test (Wave 1 — D-04/D-05/D-07)
+#
+# This test FAILS RED until Plan 07-02 adds NFC normalization to _norm.
+# The current _norm does casefold-only; NFD and NFC casefold to different byte
+# sequences so the NFD submitted name never matches the NFC roster name.
+# ---------------------------------------------------------------------------
+
+
+def test_nfd_name_resolves_same_as_nfc(roster_from_seed):
+    """MONEY-02 RED (D-04/D-07): a submitted name in NFD Unicode form must resolve
+    to the same employee as its NFC equivalent.
+
+    The roster stores names in NFC form. A client email may submit the same name in
+    NFD decomposition (e.g. 'e' + combining acute rather than precomposed 'é').
+    Without NFC normalization in _norm, the two forms casefold to different byte
+    sequences -> no match -> silent fail-to-resolve.
+
+    RED because current _norm does `casefold()` without unicodedata.normalize('NFC')
+    -- NFD and NFC byte sequences diverge after casefold, producing no match.
+    Plan 07-02 fixes this with D-05's hardened form: NFC(casefold(NFC(s))).
+
+    This test builds a minimal roster with an employee whose full_name is the NFC form
+    of a name containing combining characters, submits the NFD form, and asserts the
+    match resolves to that employee's id.
+    """
+    import unicodedata
+
+    from app.models.roster import Roster as _Roster
+
+    # Build NFC and NFD forms of a name with combining characters.
+    nfc_name = unicodedata.normalize("NFC", "Jos\xe9 Mart\xednez")   # precomposed
+    nfd_name = unicodedata.normalize("NFD", nfc_name)                 # decomposed
+
+    # Sanity: NFC and NFD must be byte-distinct (otherwise the test is vacuous).
+    assert nfc_name != nfd_name, (
+        "NFC and NFD forms must differ at the byte level to exercise the bug"
+    )
+
+    # Use an existing employee as the base; override full_name to the NFC form.
+    maria = next(e for e in roster_from_seed.employees if e.full_name == "Maria Chen")
+    jose = maria.model_copy(update={"full_name": nfc_name, "known_aliases": []})
+    roster_with_jose = _Roster(
+        business_id=roster_from_seed.business_id,
+        employees=[jose],
+    )
+
+    # Submit the NFD form -- the current _norm will fail to match the NFC roster entry.
+    [result] = reconcile_names([nfd_name], roster_with_jose)
+
+    assert result.resolved is True, (
+        f"MONEY-02 RED: NFD submitted name {nfd_name!r} must resolve to the same "
+        f"employee as the NFC roster name {nfc_name!r} -- current _norm is casefold-only "
+        "and produces no match across NFC/NFD forms (D-04/D-07)"
+    )
+    assert result.matched_employee_id == jose.id, (
+        "MONEY-02: resolved employee must be the NFC-named roster entry"
+    )

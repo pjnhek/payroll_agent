@@ -116,3 +116,45 @@ def test_decide_to_calculate_wiring_thomas_bergmann(summit_roster_and_fixture):
     assert item.net_pay == Decimal("7439.87"), (
         "D-09 wiring: net_pay (9230.77 - 738.46 - 37.20 - 133.85 - 881.39 = 7439.87)"
     )
+
+
+# ---------------------------------------------------------------------------
+# C-4 eval _normalize parity RED test (Wave 1 — RESEARCH.md §Target 9)
+#
+# This test FAILS RED until Plan 07-02 updates run_eval.py:_normalize to use
+# NFC normalization matching the new _norm in reconcile_names.
+# The current _normalize does casefold().split() without NFC.
+# ---------------------------------------------------------------------------
+
+
+def test_eval_normalize_nfd_matches_nfc():
+    """C-4 RED: eval's _normalize must treat NFD and NFC forms of a name identically.
+
+    RESEARCH.md §Target 9 / Correction C-4: run_eval.py defines its own _normalize
+    (line 51) that does `casefold().split()` without unicodedata.normalize. After
+    MONEY-02 fixes reconcile_names._norm to NFC(casefold(NFC(s))), the eval's
+    _normalize is left behind -- it produces different output for NFD vs NFC inputs,
+    causing NFD-name fixtures to score incorrectly (false eval regressions, Pitfall 5).
+
+    RED because current _normalize(NFD) != _normalize(NFC) -- the two forms produce
+    different casefold byte sequences without NFC pre-normalization.
+    Plan 07-02 fixes _normalize to match the new _norm form.
+    """
+    import unicodedata
+
+    from eval.run_eval import _normalize  # noqa: PLC0415 -- intentional late import
+
+    nfc_form = unicodedata.normalize("NFC", "Jos\xe9 Mart\xednez")
+    nfd_form = unicodedata.normalize("NFD", nfc_form)
+
+    # Sanity: the two forms must be byte-distinct (otherwise the test is vacuous).
+    assert nfc_form != nfd_form, (
+        "NFC and NFD forms must differ to exercise the normalization gap"
+    )
+
+    assert _normalize(nfd_form) == _normalize(nfc_form), (
+        f"C-4 RED: _normalize(NFD) != _normalize(NFC) -- "
+        f"got {_normalize(nfd_form)!r} vs {_normalize(nfc_form)!r}. "
+        "Plan 07-02 must update run_eval.py:_normalize to NFC(casefold(NFC(s))) "
+        "matching the new reconcile_names._norm (RESEARCH.md §Target 9 CORRECTION)"
+    )
