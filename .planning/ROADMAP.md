@@ -73,7 +73,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 07.5-03-PLAN.md — ClarifiedFields model + schema DDL (N4 DO$) + repo helpers + _clarify N7 snapshot + _RunStagesResult + resume_pipeline Round-1/Round-2 block (N1/N2/N3)
+- [x] 07.5-03-PLAN.md — ClarifiedFields model + schema DDL (N4 DO$) + repo helpers + _clarify N7 snapshot + _RunStagesResult + resume_pipeline Round-1/Round-2 block (N1/N2/N3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
