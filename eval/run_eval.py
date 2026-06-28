@@ -30,10 +30,23 @@ from decimal import Decimal
 
 from app.models.contracts import InboundEmail, Extracted
 from app.models.roster import Roster, NameMatchResult
+from app.pipeline.orchestrator import backfill_extracted
 from app.pipeline.reconcile_names import reconcile_names, _norm as _normalize
 from app.pipeline.validate import validate, detect_field_regression
 from app.pipeline.decide import decide
 from app.db.seed import seed
+
+# ---------------------------------------------------------------------------
+# Eval-only fixture keys — must be stripped before InboundEmail validation.
+# (extra="forbid" on InboundEmail rejects unknown keys.)
+#
+# WR-04 FIX: one constant shared by BOTH _load_fixture and _record_extraction
+# so the two strip sets cannot diverge. Adding a new eval-only key requires
+# exactly ONE edit here.
+# ---------------------------------------------------------------------------
+_EVAL_ONLY_KEYS: frozenset[str] = frozenset(
+    {"expected", "fixture_category", "prior_extracted", "prior_matches"}
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -100,10 +113,9 @@ def _load_fixture(path: pathlib.Path) -> dict:
     prior_matches) is returned for use by _score_fixture (D-7.5-10 three-phase path).
     """
     raw = json.loads(path.read_text())
-    # Strip eval-only keys before Pydantic validation (extra="forbid" on InboundEmail).
-    # prior_extracted and prior_matches are MONEY-03 eval keys (D-7.5-10 three-phase path).
-    _eval_keys = {"expected", "fixture_category", "prior_extracted", "prior_matches"}
-    input_fields = {k: v for k, v in raw.items() if k not in _eval_keys}
+    # WR-04 FIX: use the module-level _EVAL_ONLY_KEYS constant (shared with
+    # _record_extraction) so the two strip sets cannot diverge.
+    input_fields = {k: v for k, v in raw.items() if k not in _EVAL_ONLY_KEYS}
     InboundEmail.model_validate(input_fields)  # raises ValidationError on schema drift
     return raw
 
@@ -176,12 +188,39 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
     matches: list[NameMatchResult] = reconcile_names(submitted_names, roster)
 
     if prior_extracted is not None:
-        # D-7.5-10 three-phase path: detect on raw -> validate with pre-computed drops.
-        # prior_matches=None is safe: detect_field_regression returns [] when prior_matches is None.
+        # WR-03 FIX: honor production three-phase ordering: detect → backfill → validate.
+        # Production _run_stages runs: detect_field_regression (on RAW) → backfill_extracted
+        # → validate(on BACKFILLED, with raw_drops + prior/prior_matches) → decide.
+        # The old eval code skipped backfill and passed neither prior= nor prior_matches=
+        # into validate, so a Round-2 carry-forward fixture would be scored as "missing"
+        # by the eval while production processes it cleanly — a silent eval/production gap.
+        #
+        # Note: detect raw_drops is still computed on RAW (pre-backfill) expected_extracted,
+        # exactly as in production (the drop must be visible before backfill fills it).
         raw_drops = detect_field_regression(
             prior_extracted, expected_extracted, prior_matches, matches
         )
-        issues = validate(expected_extracted, roster, matches, raw_field_drops=raw_drops)
+        # Backfill phase: fill silence fields from the snapshot, mirroring production.
+        # resolved_drops=None: eval has no backfill_skip concept (only scoring, not classify).
+        expected_extracted = backfill_extracted(
+            expected_extracted, prior_extracted, prior_matches, matches, resolved_drops=None
+        )
+        # Validate on BACKFILLED extraction with prior context for N8 suppression.
+        # raw_field_drops= feeds the pre-backfill drops (Phase 1); prior_matches= threads
+        # the snapshot-round reconciliation for the N8 guard — mirrors production exactly.
+        issues = validate(
+            expected_extracted,
+            roster,
+            matches,
+            prior=prior_extracted,
+            prior_matches=prior_matches,
+            raw_field_drops=raw_drops,
+        )
+        # Note: the eval does not have a suppress_detection set (classify-first is an
+        # orchestrator concern, not a scoring concern). The eval currently covers only
+        # the Round-1 detect-and-clarify path (fixture 18). Round-2 carry-forward →
+        # paystub outcomes are covered by the integration tests in test_resume_pipeline.py.
+        # A future Round-2 fixture (e.g. 19_*) would exercise the full path here.
     else:
         issues = validate(expected_extracted, roster, matches)
 
@@ -671,9 +710,12 @@ def _record_extraction() -> None:
     for fp in fixture_paths:
         raw = _load_fixture(fp)
         roster = _load_roster_for_fixture(raw["from_addr"])
-        # Build InboundEmail from the fixture (strip eval-only keys).
+        # WR-04 FIX: use the shared _EVAL_ONLY_KEYS constant (same as _load_fixture).
+        # The old code stripped only ("expected", "fixture_category"), so fixtures
+        # 16/17/18 with prior_extracted/prior_matches caused ValidationError here
+        # (InboundEmail is extra="forbid"). Unifying the strip set fixes --record mode.
         email_fields = {
-            k: v for k, v in raw.items() if k not in ("expected", "fixture_category")
+            k: v for k, v in raw.items() if k not in _EVAL_ONLY_KEYS
         }
         email = InboundEmail.model_validate(email_fields)
         run_id = uuid.uuid4()
