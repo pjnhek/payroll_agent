@@ -26,12 +26,22 @@ cases; here the resolver simply declines to uniquely resolve.
 """
 from __future__ import annotations
 
+import unicodedata
+
 from app.models.roster import Employee, NameMatchResult, Roster
 
 
 def _norm(name: str) -> str:
-    """Whitespace-normalize + casefold for deterministic comparison."""
-    return " ".join(name.split()).casefold()
+    """Whitespace-normalize + NFC(casefold(NFC(s))) for deterministic Unicode-safe comparison (D-05).
+
+    The double NFC is deliberate: casefold can de-normalize its output on some Unicode
+    sequences. NFC chosen over NFKC (D-06: conservative -- NFKC over-folds compatibility
+    chars for names).
+    """
+    nfc = unicodedata.normalize("NFC", name)
+    casefolded = nfc.casefold()
+    renfc = unicodedata.normalize("NFC", casefolded)
+    return " ".join(renfc.split())
 
 
 def deterministic_match(name: str, roster: Roster) -> NameMatchResult | None:

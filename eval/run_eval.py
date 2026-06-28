@@ -30,7 +30,7 @@ from decimal import Decimal
 
 from app.models.contracts import InboundEmail, Extracted
 from app.models.roster import Roster, NameMatchResult
-from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.reconcile_names import reconcile_names, _norm as _normalize
 from app.pipeline.validate import validate
 from app.pipeline.decide import decide
 from app.db.seed import seed
@@ -46,11 +46,6 @@ CHART_PATH = pathlib.Path(__file__).resolve().parent / "chart.svg"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _normalize(name: str) -> str:
-    """casefold + collapse whitespace -- same normalization reconcile_names uses."""
-    return " ".join(name.casefold().split())
 
 
 def _require_live_llm() -> None:
