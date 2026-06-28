@@ -15,7 +15,7 @@
 **Phase Numbering:** v2 continues the global phase sequence from v1.0 (last phase: 6). Integer phases (7, 8, 9, 10) are planned milestone work; decimal phases (e.g. 9.1) are reserved for urgent insertions.
 
 - [x] **Phase 7: Money-Correctness Deepening (Pure-Function Gates)** - Close the two pure-function silent-mispay gaps: zero-hours $0 paystub and Unicode (NFC) name normalization — the engine never silently pays wrong on these messy-input paths. *(Scope reduced 2026-06-27: MONEY-03 field-regression moved to Phase 7.5 after three cross-AI review rounds showed it requires a `_run_stages` split refactor as its foundation — see 07-REVIEWS.md.)* (completed 2026-06-28)
-- [ ] **Phase 7.5: Clarification-Reply Field-Regression (MONEY-03)** - The clarification-reply field-regression state machine, built on a foundational `_run_stages` split refactor so carry-forward can land between reconcile and validate — detect a dropped money field, clarify once, carry forward (or honor an explicit removal) without an infinite loop
+- [x] **Phase 7.5: Clarification-Reply Field-Regression (MONEY-03)** - The clarification-reply field-regression state machine, built on a foundational `_run_stages` split refactor so carry-forward can land between reconcile and validate — detect a dropped money field, clarify once, carry forward (or honor an explicit removal) without an infinite loop (completed 2026-06-28)
 - [ ] **Phase 8: Data-Layer Hygiene & Diagnostics** - Restore schema-hygiene discipline (hot-path indexes, explicit column lists) and make production failures diagnosable from the DB (PII-safe `error_detail`) — the clean baseline the atomicity work builds on
 - [ ] **Phase 9: Atomic Data Integrity** - The senior-engineer ring: atomic multi-write pipeline transactions (no half-written runs on crash), a transactional webhook-dedup CAS (Resend redelivery never duplicates a run), and a stuck-run recovery path for orphaned in-flight runs
 - [ ] **Phase 10: Concurrency Proof** - The evidence capstone: a test fires N simultaneous runs / duplicate webhooks / concurrent approvals and asserts the invariants hold — no double-approval, lost update, duplicate run, or half-write — backing the production-grade claim
@@ -77,7 +77,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 07.5-04-PLAN.md — 8 integration tests (D-7.5-04a ordering + D-7.5-04b/c + SC4 mixed-issue + loop-guard) + eval fixtures 16/17/18 + run_detail.html D-7.5-08 provenance badges
+- [x] 07.5-04-PLAN.md — 8 integration tests (D-7.5-04a ordering + D-7.5-04b/c + SC4 mixed-issue + loop-guard) + eval fixtures 16/17/18 + run_detail.html D-7.5-08 provenance badges
 
 ### Phase 8: Data-Layer Hygiene & Diagnostics
 
