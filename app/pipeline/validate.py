@@ -122,7 +122,7 @@ def validate(
         if ppy is None:
             continue  # unresolved employee: gate already blocks it, no flag here
         ot = emp.hours_overtime
-        ot_missing = ot is None or ot == 0  # D-05: explicit zero treated same as absent
+        ot_missing = not _is_paid(ot)  # D-05/D-09: absent or zero == "no paid OT" (shared predicate)
         if ppy == 52 and emp.hours_regular is not None and emp.hours_regular > 40 and ot_missing:
             issues.append(
                 ValidationIssue(
