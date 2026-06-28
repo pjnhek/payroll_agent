@@ -41,8 +41,20 @@ from app.pipeline.reconcile_names import _safe_to_learn_alias  # noqa: F401 (RED
 from app.db.repo import get_outbound_message_id  # noqa: F401 (already exists; used in stubs)
 
 from app.models.roster import Employee, Roster
-from app.models.contracts import Decision
+from app.models.contracts import Decision, Extracted, ExtractedEmployee
 from app.models.roster import NameMatchResult
+
+
+def _minimal_extracted(run_id: uuid.UUID) -> Extracted:
+    """Return a minimal Extracted for tests that call _clarify directly (07.5-03).
+
+    _clarify now requires an extracted param (N7 fix — snapshot before AWAITING_REPLY).
+    Tests that don't care about the snapshot value can pass this stub.
+    """
+    return Extracted(
+        run_id=run_id,
+        employees=[ExtractedEmployee(submitted_name="__stub__", hours_regular=Decimal("0"))],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +276,8 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
 
     # Mock set_status (no-op for this test)
     monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
+    # N7: set_pre_clarify_extracted is now called in the idempotency-early-return path.
+    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -298,7 +312,7 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     # Wave 3 implementation target: _clarify idempotency guard (finding #2)
     # When the run already has an outbound clarification row, _clarify must
     # detect it via get_outbound_message_id and return WITHOUT calling send_outbound.
-    _clarify(run_id, email, decision, roster, llm=None)
+    _clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=None)
 
     assert len(send_calls) == 0, (
         "_clarify must NOT call send_outbound when a clarification outbound row "
@@ -356,6 +370,10 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
     )
+    # N7: set_pre_clarify_extracted called before AWAITING_REPLY (live path).
+    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
+    # insert_email_message called in live _clarify path.
+    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -396,7 +414,7 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
 
     # Wave 4 implementation target: single-token-only rule (finding #4, 05-07);
     # 2+ unresolved names → zero alias capture (set_alias_candidates NOT called)
-    _clarify(run_id, email, decision, roster, llm=None)
+    _clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=None)
 
     assert len(set_alias_candidates_calls) == 0, (
         "set_alias_candidates must NOT be called when unresolved_names has 2+ entries "
@@ -444,6 +462,10 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
     )
+    # N7: set_pre_clarify_extracted called before AWAITING_REPLY (live path).
+    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
+    # insert_email_message called in live _clarify path.
+    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -476,7 +498,7 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     roster, _david, _daniel = _make_roster()
 
     # Wave 4 implementation target: single unresolved token happy path
-    _clarify(run_id, email, decision, roster, llm=None)
+    _clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=None)
 
     assert len(set_alias_candidates_calls) == 1, (
         "set_alias_candidates must be called exactly once for a single unambiguous "
@@ -533,6 +555,10 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
     )
+    # N7: set_pre_clarify_extracted called before AWAITING_REPLY (live path).
+    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
+    # insert_email_message called in live _clarify path.
+    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -567,7 +593,7 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
 
     # Wave 4 implementation target: finding #5 + R2-HIGH; candidate_ids count > 1
     # excludes at capture time (NOT deterministic_match is None — that is ambiguous)
-    _clarify(run_id, email, decision, roster, llm=None)
+    _clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=None)
 
     assert len(set_alias_candidates_calls) == 0, (
         "set_alias_candidates must NOT be called when the single unresolved token "
@@ -621,6 +647,10 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
     )
+    # N7: set_pre_clarify_extracted called before AWAITING_REPLY (live path).
+    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
+    # insert_email_message called in live _clarify path.
+    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -653,7 +683,7 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     roster, _david, _daniel = _make_roster()
     # "Dave Reyez" has zero candidates in the D-01b roster — genuinely unresolved
 
-    _clarify(run_id, email, decision, roster, llm=None)
+    _clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=None)
 
     # Verify set_alias_candidates was called with the right payload
     assert "set_alias_candidates" in call_log, (
@@ -806,13 +836,19 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
+    # D-7.5-11: load_pre_clarify_extracted + load_clarified_fields needed by Step E1.
+    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
+    monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
 
-    # Mock _run_stages to simulate the post-resume state without running actual stages
+    # Mock _run_stages to simulate the post-resume state without running actual stages.
+    # Returns _RunStagesResult(clarify_deferred=False) so stage.clarify_deferred is accessible.
     import app.pipeline.orchestrator as orch_mod
+    from app.pipeline.orchestrator import _RunStagesResult
     monkeypatch.setattr(
         orch_mod,
         "_run_stages",
-        lambda *a, **kw: None,
+        lambda *a, **kw: _RunStagesResult(clarify_deferred=False),
         raising=False,
     )
 
@@ -919,9 +955,18 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
+    # D-7.5-11: load_pre_clarify_extracted + load_clarified_fields needed by Step E1.
+    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
+    monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
 
     import app.pipeline.orchestrator as orch_mod
-    monkeypatch.setattr(orch_mod, "_run_stages", lambda *a, **kw: None, raising=False)
+    from app.pipeline.orchestrator import _RunStagesResult
+    monkeypatch.setattr(
+        orch_mod, "_run_stages",
+        lambda *a, **kw: _RunStagesResult(clarify_deferred=False),
+        raising=False,
+    )
 
     run_id = uuid.uuid4()
     inbound = InboundEmail(
@@ -1040,9 +1085,18 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
+    # D-7.5-11: load_pre_clarify_extracted + load_clarified_fields needed by Step E1.
+    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
+    monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
 
     import app.pipeline.orchestrator as orch_mod
-    monkeypatch.setattr(orch_mod, "_run_stages", lambda *a, **kw: None, raising=False)
+    from app.pipeline.orchestrator import _RunStagesResult
+    monkeypatch.setattr(
+        orch_mod, "_run_stages",
+        lambda *a, **kw: _RunStagesResult(clarify_deferred=False),
+        raising=False,
+    )
 
     run_id = uuid.uuid4()
     inbound = InboundEmail(

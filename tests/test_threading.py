@@ -311,6 +311,9 @@ def test_partial_reply_preserves_hours():
             "load_run", "load_source_email", "load_roster_for_business",
             "set_status", "claim_status", "record_run_error", "persist_extracted",
             "persist_decision", "persist_reconciliation", "replace_line_items",
+            # 07.5-03: new MONEY-03 repo helpers (snapshot + clarified_fields)
+            "load_pre_clarify_extracted", "load_clarified_fields",
+            "set_pre_clarify_extracted", "set_clarified_fields",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         monkey.setattr(orchestrator, "extract", _spy_extract)
@@ -375,6 +378,9 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
             "load_run", "load_source_email", "load_roster_for_business",
             "set_status", "claim_status", "record_run_error", "persist_extracted",
             "persist_decision", "persist_reconciliation", "replace_line_items",
+            # 07.5-03: new MONEY-03 repo helpers (snapshot + clarified_fields)
+            "load_pre_clarify_extracted", "load_clarified_fields",
+            "set_pre_clarify_extracted", "set_clarified_fields",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         # If the precondition fails to short-circuit, these spies prove the mutation.
@@ -706,4 +712,20 @@ class _MiniStore:
         ]
 
     def replace_line_items(self, run_id, items, conn=None):
+        pass
+
+    def load_pre_clarify_extracted(self, run_id, conn=None):
+        """D-19 MONEY-03: return pre-clarify snapshot (always None in this mini-store)."""
+        return None
+
+    def load_clarified_fields(self, run_id, conn=None):
+        """D-13 MONEY-03: return clarified fields (always {} in this mini-store)."""
+        return {}
+
+    def set_pre_clarify_extracted(self, run_id, extracted, conn=None):
+        """D-19 MONEY-03: no-op in mini-store."""
+        return True
+
+    def set_clarified_fields(self, run_id, clarified, conn=None):
+        """D-13 MONEY-03: no-op in mini-store."""
         pass

@@ -362,6 +362,7 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         "app.email.gateway.send_outbound",
         lambda **kw: send_outbound_calls.append(kw),
     )
+    monkeypatch.setattr("app.db.repo.set_pre_clarify_extracted", lambda *a, **kw: True)
 
     # Mock LLM helpers
     mock_llm = MagicMock()
@@ -374,7 +375,17 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         lambda decision, **kw: "Clarification body",
     )
 
-    orchestrator._clarify(run_id, email, decision, roster, llm=mock_llm)
+    from app.models.contracts import Extracted, ExtractedEmployee
+
+    def _minimal_extracted(run_id):
+        return Extracted(
+            run_id=run_id,
+            employees=[],
+            pay_period_start=None,
+            pay_period_end=None,
+        )
+
+    orchestrator._clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=mock_llm)
 
     # Key assertions for HIGH-2
     assert len(send_outbound_calls) == 0, "gateway.send_outbound must NOT be called for record_only run"
@@ -517,6 +528,8 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
     monkeypatch.setattr("app.db.repo.get_record_only_flag", lambda *a, **kw: False)
     monkeypatch.setattr("app.db.repo.set_alias_candidates", lambda *a, **kw: None)
     monkeypatch.setattr("app.db.repo.set_status", lambda *a, **kw: None)
+    monkeypatch.setattr("app.db.repo.insert_email_message", lambda **kw: uuid.uuid4())
+    monkeypatch.setattr("app.db.repo.set_pre_clarify_extracted", lambda *a, **kw: True)
     monkeypatch.setattr(
         "app.email.gateway.send_outbound",
         lambda **kw: send_outbound_calls.append(kw),
@@ -527,8 +540,18 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         lambda *a, **kw: "body",
     )
 
+    from app.models.contracts import Extracted
+
+    def _minimal_extracted_live(run_id):
+        return Extracted(
+            run_id=run_id,
+            employees=[],
+            pay_period_start=None,
+            pay_period_end=None,
+        )
+
     mock_llm = MagicMock()
-    orchestrator._clarify(run_id, email, decision, roster, llm=mock_llm)
+    orchestrator._clarify(run_id, email, decision, roster, _minimal_extracted_live(run_id), llm=mock_llm)
 
     assert len(send_outbound_calls) == 1, (
         "gateway.send_outbound MUST be called for a live (record_only=False) run"

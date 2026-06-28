@@ -386,6 +386,47 @@ class InMemoryRepo:
         if run is not None:
             run["alias_candidates"] = candidates
 
+    def set_pre_clarify_extracted(self, run_id, extracted, conn=None):
+        """Snapshot pre-clarify extracted (IS NULL write-once guard, D-19 MONEY-03).
+
+        Mirrors repo.set_pre_clarify_extracted. Returns True on first write, False if
+        already set (in-memory IS NULL guard simulated by checking current value).
+        """
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return False
+        if run.get("pre_clarify_extracted") is not None:
+            return False  # already set (IS NULL guard)
+        run["pre_clarify_extracted"] = extracted.model_dump(mode="json") if hasattr(extracted, "model_dump") else extracted
+        return True
+
+    def load_pre_clarify_extracted(self, run_id, conn=None):
+        """Load pre-clarify snapshot (D-19 MONEY-03). Returns None if not set."""
+        from app.models.contracts import Extracted
+        run = self.runs.get(str(run_id))
+        if run is None or run.get("pre_clarify_extracted") is None:
+            return None
+        data = run["pre_clarify_extracted"]
+        return Extracted.model_validate(data)
+
+    def set_clarified_fields(self, run_id, clarified, conn=None):
+        """Write clarified_fields (D-13 MONEY-03, D-7.5-03b typed-on-write).
+
+        Validates through ClarifiedFields before storing (mirrors repo behavior).
+        """
+        from app.models.contracts import ClarifiedFields
+        ClarifiedFields(outcomes=clarified)  # D-7.5-03b: validate on write
+        run = self.runs.get(str(run_id))
+        if run is not None:
+            run["clarified_fields"] = clarified
+
+    def load_clarified_fields(self, run_id, conn=None):
+        """Load clarified_fields (D-13 MONEY-03). Returns {} on NULL."""
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return {}
+        return run.get("clarified_fields") or {}
+
     def get_record_only_flag(self, run_id, conn=None):
         """Return the record_only flag for a run (06-08, mirrors repo.get_record_only_flag).
 
@@ -555,6 +596,11 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "get_outbound_references_chain",
         "update_email_message_sent",
         "update_email_message_state",
+        # 07.5-03 additions — D-19 MONEY-03 snapshot + D-13 MONEY-03 clarified_fields
+        "set_pre_clarify_extracted",
+        "load_pre_clarify_extracted",
+        "set_clarified_fields",
+        "load_clarified_fields",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
