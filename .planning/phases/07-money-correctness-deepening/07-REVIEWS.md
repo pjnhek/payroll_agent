@@ -112,3 +112,108 @@ Single external reviewer (Codex), so no cross-reviewer consensus — but the orc
 independently confirmed the HIGH findings against source, which is stronger than a second
 opinion. Recommended: `/gsd-plan-phase 7 --reviews` to replan Plans 03/04/05 incorporating
 this feedback. MONEY-01 (Plan 02) and MONEY-02 (Plan 02) are low-risk and largely stand.
+
+
+═══════════════════════════════════════════════════════════════
+
+# Cross-AI Plan Review — Phase 7 — ROUND 2 (re-review of the redesign)
+
+> Reviewer: **Codex** (codex-cli 0.135.0). Re-review of the review-incorporated plans
+> (commit 8b37432). Round 1's 9 findings: **6 CLOSED, 3 PARTIALLY CLOSED**. The redesign
+> introduced **6 new HIGH defects** — ALL verified against live source by the orchestrator.
+> Verdict: **HIGH risk — Plan 04 needs another revision before execution.**
+
+## Codex Round-2 Review
+
+**Summary**  
+The redesign is materially better, but I would not execute it yet. The two-inbound concept is the right direction, and several Round-1 holes are closed on paper. The remaining risk is concentrated in Plan 04: its stated invariants and its task instructions disagree in several places, and those disagreements can still produce duplicate asks, lost backfill, or processing after an answer that was never actually asked.
+
+**Round-1 Findings Status**
+
+1. **PARTIALLY CLOSED** — `post_extract_hook` addresses re-extraction overwrite, but 07-04 Task 3 says to “continue to the existing alias-diff block,” whose current Step B calls `_run_stages` again in `orchestrator.py`; that can re-clobber backfill.
+
+2. **CLOSED** — 07-04 adopts two inbound calls: Round 1 asks and returns; Round 2 processes the answer.
+
+3. **CLOSED** — New purpose `clarification_field_regression` plus repo allowlist avoids the old `purpose="clarification"` idempotency suppression.
+
+4. **STILL OPEN** — 07-04 must-haves say write `clarified_fields="asked"` before send, but Task 3 writes it only after `_run_stages` returns, and `_run_stages` has already called `_clarify`/sent.
+
+5. **PARTIALLY CLOSED** — The sentinel UUID and period-split field trick are removed, but 07-03 still detects/reduces by `submitted_name` and maps via current matches only; it does not prove “same employee_id in both snapshots” per D-11/D-12.
+
+6. **CLOSED** — 07-01 explicitly avoids constructing `Employee(pay_type=None)` and requires a constructible/structurally-unreachable test path.
+
+7. **CLOSED** — 07-05 adds `prior_extracted`, fixture stripping, and `summary.json` regeneration.
+
+8. **CLOSED** — 07-05 stops over-claiming eval NFD proof and scopes fixture 17 honestly unless an accented seeded employee exists.
+
+9. **CLOSED** — 07-05 makes DB-backed integration evidence a phase gate, not an optional skip, though this still relies on the checkpoint being honored.
+
+**New Concerns**
+
+- **HIGH: Plan 04 can still run `_run_stages` twice and overwrite carried-forward values.**  
+  07-04 Task 3 says Round 2 calls `_run_stages(... post_extract_hook=backfill)` and then “continue to the existing alias-diff block (STEP A/B/C).” In current `resume_pipeline`, STEP B is another `_run_stages(...)` call. This reintroduces finding #1 unless the alias block is refactored to reuse the already-run result. Cite: 07-04 Task 3 Change C; `app/pipeline/orchestrator.py`.
+
+- **HIGH: The “asked before send” invariant is contradicted by the implementation steps.**  
+  07-04 must-have requires `clarified_fields[emp][field]="asked"` before send. Task 3 instead calls `_run_stages`, which calls `_clarify`, which sends, then only afterward re-detects and writes `asked`. A crash after send but before write leaves no durable loop guard. Cite: 07-04 must_haves vs Task 3 Round 1.
+
+- **HIGH: Round 2 explicit-zero handling is logically broken.**  
+  07-04 says the hook backfills asked fields, then resolves outcomes by running `detect_field_regression(snapshot, extracted_after_hook)`. After backfill, the drop has disappeared, so the code can no longer distinguish silence from explicit `0`. This violates D-14 and can turn “remove OT” into carried-forward OT. Cite: 07-04 Task 3 Round 2; D-14/D-16.
+
+- **HIGH: Existing DBs will still reject `clarification_field_regression`.**  
+  Updating the inline `CREATE TABLE` check and `ADD COLUMN IF NOT EXISTS purpose TEXT CHECK (...)` does not alter the existing `email_messages.purpose` check constraint. Plan 04 needs an explicit drop/re-add constraint migration. Cite: 07-04 Task 1; `app/db/schema.sql`.
+
+- **HIGH: Field-regression emails may not ask the field-regression question.**  
+  07-03 keeps regressions out of `Decision.missing_fields`; current `compose_clarification` only falls back to raw `gate_reasons` if there are no unresolved names and no missing fields. If a regression coexists with a normal clarification, the client may never be asked “keep/remove OT,” yet `clarified_fields` can be marked `asked`. Cite: 07-03 Rule 2b; `app/pipeline/compose_email.py`.
+
+- **HIGH: D-11/D-12 employee identity is still not enforced.**  
+  07-03 `detect_field_regression` reduces by `submitted_name`, not `employee_id`, and `validate()` maps using only current `matches`. Name clarification, alias learning, or two submitted names for one roster employee can produce phantom/missed drops. Cite: 07-03 Task 1; D-11/D-12.
+
+- **MEDIUM: `_clarify` snapshot timing misses the idempotency path.**  
+  07-04 Task 2 says add snapshot writes before both `AWAITING_REPLY` status writes, but current `_clarify` has a third early idempotency `set_status(AWAITING_REPLY)` path. Snapshot-once is not guaranteed on that path. Cite: 07-04 Task 2; `app/pipeline/orchestrator.py`.
+
+- **MEDIUM: `resolved_drops` suppresses MONEY-01 too broadly.**  
+  07-03 instructs skipping the whole missing-hours gate if any `(employee_id, field)` is resolved. That can mask a zero-hours employee when only one field was confirmed dropped. It should suppress only the specific resolved field, not the employee-level gate wholesale. Cite: 07-03 Task 1; D-15.
+
+**Suggestions**
+
+1. Refactor `resume_pipeline` into `pre_alias_state → run_stages_once → post_alias_binding`; never fall through to a block that calls `_run_stages` again.
+
+2. Make `_run_stages` return a structured `StageResult(extracted, matches, issues, decision)` so Plan 04 does not re-derive drop state from strings or repeat detection inconsistently.
+
+3. Resolve Round 2 outcomes before mutation: inspect the raw resumed extraction, classify `confirmed_dropped` vs `carried_forward`, then backfill only carried-forward fields.
+
+4. Move field-regression ask-state write into the same orchestration point that calls `_clarify`, or add an outbound intent/outbox state so “asked but never sent” and “sent but not marked asked” are both recoverable.
+
+5. Add an explicit Postgres migration block to replace the existing purpose CHECK constraint.
+
+6. Add field-regression-specific clarification copy and tests proving the sent body asks about the dropped field even when other clarification reasons exist.
+
+**Risk Assessment**  
+**HIGH.** The redesign closes several conceptual holes, but Plan 04 still has execution-level contradictions in the money-moving path. The most serious are double `_run_stages`, post-backfill outcome detection, and the `asked` write ordering. Those are not polish issues; they can still cause silent underpay/overpay or a wedged clarification loop.
+
+---
+
+## Orchestrator Verification of Round-2 NEW Findings (against live code)
+
+| # | New Finding | Severity | Verified? | Evidence |
+|---|-------------|----------|-----------|----------|
+| N1 | Round 2 falls through to the alias-diff block which calls `_run_stages` AGAIN → re-extracts + re-clobbers the backfill (reopens R1 finding #1) | HIGH | **CONFIRMED** | `orchestrator.py:165` — STEP B of the resume alias-diff is a second `_run_stages(combined_email,...)` call after line 91/Round-1; plan says 'continue to the existing alias-diff block' |
+| N2 | 'asked' written AFTER `_run_stages` (which already called `_clarify`+sent) → crash-after-send-before-write leaves no durable loop guard; contradicts the must-have | HIGH | **CONFIRMED** | Plan 04 Task 3 orders detect→write after `_run_stages` returns; `_clarify` sends inside `_run_stages` |
+| N3 | Outcome classified by re-running detect AFTER the hook backfills → the drop is gone, so silence (carried_forward) vs explicit-0 (confirmed_dropped) is indistinguishable → 'remove OT' becomes carried-forward OT (D-14 violation, OVERPAY) | HIGH | **CONFIRMED (logic)** | Plan 04 Task 3 Round 2: hook backfills asked fields, THEN resolves outcomes via detect on the post-hook Extracted |
+| N4 | New `purpose='clarification_field_regression'` rejected on EXISTING DBs — `ADD COLUMN IF NOT EXISTS` is a no-op when the column exists, so the old CHECK constraint survives | HIGH | **CONFIRMED** | `schema.sql:147` inline `CHECK (purpose IN ('clarification','confirmation'))` + `:164-165` ADD-COLUMN also only those two; no DROP/RE-ADD constraint migration |
+| N5 | Field-regression line dropped from the email when a normal clarification coexists — `compose_clarification` only falls back to `gate_reasons` when no unresolved_names AND no missing_fields → client never asked 'keep/remove OT' yet `clarified_fields`='asked' → wedged loop | HIGH | **CONFIRMED** | `compose_email.py:93` `if not decision.unresolved_names and not decision.missing_fields` |
+| N6 | `detect_field_regression` reduces by `submitted_name` + maps via CURRENT matches only — does not enforce D-11/D-12 'same employee_id in BOTH snapshots'; alias-learning / re-resolution across rounds → phantom/missed drops | HIGH | **CONFIRMED (design)** | Plan 03 Task 1 keys diff by submitted_name; D-11/D-12 require employee_id-in-both |
+| N7 | `_clarify` snapshot-write added before only 2 of 3 `AWAITING_REPLY` paths — the idempotency early-return path is missed → snapshot-once not guaranteed there | MEDIUM | **CONFIRMED** | `_clarify` has 3 `set_status(AWAITING_REPLY)`: idempotency (line ~325), collision (~438), normal (~451) |
+| N8 | `resolved_drops` skips the WHOLE missing-hours gate for an employee if ANY (emp,field) is resolved → can mask a genuinely zero-hours employee; should suppress only the specific field | MEDIUM | **CONFIRMED (design)** | Plan 03 Task 1 D-15 wording skips `any_hours` at employee level |
+
+**Bottom line:** Round 1 closed the conceptual holes; Round 2 finds Plan 04's TASK INSTRUCTIONS
+contradict its own must-have invariants, and the new machinery has real execution-level bugs in
+the money path. The three most dangerous: **N1 (double `_run_stages` re-clobbers backfill)**,
+**N3 (post-backfill outcome detection can't tell 'remove it' from silence → overpay)**, and
+**N4 (existing DBs reject the new purpose → the field-regression clarification can't even be
+stored)**. N2/N5 can wedge the clarification loop. A second `--reviews` revision of Plan 03/04 is
+warranted, centered on: (a) make `_run_stages` return a StageResult and NEVER fall through to a
+second `_run_stages`; (b) classify Round-2 outcomes from the RAW resumed extraction BEFORE any
+backfill; (c) an explicit DROP/RE-ADD CHECK-constraint migration; (d) write 'asked' at the same
+orchestration point that sends (or an outbox state); (e) ensure the field-regression question
+actually reaches the email body; (f) key the diff by resolved employee_id in both snapshots.
