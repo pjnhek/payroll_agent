@@ -52,7 +52,9 @@ Plans:
 **Requirements**: MONEY-03
 **Closes audit findings**: v1-backlog field-regression clarification
 **Foundational refactor (Plan A, MUST land + be regression-tested BEFORE the feature)**:
+
   - Split `_run_stages` into `(a) extract + reconcile` and `(b) validate + decide + persist + branch`, returning a structured result, so an optional carry-forward backfill can run *between* (a) and (b). The existing `run_pipeline` and `resume_pipeline` callers are updated and their behavior is pinned by regression tests BEFORE any field-regression logic is added. This directly resolves 07-REVIEWS round-3 R3-1 (post-return backfill is too late because `_run_stages` already persisted + branched).
+
 **Success Criteria** (what must be TRUE):
 
   1. **Foundation:** `_run_stages` is split so a carry-forward backfill can be injected between reconcile and validate/decide/calc; both `run_pipeline` and `resume_pipeline` behave identically to today on all non-regression paths, proven by the existing orchestrator/clarify/persistence test suites staying green.
@@ -61,9 +63,20 @@ Plans:
   4. A run with a MIXED clarification (a field-regression issue AND a normal missing-field/unresolved-name in the same reply) still durably records the field-regression `asked` state and still asks the field-regression question in the email — proven by a mixed-issue test (resolves 07-REVIEWS round-3 R3-2).
 
 **Plans**: 4 plans
+**Wave 1**
+
 - [ ] 07.5-01-PLAN.md — PLAN A: add no-op prior=/resolved_drops= kwargs to _run_stages and validate() (pure structural seam, zero behavior change)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 07.5-02-PLAN.md — RawFieldDrop + detect_field_regression + validate(prior=) (N6/N8 correct) + decide Rule 2b + compose_email N5/D-7.5-09 wording
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 07.5-03-PLAN.md — ClarifiedFields model + schema DDL (N4 DO$) + repo helpers + _clarify N7 snapshot + _RunStagesResult + resume_pipeline Round-1/Round-2 block (N1/N2/N3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 07.5-04-PLAN.md — 8 integration tests (D-7.5-04a ordering + D-7.5-04b/c + SC4 mixed-issue + loop-guard) + eval fixtures 16/17/18 + run_detail.html D-7.5-08 provenance badges
 
 ### Phase 8: Data-Layer Hygiene & Diagnostics
