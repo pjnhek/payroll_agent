@@ -32,16 +32,15 @@ from app.models.roster import Employee, NameMatchResult, Roster
 
 
 def _norm(name: str) -> str:
-    """Whitespace-normalize + NFC(casefold(NFC(s))) for deterministic Unicode-safe comparison (D-05).
+    """Whitespace-normalize + NFC(casefold(s)) for deterministic Unicode-safe comparison (D-05).
 
-    The double NFC is deliberate: casefold can de-normalize its output on some Unicode
-    sequences. NFC chosen over NFKC (D-06: conservative -- NFKC over-folds compatibility
-    chars for names).
+    NFC is applied AFTER casefold: casefold can emit a non-NFC sequence for some
+    inputs, so re-normalizing afterward makes NFD/NFC submissions compare equal.
+    A pre-casefold NFC is unnecessary -- a full Unicode scan showed the post-casefold
+    NFC alone is load-bearing. NFC (not NFKC) is deliberate: NFKC over-folds
+    compatibility chars for names (D-06).
     """
-    nfc = unicodedata.normalize("NFC", name)
-    casefolded = nfc.casefold()
-    renfc = unicodedata.normalize("NFC", casefolded)
-    return " ".join(renfc.split())
+    return " ".join(unicodedata.normalize("NFC", name.casefold()).split())
 
 
 def deterministic_match(name: str, roster: Roster) -> NameMatchResult | None:
