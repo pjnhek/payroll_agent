@@ -369,15 +369,29 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             # (e.g. hours_regular that was always present) as client_supplied.
             # Only fields currently 'asked' get classified.
             #
-            # Build a lookup from current submitted_name → employee_id_str using
-            # prior_matches (the snapshot reconciliation) as a best-effort resolver.
+            # CR-01 FIX: Build the classify lookup from the UNION of current matches
+            # (reconcile the raw reply's submitted names) AND prior_matches (snapshot names).
+            # Prior-only keying misses restated names: if snapshot had "M. Chen" but the
+            # reply says "Maria Chen", the current name is absent from prior_matches-only
+            # lookup → raw_emp stays None → field stays "asked" → absent from backfill_skip
+            # → snapshot's positive value is silently restored (OVERPAY). The union ensures
+            # the reply's current submitted names are always covered.
+            # Current matches go FIRST so a restated name takes the current resolution;
+            # prior_matches are the fallback for names the client did not restate.
+            raw_submitted = [e.submitted_name for e in raw_extracted.employees]
+            current_matches_for_classify = reconcile_names(raw_submitted, roster)
             name_to_id_for_classify: dict[str, str] = {
                 m.submitted_name: str(m.matched_employee_id)
-                for m in prior_matches
+                for m in (list(current_matches_for_classify) + list(prior_matches))
                 if m.resolved and m.matched_employee_id is not None
             }
             # Build a lookup from raw_extracted: {submitted_name: ExtractedEmployee}.
             raw_name_to_emp = {emp.submitted_name: emp for emp in raw_extracted.employees}
+
+            # WR-01: staging set for asked fields that cannot be resolved in the raw reply.
+            # These are absorbed into backfill_skip in STEP 2 to fail conservatively
+            # (under-fill that re-clarifies, never overpay from snapshot restore).
+            _unresolvable_asked: set[tuple[str, str]] = set()
 
             # Classify each (emp_id_str, field) with outcome 'asked'.
             newly_classified: set[tuple[str, str]] = set()  # all answered asked fields
@@ -386,7 +400,8 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                     if outcome != "asked":
                         continue  # only reclassify fields that were asked
 
-                    # Find the raw extracted employee for this emp_id_str via prior_matches.
+                    # Find the raw extracted employee for this emp_id_str via the
+                    # union lookup (current + prior names → employee_id).
                     raw_emp = None
                     for raw_name, raw_e in raw_name_to_emp.items():
                         if name_to_id_for_classify.get(raw_name) == emp_id_str:
@@ -394,8 +409,14 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                             break
 
                     if raw_emp is None:
-                        # Cannot resolve the employee in the raw reply — safe no-op.
-                        # The field remains 'asked'; handled by the next round or loop guard.
+                        # WR-01 FIX: Cannot resolve this employee in the raw reply even
+                        # after the union lookup — fail conservatively.
+                        # Stage in _unresolvable_asked so STEP 2 adds (emp_id_str, field)
+                        # to backfill_skip; the field is then NEVER re-backfilled from the
+                        # snapshot. Worst case: under-fill that re-clarifies next round.
+                        # This invariant prevents snapshot-restore overpay on any asked
+                        # field that the classify step cannot resolve.
+                        _unresolvable_asked.add((emp_id_str, field))
                         continue
 
                     raw_val = getattr(raw_emp, field, None)
@@ -424,18 +445,23 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 suppress_detection.add(pair)
 
             # SET B — backfill_skip: ONLY confirmed_dropped + client_supplied (NOT carried_forward).
-            # = _resolved_by_name (prior terminals) UNION only confirmed_dropped + client_supplied.
+            # = _resolved_by_name (prior terminals) UNION only confirmed_dropped + client_supplied
+            #   UNION _unresolvable_asked (WR-01: conservative fail for unresolvable asked fields).
             # Purpose: tell backfill_extracted which fields to skip.
             # carried_forward is intentionally ABSENT: backfill FILLS those → paystub OT=2.
             # confirmed_dropped IS present: backfill skips → paystub OT=0 (no overpay).
             # _is_paid(Decimal('0')) is False (explicit zero looks backfillable by value alone);
             # the backfill_skip resolved_drops gate is the protection.
+            # WR-01: _unresolvable_asked fields are added to backfill_skip so an unclassifiable
+            # asked field is NEVER re-backfilled from the snapshot. Fail conservatively.
             backfill_skip: set[tuple[str, str]] = set(_resolved_by_name)
             for emp_id_str, field in newly_classified:
                 outcome = clarified.get(emp_id_str, {}).get(field)
                 if outcome in ("confirmed_dropped", "client_supplied"):
                     backfill_skip.add((emp_id_str, field))
                 # carried_forward: NOT added → backfill fires → OT=2 from snapshot → paystub
+            # WR-01 absorption: unresolvable asked fields are always backfill-skipped.
+            backfill_skip.update(_unresolvable_asked)
 
             # D-7.5-11 STEP 3: call _run_stages ONCE with TWO DISTINCT sets.
             # - extracted=raw_extracted: skip double-extraction (LLM already called once above)

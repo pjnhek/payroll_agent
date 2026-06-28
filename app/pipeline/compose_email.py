@@ -40,7 +40,13 @@ def _field_regression_lines(gate_reasons: list[str]) -> list[str]:
     for reason in gate_reasons:
         if reason.startswith("field regression: "):
             qualified = reason[len("field regression: "):]
-            submitted_name, field_name = qualified.rsplit(".", 1)
+            # IN-03 guard: rsplit(".", 1) raises ValueError if there is no ".".
+            # A malformed gate_reason (no dot separator) is skipped rather than
+            # crashing the draft call and stranding the run (CLAR-01 contract).
+            parts = qualified.rsplit(".", 1)
+            if len(parts) != 2:
+                continue
+            submitted_name, field_name = parts
             lines.append(
                 f"  - Reply with the {field_name} hours for {submitted_name},"
                 " or 'none' to confirm zero."
