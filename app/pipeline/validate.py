@@ -21,6 +21,8 @@ valid non-negative Decimal — so the typed path can never reach `non_numeric`.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from app.models.contracts import Extracted
 from app.models.roster import NameMatchResult, Roster, ValidationIssue
 
@@ -31,6 +33,16 @@ _HOURS_FIELDS = (
     "hours_sick",
     "hours_holiday",
 )
+
+
+def _is_paid(v: Decimal | None) -> bool:
+    """True iff value is present AND strictly positive (D-09 shared predicate).
+
+    Decimal('0') is treated the same as None — both count as absent for the
+    zero-hours gate. Phase 7.5 detect_field_regression will use this same
+    predicate as its second call site.
+    """
+    return v is not None and v > 0
 
 
 def _employee_pay_type(
@@ -82,7 +94,7 @@ def validate(
     issues: list[ValidationIssue] = []
     for emp in extracted.employees:
         any_hours = any(
-            getattr(emp, f) is not None for f in _HOURS_FIELDS
+            _is_paid(getattr(emp, f)) for f in _HOURS_FIELDS
         )
         if any_hours:
             continue
