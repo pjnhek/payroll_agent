@@ -82,6 +82,10 @@ def validate(
     extracted: Extracted,
     roster: Roster,
     matches: list[NameMatchResult],
+    *,
+    prior=None,
+    prior_matches=None,
+    resolved_drops=None,
 ) -> list[ValidationIssue]:
     """Emit field-validation issues for one run (LLM-06).
 

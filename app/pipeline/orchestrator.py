@@ -257,7 +257,7 @@ def _combined_context_email(reply: InboundEmail, original_body: str) -> InboundE
     return reply.model_copy(update={"body_text": combined_body})
 
 
-def _run_stages(run_id, email, roster, *, llm) -> None:
+def _run_stages(run_id, email, roster, *, llm, prior=None, prior_matches=None, resolved_drops=None) -> None:
     """The shared four-stage gate path: extract → reconcile → validate → decide →
     persist → branch. Used by BOTH run_pipeline (first run) and resume_pipeline (the
     CLAR-03 re-entry), so the eval-reusable spine and the gate stay DRY and identical.
@@ -270,7 +270,7 @@ def _run_stages(run_id, email, roster, *, llm) -> None:
 
     submitted_names = [e.submitted_name for e in extracted.employees]
     matches = reconcile_names(submitted_names, roster)  # pure: no llm (D-21-01)
-    issues = validate(extracted, roster, matches)
+    issues = validate(extracted, roster, matches, prior=prior, prior_matches=prior_matches, resolved_drops=resolved_drops)
 
     decision = decide(extracted, matches, issues)  # pure: no llm, no score (D-21-01)
 
