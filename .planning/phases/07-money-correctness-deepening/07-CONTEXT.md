@@ -1,14 +1,28 @@
-# Phase 7: Money-Correctness Deepening - Context
+# Phase 7: Money-Correctness Deepening (Pure-Function Gates) - Context
 
 **Gathered:** 2026-06-27
 **Status:** Ready for planning
 
+> **⚠ SCOPE OVERRIDE (2026-06-27 — supersedes the "In scope" line below):** Phase 7 was re-scoped to
+> **MONEY-01 + MONEY-02 ONLY**. **MONEY-03 (field-regression) was moved to the new Phase 7.5** after
+> three cross-AI review rounds (see `07-REVIEWS.md`) showed its resume state machine needs a
+> `_run_stages` split refactor as a foundation. **Do NOT plan MONEY-03 work in this phase.** The
+> MONEY-03 decisions (D-08..D-30) below are RETAINED as the design record that Phase 7.5 inherits —
+> they are NOT a Phase 7 deliverable. The ROADMAP §"Phase 7" success criteria (only SC1 + SC2) are
+> authoritative for what this phase plans. Phase 7 MAY still land forward-compatible *scaffolding* —
+> the `field_regression` `ValidationIssue` Literal value and the `FieldDrop`/`RawFieldDrop` models —
+> so Phase 7.5 builds on a stable contract; these are harmless no-ops in Phase 7 (nothing emits
+> `field_regression` here). `_is_paid` (D-09) IS a Phase 7 deliverable (MONEY-01 needs it).
+
 <domain>
 ## Phase Boundary
 
-Close three **silent-mispay** paths in the shipped pipeline so the core thesis — "never silently pays wrong" — holds against messy real input, not just the demo path. Brownfield correctness fixes on the pure-function judgment modules (`validate.py`, `reconcile_names.py`) plus a new field-regression rule wired through the existing gate. TDD throughout — a failing test first for every fix.
+Close two **silent-mispay** paths in the shipped pure-function judgment layer so the core thesis —
+"never silently pays wrong" — holds against messy real input, not just the demo path. Brownfield
+correctness fixes on `validate.py` (MONEY-01) and `reconcile_names.py` (MONEY-02). TDD throughout —
+a failing test first for every fix. *(MONEY-03's field-regression rule is Phase 7.5; see scope override above.)*
 
-**In scope:** MONEY-01 (zero-hours $0 gate), MONEY-02 (Unicode NFC name normalization), MONEY-03 (clarification-reply field-regression: detect → clarify once → carry forward).
+**In scope (Phase 7, post-split):** MONEY-01 (zero-hours $0 gate), MONEY-02 (Unicode NFC name normalization). **MONEY-03 → Phase 7.5 (do NOT build here).**
 
 **Out of scope (belongs to later v2 phases, do NOT build here):** atomic multi-write transactions / crash-idempotency at the DB layer (Phase 9), webhook-dedup CAS and stuck-run recovery (Phase 9), the concurrency/load proof test (Phase 10), schema indexes + `error_detail` enrichment + `SELECT *` removal (Phase 8). Where Phase 7's resume sequencing **touches** atomicity, see D-13/D-14 below — Phase 7 specifies the *ordering invariant*; the broader transaction hardening is Phase 9's. Cross-reference, do not double-build.
 
