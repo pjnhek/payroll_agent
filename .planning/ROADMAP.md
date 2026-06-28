@@ -69,7 +69,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 07.5-02-PLAN.md — RawFieldDrop + detect_field_regression + validate(prior=) (N6/N8 correct) + decide Rule 2b + compose_email N5/D-7.5-09 wording
+- [x] 07.5-02-PLAN.md — RawFieldDrop + detect_field_regression + validate(prior=) (N6/N8 correct) + decide Rule 2b + compose_email N5/D-7.5-09 wording
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
