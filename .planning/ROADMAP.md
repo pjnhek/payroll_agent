@@ -14,47 +14,53 @@
 
 **Phase Numbering:** v2 continues the global phase sequence from v1.0 (last phase: 6). Integer phases (7, 8, 9, 10) are planned milestone work; decimal phases (e.g. 9.1) are reserved for urgent insertions.
 
-- [ ] **Phase 7: Money-Correctness Deepening** - Close the three silent-mispay gaps: zero-hours $0 paystub, Unicode (NFC) name normalization, and clarification-reply field regression — the engine never silently pays wrong on messy real input
+- [ ] **Phase 7: Money-Correctness Deepening (Pure-Function Gates)** - Close the two pure-function silent-mispay gaps: zero-hours $0 paystub and Unicode (NFC) name normalization — the engine never silently pays wrong on these messy-input paths. *(Scope reduced 2026-06-27: MONEY-03 field-regression moved to Phase 7.5 after three cross-AI review rounds showed it requires a `_run_stages` split refactor as its foundation — see 07-REVIEWS.md.)*
+- [ ] **Phase 7.5: Clarification-Reply Field-Regression (MONEY-03)** - The clarification-reply field-regression state machine, built on a foundational `_run_stages` split refactor so carry-forward can land between reconcile and validate — detect a dropped money field, clarify once, carry forward (or honor an explicit removal) without an infinite loop
 - [ ] **Phase 8: Data-Layer Hygiene & Diagnostics** - Restore schema-hygiene discipline (hot-path indexes, explicit column lists) and make production failures diagnosable from the DB (PII-safe `error_detail`) — the clean baseline the atomicity work builds on
 - [ ] **Phase 9: Atomic Data Integrity** - The senior-engineer ring: atomic multi-write pipeline transactions (no half-written runs on crash), a transactional webhook-dedup CAS (Resend redelivery never duplicates a run), and a stuck-run recovery path for orphaned in-flight runs
 - [ ] **Phase 10: Concurrency Proof** - The evidence capstone: a test fires N simultaneous runs / duplicate webhooks / concurrent approvals and asserts the invariants hold — no double-approval, lost update, duplicate run, or half-write — backing the production-grade claim
 
 ## Phase Details
 
-### Phase 7: Money-Correctness Deepening
+### Phase 7: Money-Correctness Deepening (Pure-Function Gates)
 
-**Goal**: The core thesis — "never silently pays wrong" — holds against messy real input, not just the demo path. Three distinct silent-mispay paths are closed: an explicit-zero-hours submission, a Unicode-form mismatch on a roster name, and a clarification reply that quietly drops a money field the original stated.
+**Goal**: The core thesis — "never silently pays wrong" — holds against two messy-input paths in the pure-function judgment layer: an explicit-zero-hours submission and a Unicode-form mismatch on a roster name. *(Scope reduced 2026-06-27: MONEY-03 field-regression moved to Phase 7.5 — three cross-AI review rounds, 07-REVIEWS.md, showed its resume state machine needs a `_run_stages` split refactor as a foundation, distinct from these two self-contained pure-function fixes.)*
 **Mode:** standard (brownfield correctness fixes on shipped pure-function modules)
 **Depends on**: Nothing (independent of the data-layer phases; first v2 phase by risk-ordering — lowest blast radius, deepens the headline claim)
-**Requirements**: MONEY-01, MONEY-02, MONEY-03
-**Closes audit findings**: HIGH-01 (zero-hours silent $0, `validate.py` `any_hours`), MED-01 (Unicode NFC, `reconcile_names._norm`), v1-backlog field-regression clarification
+**Requirements**: MONEY-01, MONEY-02
+**Closes audit findings**: HIGH-01 (zero-hours silent $0, `validate.py` `any_hours`), MED-01 (Unicode NFC, `reconcile_names._norm`)
 **Success Criteria** (what must be TRUE):
 
   1. An hourly employee submitted with explicitly-zero hours (`hours_regular=0`, no other hours) gates to `request_clarification` instead of producing a $0 paystub — the validation `any_hours` check treats explicit `0` as missing for hourly, and a failing test proves the old `is not None` path no longer ships a $0 stub (the reconciliation backstop can't catch $0, so this gate is the only defense).
   2. Two visually-identical names in different Unicode normalization forms (e.g. "José" NFC vs the NFD decomposition) resolve as a match — `reconcile_names._norm` applies `unicodedata.normalize("NFC", …)` before casefold — with a test asserting the previously-failing NFD case now resolves to the same employee.
-  3. A clarification reply that drops or changes a money-affecting field the original submission stated (original "40 + 2 OT", reply "40" with no OT) is detected as a regression and clarifies once ("did you forget the overtime?") before processing; if the regression is still unaddressed after that one round, the original value is carried forward — proven by a test that the clarify-loop guard fires exactly once and never enters an infinite re-clarify loop.
 
-**Plans**: 5 plans
+**Plans**: 2 plans
 Plans:
 **Wave 1**
 
-- [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop model) + all Wave 0 failing tests
+- [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop/RawFieldDrop models) + Wave 0 failing tests for MONEY-01/02 *(the field_regression Literal value + FieldDrop models are added here as forward-compatible scaffolding so Phase 7.5 builds on them; the MONEY-03 tests move to 7.5)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [ ] 07-02-PLAN.md — MONEY-01 `_is_paid` predicate + `any_hours` fix; MONEY-02 NFC `_norm` + eval `_normalize` parity
 
-**Wave 3** *(blocked on Wave 2 completion)*
+### Phase 7.5: Clarification-Reply Field-Regression (MONEY-03)
 
-- [ ] 07-03-PLAN.md — MONEY-03 pure logic: `detect_field_regression` helper + `validate(prior=)` seam + `decide` Rule 2b
+**Goal**: A clarification reply that drops a money-affecting field the original submission stated (original "40 + 2 OT", reply "40" with no OT) is detected as a regression, clarifies exactly once, then carries the original value forward — or honors an explicit removal — and never enters an infinite re-clarify loop. **This phase is built on a foundational refactor first**: `_run_stages` is split so the carry-forward backfill lands *between* reconcile and validate/decide/calc, which three cross-AI review rounds proved is the only correct seam (see 07-REVIEWS.md rounds 1–3).
+**Mode:** standard (a structural refactor of shipped orchestration code, then the field-regression state machine layered on top)
+**Depends on**: Phase 7 (reuses the `_is_paid` predicate, the `field_regression` ValidationIssue Literal, and the FieldDrop/RawFieldDrop models that Phase 7 lands as scaffolding). Independent of Phases 8–10.
+**Requirements**: MONEY-03
+**Closes audit findings**: v1-backlog field-regression clarification
+**Foundational refactor (Plan A, MUST land + be regression-tested BEFORE the feature)**:
+  - Split `_run_stages` into `(a) extract + reconcile` and `(b) validate + decide + persist + branch`, returning a structured result, so an optional carry-forward backfill can run *between* (a) and (b). The existing `run_pipeline` and `resume_pipeline` callers are updated and their behavior is pinned by regression tests BEFORE any field-regression logic is added. This directly resolves 07-REVIEWS round-3 R3-1 (post-return backfill is too late because `_run_stages` already persisted + branched).
+**Success Criteria** (what must be TRUE):
 
-**Wave 4** *(blocked on Wave 3 completion)*
+  1. **Foundation:** `_run_stages` is split so a carry-forward backfill can be injected between reconcile and validate/decide/calc; both `run_pipeline` and `resume_pipeline` behave identically to today on all non-regression paths, proven by the existing orchestrator/clarify/persistence test suites staying green.
+  2. A clarification reply that drops a money field (original "40 + 2 OT", reply "40" with no OT) is detected as a regression and clarifies once ("did you forget the overtime?") before processing; the diff is keyed by the SAME `employee_id` resolved in BOTH the pre-clarify snapshot and the reply (a restated name resolving to the same employee is still diffed; a re-resolution to a different employee is skipped) — proven by tests including a restated-name case.
+  3. If the regression is still unaddressed after that one clarification round, the original value is **carried forward into the computed paystub** (backfill lands before calc, not after); if the reply explicitly zeroes the field ("remove it"), that is honored as `confirmed_dropped` with NO carry-forward — proven by a test that distinguishes silence from an explicit zero, and a loop-guard test proving the clarification fires exactly once with no infinite re-clarify.
+  4. A run with a MIXED clarification (a field-regression issue AND a normal missing-field/unresolved-name in the same reply) still durably records the field-regression `asked` state and still asks the field-regression question in the email — proven by a mixed-issue test (resolves 07-REVIEWS round-3 R3-2).
 
-- [ ] 07-04-PLAN.md — MONEY-03 state machine: schema DDL + repo helpers + orchestrator `_clarify`/`_run_stages`/`resume_pipeline` wiring
-
-**Wave 5** *(blocked on Wave 4 completion)*
-
-- [ ] 07-05-PLAN.md — Eval fixtures 16/17/18 + integration tests (snapshot_once, loop_guard, confirmed_dropped_no_reflag)
+**Plans**: TBD *(start the foundational split-refactor plan FIRST, then layer detection → state machine → eval/integration; carry forward the verified design from 07-CONTEXT.md decisions D-08..D-30 and the 07-REVIEWS.md round-1/2/3 findings)*
 
 ### Phase 8: Data-Layer Hygiene & Diagnostics
 

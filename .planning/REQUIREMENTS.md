@@ -41,9 +41,9 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MONEY-01 | Phase 7 — Money-Correctness Deepening | Pending |
-| MONEY-02 | Phase 7 — Money-Correctness Deepening | Pending |
-| MONEY-03 | Phase 7 — Money-Correctness Deepening | Pending |
+| MONEY-01 | Phase 7 — Money-Correctness Deepening (Pure-Function Gates) | Pending |
+| MONEY-02 | Phase 7 — Money-Correctness Deepening (Pure-Function Gates) | Pending |
+| MONEY-03 | Phase 7.5 — Clarification-Reply Field-Regression | Pending |
 | OPS2-01 | Phase 8 — Data-Layer Hygiene & Diagnostics | Pending |
 | OPS2-02 | Phase 8 — Data-Layer Hygiene & Diagnostics | Pending |
 | DATA-01 | Phase 9 — Atomic Data Integrity | Pending |
@@ -57,7 +57,8 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 - Unmapped: 0 ✓
 
 Mapping by phase:
-- **Phase 7 — Money-Correctness Deepening:** MONEY-01, MONEY-02, MONEY-03
+- **Phase 7 — Money-Correctness Deepening (Pure-Function Gates):** MONEY-01, MONEY-02
+- **Phase 7.5 — Clarification-Reply Field-Regression:** MONEY-03 *(re-scoped out of Phase 7 on 2026-06-27 after 3 cross-AI review rounds; needs a `_run_stages` split refactor as its foundation — see `.planning/phases/07-money-correctness-deepening/07-REVIEWS.md`)*
 - **Phase 8 — Data-Layer Hygiene & Diagnostics:** OPS2-01, OPS2-02
 - **Phase 9 — Atomic Data Integrity:** DATA-01, DATA-02, DATA-03
 - **Phase 10 — Concurrency Proof:** OPS2-03 (depends on Phase 9 — validates the atomicity/dedup/recovery invariants)
