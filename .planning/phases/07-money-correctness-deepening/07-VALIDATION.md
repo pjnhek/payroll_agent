@@ -7,12 +7,13 @@ wave_0_complete: false
 created: 2026-06-27
 ---
 
-# Phase 7 — Validation Strategy
+# Phase 7 — Validation Strategy (Pure-Function Gates)
 
 > Per-phase validation contract for feedback sampling during execution.
-> Derived from `07-RESEARCH.md` § Validation Architecture. Honors the **D-23 two-layer split**:
-> the eval certifies *judgment* (import `validate`/`decide` directly); integration tests certify
-> the *state machine* (snapshot / `clarified_fields` loop-guard / backfill) the eval cannot see.
+> **Re-scoped 2026-06-27:** Phase 7 = MONEY-01 + MONEY-02 only. MONEY-03's field-regression
+> validation (the eval/integration two-layer split, snapshot/loop-guard tests, fixtures 16–18)
+> moved to Phase 7.5 — see `.planning/phases/07.5-clarification-reply-field-regression/`. This
+> doc covers only the two pure-function fixes, all unit-level.
 
 ---
 
@@ -24,78 +25,64 @@ created: 2026-06-27
 | **Config file** | none found — pytest auto-discovers `tests/` |
 | **Quick run command** | `uv run pytest tests/test_validate.py tests/test_reconcile.py -q` |
 | **Full suite command** | `uv run pytest -q` |
-| **Eval check** | `uv run python eval/run_eval.py --check` |
-| **Estimated runtime** | ~30 seconds (unit); integration adds DB round-trips |
+| **Estimated runtime** | ~30 seconds (all unit) |
 
 ---
 
 ## Sampling Rate
 
-- **After every task commit:** Run `uv run pytest tests/test_validate.py tests/test_reconcile.py -q`
+- **After every task commit:** Run `uv run pytest tests/test_validate.py tests/test_reconcile.py tests/test_eval_wiring.py -q`
 - **After every plan wave:** Run `uv run pytest -q`
-- **Before `/gsd-verify-work`:** Full suite green AND `uv run python eval/run_eval.py --check` passes
+- **Before `/gsd-verify-work`:** Full suite green
 - **Max feedback latency:** ~30 seconds
 
 ---
 
 ## Per-Task Verification Map
 
-> Plan/Task IDs are assigned by the planner; this map is keyed by requirement + behavior so the
-> planner can attach `<automated>` commands. `unit` = import-`validate`/`decide` judgment (eval layer,
-> D-23). `integration` = real DB columns + `resume_pipeline` (state-machine layer, D-23).
+> All Phase 7 behaviors are unit-level (pure-function fixes — no DB, no state machine).
 
-| Requirement | Behavior | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|-------------|----------|------------|-----------------|-----------|-------------------|-------------|--------|
-| MONEY-01 | Hourly + `hours_regular=0`, all other hours None/0 → `request_clarification` (never $0 stub) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "zero_hours" -x` | ❌ W0 | ⬜ pending |
-| MONEY-01 | `hours_regular=0` + `hours_holiday=8` (partial week) → NOT gated (D-03 edge) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "partial_week" -x` | ❌ W0 | ⬜ pending |
-| MONEY-01 | `pay_type=None`/unknown + all-zero hours → fail-safe gate (D-03) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "unknown_pay_type" -x` | ❌ W0 | ⬜ pending |
-| MONEY-01 | Salaried + no hours → NOT gated (D-03: never reaches gate) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "salaried_no_gate" -x` | ❌ W0 | ⬜ pending |
-| MONEY-01 | D-25 predicate-consistency: `OT 2→0` gates identically to `OT 2→absent` | — | N/A | unit | `uv run pytest tests/test_validate.py -k "predicate_consistency" -x` | ❌ W0 | ⬜ pending |
-| MONEY-02 | NFD "José" matches NFC "José" in roster via `_norm` → same `matched_employee_id` (D-07) | — | N/A | unit | `uv run pytest tests/test_reconcile.py -k "nfd" -x` | ❌ W0 | ⬜ pending |
-| MONEY-02 | `run_eval.py:_normalize` NFC-normalizes before casefold (C-4 fix — eval scorer parity) | — | N/A | unit | `uv run pytest tests/test_eval_wiring.py -k "nfd" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | `detect_field_regression`: `OT=2` snapshot, `OT=None` resumed → returns `FieldDrop` for OT | — | N/A | unit | `uv run pytest tests/test_validate.py -k "detect_regression" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | `field_regression` ValidationIssue gates to `request_clarification` via decide (C-1: widened Literal + decide rule) | V5 | Pydantic `extra="forbid"`; JSONB via `json.dumps` | unit | `uv run pytest tests/test_decide.py -k "field_regression" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | D-26 explicit-drop: reply `OT=0` → `confirmed_dropped`, NO carry-forward (fails today) | — | N/A | unit | `uv run pytest tests/test_validate.py -k "explicit_drop" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | D-27 determinism: no-op reply → `detect_field_regression` returns `[]` | — | N/A | unit | `uv run pytest tests/test_validate.py -k "no_regression" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | D-28 multi-round baseline: second clarification does NOT overwrite `pre_clarify_extracted` (D-19 snapshot-once) | V5 | `IS NULL` SQL guard | integration | `uv run pytest tests/test_resume_pipeline.py -k "snapshot_once" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | Loop guard: field-regression clarify fires exactly ONCE, then carry-forward; no infinite re-clarify (D-13/D-16/D-20) | — | N/A | integration | `uv run pytest tests/test_resume_pipeline.py -k "loop_guard" -x` | ❌ W0 | ⬜ pending |
-| MONEY-03 | D-15: `confirmed_dropped` field short-circuits MONEY-01 (does not re-flag) | — | N/A | integration | `uv run pytest tests/test_resume_pipeline.py -k "confirmed_dropped_no_reflag" -x` | ❌ W0 | ⬜ pending |
-| MONEY-01/02/03 | Three new eval judgment fixtures score correctly (D-24: serialized via `model_dump_json`) | — | N/A | unit (eval) | `uv run python eval/run_eval.py --check` | ❌ W0 | ⬜ pending |
+| Requirement | Behavior | Threat Ref | Test Type | Automated Command | File Exists | Status |
+|-------------|----------|------------|-----------|-------------------|-------------|--------|
+| MONEY-01 | Hourly + `hours_regular=0`, all other hours None/0 → `request_clarification` (never $0 stub) | — | unit | `uv run pytest tests/test_validate.py -k "zero_hours" -x` | ✅ extend | ⬜ pending |
+| MONEY-01 | `hours_regular=0` + `hours_holiday=8` (partial week) → NOT gated (D-03 edge) | — | unit | `uv run pytest tests/test_validate.py -k "partial_week" -x` | ✅ extend | ⬜ pending |
+| MONEY-01 | Salaried + no hours → NOT gated (D-03: never reaches gate) | — | unit | `uv run pytest tests/test_validate.py -k "salaried" -x` | ✅ extend | ⬜ pending |
+| MONEY-01 | D-25 predicate-consistency: `OT 2→0` gates identically to `OT 2→absent` | — | unit | `uv run pytest tests/test_validate.py -k "predicate_consistency" -x` | ✅ extend | ⬜ pending |
+| MONEY-02 | NFD "José" matches NFC "José" in roster via `_norm` → same `matched_employee_id` (D-07) | — | unit | `uv run pytest tests/test_reconcile.py -k "nfd" -x` | ✅ extend | ⬜ pending |
+| MONEY-02 | `run_eval.py:_normalize` NFC-normalizes (imported from `_norm`) — eval scorer parity (C-4) | — | unit | `uv run pytest tests/test_eval_wiring.py -k "nfd" -x` | ✅ extend | ⬜ pending |
+| (scaffold) | `ValidationIssue(issue_type="field_regression")` constructs; `FieldDrop` constructs with `extra="forbid"` — forward-compat for Phase 7.5, no behavior | V5 | unit | `uv run pytest tests/test_models_contracts.py -q` | ✅ extend | ⬜ pending |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*Note on the `unknown_pay_type` edge (D-03): `Employee.pay_type` is a non-nullable `Literal["hourly","salary"]` and `ExtractedEmployee` has no `pay_type` field, so `Employee(pay_type=None)` is not constructible. The "uncertain pay_type" fail-safe is handled upstream by `decide.py` (an unresolved employee never reaches the hourly gate). No Phase-7 test constructs `pay_type=None`; the branch is documented as structurally handled rather than unit-tested here.*
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_validate.py` — MONEY-01 + MONEY-03 detection tests (zero-hours, partial-week, unknown-pay-type, salaried-no-gate, predicate-consistency, detect-regression, explicit-drop, no-regression)
-- [ ] `tests/test_reconcile.py` — MONEY-02 NFD test (file EXISTS — extend it)
-- [ ] `tests/test_decide.py` — `field_regression` issue gates to clarification (NEW file — does not exist yet)
-- [ ] `tests/test_eval_wiring.py` — `run_eval.py:_normalize` NFC parity (file EXISTS — extend it; covers C-4)
-- [ ] `tests/test_resume_pipeline.py` — integration: snapshot-once, loop-guard, confirmed-dropped-no-reflag (NEW file; needs live DATABASE_URL)
-- [ ] `eval/fixtures/` — three new fixtures (zero-hours-hourly, NFD-name, field-drop/carry-forward) + their `_extraction.json`, serialized through `extracted.model_dump_json()` per D-24
+All target test files already EXIST — extend them, don't create:
+- [ ] `tests/test_validate.py` — MONEY-01 tests (zero-hours, partial-week, salaried-not-gated, predicate-consistency)
+- [ ] `tests/test_reconcile.py` — MONEY-02 NFD test
+- [ ] `tests/test_eval_wiring.py` — `run_eval.py:_normalize` NFC parity (C-4)
+- [ ] `tests/test_models_contracts.py` — `field_regression` Literal + `FieldDrop` construction tests (forward-compat scaffolding)
 
-*Confirmed against live `tests/` (2026-06-27): `test_validate.py`, `test_reconcile.py`, `test_eval_wiring.py` EXIST (extend them); `test_decide.py` and `test_resume_pipeline.py` are NEW. There is no `test_reconcile_names.py` — the canonical reconcile test file is `test_reconcile.py`.*
+*No new test files in Phase 7. (`test_decide.py` and `test_resume_pipeline.py` are Phase 7.5.)*
 
 ---
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| Clarification-email copy reads naturally ("did you forget the overtime?") and phrases the question so "yes, remove it" lands as an explicit `0` in re-extraction (D-14) | MONEY-03 | Email copy quality + LLM re-extraction behavior is judgment, not a pure assertion | Send the worked-example reply ("40", no OT) end-to-end on the dev deploy; confirm one clarification, then carry-forward of OT=2; separately reply "remove the OT" and confirm `confirmed_dropped` (no backfill) |
+*None — both Phase 7 behaviors have automated unit verification.* (The field-regression email-copy manual check moved to Phase 7.5.)
 
 ---
 
 ## Validation Sign-Off
 
-- [x] All tasks have `<automated>` verify or Wave 0 dependencies (every plan task uses a `uv run` command)
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
 - [x] Sampling continuity: no 3 consecutive tasks without automated verify
-- [x] Wave 0 covers all MISSING references (new files: `test_decide.py`, `test_resume_pipeline.py`, fixtures 16–18)
+- [x] Wave 0 covers all referenced test files (all exist — extend)
 - [x] No watch-mode flags
-- [x] Feedback latency < 30s (unit suite ~30s; integration adds DB round-trips)
+- [x] Feedback latency < 30s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-*`wave_0_complete` stays `false` until the RED test scaffolds are actually written in Wave 1 of execution.*
+*`wave_0_complete` stays `false` until the RED test scaffolds are written in Wave 1 of execution.*
 
-**Approval:** approved 2026-06-27
+**Approval:** approved 2026-06-27 (re-scoped to MONEY-01/02)
