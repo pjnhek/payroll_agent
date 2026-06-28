@@ -60,7 +60,11 @@ Plans:
   3. If the regression is still unaddressed after that one clarification round, the original value is **carried forward into the computed paystub** (backfill lands before calc, not after); if the reply explicitly zeroes the field ("remove it"), that is honored as `confirmed_dropped` with NO carry-forward — proven by a test that distinguishes silence from an explicit zero, and a loop-guard test proving the clarification fires exactly once with no infinite re-clarify.
   4. A run with a MIXED clarification (a field-regression issue AND a normal missing-field/unresolved-name in the same reply) still durably records the field-regression `asked` state and still asks the field-regression question in the email — proven by a mixed-issue test (resolves 07-REVIEWS round-3 R3-2).
 
-**Plans**: TBD *(start the foundational split-refactor plan FIRST, then layer detection → state machine → eval/integration; carry forward the verified design from 07-CONTEXT.md decisions D-08..D-30 and the 07-REVIEWS.md round-1/2/3 findings)*
+**Plans**: 4 plans
+- [ ] 07.5-01-PLAN.md — PLAN A: add no-op prior=/resolved_drops= kwargs to _run_stages and validate() (pure structural seam, zero behavior change)
+- [ ] 07.5-02-PLAN.md — RawFieldDrop + detect_field_regression + validate(prior=) (N6/N8 correct) + decide Rule 2b + compose_email N5/D-7.5-09 wording
+- [ ] 07.5-03-PLAN.md — ClarifiedFields model + schema DDL (N4 DO$) + repo helpers + _clarify N7 snapshot + _RunStagesResult + resume_pipeline Round-1/Round-2 block (N1/N2/N3)
+- [ ] 07.5-04-PLAN.md — 8 integration tests (D-7.5-04a ordering + D-7.5-04b/c + SC4 mixed-issue + loop-guard) + eval fixtures 16/17/18 + run_detail.html D-7.5-08 provenance badges
 
 ### Phase 8: Data-Layer Hygiene & Diagnostics
 
