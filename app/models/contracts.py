@@ -145,6 +145,60 @@ class RawFieldDrop(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# ClarifiedFields — typed validator for clarified_fields JSONB column (D-7.5-03b)
+# ---------------------------------------------------------------------------
+
+ClarifiedFieldOutcome = Literal["asked", "carried_forward", "confirmed_dropped", "client_supplied"]
+"""Four outcomes for field-regression classification (Finding 6 fix):
+
+- "asked": the field-regression question was sent; awaiting client reply.
+- "carried_forward": the client was SILENT; the value came from the pre-clarify
+  snapshot (not from the client's reply). This label means the RAW reply had
+  None/absent for the field — NOT that the client resupplied the same value
+  (which is "client_supplied"). D-7.5-10b and D-7.5-11: classification reads
+  the RAW reply before backfill, scoped to asked fields.
+- "confirmed_dropped": the client explicitly zeroed or said "none" — honor the
+  removal; NOT re-backfilled even though _is_paid(Decimal('0')) is False.
+  D-7.5-11 overpay guard: confirmed_dropped is in backfill_skip so backfill
+  does NOT fire, even though the explicit-zero value looks backfillable by
+  value alone.
+- "client_supplied": the client replied with a POSITIVE replacement value —
+  the raw extraction for this employee/field was present-positive before
+  backfill; NOT same-value resupply mislabeled (D-7.5-10b).
+"""
+
+
+class ClarifiedFields(BaseModel):
+    """Typed validator for the clarified_fields JSONB column (D-7.5-03b).
+
+    Shape: {employee_id_str: {field_name: outcome}}.
+
+    Validate on every write — a mislabeled carried_forward->confirmed_dropped
+    silently underpays. Four outcomes:
+    - asked (awaiting reply)
+    - carried_forward (client silent; value from snapshot; RAW reply had None —
+      D-7.5-10b/D-7.5-11)
+    - confirmed_dropped (explicit zero/none from client; protected from
+      re-backfill even though _is_paid(0) is False — D-7.5-11 overpay guard)
+    - client_supplied (positive replacement from client — raw reply had the
+      value before backfill)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcomes: dict[str, dict[str, ClarifiedFieldOutcome]]
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ClarifiedFields":
+        """Validate from a plain dict (outcomes=d)."""
+        return cls(outcomes=d)
+
+    def to_dict(self) -> dict:
+        """Return the raw outcomes dict."""
+        return self.outcomes
+
+
+# ---------------------------------------------------------------------------
 # FieldDrop — forward-compat scaffolding for Phase 7.5 (MONEY-03)
 # ---------------------------------------------------------------------------
 

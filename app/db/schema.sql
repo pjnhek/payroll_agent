@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     -- D-04: separate JSONB column for alias candidates so persist_reconciliation can
     -- never overwrite it on resume. Written by repo.set_alias_candidates in Wave 4.
     alias_candidates JSONB,
+    pre_clarify_extracted JSONB,    -- D-19 MONEY-03: snapshot at awaiting_reply (IS NULL write-once guard)
+    clarified_fields      JSONB,    -- D-13 MONEY-03: {employee_id: {field: outcome}} field-regression outcomes
     error_reason    TEXT,       -- D-A1-03 / FIX 7: orchestrator's persisted ERROR reason
     pay_period_start DATE,
     pay_period_end   DATE,
@@ -106,6 +108,8 @@ ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reconciliation    JSONB;  -- D
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_reason      TEXT;   -- D-A1-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS alias_candidates  JSONB;  -- D-04 (Plan 05-03)
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS record_only       BOOLEAN NOT NULL DEFAULT FALSE;  -- 06-08 HIGH-1: compose-created runs skip real Resend send
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS pre_clarify_extracted JSONB;  -- D-19 MONEY-03
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarified_fields      JSONB;  -- D-13 MONEY-03
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
@@ -144,7 +148,8 @@ CREATE TABLE IF NOT EXISTS email_messages (
     body_text        TEXT,
     -- Plan 05-03: D-13c sharpening (finding #1 + #3, Codex review):
     -- purpose distinguishes clarification from confirmation; inbound rows keep NULL.
-    purpose          TEXT        CHECK (purpose IN ('clarification','confirmation')),
+    -- N4 MONEY-03: 'clarification_field_regression' added for field-regression runs.
+    purpose          TEXT        CHECK (purpose IN ('clarification','confirmation','clarification_field_regression')),
     -- send_state is NULLABLE (NOT NOT NULL DEFAULT 'sent'): inbound rows have no send
     -- lifecycle and must keep NULL — giving them 'sent' would weaken audit semantics
     -- (R2-MEDIUM/HIGH finding). Outbound rows: 'reserved' before provider call,
@@ -162,9 +167,36 @@ CREATE TABLE IF NOT EXISTS email_messages (
 -- ALTER ... ADD COLUMN IF NOT EXISTS blocks apply the new columns on a running DB.
 -- Both columns are nullable (no DEFAULT) so existing rows are unaffected.
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS purpose
-    TEXT CHECK (purpose IN ('clarification','confirmation'));  -- finding #1, D-13c sharpening
+    TEXT CHECK (purpose IN ('clarification','confirmation','clarification_field_regression'));  -- finding #1, D-13c sharpening; N4 MONEY-03 adds clarification_field_regression
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS send_state
     TEXT CHECK (send_state IN ('reserved','sent','failed'));   -- finding #3, R2-HIGH fix; NULLABLE
+
+-- N4 MONEY-03: Idempotent DROP + RE-ADD of email_messages purpose CHECK constraint
+-- (D-7.5-03a atomic DROP+ADD in one transaction). The pg_constraint lookup is narrowed
+-- by BOTH contype='c' AND conrelid='email_messages'::regclass before applying the LIKE
+-- pattern (Finding 9 defensive matcher). The new CHECK includes 'clarification_field_regression'.
+DO $$
+DECLARE
+    _con_name TEXT;
+BEGIN
+    SELECT conname INTO _con_name
+    FROM pg_constraint
+    WHERE contype = 'c'
+      AND conrelid = 'email_messages'::regclass
+      AND conname LIKE '%purpose%';
+    IF _con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE email_messages DROP CONSTRAINT ' || quote_ident(_con_name);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'email_messages_purpose_check'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages ADD CONSTRAINT email_messages_purpose_check
+            CHECK (purpose IN ('clarification','confirmation','clarification_field_regression'));
+    END IF;
+END;
+$$;
 
 -- Idempotent unique-constraint add for (run_id, purpose) on email_messages (Plan 05-03).
 -- NOTE: Postgres does NOT support ADD CONSTRAINT IF NOT EXISTS — the DO $$ pg_constraint

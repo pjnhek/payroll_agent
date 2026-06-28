@@ -67,7 +67,7 @@ from typing import Any
 import psycopg.rows
 
 from app.db.supabase import get_connection
-from app.models.contracts import Decision, Extracted, PaystubLineItem
+from app.models.contracts import ClarifiedFields, Decision, Extracted, PaystubLineItem
 from app.models.roster import Employee, NameMatchResult, Roster
 from app.models.status import RunStatus
 
@@ -524,6 +524,98 @@ def set_alias_candidates(
             )
 
 
+def set_pre_clarify_extracted(
+    run_id: uuid.UUID,
+    extracted: Extracted,
+    conn=None,
+) -> bool:
+    """Snapshot the pre-clarify extracted data (IS NULL write-once guard, D-19 MONEY-03).
+
+    Uses a CAS UPDATE with `WHERE id = %s AND pre_clarify_extracted IS NULL RETURNING id`
+    — atomic check-and-write so the snapshot is written ONLY ONCE on the first call.
+    Subsequent calls return False (idempotent no-op). Called BEFORE each of the
+    three set_status(AWAITING_REPLY) paths in _clarify (N7 fix).
+
+    Returns True if written (first write), False if already set.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            row = c.execute(
+                "UPDATE payroll_runs SET pre_clarify_extracted = %s, updated_at = now()"
+                " WHERE id = %s AND pre_clarify_extracted IS NULL RETURNING id",
+                (json.dumps(extracted.model_dump(mode="json")), str(run_id)),
+            ).fetchone()
+    return row is not None
+
+
+def load_pre_clarify_extracted(
+    run_id: uuid.UUID,
+    conn=None,
+) -> Extracted | None:
+    """Load the pre-clarify extraction snapshot (D-19 MONEY-03).
+
+    Returns None if the column is NULL (no snapshot taken yet — first resume or
+    non-field-regression run). Deserializes via Extracted.model_validate.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT pre_clarify_extracted FROM payroll_runs WHERE id = %s",
+            (str(run_id),),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    return Extracted.model_validate(data)
+
+
+def set_clarified_fields(
+    run_id: uuid.UUID,
+    clarified: dict,
+    conn=None,
+) -> None:
+    """Write the clarified_fields JSONB column (D-13 MONEY-03, D-7.5-03b typed-on-write).
+
+    D-7.5-03b: shape validated through ClarifiedFields before persisting — a mislabeled
+    carried_forward->confirmed_dropped silently underpays. Four outcomes:
+    - asked (awaiting reply)
+    - carried_forward (client silent; value from snapshot; RAW reply had None/absent —
+      D-7.5-10b/D-7.5-11; does NOT mean client resupplied the same value)
+    - confirmed_dropped (explicit zero/none from client; protected from re-backfill
+      even though _is_paid(Decimal('0')) is False — D-7.5-11 overpay guard)
+    - client_supplied (positive replacement from client — raw reply had the value
+      before backfill; NOT same-value resupply mislabeled)
+
+    Raises pydantic.ValidationError if the shape is wrong (any invalid outcome string).
+    """
+    # D-7.5-03b: validate through ClarifiedFields before serializing.
+    ClarifiedFields(outcomes=clarified)
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET clarified_fields = %s, updated_at = now() WHERE id = %s",
+                (json.dumps(clarified), str(run_id)),
+            )
+
+
+def load_clarified_fields(
+    run_id: uuid.UUID,
+    conn=None,
+) -> dict:
+    """Load the clarified_fields JSONB column (D-13 MONEY-03).
+
+    Returns {} on NULL (no field-regression outcomes yet — first resume or
+    non-field-regression run). Deserializes via json.loads.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT clarified_fields FROM payroll_runs WHERE id = %s",
+            (str(run_id),),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return {}
+    return json.loads(row[0]) if isinstance(row[0], str) else row[0]
+
+
 def update_known_alias(
     employee_id: uuid.UUID,
     new_alias: str,
@@ -667,9 +759,9 @@ def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str |
     Raises ValueError on an unrecognised purpose value (invalid-purpose guard prevents
     accidental purpose-blind calls — T-05-09b).
     """
-    if purpose not in ("clarification", "confirmation"):
+    if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
         raise ValueError(
-            f"purpose must be 'clarification' or 'confirmation', got {purpose!r}"
+            f"purpose must be 'clarification', 'confirmation', or 'clarification_field_regression', got {purpose!r}"
         )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
