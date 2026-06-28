@@ -314,57 +314,44 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             # NOTE: no extracted= kwarg on Round-1. _run_stages calls extract() internally.
 
             if stage.clarify_deferred:
-                # R3-2 fix: ANY field_regression issue defers clarification.
-                # Write 'asked' BEFORE calling _clarify (N2 ordering: asked-before-send).
-                post_run = repo.load_run(run_id)
-                name_to_id_r1 = {
-                    m["submitted_name"]: m["matched_employee_id"]
-                    for m in (post_run.get("reconciliation") or [])
-                    if isinstance(m, dict) and m.get("matched_employee_id")
-                }
-                for issue in (stage.issues or []):
-                    if issue.issue_type == "field_regression":
-                        # issue.field format: "{submitted_name}.{field_name}"
-                        parts = issue.field.rsplit(".", 1)
-                        if len(parts) == 2:
-                            submitted_name_r1, field_name_r1 = parts
-                            current_emp_id_r1 = name_to_id_r1.get(submitted_name_r1)
-                            if current_emp_id_r1:
-                                clarified.setdefault(str(current_emp_id_r1), {})[field_name_r1] = "asked"
-                # Write asked durably BEFORE send (N2).
-                repo.set_clarified_fields(run_id, clarified)
-
-                # THEN call _clarify with purpose='clarification_field_regression' (R3-2 fix).
-                run_row = repo.load_run(run_id)
-                from app.models.contracts import Decision as _Decision
-                persisted_decision = _Decision.model_validate(run_row["decision"]) if run_row and run_row.get("decision") else None
-                persisted_extracted = Extracted.model_validate(run_row["extracted_data"]) if run_row and run_row.get("extracted_data") else None
-                if persisted_decision is not None and persisted_extracted is not None:
-                    _clarify(
-                        run_id,
-                        combined_email,
-                        persisted_decision,
-                        roster,
-                        persisted_extracted,
-                        llm=llm,
-                        purpose="clarification_field_regression",
-                    )
+                # IN-01: shared helper writes 'asked', persists, and sends the
+                # clarification_field_regression email (N2 ordering preserved).
+                # Factored out so Round-1 and Round-2 cannot drift (CR-02 fix).
+                _defer_field_regression_clarification(
+                    run_id, clarified, stage, combined_email, roster, llm=llm
+                )
                 return  # run is at AWAITING_REPLY — do not fall through to alias-diff
 
             # stage.clarify_deferred is False: fall through to STEP C/D alias-diff.
 
         # Step E5: Round-2 path — D-7.5-11 CLASSIFY-FIRST (answered rounds).
         else:
-            # D-7.5-11: extract the raw reply ONCE UP FRONT, before _run_stages.
-            # This is the key mechanism that enables classify-first ordering.
-            # run_pipeline and Round-1 do NOT use this pattern.
+            # CR-01 FIX: two separate extractions for two different purposes.
+            #
+            # CLASSIFY needs the REPLY IN ISOLATION so that:
+            #   - silence (field absent from reply) → None → carried_forward
+            #   - explicit zero ("0 overtime") → Decimal('0') → confirmed_dropped
+            # If we classified from combined_email, the original section's positive value
+            # (e.g. OT=2) can survive into the extraction, and "0 overtime" in the reply
+            # section is eclipsed → classified as client_supplied with raw_val=2 → OVERPAY.
+            #
+            # PROCESS/BACKFILL needs the COMBINED body so original employees/hours that the
+            # client did not re-state are retained (lossless combined extraction, FIX 4).
+            #
+            # Cost: one extra LLM call on answered rounds — acceptable for money-safety.
             extract_kwargs_r2 = {"run_id": run_id}
             if llm is not None:
                 extract_kwargs_r2["llm"] = llm
-            raw_extracted = extract(combined_email, roster, **extract_kwargs_r2)
-            # raw_extracted is the raw reply extraction, before any backfill.
 
-            # D-7.5-11 STEP 1: CLASSIFY the raw reply for asked fields ONLY.
+            # Extraction 1 (CLASSIFY): reply body ONLY — uncombined.
+            # `inbound` is the raw reply InboundEmail BEFORE combination (resume_pipeline param).
+            # Use it directly so the classify step sees ONLY what the client said in the reply.
+            raw_reply_extracted = extract(inbound, roster, **extract_kwargs_r2)
+
+            # Extraction 2 (PROCESS/BACKFILL): combined body — retains original employees/hours.
+            raw_extracted = extract(combined_email, roster, **extract_kwargs_r2)
+
+            # D-7.5-11 STEP 1: CLASSIFY the raw REPLY (reply-only) for asked fields ONLY.
             # Do NOT classify all snapshot-paid fields — that mislabels untouched fields
             # (e.g. hours_regular that was always present) as client_supplied.
             # Only fields currently 'asked' get classified.
@@ -376,17 +363,22 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             # lookup → raw_emp stays None → field stays "asked" → absent from backfill_skip
             # → snapshot's positive value is silently restored (OVERPAY). The union ensures
             # the reply's current submitted names are always covered.
-            # Current matches go FIRST so a restated name takes the current resolution;
-            # prior_matches are the fallback for names the client did not restate.
-            raw_submitted = [e.submitted_name for e in raw_extracted.employees]
-            current_matches_for_classify = reconcile_names(raw_submitted, roster)
+            #
+            # WR-01 FIX: prior_matches go FIRST, current_matches_for_classify go LAST.
+            # Dict comprehension is last-wins: current (appended last) overrides prior for
+            # any shared submitted_name. This implements "current wins" — a restated name
+            # takes the CURRENT resolution. The old code had the order reversed (current
+            # first, prior last) which was prior-wins — contradicting the comment.
+            raw_reply_submitted = [e.submitted_name for e in raw_reply_extracted.employees]
+            current_matches_for_classify = reconcile_names(raw_reply_submitted, roster)
             name_to_id_for_classify: dict[str, str] = {
                 m.submitted_name: str(m.matched_employee_id)
-                for m in (list(current_matches_for_classify) + list(prior_matches))
+                for m in (list(prior_matches) + list(current_matches_for_classify))
                 if m.resolved and m.matched_employee_id is not None
             }
-            # Build a lookup from raw_extracted: {submitted_name: ExtractedEmployee}.
-            raw_name_to_emp = {emp.submitted_name: emp for emp in raw_extracted.employees}
+            # Build a lookup from raw_reply_extracted: {submitted_name: ExtractedEmployee}.
+            # CR-01: uses the REPLY-ONLY extraction so silence == None (not the original value).
+            raw_name_to_emp = {emp.submitted_name: emp for emp in raw_reply_extracted.employees}
 
             # WR-01: staging set for asked fields that cannot be resolved in the raw reply.
             # These are absorbed into backfill_skip in STEP 2 to fail conservatively
@@ -464,7 +456,7 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             backfill_skip.update(_unresolvable_asked)
 
             # D-7.5-11 STEP 3: call _run_stages ONCE with TWO DISTINCT sets.
-            # - extracted=raw_extracted: skip double-extraction (LLM already called once above)
+            # - extracted=raw_extracted: combined-body extraction (lossless, retains originals)
             # - suppress_detection=suppress_detection: ALL answered fields → N8 only
             # - resolved_drops=backfill_skip: confirmed_dropped+client_supplied → backfill skip
             # - prior=snapshot, prior_matches=prior_matches_for_backfill: three-phase ordering (D-7.5-10)
@@ -480,11 +472,12 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             if snapshot is not None:
                 snapshot_submitted = [e.submitted_name for e in snapshot.employees]
                 snapshot_matches = reconcile_names(snapshot_submitted, roster)
-                # Merge: snapshot_matches FIRST so snapshot names are in the lookup;
-                # prior_matches are the fallback for any snapshot name already in prior_matches.
-                # The dict union in backfill_extracted is last-wins; putting snapshot_matches
-                # first lets prior_matches override if the same employee appears in both — safe
-                # because both point to the same employee_id.
+                # WR-02: Merge snapshot_matches FIRST, prior_matches LAST.
+                # backfill_extracted's name_to_id_prior is last-wins, so prior_matches
+                # (persisted snapshot-round reconciliation) overrides snapshot_matches
+                # for any shared name — prior is the AUTHORITATIVE snapshot-round record
+                # and this is the INTENDED conflict resolution (both point to the same
+                # employee_id in the normal case; prior wins when they disagree).
                 prior_matches_for_backfill = list(snapshot_matches) + list(prior_matches)
             else:
                 prior_matches_for_backfill = prior_matches
@@ -497,10 +490,25 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 prior_matches=prior_matches_for_backfill,
                 suppress_detection=suppress_detection,  # ALL answered → N8 only
                 resolved_drops=backfill_skip,           # confirmed_dropped+client_supplied → backfill skip
-                extracted=raw_extracted,                # D-7.5-11: pre-extracted raw reply
+                extracted=raw_extracted,                # combined-body extraction for lossless process
             )
 
-            # D-7.5-11 STEP 4: persist the terminal outcomes computed in step 1 (classify-first).
+            # D-7.5-11 STEP 4: CR-02 FIX — check clarify_deferred BEFORE persisting terminals.
+            # If _run_stages deferred (a NEW field_regression appeared this round), the run
+            # must send a clarification and return — NOT fall through to the alias-diff.
+            # This mirrors Round-1's deferred handling (step ~316-325) and uses the same
+            # shared helper (IN-01, _defer_field_regression_clarification).
+            if stage.clarify_deferred:
+                # N2 ordering: write 'asked' for the NEW drop + persist clarified BEFORE send.
+                # Then call _clarify(purpose='clarification_field_regression') and return.
+                # The terminal outcomes from classify-first (STEP 1) are already in `clarified`;
+                # the helper adds the NEW 'asked' entries before persisting.
+                _defer_field_regression_clarification(
+                    run_id, clarified, stage, combined_email, roster, llm=llm
+                )
+                return  # run is at AWAITING_REPLY — do not run the alias diff
+
+            # Not deferred: persist the terminal outcomes from classify-first STEP 1.
             # These are already final — do NOT reclassify from stage.issues after the fact.
             # A post-decide reclassification would reproduce the D-7.5-11 stranding bug.
             repo.set_clarified_fields(run_id, clarified)
@@ -581,6 +589,78 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         reason = type(exc).__name__
         logger.warning("resume of run %s failed: %s", run_id, reason)
         repo.record_run_error(run_id, reason)
+
+
+def _defer_field_regression_clarification(
+    run_id,
+    clarified: dict,
+    stage: _RunStagesResult,
+    combined_email: InboundEmail,
+    roster,
+    *,
+    llm,
+) -> None:
+    """Shared helper for deferred field-regression clarification (IN-01, CR-02 fix).
+
+    Called from BOTH the Round-1 branch (lines ~316-352) and the new Round-2
+    branch when _run_stages returns clarify_deferred=True.  Factoring into one
+    helper prevents the two copies from drifting — the Round-2 copy being
+    entirely absent was the CR-02 bug.
+
+    Contract (N2 ordering invariant):
+      1. Write 'asked' for every NEW field_regression issue into `clarified`
+         dict (mutated in-place).
+      2. Persist clarified via set_clarified_fields BEFORE the send.
+      3. Call _clarify(purpose='clarification_field_regression') to draft +
+         send the email and advance to AWAITING_REPLY.
+
+    The caller must `return` immediately after this call — the run is now at
+    AWAITING_REPLY and must NOT fall through to the alias-diff.
+    """
+    # Step 1: Load fresh reconciliation so we can look up emp_id by submitted_name.
+    post_run = repo.load_run(run_id)
+    name_to_id_post = {
+        m["submitted_name"]: m["matched_employee_id"]
+        for m in (post_run.get("reconciliation") or [])
+        if isinstance(m, dict) and m.get("matched_employee_id")
+    }
+    # Step 2: Write 'asked' for each NEW field_regression issue (N2 ordering).
+    for issue in (stage.issues or []):
+        if issue.issue_type == "field_regression":
+            # issue.field format: "{submitted_name}.{field_name}" (IN-03 guard)
+            parts = issue.field.rsplit(".", 1)
+            if len(parts) == 2:
+                submitted_name_p, field_name_p = parts
+                current_emp_id_p = name_to_id_post.get(submitted_name_p)
+                if current_emp_id_p:
+                    clarified.setdefault(str(current_emp_id_p), {})[field_name_p] = "asked"
+    # Step 3: Persist 'asked' BEFORE send (N2 invariant — asked-before-send).
+    repo.set_clarified_fields(run_id, clarified)
+
+    # Step 4: Load the persisted decision + extracted for _clarify.
+    run_row = repo.load_run(run_id)
+    from app.models.contracts import Decision as _Decision
+    persisted_decision = (
+        _Decision.model_validate(run_row["decision"])
+        if run_row and run_row.get("decision")
+        else None
+    )
+    persisted_extracted = (
+        Extracted.model_validate(run_row["extracted_data"])
+        if run_row and run_row.get("extracted_data")
+        else None
+    )
+    # Step 5: Send the clarification email (advances run to AWAITING_REPLY).
+    if persisted_decision is not None and persisted_extracted is not None:
+        _clarify(
+            run_id,
+            combined_email,
+            persisted_decision,
+            roster,
+            persisted_extracted,
+            llm=llm,
+            purpose="clarification_field_regression",
+        )
 
 
 def _combined_context_email(reply: InboundEmail, original_body: str) -> InboundEmail:
