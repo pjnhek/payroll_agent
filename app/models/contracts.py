@@ -117,6 +117,34 @@ class Extracted(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# RawFieldDrop — internal submitted_name-keyed field regression record (D-7.5-05)
+# ---------------------------------------------------------------------------
+
+
+class RawFieldDrop(BaseModel):
+    """Internal raw record keyed by submitted_name (D-7.5-05).
+
+    detect_field_regression returns list[RawFieldDrop]. The submitted_name is from
+    the CURRENT (resumed) extraction — the name the client used in the reply.
+
+    validate() receives these as raw_field_drops= kwarg (D-7.5-10: detection runs
+    in the orchestrator on RAW data before backfill). resumed_value=None means
+    absent (silence); resumed_value=Decimal('0') means explicit zero (D-14
+    confirmed_dropped signal).
+
+    Counterpart to FieldDrop: RawFieldDrop is the INTERNAL submitted_name-keyed
+    record; FieldDrop is the PUBLIC employee_id-keyed record.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    submitted_name: str
+    field: str
+    original_value: Decimal = Field(ge=0)
+    resumed_value: Decimal | None = Field(default=None, ge=0)
+
+
+# ---------------------------------------------------------------------------
 # FieldDrop — forward-compat scaffolding for Phase 7.5 (MONEY-03)
 # ---------------------------------------------------------------------------
 

@@ -22,8 +22,9 @@ valid non-negative Decimal — so the typed path can never reach `non_numeric`.
 from __future__ import annotations
 
 from decimal import Decimal
+from uuid import UUID
 
-from app.models.contracts import Extracted
+from app.models.contracts import Extracted, RawFieldDrop
 from app.models.roster import NameMatchResult, Roster, ValidationIssue
 
 _HOURS_FIELDS = (
@@ -78,6 +79,84 @@ def _employee_pay_periods_per_year(
     return None
 
 
+def detect_field_regression(
+    original: Extracted,
+    resumed: Extracted,
+    prior_matches: list | None,
+    current_matches: list,
+) -> list[RawFieldDrop]:
+    """Detect field regressions between the original and resumed extraction (D-7.5-10).
+
+    PUBLIC function — designed to be imported and called directly by orchestrator.py
+    in Plan 03. It is NOT called internally by validate().
+
+    D-7.5-10 THREE-PHASE ORDERING:
+      This function is step 1 (DETECT). The orchestrator calls it on the RAW resumed
+      extraction BEFORE backfill. validate() then receives the pre-computed drops via
+      raw_field_drops= kwarg (step 3).
+
+    R3-3 FIX (employee-id-keyed diff): reduces BOTH Extracted to
+    {employee_id: ExtractedEmployee} maps using the match results BEFORE diffing.
+    'M. Chen' in original and 'Maria Chen' in resumed, both resolving to the same
+    employee_id, land in the same diff slot and produce a RawFieldDrop.
+
+    Returns [] immediately when prior_matches is None (honest documented no-op).
+    Production (Plan 03) always threads prior_matches from the pre-resume
+    reconciliation; this branch never fires on the real resume path.
+    """
+    # Honest no-op: production always threads prior_matches from pre-resume reconciliation.
+    if prior_matches is None:
+        return []
+
+    # Build id_to_orig: {employee_id: ExtractedEmployee} from original + prior_matches.
+    name_to_id_prior: dict[str, UUID] = {
+        m.submitted_name: m.matched_employee_id
+        for m in prior_matches
+        if m.resolved and m.matched_employee_id is not None
+    }
+    id_to_orig: dict[UUID, object] = {}
+    for emp in original.employees:
+        emp_id = name_to_id_prior.get(emp.submitted_name)
+        if emp_id is not None:
+            id_to_orig[emp_id] = emp  # last-wins (D-12)
+
+    # Build id_to_resumed: {employee_id: ExtractedEmployee} from resumed + current_matches.
+    name_to_id_current: dict[str, UUID] = {
+        m.submitted_name: m.matched_employee_id
+        for m in current_matches
+        if m.resolved and m.matched_employee_id is not None
+    }
+    id_to_resumed: dict[UUID, object] = {}
+    for emp in resumed.employees:
+        emp_id = name_to_id_current.get(emp.submitted_name)
+        if emp_id is not None:
+            id_to_resumed[emp_id] = emp  # last-wins (D-12)
+
+    # Diff: iterate employees present in BOTH maps (sorted for determinism, D-27).
+    drops: list[RawFieldDrop] = []
+    common_ids = sorted(set(id_to_orig) & set(id_to_resumed), key=str)
+    for emp_id in common_ids:
+        orig_emp = id_to_orig[emp_id]
+        resumed_emp = id_to_resumed[emp_id]
+        current_name = resumed_emp.submitted_name  # name the client used in the reply
+
+        for field in _HOURS_FIELDS:  # reuse module-level constant (DRY, D-09)
+            original_val = getattr(orig_emp, field)
+            resumed_val = getattr(resumed_emp, field)
+            # _is_paid: present AND strictly positive (D-09 shared predicate, D-25)
+            if _is_paid(original_val) and not _is_paid(resumed_val):
+                drops.append(
+                    RawFieldDrop(
+                        submitted_name=current_name,
+                        field=field,
+                        original_value=original_val,
+                        resumed_value=resumed_val,  # None=absent, Decimal('0')=explicit zero (D-26)
+                    )
+                )
+
+    return drops
+
+
 def validate(
     extracted: Extracted,
     roster: Roster,
@@ -86,16 +165,63 @@ def validate(
     prior=None,
     prior_matches=None,
     resolved_drops=None,
+    raw_field_drops=None,
 ) -> list[ValidationIssue]:
     """Emit field-validation issues for one run (LLM-06).
 
     Rules (deterministic, no model):
+    - field_regression: pre-computed RawFieldDrop records passed via raw_field_drops=
+      kwarg (D-7.5-10). Detection runs in the orchestrator via detect_field_regression()
+      BEFORE backfill; validate() receives pre-computed drops and promotes them to
+      ValidationIssues. NOT self-detecting.
     - missing: an HOURLY employee with no hours of any kind (all five None). A
       salaried employee with no hours is fine (calc uses annual_salary). An
       unresolved name's pay_type is unknown, so no missing-hours issue is raised
       for it here — the gate already blocks it on the unknown match.
+
+    # prior= is kept for signature compatibility (Plan 01 threaded it). Detection runs
+    # in the orchestrator via detect_field_regression(); pre-computed drops arrive via
+    # raw_field_drops= (D-7.5-10).
     """
     issues: list[ValidationIssue] = []
+
+    # D-7.5-10: promote pre-computed field regression drops to ValidationIssues.
+    # Detection runs in the orchestrator (detect_field_regression on RAW extracted,
+    # BEFORE backfill). This function is a consumer, NOT the detector.
+    if raw_field_drops is not None and len(raw_field_drops) > 0:
+        # TYPE CONTRACT: set[tuple[str, str]] keyed by (employee_id_str, field).
+        _resolved_drops: set = resolved_drops or set()
+
+        # Build name→id map for N8 suppression check.
+        name_to_id_current: dict[str, UUID] = {
+            m.submitted_name: m.matched_employee_id
+            for m in matches
+            if m.resolved and m.matched_employee_id is not None
+        }
+
+        for raw_drop in raw_field_drops:
+            current_emp_id = name_to_id_current.get(raw_drop.submitted_name)
+            if current_emp_id is None:
+                continue  # submitted_name not resolved in current run — skip
+
+            # N8 suppression check (KEY TYPE FIX): str(current_emp_id) to match
+            # the (employee_id_str, field) set built by Plan 03 Step E2.
+            # DO NOT use (current_emp_id, raw_drop.field) — UUID vs str never matches.
+            # DO NOT use (raw_drop.submitted_name, field) — not stable across restated names.
+            if (str(current_emp_id), raw_drop.field) in _resolved_drops:
+                continue  # confirmed_dropped per D-15 — suppress re-flag
+
+            issues.append(
+                ValidationIssue(
+                    issue_type="field_regression",
+                    field=f"{raw_drop.submitted_name}.{raw_drop.field}",
+                    message=(
+                        f"field regression: {raw_drop.field} was {raw_drop.original_value}, "
+                        f"now {'absent' if raw_drop.resumed_value is None else str(raw_drop.resumed_value)}"
+                    ),
+                )
+            )
+
     for emp in extracted.employees:
         any_hours = any(
             _is_paid(getattr(emp, f)) for f in _HOURS_FIELDS
