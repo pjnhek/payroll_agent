@@ -467,14 +467,34 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             # - extracted=raw_extracted: skip double-extraction (LLM already called once above)
             # - suppress_detection=suppress_detection: ALL answered fields → N8 only
             # - resolved_drops=backfill_skip: confirmed_dropped+client_supplied → backfill skip
-            # - prior=snapshot, prior_matches=prior_matches: three-phase ordering (D-7.5-10)
+            # - prior=snapshot, prior_matches=prior_matches_for_backfill: three-phase ordering (D-7.5-10)
+            #
+            # R2-2 SNAPSHOT-NAME FIX: prior_matches (loaded from post-Round-1 reconciliation)
+            # reflects the REPLY names ("Maria Chen"), not the SNAPSHOT names ("M. Chen").
+            # backfill_extracted builds name_to_id_prior from prior_matches to map snapshot
+            # employees → employee_id; if the snapshot name is absent from prior_matches, no
+            # backfill occurs (OT=0 instead of OT=2). Fix: also reconcile the SNAPSHOT's
+            # submitted names and merge into prior_matches_for_backfill. The snapshot names
+            # resolve via alias → same employee_id, so "M. Chen" + "Maria Chen" both map to
+            # CHEN_ID, and the backfill finds the snapshot employee by employee_id.
+            if snapshot is not None:
+                snapshot_submitted = [e.submitted_name for e in snapshot.employees]
+                snapshot_matches = reconcile_names(snapshot_submitted, roster)
+                # Merge: snapshot_matches FIRST so snapshot names are in the lookup;
+                # prior_matches are the fallback for any snapshot name already in prior_matches.
+                # The dict union in backfill_extracted is last-wins; putting snapshot_matches
+                # first lets prior_matches override if the same employee appears in both — safe
+                # because both point to the same employee_id.
+                prior_matches_for_backfill = list(snapshot_matches) + list(prior_matches)
+            else:
+                prior_matches_for_backfill = prior_matches
             stage = _run_stages(
                 run_id,
                 combined_email,
                 roster,
                 llm=llm,
                 prior=snapshot,
-                prior_matches=prior_matches,
+                prior_matches=prior_matches_for_backfill,
                 suppress_detection=suppress_detection,  # ALL answered → N8 only
                 resolved_drops=backfill_skip,           # confirmed_dropped+client_supplied → backfill skip
                 extracted=raw_extracted,                # D-7.5-11: pre-extracted raw reply
