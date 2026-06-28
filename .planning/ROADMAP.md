@@ -38,7 +38,7 @@
 Plans:
 **Wave 1**
 
-- [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop/RawFieldDrop models) + Wave 0 failing tests for MONEY-01/02 *(the field_regression Literal value + FieldDrop models are added here as forward-compatible scaffolding so Phase 7.5 builds on them; the MONEY-03 tests move to 7.5)*
+- [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop model as forward-compat scaffolding for Phase 7.5) + RED failing tests for MONEY-01 and MONEY-02 *(RawFieldDrop and all MONEY-03 tests belong to Phase 7.5; this plan is strictly MONEY-01/02 RED scaffolding)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -48,7 +48,7 @@ Plans:
 
 **Goal**: A clarification reply that drops a money-affecting field the original submission stated (original "40 + 2 OT", reply "40" with no OT) is detected as a regression, clarifies exactly once, then carries the original value forward — or honors an explicit removal — and never enters an infinite re-clarify loop. **This phase is built on a foundational refactor first**: `_run_stages` is split so the carry-forward backfill lands *between* reconcile and validate/decide/calc, which three cross-AI review rounds proved is the only correct seam (see 07-REVIEWS.md rounds 1–3).
 **Mode:** standard (a structural refactor of shipped orchestration code, then the field-regression state machine layered on top)
-**Depends on**: Phase 7 (reuses the `_is_paid` predicate, the `field_regression` ValidationIssue Literal, and the FieldDrop/RawFieldDrop models that Phase 7 lands as scaffolding). Independent of Phases 8–10.
+**Depends on**: Phase 7 (reuses the `_is_paid` predicate, the `field_regression` ValidationIssue Literal, and the FieldDrop model that Phase 7 lands as scaffolding). Independent of Phases 8–10.
 **Requirements**: MONEY-03
 **Closes audit findings**: v1-backlog field-regression clarification
 **Foundational refactor (Plan A, MUST land + be regression-tested BEFORE the feature)**:
@@ -122,7 +122,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 7. Money-Correctness Deepening | 0/5 | Not started | - |
+| 7. Money-Correctness Deepening | 0/2 | Not started | - |
 | 8. Data-Layer Hygiene & Diagnostics | 0/TBD | Not started | - |
 | 9. Atomic Data Integrity | 0/TBD | Not started | - |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
