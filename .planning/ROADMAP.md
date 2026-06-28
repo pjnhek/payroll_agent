@@ -38,7 +38,7 @@
 Plans:
 **Wave 1**
 
-- [ ] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop model as forward-compat scaffolding for Phase 7.5) + RED failing tests for MONEY-01 and MONEY-02 *(RawFieldDrop and all MONEY-03 tests belong to Phase 7.5; this plan is strictly MONEY-01/02 RED scaffolding)*
+- [x] 07-01-PLAN.md — Contracts widening (ValidationIssue Literal + FieldDrop model as forward-compat scaffolding for Phase 7.5) + RED failing tests for MONEY-01 and MONEY-02 *(RawFieldDrop and all MONEY-03 tests belong to Phase 7.5; this plan is strictly MONEY-01/02 RED scaffolding)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -122,7 +122,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 7. Money-Correctness Deepening | 0/2 | Not started | - |
+| 7. Money-Correctness Deepening | 1/2 | In Progress|  |
 | 8. Data-Layer Hygiene & Diagnostics | 0/TBD | Not started | - |
 | 9. Atomic Data Integrity | 0/TBD | Not started | - |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
