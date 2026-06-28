@@ -11,7 +11,7 @@
 
 - [x] **MONEY-01**: An hourly employee submitted with explicitly-zero hours (`hours_regular=0` and no other hours) is treated as a missing-field case and gates to `request_clarification` — it never silently produces a $0 paystub. (Audit HIGH-01, `validate.py`.)
 - [x] **MONEY-02**: Name reconciliation is Unicode-normalized (NFC) before casefold, so visually-identical names in different Unicode forms (e.g. "José" NFC vs "José" NFD) resolve as a match instead of silently failing. (Audit MED-01, `reconcile_names._norm`.)
-- [ ] **MONEY-03**: When a clarification reply drops or changes a money-affecting field the original submission stated (e.g. original "40 + 2 OT", reply "40" with no OT), the system detects the regression and clarifies once ("did you forget the overtime?") before processing — then carries the original value forward if still unaddressed (no infinite re-clarify loop). (v1 backlog: field-regression.)
+- [x] **MONEY-03**: When a clarification reply drops or changes a money-affecting field the original submission stated (e.g. original "40 + 2 OT", reply "40" with no OT), the system detects the regression and clarifies once ("did you forget the overtime?") before processing — then carries the original value forward if still unaddressed (no infinite re-clarify loop). (v1 backlog: field-regression.)
 
 ### Ring 2 — Data integrity (correct under concurrency and crashes)
 
@@ -43,7 +43,7 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 |-------------|-------|--------|
 | MONEY-01 | Phase 7 — Money-Correctness Deepening (Pure-Function Gates) | Complete |
 | MONEY-02 | Phase 7 — Money-Correctness Deepening (Pure-Function Gates) | Complete |
-| MONEY-03 | Phase 7.5 — Clarification-Reply Field-Regression | Pending |
+| MONEY-03 | Phase 7.5 — Clarification-Reply Field-Regression | Complete |
 | OPS2-01 | Phase 8 — Data-Layer Hygiene & Diagnostics | Pending |
 | OPS2-02 | Phase 8 — Data-Layer Hygiene & Diagnostics | Pending |
 | DATA-01 | Phase 9 — Atomic Data Integrity | Pending |
