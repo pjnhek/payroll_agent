@@ -44,6 +44,63 @@ def test_runs_list_returns_200():
 
 
 # ---------------------------------------------------------------------------
+# D-8-07 / OPS2-02 — load_all_runs explicit-column projection (jsonb_typeof-guarded
+# employee_count, review fix #2). DB-free via FakeConnection (fake_conn fixture,
+# tests/conftest.py).
+# ---------------------------------------------------------------------------
+
+
+def test_load_all_runs_projection_has_no_select_star(fake_conn):
+    """D-8-07 — the SQL text has no `pr.*` / `SELECT *`, and names the explicit
+    scalar columns plus the two computed aliases."""
+    from app.db import repo
+
+    fake_conn.script_fetchall([])
+    repo.load_all_runs(conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    assert "pr.*" not in sql
+    assert "SELECT *" not in sql
+    assert "summary_gate_reason" in sql
+    assert "employee_count" in sql
+    assert "pr.id" in sql
+    assert "pr.status" in sql
+    assert "pr.created_at" in sql
+
+
+def test_load_all_runs_employee_count_uses_jsonb_typeof_guard(fake_conn):
+    """Review fix #2 / T-8-12 — employee_count is guarded by a jsonb_typeof CASE
+    expression, NOT a bare COALESCE(jsonb_array_length(...), 0) — the bare form
+    still raises on a non-array JSON scalar/null literal."""
+    from app.db import repo
+
+    fake_conn.script_fetchall([])
+    repo.load_all_runs(conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    assert "CASE WHEN jsonb_typeof(pr.extracted_data->'employees') = 'array'" in sql
+    assert "THEN jsonb_array_length(pr.extracted_data->'employees')" in sql
+    assert "ELSE 0 END AS employee_count" in sql
+    assert "COALESCE(jsonb_array_length" not in sql
+
+
+def test_load_all_runs_tolerates_non_array_employee_count_value(fake_conn):
+    """Review fix #2 — hermetic proxy: since FakeConnection replays scripted rows
+    rather than executing real SQL, this proves the PYTHON-SIDE return path
+    tolerates the employee_count value the new jsonb_typeof-guarded SQL guarantees
+    for a corrupt/legacy non-array `employees` value (0), without raising."""
+    from app.db import repo
+
+    fake_conn.script_fetchall(
+        [{"id": uuid.uuid4(), "employee_count": 0, "summary_gate_reason": None}]
+    )
+    result = repo.load_all_runs(conn=fake_conn)
+
+    assert len(result) == 1
+    assert result[0]["employee_count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Test 2: DASH-02 — GET /runs/{valid_uuid} returns 200 or 404
 # ---------------------------------------------------------------------------
 
