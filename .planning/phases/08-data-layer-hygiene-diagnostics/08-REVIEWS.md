@@ -1,0 +1,111 @@
+---
+phase: 8
+reviewers: [codex]
+reviewed_at: 2026-07-02
+plans_reviewed: [08-01-PLAN.md, 08-02-PLAN.md, 08-03-PLAN.md]
+---
+
+# Cross-AI Plan Review — Phase 8
+
+## Codex Review
+
+I traced the plan claims against the live repo. I did not modify files or run the suite.
+
+## 08-01
+
+**Summary**  
+Strong schema/enum baseline plan. It correctly avoids a duplicate `businesses.contact_email` index because the live schema already has `TEXT NOT NULL UNIQUE`, and it updates both fresh-schema and existing-table status constraints. Main gap: the automated drift guard may not prove the new existing-table `DO $$` status CHECK swap.
+
+**Strengths**
+- Correctly treats `contact_email` as constraint-index-covered, matching [schema.sql](</Users/pnhek/usf msds/github/payroll_agent/app/db/schema.sql:18>) and the equality lookup in [repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:175>).
+- Reuses the existing idempotent schema style and the proven `DO $$` constraint-swap pattern.
+- Keeps the `NEEDS_CLARIFICATION` removal scoped to enum/schema/tests.
+
+**Concerns**
+- **MEDIUM:** `tests/test_status_drift.py` currently extracts the first `CHECK (status IN (...))` it finds, so it will validate the inline fresh-table CHECK but not necessarily the new live-table `DO $$` re-add block. A stale `DO $$` value list could slip through unless separately asserted.
+- **LOW:** The schema comment still says the status CHECK has “11 values” near [schema.sql](</Users/pnhek/usf msds/github/payroll_agent/app/db/schema.sql:64>); the plan does not explicitly update that stale prose.
+- **LOW:** The acceptance text around `grep -c "needs_clarification"` is slightly contradictory. The intended assertion should be simple: zero occurrences in `app/db/schema.sql`.
+
+**Suggestions**
+- Add a static test asserting `"needs_clarification"` is absent from the whole schema file and that the `payroll_runs_status_check` `DO $$` block contains the same 10 values as `RunStatus`.
+- Update the schema status comment from 11 to 10 values.
+- Keep the no-duplicate-index decision for `contact_email`; that part is correct.
+
+**Risk Assessment**  
+**LOW-MEDIUM.** The DDL shape is sound, but the live-table CHECK-swap proof needs a tighter automated guard.
+
+## 08-02
+
+**Summary**  
+Good data-access plan: centralizing scrub/truncate behavior inside `record_run_error` is the right architecture, and replacing `load_all_runs`’s `SELECT pr.*` directly closes the stated hygiene gap at [repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:1088>). A few edge cases need tightening before implementation.
+
+**Strengths**
+- Central scrubber inside `record_run_error` avoids caller bypass.
+- Fail-open behavior is appropriate for an error-path diagnostic feature.
+- The tests cover the important scrub-before-truncate boundary case.
+- The explicit projection aligns with existing `RUN_COLS` discipline at [repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:90>).
+
+**Concerns**
+- **MEDIUM:** `COALESCE(jsonb_array_length(pr.extracted_data->'employees'), 0)` is SQL-NULL safe, but not robust if the JSON value is `null` or a non-array scalar. That can still error. Corrupt/legacy JSON should not take down the runs list.
+- **MEDIUM:** The proposed signature makes `conn` keyword-only. Current in-repo calls use `conn=`, but this is a public repo helper pattern; preserving positional `conn` is safer.
+- **MEDIUM:** The scrubber’s exact `str.replace` is case-sensitive and normalization-sensitive. A roster name in different case or Unicode form can leak, which matters because MONEY-02 already established Unicode normalization as a project concern.
+- **LOW:** The helper design redacts roster names/aliases and emails, but not any non-email business contact string if one ever appears outside the roster object.
+
+**Suggestions**
+- Use a safer employee count expression, e.g. `CASE WHEN jsonb_typeof(pr.extracted_data->'employees') = 'array' THEN jsonb_array_length(...) ELSE 0 END`.
+- Prefer `def record_run_error(run_id, reason, conn=None, *, detail_exc=None, stage=None, roster=None)`.
+- Normalize names before matching, and consider length-descending replacement or boundary-aware matching to avoid short-alias over-redaction.
+
+**Risk Assessment**  
+**MEDIUM.** The plan achieves the core goals, but the JSONB scalar edge case and PII matching semantics should be fixed before execution.
+
+## 08-03
+
+**Summary**  
+This is the most important plan and it catches the key `RUN_COLS` data-flow gap: without adding `error_detail` to [RUN_COLS](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:90>), the dashboard route at [main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:904>) could never render the new column. The major blocker is that the main first-run pipeline still cannot roster-scrub errors, because `run_pipeline()` catches outside `_run()` and `_run()`’s `roster` local is not visible.
+
+**Strengths**
+- Correctly identifies the DB column → `RUN_COLS` → `load_run` → template path.
+- Updates all currently visible production `record_run_error` call sites: [orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:173>) and [main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:475>).
+- Keeps Jinja autoescaping intact for `error_detail`.
+- Includes a live Supabase checkpoint with the right pre-migration status count guard.
+- Adds the pool singleton lock, which is a reasonable low-risk folded hygiene fix.
+
+**Concerns**
+- **HIGH:** `run_pipeline()` will pass no roster, so first-run failures after `_run()` loads the roster at [orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:191>) are only email-regex scrubbed. If `str(exc)` contains employee names/aliases, OPS2-01’s PII-safe guarantee fails on the main pipeline path.
+- **MEDIUM:** Code that writes `error_detail` can run before the live DB checkpoint adds the column. Against a real DB with old schema, `record_run_error` will fail instead of recording the original error.
+- **LOW:** `InMemoryRepo.load_all_runs()` in [conftest.py](</Users/pnhek/usf msds/github/payroll_agent/tests/conftest.py:359>) will not mirror the new `summary_gate_reason` / `employee_count` aliases, so route-level fake tests may stop exercising the real list summary contract.
+- **LOW:** The live dashboard verification asks for “a real failure” but does not define a deterministic safe way to create one.
+
+**Suggestions**
+- Revise the first-run pipeline wiring so the catch block has `roster` when available. The simplest safe shape is to move the try/except boundary into a function scope where `roster = None` is initialized before load and reassigned after `load_roster_for_business`.
+- Make schema apply a deployment gate before code that writes `error_detail` runs against any real DB.
+- Update `InMemoryRepo.load_all_runs()` to compute the same two aliases.
+- Add a deterministic live verification option, such as temporarily setting a test ERROR row’s `error_detail` via SQL and confirming the dashboard render.
+
+**Risk Assessment**  
+**MEDIUM-HIGH until the roster-scrub gap is fixed; MEDIUM after.** The plan is otherwise well-structured, but the current first-run data flow does not satisfy the PII-safe diagnostics requirement.
+
+---
+
+## Consensus Summary
+
+Single external reviewer (Codex) this round; consensus is drawn against the internal gsd-plan-checker rounds (iteration 1 blocker + re-verification).
+
+### Agreed Strengths
+- The RUN_COLS → load_run → run_detail.html key link (the internal checker's iteration-1 blocker, fixed in revision) is independently confirmed correct by Codex: "Correctly identifies the DB column → RUN_COLS → load_run → template path."
+- No duplicate index on `businesses.contact_email` (D-8-09) — both reviewers verified the UNIQUE constraint + equality lookup against live source.
+- Centralized scrub-inside-record_run_error architecture (no caller bypass) and fail-open error-path behavior endorsed by both.
+
+### Agreed Concerns
+_(raised by Codex; internal checker did not catch these — all verified against live source by the orchestrator)_
+
+1. **HIGH — roster-scope gap on the main pipeline path (08-03):** `run_pipeline()`'s except block (orchestrator.py:181) wraps the `_run()` call, but `roster` is a local *inside* `_run()` (orchestrator.py:200). As planned, the first-run catch-all can only pass `roster=None`, so first-run failures are email-regex-scrubbed only — roster names/aliases in `str(exc)` would leak, failing OPS2-01's "excludes PII" criterion on the most common failure path. VERIFIED against live source. Fix direction: move the try/except boundary (or roster binding) into a scope where `roster = None` is initialized before `load_roster_for_business` and reassigned after, so the except block sees whatever was loaded.
+2. **MEDIUM — JSONB scalar edge case (08-02):** `COALESCE(jsonb_array_length(...), 0)` is NULL-safe but errors if `extracted_data->'employees'` is a JSON scalar/`null` literal (non-array). Use `CASE WHEN jsonb_typeof(...) = 'array' THEN jsonb_array_length(...) ELSE 0 END`.
+3. **MEDIUM — deploy-order gap (08-03):** code writing `error_detail` can reach a live DB before the checkpoint applies the column — `record_run_error` would then fail instead of recording the original error (the exact failure mode D-8-01b exists to prevent). Sequence the live schema apply before (or make the write tolerant of) the missing column.
+4. **MEDIUM — scrubber case/normalization sensitivity (08-02):** exact `str.replace` misses case/Unicode-form variants of roster names (project already treats Unicode normalization as a concern per MONEY-02). Normalize before matching; replace length-descending.
+5. **MEDIUM — drift-guard coverage (08-01):** `test_status_drift.py` parses the first inline `CHECK (status IN (...))`, which may not cover the new `DO $$` re-add block — a stale value list in the swap block could slip through. Assert the `DO $$` block's value list matches RunStatus and `needs_clarification` is absent from the whole schema file.
+6. **LOW:** stale "11 values" schema comment; `InMemoryRepo.load_all_runs()` should mirror the new aliases; keyword-only `conn` deviates from existing signature convention; live checkpoint lacks a deterministic way to produce an ERROR run.
+
+### Divergent Views
+- None substantive. The internal checker passed the plans; Codex agrees on structure but adds data-flow findings the internal rounds missed — consistent with this project's Phase 7.5 pattern (external arg-flow tracing catches what prose-level checks don't).
