@@ -2,6 +2,7 @@
 phase: 8
 reviewers: [codex]
 reviewed_at: 2026-07-02
+rounds: 2  # round 2 = post-replan re-review (replan commit 69919a7)
 plans_reviewed: [08-01-PLAN.md, 08-02-PLAN.md, 08-03-PLAN.md]
 ---
 
@@ -109,3 +110,54 @@ _(raised by Codex; internal checker did not catch these — all verified against
 
 ### Divergent Views
 - None substantive. The internal checker passed the plans; Codex agrees on structure but adds data-flow findings the internal rounds missed — consistent with this project's Phase 7.5 pattern (external arg-flow tracing catches what prose-level checks don't).
+
+---
+
+# Round 2 — Codex Re-Review (post-replan, commit 69919a7)
+
+I traced the revised plans against the live repo. I did not modify files.
+
+**Round 1 Findings Disposition**
+
+| Finding | Disposition | Evidence |
+|---|---:|---|
+| 08-01 drift guard only parsed first status CHECK | FIXED | Live guard uses first-match `re.search` in [tests/test_status_drift.py](/Users/pnhek/usf msds/github/payroll_agent/tests/test_status_drift.py:54). Revised plan adds a separate DO-block parser for `payroll_runs_status_check` in [08-01-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-01-PLAN.md:131). |
+| 08-01 stale “11 values” schema comment | FIXED | Comment is currently stale in [schema.sql](/Users/pnhek/usf msds/github/payroll_agent/app/db/schema.sql:59); plan explicitly updates it in [08-01-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-01-PLAN.md:125). |
+| 08-01 ambiguous `needs_clarification` grep acceptance | FIXED | Live value exists in [schema.sql](/Users/pnhek/usf msds/github/payroll_agent/app/db/schema.sql:69); plan requires zero occurrences file-wide in [08-01-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-01-PLAN.md:142). |
+| 08-02 JSONB scalar edge in `employee_count` | FIXED | Live `load_all_runs` still uses `SELECT pr.*` in [repo.py](/Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:1095). Plan replaces with `CASE WHEN jsonb_typeof(...) = 'array' ... ELSE 0` in [08-02-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:131). |
+| 08-02 `conn` positional compatibility | FIXED | Live signature is positional-compatible in [repo.py](/Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:370); revised signature preserves `conn` before `*` in [08-02-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:100). |
+| 08-02 case/Unicode-insensitive roster scrub | PARTIALLY FIXED | Plan adds NFKC/casefold/longest-first matching in [08-02-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:96), but the proposed “normalized search, original slicing using normalized offsets” is not offset-safe for Unicode normalization/casefold expansions. See new concern below. |
+| 08-02 non-email business contact string redaction | NOT FIXED | Live `Roster` contains only employee `full_name` and `known_aliases` in [roster.py](/Users/pnhek/usf msds/github/payroll_agent/app/models/roster.py:36). Plan scrubs emails plus roster names only in [08-02-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:97). This is probably acceptable today because `businesses.contact_email` is an email, but the Round 1 low note remains. |
+| 08-03 main pipeline roster-scope gap | FIXED | Live `run_pipeline` catches outside `_run` in [orchestrator.py](/Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:173), while `roster` is local to `_run` at [orchestrator.py](/Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:199). Plan moves the catch into `_run` and passes `roster=roster` in [08-03-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-03-PLAN.md:120). |
+| 08-03 deploy-order gap | FIXED | Plan makes schema-before-code an explicit live checkpoint/gate in [08-03-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-03-PLAN.md:168). |
+| 08-03 `InMemoryRepo.load_all_runs` alias gap | FIXED | Live fake currently returns only `{**run, business_name}` in [conftest.py](/Users/pnhek/usf msds/github/payroll_agent/tests/conftest.py:359). Plan adds `summary_gate_reason` and `employee_count` in [08-03-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-03-PLAN.md:139). |
+| 08-03 deterministic live ERROR dashboard verification | FIXED | Plan now includes a set-and-revert SQL verification path in [08-03-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-03-PLAN.md:195). |
+
+**New Concerns**
+
+- **MEDIUM — Unicode scrub algorithm can use wrong spans.**  
+  In [08-02-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:97), the plan says to search a normalized message but slice the original string using the normalized match offsets. NFKC/casefold can change string length, so those offsets are not reliable. This can leave partial PII, for example a combining accent after `[REDACTED]`, or redact the wrong adjacent characters. Use an offset-preserving matcher, or normalize by grapheme/character mapping while retaining original spans. Make the Unicode test non-skippable with a constructed accented employee and assert no raw fragments or combining marks remain.
+
+- **MEDIUM — the HIGH roster-scope fix still lacks a behavioral test.**  
+  The plan has source grep assertions for `roster=roster` in [08-03-PLAN.md](/Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-03-PLAN.md:149), but existing orchestrator tests only assert `status == "error"` and `error_reason` in [test_orchestrator_states.py](/Users/pnhek/usf msds/github/payroll_agent/tests/test_orchestrator_states.py:104). Add a spy test that forces a failure after `load_roster_for_business` and asserts `record_run_error(..., stage="pipeline", roster=<non-None roster>)`.
+
+- **LOW — short aliases can over-redact inside ordinary words.**  
+  The plan’s longest-first approach helps overlapping names, but it is still unbounded substring replacement. Seed aliases include short values like `Tom` and `Maria` in [seed.py](/Users/pnhek/usf msds/github/payroll_agent/app/db/seed.py:83). Consider boundary-aware matching for roster terms to preserve diagnostic value.
+
+**Risk Assessment**
+
+Overall risk: **MEDIUM**. The Round 1 structural issues are mostly fixed, including the important orchestrator scope problem and deployment sequencing. I would not execute unchanged because the Unicode scrub implementation can still violate the PII-safe guarantee, and the main-pipeline roster fix should have a real argument-flow regression test, not just grep checks. After those two adjustments, the plans look ready to execute.
+
+---
+
+## Round 2 Consensus Summary
+
+- **Disposition:** 9/11 Round-1 findings FIXED (traced against live source); 1 PARTIALLY FIXED (Unicode scrub — see R2-1); 1 NOT FIXED but accepted (LOW: non-email business contact strings — Roster carries only employee names/aliases today, contact is an email and email-regex covers it).
+- **Internal checker agreement:** the gsd-plan-checker's post-replan verification also passed the roster-scope fix, resume_pipeline right-sizing, and all MEDIUM/LOW fixes — Codex R2 concurs, then goes one level deeper on the scrubber algorithm.
+
+### Open items from Round 2 (to fold into plans before execution)
+1. **R2-1 MEDIUM (08-02) — Unicode scrub offset bug:** "search normalized, slice original with normalized offsets" is not offset-safe — NFKC/casefold can change string length, so spans drift → partial PII fragments (e.g. a stray combining mark) or wrong-character redaction. Fix: offset-preserving matching (e.g. per-candidate regex built from the original-name pattern with IGNORECASE, or normalize with an index map back to original spans). Make the accented-employee test constructed and non-skippable; assert no raw fragments/combining marks survive.
+2. **R2-2 MEDIUM (08-03) — roster arg-flow needs a behavioral test:** the HIGH fix is only guarded by source-grep assertions. Add a spy test forcing a failure AFTER load_roster_for_business and asserting record_run_error was called with a non-None roster (argument-flow regression test, per this project's Phase 7.5 lesson).
+3. **R2-3 LOW (08-02) — short-alias over-redaction:** seed aliases include `Tom`/`Maria`; unbounded substring replacement can redact inside ordinary words. Prefer boundary-aware matching (e.g. `\b`-anchored regex per name) to preserve diagnostic value.
+
+**Codex verdict:** MEDIUM risk — "After those two adjustments, the plans look ready to execute."
