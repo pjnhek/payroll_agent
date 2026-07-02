@@ -65,6 +65,43 @@ def _extract_check_in_values(sql: str, column: str) -> set[str]:
     return {v.strip().strip("'") for v in raw_values if v.strip()}
 
 
+def _extract_do_block_status_values(sql: str) -> set[str]:
+    """Parse the value set out of the payroll_runs_status_check DO-block re-add.
+
+    Review fix (codex MEDIUM #5): `_extract_check_in_values` uses `re.search`,
+    which only ever finds the FIRST `CHECK (status IN (...))` match in the whole
+    file — the INLINE CREATE TABLE CHECK. It structurally cannot see the DO-block's
+    re-add value list below it. This is a SEPARATE, dedicated parser: it locates
+    the `payroll_runs_status_check` constraint-name literal first, then searches
+    for the `CHECK (status IN (...))` that appears AFTER that point in the file
+    (the DO-block's ADD CONSTRAINT), independent of the inline-CHECK parser.
+    """
+    sql_clean = re.sub(r"--[^\n]*", "", sql)
+
+    marker = "payroll_runs_status_check"
+    marker_idx = sql_clean.find(marker)
+    if marker_idx == -1:
+        raise ValueError(
+            "No 'payroll_runs_status_check' constraint name found in schema.sql"
+        )
+    # Search for the CHECK (status IN (...)) that appears after the constraint
+    # name literal — the DO-block's ADD CONSTRAINT clause, not the inline CHECK.
+    remainder = sql_clean[marker_idx:]
+    m = re.search(
+        r"CHECK\s*\(\s*status\s+IN\s*\((.*?)\)\s*\)",
+        remainder,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not m:
+        raise ValueError(
+            "No 'CHECK (status IN (...))' found after payroll_runs_status_check "
+            "in schema.sql (DO-block re-add value list not found)"
+        )
+
+    raw_values = m.group(1).split(",")
+    return {v.strip().strip("'") for v in raw_values if v.strip()}
+
+
 def _literal_values(field_name: str) -> set[str]:
     """Return the Literal arg set for an Employee field as strings.
 
@@ -115,19 +152,54 @@ class TestEnumCheckDrift:
             f"  Python values: {sorted(python_values)}"
         )
 
-    def test_status_exact_count_is_eleven(self) -> None:
+    def test_status_exact_count_is_ten(self) -> None:
         """Sanity-check that neither status source has silent duplicates."""
         sql = _SCHEMA_SQL.read_text()
         sql_values = _extract_check_in_values(sql, "status")
         enum_values = {member.value for member in RunStatus}
 
-        assert len(sql_values) == 11, (
-            f"Expected 11 unique status values in SQL CHECK, got {len(sql_values)}: "
+        assert len(sql_values) == 10, (
+            f"Expected 10 unique status values in SQL CHECK, got {len(sql_values)}: "
             f"{sorted(sql_values)}"
         )
-        assert len(enum_values) == 11, (
-            f"Expected 11 RunStatus members, got {len(enum_values)}: "
+        assert len(enum_values) == 10, (
+            f"Expected 10 RunStatus members, got {len(enum_values)}: "
             f"{sorted(enum_values)}"
+        )
+
+    def test_do_block_status_check_matches_enum(self) -> None:
+        """The DO-block's payroll_runs_status_check re-add list matches RunStatus.
+
+        Review fix (codex MEDIUM #5): independent of `_extract_check_in_values`
+        (which only ever sees the FIRST CHECK match, i.e. the inline CREATE TABLE
+        CHECK). This test uses the dedicated `_extract_do_block_status_values`
+        parser so a stale value in EITHER the inline CHECK or the DO-block re-add
+        list fails CI — a one-sided edit to either location is now caught.
+        """
+        sql = _SCHEMA_SQL.read_text()
+        do_block_values = _extract_do_block_status_values(sql)
+        enum_values = {member.value for member in RunStatus}
+
+        assert do_block_values == enum_values, (
+            "Enum drift detected in the payroll_runs_status_check DO-block re-add "
+            "list!\n"
+            f"  In DO-block but not in Python: {do_block_values - enum_values or 'none'}\n"
+            f"  In Python but not in DO-block: {enum_values - do_block_values or 'none'}\n"
+            f"  DO-block values: {sorted(do_block_values)}\n"
+            f"  Python values:   {sorted(enum_values)}"
+        )
+
+    def test_needs_clarification_absent_file_wide(self) -> None:
+        """'needs_clarification' has zero occurrences anywhere in schema.sql.
+
+        Belt-and-suspenders proof (review fix, folded todo 260623-06) that the
+        removed status value is gone from every location — inline CHECK, DO-block
+        re-add list, and any stray comment — not just the two CHECK definitions.
+        """
+        sql = _SCHEMA_SQL.read_text()
+        assert "needs_clarification" not in sql, (
+            "'needs_clarification' still appears in schema.sql — it must be fully "
+            "removed (folded todo 260623-06)"
         )
 
     def test_no_db_connection_needed(self) -> None:
@@ -136,6 +208,124 @@ class TestEnumCheckDrift:
         Uses AST inspection of this file's own source to confirm no DB import
         exists.  Process-global sys.modules is NOT used (it would reflect other
         tests in the run, making the assertion order-dependent).
+        """
+        source = pathlib.Path(__file__).read_text()
+        tree = ast.parse(source, filename=__file__)
+
+        _FORBIDDEN = {"app.db.supabase", "psycopg", "psycopg_pool"}
+
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in _FORBIDDEN:
+                        offenders.append(
+                            f"line {node.lineno}: import {alias.name}"
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module in _FORBIDDEN or module.startswith("app.db.supabase"):
+                    offenders.append(
+                        f"line {node.lineno}: from {module} import ..."
+                    )
+
+        assert not offenders, (
+            "test_status_drift.py must not import the DB layer.\n"
+            "Forbidden import(s) found:\n  " + "\n  ".join(offenders)
+        )
+
+
+class TestIndexStaticGuard:
+    """D-8-10 static half of the hot-path index guard (the live half is 08-03).
+
+    Mirrors TestEnumCheckDrift's parse-and-assert shape: purely textual assertions
+    against schema.sql, no DB connection.  Proves the 3 OPS2-02 CREATE INDEX
+    statements exist with their exact researched column order, and that
+    businesses.contact_email / uq_email_run_purpose coverage facts still hold
+    (the substitute proof for D-8-09's non-duplication decision).
+    """
+
+    def test_schema_file_exists(self) -> None:
+        assert _SCHEMA_SQL.exists(), f"schema.sql not found at {_SCHEMA_SQL}"
+
+    def test_email_messages_composite_index_present(self) -> None:
+        sql = _SCHEMA_SQL.read_text()
+        assert (
+            "CREATE INDEX IF NOT EXISTS idx_email_messages_run_direction_state"
+            in sql
+        ), "idx_email_messages_run_direction_state statement not found"
+        # Column order is locked by D-8-09 / 08-RESEARCH.md Pattern 3.
+        m = re.search(
+            r"idx_email_messages_run_direction_state\s*\n?\s*ON\s+email_messages\s*\(([^)]*)\)",
+            sql,
+        )
+        assert m, "could not find the index's ON email_messages (...) column list"
+        columns = [c.strip() for c in m.group(1).split(",")]
+        assert columns == ["run_id", "direction", "send_state"], (
+            f"expected column order (run_id, direction, send_state), got {columns}"
+        )
+
+    def test_payroll_runs_created_at_index_present(self) -> None:
+        sql = _SCHEMA_SQL.read_text()
+        assert (
+            "CREATE INDEX IF NOT EXISTS idx_payroll_runs_created_at" in sql
+        ), "idx_payroll_runs_created_at statement not found"
+        m = re.search(
+            r"idx_payroll_runs_created_at\s*\n?\s*ON\s+payroll_runs\s*\(([^)]*)\)",
+            sql,
+        )
+        assert m, "could not find the index's ON payroll_runs (...) column list"
+        assert m.group(1).strip().lower() == "created_at desc", (
+            f"expected 'created_at DESC', got {m.group(1).strip()!r}"
+        )
+
+    def test_payroll_runs_status_index_present(self) -> None:
+        sql = _SCHEMA_SQL.read_text()
+        assert (
+            "CREATE INDEX IF NOT EXISTS idx_payroll_runs_status" in sql
+        ), "idx_payroll_runs_status statement not found"
+        m = re.search(
+            r"idx_payroll_runs_status\s*\n?\s*ON\s+payroll_runs\s*\(([^)]*)\)",
+            sql,
+        )
+        assert m, "could not find the index's ON payroll_runs (...) column list"
+        assert m.group(1).strip() == "status", (
+            f"expected 'status', got {m.group(1).strip()!r}"
+        )
+
+    def test_exactly_three_new_indexes(self) -> None:
+        sql = _SCHEMA_SQL.read_text()
+        assert sql.count("CREATE INDEX IF NOT EXISTS") == 3, (
+            "expected exactly 3 CREATE INDEX IF NOT EXISTS statements in schema.sql"
+        )
+
+    def test_contact_email_still_not_null_unique(self) -> None:
+        """D-8-09 substitute proof: contact_email's UNIQUE constraint is untouched.
+
+        No separate CREATE INDEX on businesses(contact_email) should ever exist —
+        the NOT NULL UNIQUE constraint's implicit index already covers it.
+        """
+        sql = _SCHEMA_SQL.read_text()
+        m = re.search(r"contact_email\s+TEXT\s+NOT NULL UNIQUE", sql)
+        assert m, "businesses.contact_email must remain NOT NULL UNIQUE"
+        assert not re.search(
+            r"CREATE INDEX[^\n]*\n?\s*ON\s+businesses\s*\(\s*contact_email\s*\)",
+            sql,
+            re.IGNORECASE,
+        ), "a duplicate index on businesses(contact_email) must not exist (D-8-09)"
+
+    def test_uq_email_run_purpose_still_present(self) -> None:
+        sql = _SCHEMA_SQL.read_text()
+        assert "uq_email_run_purpose" in sql, (
+            "uq_email_run_purpose constraint must still be present"
+        )
+
+    def test_no_db_connection_needed(self) -> None:
+        """Confirm this file imports no DB module (pure static file test).
+
+        Copied verbatim (per-class, since pytest classes don't inherit test
+        collection across classes) from TestEnumCheckDrift.test_no_db_connection_needed
+        so this class is provably hermetic like its sibling.
         """
         source = pathlib.Path(__file__).read_text()
         tree = ast.parse(source, filename=__file__)

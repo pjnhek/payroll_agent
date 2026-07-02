@@ -2,7 +2,7 @@
 
 Finding #6: these tests run in CI on every push.  They are the living proof that:
 - All 10 public types import from app.models
-- RunStatus has exactly 11 members with the right values (mirrors Plan 02 CHECK)
+- RunStatus has exactly 10 members with the right values (mirrors Plan 02 CHECK)
 - Decimal serializes to JSON strings (D-06 guard at the DB jsonb boundary)
 - Decision is purely code-owned: final_action is the sole branch source and
   resolutions carries per-name detail (D-21-01 / D-21-04) — no model_action,
@@ -118,16 +118,15 @@ def test_imports() -> None:
 
 
 def test_run_status_count() -> None:
-    """RunStatus has exactly 11 members (D-02 / D-03)."""
-    assert len(RunStatus) == 11
+    """RunStatus has exactly 10 members (D-02 / D-03)."""
+    assert len(RunStatus) == 10
 
 
 def test_run_status_values() -> None:
-    """RunStatus values match the 11-value set verbatim (mirrors Plan 02 CHECK)."""
+    """RunStatus values match the 10-value set verbatim (mirrors Plan 02 CHECK)."""
     expected = {
         "received",
         "extracting",
-        "needs_clarification",
         "awaiting_reply",
         "computed",
         "awaiting_approval",

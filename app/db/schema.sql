@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS employees (
 -- payroll_runs.source_email_id references email_messages.id).
 --
 -- D-02/D-03: status is TEXT + CHECK (not a native ENUM) so adding a value is a
--- one-line CHECK edit that can run inside a transaction. The 11 values mirror
+-- one-line CHECK edit that can run inside a transaction. The 10 values mirror
 -- RunStatus in app/models/status.py exactly — a CI test asserts set-equality.
 CREATE TABLE IF NOT EXISTS payroll_runs (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -69,7 +69,6 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
                                 CHECK (status IN (
                                     'received',
                                     'extracting',
-                                    'needs_clarification',
                                     'awaiting_reply',
                                     'computed',
                                     'awaiting_approval',
@@ -122,6 +121,49 @@ CREATE INDEX IF NOT EXISTS idx_payroll_runs_created_at
     ON payroll_runs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_payroll_runs_status
     ON payroll_runs (status);
+
+-- Folded todo 260623-06: idempotent DROP + RE-ADD of the payroll_runs status CHECK
+-- constraint, removing the dead needs-clarification value. Mirrors the D-7.5-03a
+-- atomic DROP+ADD pattern used above for email_messages_purpose_check — the DROP
+-- and re-ADD happen inside one DO $$ ... END $$; block so a failed ADD rolls back
+-- the DROP too (no half-migrated table). The pg_constraint lookup is narrowed by
+-- BOTH contype='c' AND conrelid='payroll_runs'::regclass before the LIKE pattern
+-- (mirrors the defensive matcher used for email_messages_purpose_check).
+-- NOTE: this DO-block only fixes an EXISTING table (bootstrap re-apply path); the
+-- inline CHECK edit above already gives a fresh bootstrap the correct 10-value set.
+DO $$
+DECLARE
+    _con_name TEXT;
+BEGIN
+    SELECT conname INTO _con_name
+    FROM pg_constraint
+    WHERE contype = 'c'
+      AND conrelid = 'payroll_runs'::regclass
+      AND conname LIKE '%status%';
+    IF _con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE payroll_runs DROP CONSTRAINT ' || quote_ident(_con_name);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'payroll_runs_status_check'
+          AND conrelid = 'payroll_runs'::regclass
+    ) THEN
+        ALTER TABLE payroll_runs ADD CONSTRAINT payroll_runs_status_check
+            CHECK (status IN (
+                'received',
+                'extracting',
+                'awaiting_reply',
+                'computed',
+                'awaiting_approval',
+                'approved',
+                'sent',
+                'reconciled',
+                'rejected',
+                'error'
+            ));
+    END IF;
+END;
+$$;
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
