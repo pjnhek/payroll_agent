@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS businesses (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     name            TEXT        NOT NULL,
     contact_email   TEXT        NOT NULL UNIQUE,
+    -- D-8-09: verify, don't duplicate — the UNIQUE constraint above already
+    -- creates an implicit btree index that serves find_business_by_sender's
+    -- plain-equality lookup (repo.py). No separate CREATE INDEX is added.
     pay_period      TEXT        NOT NULL CHECK (pay_period IN ('weekly','biweekly','semi_monthly','monthly')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -56,7 +59,7 @@ CREATE TABLE IF NOT EXISTS employees (
 -- payroll_runs.source_email_id references email_messages.id).
 --
 -- D-02/D-03: status is TEXT + CHECK (not a native ENUM) so adding a value is a
--- one-line CHECK edit that can run inside a transaction. The 11 values mirror
+-- one-line CHECK edit that can run inside a transaction. The 10 values mirror
 -- RunStatus in app/models/status.py exactly — a CI test asserts set-equality.
 CREATE TABLE IF NOT EXISTS payroll_runs (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -66,7 +69,6 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
                                 CHECK (status IN (
                                     'received',
                                     'extracting',
-                                    'needs_clarification',
                                     'awaiting_reply',
                                     'computed',
                                     'awaiting_approval',
@@ -110,6 +112,58 @@ ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS alias_candidates  JSONB;  -- D
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS record_only       BOOLEAN NOT NULL DEFAULT FALSE;  -- 06-08 HIGH-1: compose-created runs skip real Resend send
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS pre_clarify_extracted JSONB;  -- D-19 MONEY-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarified_fields      JSONB;  -- D-13 MONEY-03
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_detail          TEXT;   -- D-8-01/D-8-02: PII-scrubbed, stage-prefixed, truncated exception detail
+
+-- ── OPS2-02 hot-path indexes for payroll_runs ─────────────────────────────────
+-- Serve load_all_runs's ORDER BY created_at DESC and find_awaiting_reply_for_header's
+-- pr.status = 'awaiting_reply' filter (repo.py, confirmed in 08-RESEARCH.md).
+CREATE INDEX IF NOT EXISTS idx_payroll_runs_created_at
+    ON payroll_runs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payroll_runs_status
+    ON payroll_runs (status);
+
+-- Folded todo 260623-06: idempotent DROP + RE-ADD of the payroll_runs status CHECK
+-- constraint, removing the dead needs-clarification value. Mirrors the D-7.5-03a
+-- atomic DROP+ADD pattern used above for email_messages_purpose_check — the DROP
+-- and re-ADD happen inside one DO $$ ... END $$; block so a failed ADD rolls back
+-- the DROP too (no half-migrated table). The pg_constraint lookup is narrowed by
+-- BOTH contype='c' AND conrelid='payroll_runs'::regclass before the LIKE pattern
+-- (mirrors the defensive matcher used for email_messages_purpose_check).
+-- NOTE: this DO-block only fixes an EXISTING table (bootstrap re-apply path); the
+-- inline CHECK edit above already gives a fresh bootstrap the correct 10-value set.
+DO $$
+DECLARE
+    _con_name TEXT;
+BEGIN
+    SELECT conname INTO _con_name
+    FROM pg_constraint
+    WHERE contype = 'c'
+      AND conrelid = 'payroll_runs'::regclass
+      AND conname LIKE '%status%';
+    IF _con_name IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE payroll_runs DROP CONSTRAINT ' || quote_ident(_con_name);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'payroll_runs_status_check'
+          AND conrelid = 'payroll_runs'::regclass
+    ) THEN
+        ALTER TABLE payroll_runs ADD CONSTRAINT payroll_runs_status_check
+            CHECK (status IN (
+                'received',
+                'extracting',
+                'awaiting_reply',
+                'computed',
+                'awaiting_approval',
+                'approved',
+                'sent',
+                'reconciled',
+                'rejected',
+                'error'
+            ));
+    END IF;
+END;
+$$;
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
@@ -214,6 +268,15 @@ BEGIN
     END IF;
 END;
 $$;
+
+-- ── OPS2-02 hot-path index for email_messages ─────────────────────────────────
+-- D-8-09: column order (run_id, direction, send_state) traced against live query
+-- predicates in repo.py (08-RESEARCH.md Pattern 3), not copied from the audit's
+-- guess. businesses.contact_email is deliberately excluded from any new index
+-- here — it is already covered by its own NOT NULL UNIQUE constraint's implicit
+-- index (see the comment on that column declaration above).
+CREATE INDEX IF NOT EXISTS idx_email_messages_run_direction_state
+    ON email_messages (run_id, direction, send_state);
 
 -- ── 6. eval_results ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS eval_results (
