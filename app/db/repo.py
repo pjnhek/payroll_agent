@@ -61,6 +61,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -367,7 +368,114 @@ def claim_status(
     return row is not None
 
 
-def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
+# ---------------------------------------------------------------------------
+# PII scrub helpers (OPS2-01, D-8-01/D-8-01b/D-8-02) — offset-safe, per-candidate
+# compiled regex, mark-aware-lookaround-anchored, longest-name-first, fail-open.
+#
+# Design (closes codex R2-1 offset-drift + R2-3 boundary-over-redaction + R3-1
+# stray-combining-mark, see 08-02-PLAN.md): each candidate name/alias gets ONE
+# compiled re.Pattern built directly from the ORIGINAL (non-normalized) string —
+# never from a normalized copy of the message. Every match span the regex engine
+# reports is therefore already a valid offset into the original message; there is
+# no normalize-then-slice-original translation step, so no offset can drift.
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_REDACTED = "[REDACTED]"
+
+# Explicit, transcribed three-way alternation per accented Latin letter likely to
+# appear in a roster name: (precomposed | base + combining mark | bare unaccented
+# base). The bare-base alternative is required because real input (LLM extraction,
+# all-caps email rendering) frequently strips diacritics entirely rather than
+# decomposing them — a map with only the first two alternatives lets a fully
+# unaccented rendering (e.g. "Ana Nunez" for stored "Ana Núñez") leak unredacted.
+# NOT computed via unicodedata.normalize at match time (that is the offset-unsafe
+# approach R2-1 rejects) — this is a small, explicit, transcribed table.
+_ACCENT_CLASS_MAP: dict[str, str] = {
+    "\u00e1": "(?:\u00e1|a\u0301|a)",  # a-acute: precomposed | a+combining acute | bare a
+    "\u00e9": "(?:\u00e9|e\u0301|e)",  # e-acute
+    "\u00ed": "(?:\u00ed|i\u0301|i)",  # i-acute
+    "\u00f3": "(?:\u00f3|o\u0301|o)",  # o-acute
+    "\u00fa": "(?:\u00fa|u\u0301|u)",  # u-acute
+    "\u00f1": "(?:\u00f1|n\u0303|n)",  # n-tilde
+    "\u00e7": "(?:\u00e7|c\u0327|c)",  # c-cedilla
+}
+
+
+def _compile_name_pattern(name: str) -> re.Pattern[str]:
+    r"""Build ONE compiled, mark-aware-lookaround-anchored pattern for `name`.
+
+    Matches the precomposed form, an NFD-decomposed occurrence, AND a bare-
+    unaccented occurrence of `name` -- all directly against the ORIGINAL
+    message string (no normalize-then-slice step, so no offset drift, R2-1).
+    Anchored with lookarounds -- (?<![\w\u0300-\u036f]) / (?![\w\u0300-\u036f])
+    -- instead of bare \b...\b (R3-1): these reject BOTH a following word
+    character AND a following combining mark, so a candidate ending in an
+    accented character can't match only its bare-base alternative while
+    stranding an NFD trailing combining mark next to [REDACTED]. Strictly
+    stronger than \b for plain ASCII, so "Tom" still never matches inside
+    "Tomorrow" (R2-3).
+    """
+    fragments: list[str] = []
+    for ch in name:
+        mapped = _ACCENT_CLASS_MAP.get(ch.lower())
+        fragments.append(mapped if mapped is not None else re.escape(ch))
+    body = "".join(fragments)
+    pattern = r"(?<![\w\u0300-\u036f])" + body + r"(?![\w\u0300-\u036f])"
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _scrub(message: str, roster: Roster | None = None) -> str:
+    """Redact email addresses and (if `roster` given) roster names/aliases.
+
+    Never queries the DB or calls any repo/load function — `roster` is only
+    ever the in-memory object the caller already has (D-8-01b, non-negotiable).
+    Candidates are applied longest-first so a short alias contained inside a
+    longer name/alias (e.g. alias "Dave" inside full_name "Dave Reyes") never
+    independently matches and fragments an already-redacted span (R2-1).
+    """
+    message = _EMAIL_RE.sub(_REDACTED, message)
+    if roster is None:
+        return message
+
+    candidates: list[str] = []
+    for employee in roster.employees:
+        if employee.full_name:
+            candidates.append(employee.full_name)
+        for alias in employee.known_aliases:
+            if alias:
+                candidates.append(alias)
+    candidates.sort(key=len, reverse=True)
+
+    for name in candidates:
+        pattern = _compile_name_pattern(name)
+        message = pattern.sub(_REDACTED, message)
+    return message
+
+
+def _build_error_detail(
+    stage: str, exc: Exception, roster: Roster | None = None
+) -> str | None:
+    """Scrub-then-compose-then-truncate. Fails open: any internal exception
+    returns None so diagnostics never blocks the error path it exists to
+    observe (D-8-01b, T-8-02).
+    """
+    try:
+        scrubbed = _scrub(str(exc), roster=roster)
+        return f"{stage}: {scrubbed}"[:200]
+    except Exception:  # noqa: BLE001 — diagnostics must never break diagnostics
+        return None
+
+
+def record_run_error(
+    run_id: uuid.UUID,
+    reason: str,
+    conn=None,
+    *,
+    detail_exc: Exception | None = None,
+    stage: str | None = None,
+    roster: Roster | None = None,
+) -> None:
     """Write payroll_runs.error_reason AND advance the run to ERROR.
 
     The single documented exception to "set_status is the only status writer":
@@ -382,7 +490,19 @@ def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
     transaction first; if it is terminal, log and return WITHOUT writing — defense in
     depth even with CR-02's resume precondition in place. (No-op on terminal includes
     a run already in ERROR — re-stamping it is pointless.)
+
+    OPS2-01 (D-8-01/D-8-01b/D-8-02): the optional keyword-only `detail_exc`/`stage`/
+    `roster` params drive a scrubbed, stage-prefixed, 200-char-truncated
+    `error_detail` write alongside the existing `error_reason`. `conn` stays
+    positional-compatible (review fix #8) — the new params are keyword-only and
+    placed AFTER it so every existing call site is unaffected. When `detail_exc`
+    or `stage` is omitted, `error_detail` is left `None` (unchanged behavior).
     """
+    detail = (
+        _build_error_detail(stage, detail_exc, roster=roster)
+        if (detail_exc is not None and stage is not None)
+        else None
+    )
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             current = c.execute(
@@ -398,8 +518,9 @@ def record_run_error(run_id: uuid.UUID, reason: str, conn=None) -> None:
                 )
                 return
             c.execute(
-                "UPDATE payroll_runs SET error_reason = %s, updated_at = now() WHERE id = %s",
-                (reason, str(run_id)),
+                "UPDATE payroll_runs SET error_reason = %s, error_detail = %s,"
+                " updated_at = now() WHERE id = %s",
+                (reason, detail, str(run_id)),
             )
             set_status(run_id, RunStatus.ERROR, conn=c)
 

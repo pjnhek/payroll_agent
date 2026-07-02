@@ -15,6 +15,7 @@ round-trips BOTH decision AND reconciliation — mirrors tests/test_seed_roundtr
 from __future__ import annotations
 
 import os
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -22,7 +23,7 @@ from decimal import Decimal
 import pytest
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, PaystubLineItem
-from app.models.roster import Employee, NameMatchResult
+from app.models.roster import Employee, NameMatchResult, Roster
 from app.pipeline.calculate import calculate
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
@@ -193,6 +194,252 @@ def test_record_run_error_writes_for_non_terminal_run(fake_conn):
     sql = fake_conn.all_sql()
     assert "SET error_reason" in sql, "a non-terminal run must persist the error_reason"
     assert "SET status" in sql, "a non-terminal run must advance to ERROR via set_status"
+
+
+# ===========================================================================
+# Section 1c — PII scrub / _build_error_detail (OPS2-01, D-8-01/D-8-01b/D-8-02)
+# ===========================================================================
+
+
+def _employee(full_name: str, aliases: list[str] | None = None) -> Employee:
+    """Minimal valid hourly Employee for scrub-test rosters (fields unused by
+    the scrubber are filled with harmless defaults)."""
+    return Employee(
+        id=uuid.uuid4(),
+        business_id=uuid.uuid4(),
+        full_name=full_name,
+        known_aliases=aliases or [],
+        pay_type="hourly",
+        hourly_rate=Decimal("20.00"),
+        annual_salary=None,
+        retirement_contribution_pct=Decimal("0.00"),
+        filing_status="single",
+        step_2_checkbox=False,
+        step_3_dependents=Decimal("0"),
+        step_4a_other_income=Decimal("0"),
+        step_4b_deductions=Decimal("0"),
+        ytd_ss_wages=Decimal("0.00"),
+        pay_periods_per_year=52,
+    )
+
+
+def test_record_run_error_scrubs_pii_from_error_detail(fake_conn, roster_from_seed):
+    """D-8-04 — error_detail excludes both a roster employee's full_name AND an
+    email address, but retains the surviving non-PII text plus a [REDACTED] marker.
+    """
+    from app.db import repo
+
+    employee = roster_from_seed.employees[0]
+    exc = ValueError(
+        f"failed to process {employee.full_name} <maria.gonzalez@acme.test>: bad row"
+    )
+    fake_conn.script_fetchone(("extracting",))
+    repo.record_run_error(
+        uuid.uuid4(),
+        "ValueError",
+        conn=fake_conn,
+        detail_exc=exc,
+        stage="extract",
+        roster=roster_from_seed,
+    )
+
+    sql, params = fake_conn.executed[-2]
+    assert "error_detail" in sql
+    detail = params[1]
+    assert detail is not None
+    assert "[REDACTED]" in detail
+    assert employee.full_name not in detail
+    assert "maria.gonzalez@acme.test" not in detail
+    assert "bad row" in detail
+
+
+def test_record_run_error_scrubs_before_truncate_boundary(fake_conn, roster_from_seed):
+    """D-8-04a — scrub runs on the FULL message BEFORE the 200-char truncate, so a
+    sensitive email straddling the boundary is never left as a partial fragment."""
+    from app.db import repo
+
+    padding = "x" * 185
+    email = "straddle.boundary@acme.test"
+    message = f"{padding} {email} more trailing text that gets cut off after this"
+    exc = ValueError(message)
+
+    fake_conn.script_fetchone(("extracting",))
+    repo.record_run_error(
+        uuid.uuid4(),
+        "ValueError",
+        conn=fake_conn,
+        detail_exc=exc,
+        stage="extract",
+        roster=roster_from_seed,
+    )
+
+    sql, params = fake_conn.executed[-2]
+    detail = params[1]
+    assert detail is not None
+    assert email not in detail
+    # No fragment of the email survives (neither the full string nor a partial
+    # remnant like the local-part or domain-part alone).
+    assert "straddle.boundary" not in detail
+    assert "acme.test" not in detail
+
+
+def test_record_run_error_fails_open_when_scrub_raises(fake_conn, roster_from_seed, monkeypatch):
+    """D-8-04b — if the scrub step itself raises, record_run_error still writes the
+    pre-existing error_reason and advances to ERROR; error_detail falls back to None.
+    """
+    from app.db import repo
+
+    def _boom(message, roster=None):
+        raise RuntimeError("scrub exploded")
+
+    monkeypatch.setattr(repo, "_scrub", _boom)
+
+    fake_conn.script_fetchone(("extracting",))
+    repo.record_run_error(
+        uuid.uuid4(),
+        "ValueError",
+        conn=fake_conn,
+        detail_exc=ValueError("boom"),
+        stage="extract",
+        roster=roster_from_seed,
+    )
+
+    sql = fake_conn.all_sql()
+    assert "SET error_reason" in sql
+    assert "SET status" in sql
+    sql_last, params = fake_conn.executed[-2]
+    assert params[0] == "ValueError"
+    assert params[1] is None
+
+
+def test_record_run_error_fails_open_when_no_roster(fake_conn):
+    """D-8-04b — with roster=None, record_run_error does not raise; error_detail is
+    still populated via the regex-only (email) scrub, with no roster-name redaction
+    attempted and no additional DB/roster-loading SQL beyond the terminal-status read.
+    """
+    from app.db import repo
+
+    exc = ValueError("contact ops@acme.test about this run")
+    fake_conn.script_fetchone(("extracting",))
+    repo.record_run_error(
+        uuid.uuid4(),
+        "ValueError",
+        conn=fake_conn,
+        detail_exc=exc,
+        stage="extract",
+        roster=None,
+    )
+
+    sql, params = fake_conn.executed[-2]
+    detail = params[1]
+    assert detail is not None
+    assert "[REDACTED]" in detail
+    assert "ops@acme.test" not in detail
+    # Exactly the terminal-status SELECT plus the UPDATE plus set_status's UPDATE —
+    # no extra roster-loading SELECT appears.
+    select_count = fake_conn.all_sql().count("SELECT status")
+    assert select_count == 1
+
+
+def test_scrub_case_and_unicode_form_insensitive_longest_first(roster_from_seed):
+    """R2-1 (constructed, non-skippable) — the scrubber matches roster names
+    case-insensitively and Unicode-form-insensitively across precomposed, NFD-
+    decomposed, AND bare-unaccented renderings, for BOTH a with-alias name and a
+    no-covering-alias name. This test builds its OWN roster (not roster_from_seed)
+    so it never depends on what the seed data happens to contain.
+    """
+    from app.db import repo
+
+    jose = _employee("José García", aliases=["Jose"])
+    ana = _employee("Ana Núñez", aliases=[])
+    roster = Roster(business_id=uuid.uuid4(), employees=[jose, ana])
+
+    variants = []
+    for name in ("José García", "Ana Núñez"):
+        precomposed = name
+        decomposed = unicodedata.normalize("NFD", name)
+        upper_precomposed = name.upper()
+        bare_unaccented = (
+            unicodedata.normalize("NFKD", name)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .upper()
+        )
+        variants.extend([precomposed, decomposed, upper_precomposed, bare_unaccented])
+
+    message = "Payroll note: " + " | ".join(variants) + " — please review."
+    scrubbed = repo._scrub(message, roster=roster)
+
+    assert scrubbed.count("[REDACTED]") >= 8
+
+    # No stray combining mark survives adjacent to a redacted span or anywhere.
+    for i, ch in enumerate(scrubbed):
+        if unicodedata.combining(ch) != 0:
+            raise AssertionError(f"stray combining mark {ch!r} at index {i} in {scrubbed!r}")
+
+    # No raw literal occurrence of any constructed variant survives.
+    for variant in variants:
+        assert variant not in scrubbed.replace("[REDACTED]", ""), (
+            f"raw variant {variant!r} leaked into scrubbed output: {scrubbed!r}"
+        )
+
+    # The individual surname fragments must not leak either — the exact
+    # fixture-coincidence gap the original test design left open.
+    assert "GARCIA" not in scrubbed
+    assert "NUNEZ" not in scrubbed
+
+
+def test_scrub_mark_aware_boundary_trailing_accent_nfd(roster_from_seed):
+    """R3-1 — a name ending in an accented character (no trailing consonant) must
+    still fully consume an NFD-decomposed trailing combining mark; no character in
+    the scrubbed output anywhere may have unicodedata.combining(ch) != 0.
+    """
+    from app.db import repo
+
+    rene = _employee("René", aliases=[])
+    roster = Roster(business_id=uuid.uuid4(), employees=[rene])
+
+    decomposed = unicodedata.normalize("NFD", "René")
+    message = "Contact " + decomposed + " about the run."
+    scrubbed = repo._scrub(message, roster=roster)
+
+    assert "[REDACTED]" in scrubbed
+    for ch in scrubbed:
+        assert unicodedata.combining(ch) == 0, (
+            f"stray combining mark survived in scrubbed output: {scrubbed!r}"
+        )
+    assert (decomposed) not in scrubbed
+
+
+def test_scrub_longest_first_no_offset_drift(roster_from_seed):
+    """R2-1 continued — a short alias contained inside a longer full_name (e.g.
+    "Dave" vs "Dave Reyes") redacts as ONE span, and surrounding text is byte-
+    identical to the input outside the redacted span."""
+    from app.db import repo
+
+    dave = _employee("Dave Reyes", aliases=["Dave"])
+    roster = Roster(business_id=uuid.uuid4(), employees=[dave])
+
+    message = "Please confirm Dave Reyes submitted hours correctly."
+    scrubbed = repo._scrub(message, roster=roster)
+
+    assert scrubbed.count("[REDACTED]") == 1
+    assert scrubbed == "Please confirm [REDACTED] submitted hours correctly."
+
+
+def test_scrub_mark_aware_lookaround_no_over_redaction(roster_from_seed):
+    """R2-3 — a short alias ("Tom") never matches as a prefix inside an unrelated
+    word ("Tomorrow"); lookarounds are strictly stronger than \\b for plain ASCII."""
+    from app.db import repo
+
+    tom = _employee("Thomas Bergmann", aliases=["Tom Bergmann", "Tom"])
+    roster = Roster(business_id=uuid.uuid4(), employees=[tom])
+
+    message = "Tom submitted hours late. Tomorrow the batch reruns."
+    scrubbed = repo._scrub(message, roster=roster)
+
+    assert "[REDACTED]" in scrubbed
+    assert "Tomorrow" in scrubbed
 
 
 # ===========================================================================
