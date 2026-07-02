@@ -171,35 +171,56 @@ def backfill_extracted(extracted, snapshot, prior_matches, matches, resolved_dro
 
 
 def run_pipeline(run_id: uuid.UUID, *, llm=None) -> None:
-    """Drive one run from received → awaiting_approval (or needs_clarification).
+    """Drive one run from received → awaiting_approval (or awaiting_reply on a clarification).
 
     `llm` is the client module the stages call; defaults to each stage's own
     bound client. Tests inject a mocked client by patching app.llm.client.OpenAI.
+
+    Thin, non-raising delegator (HIGH #1 fix, review round): the error-wrap
+    boundary now lives INSIDE `_run` itself, not here — `_run` owns its own
+    try/except so its error path can see the `roster` local it already loaded,
+    which this outer scope never had access to. `_run` never lets an exception
+    escape, so this function needs no try/except of its own; its external
+    contract (never raises) is unchanged.
     """
-    try:
-        _run(run_id, llm=llm)
-    except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary
-        # PII-safe summary: the exception TYPE only — str(exc) can echo prompt text,
-        # submitted names, or model output, and this `reason` is BOTH logged AND
-        # persisted to payroll_runs.error_reason (review fix). run_id is the
-        # correlation key for deeper debugging.
-        reason = type(exc).__name__
-        logger.warning("run %s failed: %s", run_id, reason)
-        repo.record_run_error(run_id, reason)
+    _run(run_id, llm=llm)
 
 
 def _run(run_id: uuid.UUID, *, llm) -> None:
-    run = repo.load_run(run_id)
-    if run is None:
-        raise ValueError(f"run {run_id} not found")
+    """Load the run, run the four judgment stages, and self-contain any failure.
 
-    email = repo.load_inbound_email(run_id)
-    if email is None:
-        raise ValueError(f"run {run_id} has no source email")
-    roster = repo.load_roster_for_business(run["business_id"])
+    HIGH #1 fix: this function owns its OWN try/except (moved here from
+    run_pipeline) so that whatever `roster` it has already loaded before a
+    failure is visible to its own error path — record_run_error(roster=roster)
+    now sees a real, populated Roster for any failure after the load line,
+    instead of always None. `roster = None` is the first statement so the name
+    is always bound, even if `load_run`/`load_inbound_email` raise before the
+    roster is ever loaded.
+    """
+    roster = None
+    try:
+        run = repo.load_run(run_id)
+        if run is None:
+            raise ValueError(f"run {run_id} not found")
 
-    repo.set_status(run_id, RunStatus.EXTRACTING)
-    _ = _run_stages(run_id, email, roster, llm=llm)  # discard return — first run, no field-regression
+        email = repo.load_inbound_email(run_id)
+        if email is None:
+            raise ValueError(f"run {run_id} has no source email")
+        roster = repo.load_roster_for_business(run["business_id"])
+
+        repo.set_status(run_id, RunStatus.EXTRACTING)
+        _ = _run_stages(run_id, email, roster, llm=llm)  # discard return — first run, no field-regression
+    except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (moved here from run_pipeline so roster, loaded above, is visible to the error path — HIGH #1 fix)
+        # PII-safe summary: the exception TYPE only — str(exc) can echo prompt text,
+        # submitted names, or model output, and this `reason` is BOTH logged AND
+        # persisted to payroll_runs.error_reason (review fix). run_id is the
+        # correlation key for deeper debugging. `roster`, whatever this function
+        # had already loaded before the failure, is now passed through so
+        # record_run_error's scrub step can exclude real employee names/aliases
+        # instead of falling back to email-regex-only scrubbing (HIGH #1).
+        reason = type(exc).__name__
+        logger.warning("run %s failed: %s", run_id, reason)
+        repo.record_run_error(run_id, reason, detail_exc=exc, stage="pipeline", roster=roster)
 
 
 def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> None:
@@ -227,6 +248,12 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
     check-and-transition atomic. The losing concurrent caller gets False and drops
     cleanly — no re-run, no ERROR route.
     """
+    # HIGH #1 (resume variant): initialize roster=None as the first statement inside
+    # the try block, so the name is always bound in the enclosing scope even if the
+    # exception fires before the roster load line below (the narrower UnboundLocalError
+    # window resume_pipeline has — unlike _run, its own roster load already happens
+    # inside the same try block its except clause guards).
+    roster = None
     try:
         # Atomic compare-and-swap: claim the run from AWAITING_REPLY → EXTRACTING.
         # This closes CR-02's residual race (the prior load-then-check+set was non-atomic).
@@ -661,10 +688,12 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
     except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (resume)
         # PII-safe: exception TYPE only — str(exc) can echo submitted names / prompt
         # text, and `reason` is logged AND persisted to error_reason (review fix —
-        # the resume path was missed when run_pipeline was sanitized).
+        # the resume path was missed when run_pipeline was sanitized). `roster` is
+        # guaranteed bound (either None from the top-of-try initialization, or the
+        # real Roster if the exception fired after the load line above) — OPS2-01.
         reason = type(exc).__name__
         logger.warning("resume of run %s failed: %s", run_id, reason)
-        repo.record_run_error(run_id, reason)
+        repo.record_run_error(run_id, reason, detail_exc=exc, stage="resume", roster=roster)
 
 
 def _defer_field_regression_clarification(

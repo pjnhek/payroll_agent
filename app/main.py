@@ -503,7 +503,9 @@ def approve(
             # PII-safe: type only — str(exc) may echo model output, submitted names,
             # or raw email content (D-A1-03). run_id is the correlation key for debug.
             logger.warning("delivery of run %s failed: %s", run_id, type(exc).__name__)
-            repo.record_run_error(run_id, type(exc).__name__)
+            # OPS2-01: no roster= — approve() never loads one; roster=None is correct
+            # by design (D-8-01b), not a gap (this boundary has no roster to pass).
+            repo.record_run_error(run_id, type(exc).__name__, detail_exc=exc, stage="delivery")
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

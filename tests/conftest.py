@@ -263,6 +263,7 @@ class InMemoryRepo:
             "decision": None,
             "reconciliation": None,
             "error_reason": None,
+            "error_detail": None,
             "pay_period_start": pay_period_start,
             "pay_period_end": pay_period_end,
             "record_only": record_only,
@@ -328,7 +329,9 @@ class InMemoryRepo:
         run["status"] = RunStatus(new).value
         return True
 
-    def record_run_error(self, run_id, reason, conn=None):
+    def record_run_error(
+        self, run_id, reason, conn=None, *, detail_exc=None, stage=None, roster=None
+    ):
         from app.db.repo import _TERMINAL_STATUSES
         from app.models.status import RunStatus
 
@@ -336,6 +339,12 @@ class InMemoryRepo:
         if self.runs[str(run_id)]["status"] in _TERMINAL_STATUSES:
             return
         self.runs[str(run_id)]["error_reason"] = reason
+        # OPS2-01: mirrors the real repo.record_run_error's new keyword-only-extras
+        # shape (conn stays positional-compatible) so orchestrator.py/main.py call
+        # sites that pass detail_exc=/stage=/roster= don't raise TypeError against
+        # this fake. The real scrub logic is unit-tested against the real
+        # repo.record_run_error in Plan 08-02 — this fake only needs to not error.
+        self.runs[str(run_id)]["error_detail"] = None
         self.set_status(run_id, RunStatus.ERROR)
 
     def persist_extracted(self, run_id, extracted, conn=None):
@@ -357,11 +366,37 @@ class InMemoryRepo:
         return list(self.line_items.get(str(run_id), []))
 
     def load_all_runs(self, conn=None):
-        """Return all runs as dicts with business_name (mirrors repo.load_all_runs)."""
+        """Return all runs as dicts with business_name (mirrors repo.load_all_runs).
+
+        Review fix #7: also computes the SQL-computed `summary_gate_reason` /
+        `employee_count` aliases the real repo.load_all_runs (Plan 08-02) now
+        projects, so route-level tests that swap in InMemoryRepo keep exercising
+        the real runs_list.html alias contract instead of silently falling
+        through to the template's `--` else-branch.
+        """
         result = []
         for run in self.runs.values():
             biz_name = "Test Business"
-            result.append({**run, "business_name": biz_name})
+            decision = run.get("decision")
+            gate_reasons = (decision or {}).get("gate_reasons") if isinstance(decision, dict) else None
+            summary_gate_reason = gate_reasons[0] if gate_reasons else None
+            extracted_data = run.get("extracted_data")
+            employees = (
+                extracted_data.get("employees")
+                if isinstance(extracted_data, dict)
+                else None
+            )
+            # Mirror the SQL jsonb_typeof guard: only a real list counts; any
+            # non-list/missing value degrades to 0 instead of raising.
+            employee_count = len(employees) if isinstance(employees, list) else 0
+            result.append(
+                {
+                    **run,
+                    "business_name": biz_name,
+                    "summary_gate_reason": summary_gate_reason,
+                    "employee_count": employee_count,
+                }
+            )
         return result
 
     def load_business_name(self, business_id, conn=None):

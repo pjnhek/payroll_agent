@@ -121,6 +121,71 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# R2-2 — behavioral argument-flow spy test for the HIGH #1 roster-scope fix.
+#
+# The plan's own acceptance criteria already grep-prove the call-site TEXT says
+# `roster=roster`. This test instead proves the ACTUAL RUNTIME VALUE
+# record_run_error receives is a real, populated Roster — per this project's
+# Phase 7.5 lesson (grep/prose checks on a money-adjacent data path are not
+# sufficient; trace argument flow against live execution).
+# ---------------------------------------------------------------------------
+
+
+def test_first_run_failure_after_roster_load_passes_nonnull_roster_to_record_run_error(
+    fake_repo, mock_llm, monkeypatch
+):
+    """Force a first-run failure AFTER _run's roster-load line has already
+    succeeded (the extract stage raises, which happens strictly after the
+    roster load in _run's top-to-bottom body). Assert record_run_error is
+    actually called with stage="pipeline" and a non-None, populated Roster —
+    not that the source text merely says `roster=roster`.
+    """
+    import app.pipeline.orchestrator as orchestrator_module
+    from app.models.roster import Roster
+
+    captured: dict = {}
+    real_record_run_error = fake_repo.record_run_error
+
+    def _spy_record_run_error(run_id, reason, conn=None, **kwargs):
+        # Wrap, don't replace: record the kwargs, then delegate to the real
+        # fake so the run still reaches ERROR status normally.
+        captured["stage"] = kwargs.get("stage")
+        captured["roster"] = kwargs.get("roster")
+        captured["detail_exc"] = kwargs.get("detail_exc")
+        return real_record_run_error(run_id, reason, conn=conn, **kwargs)
+
+    monkeypatch.setattr(orchestrator_module.repo, "record_run_error", _spy_record_run_error)
+
+    # Force the extract stage itself to raise: a permanently-invalid payload
+    # fails BOTH the original call and the retry (same pattern as
+    # test_stage_raise_sets_error). Extraction happens strictly AFTER the
+    # roster-load line inside _run, so this exercises the HIGH #1 code path
+    # (roster already bound to a real Roster when the except block runs).
+    bad = json.dumps(
+        {
+            "employees": [{"submitted_name": "Maria Chen", "hours_regular": "forty"}],
+            "pay_period_start": "2026-06-15",
+        }
+    )
+    mock_llm.script = [bad, bad]
+    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+
+    run_pipeline(run_id)
+
+    assert captured["stage"] == "pipeline"
+    assert captured["roster"] is not None, (
+        "record_run_error must receive the roster _run already loaded before "
+        "the failure — a None roster here means the HIGH #1 scope gap is back "
+        "and the error path has degraded to email-regex-only scrubbing"
+    )
+    assert isinstance(captured["roster"], Roster)
+    assert len(captured["roster"].employees) > 0
+
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == "error"
+
+
+# ---------------------------------------------------------------------------
 # Branches on final_action — an unresolved name deterministically gates to clarify
 # ---------------------------------------------------------------------------
 

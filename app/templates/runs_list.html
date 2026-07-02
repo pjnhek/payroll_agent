@@ -61,10 +61,10 @@
         <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
       </td>
       <td class="text-muted">
-        {% if run.decision and run.decision.gate_reasons %}
-          {{ run.decision.gate_reasons[0] }}
-        {% elif run.extracted_data and run.extracted_data.employees %}
-          {{ run.extracted_data.employees | length }} employee{{ 's' if run.extracted_data.employees | length != 1 else '' }}
+        {% if run.summary_gate_reason %}
+          {{ run.summary_gate_reason }}
+        {% elif run.employee_count %}
+          {{ run.employee_count }} employee{{ 's' if run.employee_count != 1 else '' }}
         {% else %}
           —
         {% endif %}

@@ -88,9 +88,13 @@ EMPLOYEE_COLS = (
 # Without it, the retrigger handler's stale-run check always evaluated to False
 # (run.get("updated_at") was always None) and the stale-state recovery branch
 # for RECEIVED/EXTRACTING/COMPUTED/SENT was permanently disabled.
+# OPS2-01: error_detail is included alongside error_reason for the same reason
+# CR-02 added updated_at — a column missing from this constant is invisible to
+# every load_run caller (including the run_detail dashboard route) regardless
+# of what record_run_error already wrote into the actual DB row.
 RUN_COLS = (
     "id, business_id, source_email_id, status, extracted_data, decision,"
-    " reconciliation, error_reason, pay_period_start, pay_period_end, updated_at"
+    " reconciliation, error_reason, error_detail, pay_period_start, pay_period_end, updated_at"
 )
 
 # Terminal run statuses (WR-04): once a run reaches one of these, an error must NOT
