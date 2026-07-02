@@ -547,8 +547,15 @@ def record_run_error(
     `roster` params drive a scrubbed, stage-prefixed, 200-char-truncated
     `error_detail` write alongside the existing `error_reason`. `conn` stays
     positional-compatible (review fix #8) — the new params are keyword-only and
-    placed AFTER it so every existing call site is unaffected. When `detail_exc`
-    or `stage` is omitted, `error_detail` is left `None` (unchanged behavior).
+    placed AFTER it so every existing call site is unaffected AT THE CALL SITE.
+
+    WR-05 (phase-8 review) — overwrite contract: `error_detail` is ALWAYS written.
+    When `detail_exc` or `stage` is omitted it is OVERWRITTEN WITH NULL, erasing
+    any previously-persisted detail for this run. This is deliberate: error_reason
+    and error_detail always describe the SAME (latest) error — preserving a stale
+    detail next to a fresh reason via COALESCE would mislead the operator reading
+    the error banner. Callers that want a diagnostic detail must pass BOTH
+    `detail_exc` and `stage` (all current production callers do).
     """
     detail = (
         _build_error_detail(stage, detail_exc, roster=roster)

@@ -216,6 +216,32 @@ def test_record_run_error_writes_for_non_terminal_run(fake_conn):
     assert "SET status" in sql, "a non-terminal run must advance to ERROR via set_status"
 
 
+def test_record_run_error_two_arg_call_overwrites_detail_with_null(fake_conn):
+    """WR-05 (phase-8 review) — the documented overwrite contract: a legacy
+    two-arg call (no detail_exc/stage) writes error_detail = NULL, ERASING any
+    previously-persisted detail. Deliberate: error_reason and error_detail must
+    always describe the SAME (latest) error — a stale detail next to a fresh
+    reason would mislead the operator. This test pins the contract so the
+    docstring and the SQL cannot drift apart again.
+    """
+    from app.db import repo
+
+    run_id = uuid.uuid4()
+    fake_conn.script_fetchone((str(run_id),))  # CAS claim succeeds
+    repo.record_run_error(run_id, "SomeLaterError", conn=fake_conn)
+
+    sql, params = fake_conn.executed[0]
+    assert "error_detail" in sql, (
+        "the UPDATE must always include error_detail in its SET clause "
+        "(always-overwrite contract, WR-05)"
+    )
+    assert params[0] == "SomeLaterError"
+    assert params[1] is None, (
+        "omitting detail_exc/stage must overwrite error_detail with NULL — "
+        "never silently preserve a stale prior detail (WR-05)"
+    )
+
+
 # ===========================================================================
 # Section 1c — PII scrub / _build_error_detail (OPS2-01, D-8-01/D-8-01b/D-8-02)
 # ===========================================================================
