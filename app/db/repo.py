@@ -92,9 +92,15 @@ EMPLOYEE_COLS = (
 # CR-02 added updated_at — a column missing from this constant is invisible to
 # every load_run caller (including the run_detail dashboard route) regardless
 # of what record_run_error already wrote into the actual DB row.
+# CR-01 (phase-8 review): alias_candidates is included because two orchestrator
+# paths read it from load_run() — resume_pipeline's STEP A pre-candidate binding
+# and _write_aliases_if_safe at the approval gate. Without it, both paths saw {}
+# on a real dict_row and the alias-learning WRITE side was a silent no-op on a
+# live DB (masked by InMemoryRepo.load_run returning the full in-memory dict).
 RUN_COLS = (
     "id, business_id, source_email_id, status, extracted_data, decision,"
-    " reconciliation, error_reason, error_detail, pay_period_start, pay_period_end, updated_at"
+    " reconciliation, error_reason, error_detail, alias_candidates,"
+    " pay_period_start, pay_period_end, updated_at"
 )
 
 # Terminal run statuses (WR-04): once a run reaches one of these, an error must NOT

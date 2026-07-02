@@ -167,6 +167,73 @@ def test_cr02_load_run_select_includes_updated_at(fake_conn):
 
 
 # ---------------------------------------------------------------------------
+# Phase-8 review CR-01 regression: RUN_COLS must include alias_candidates
+# ---------------------------------------------------------------------------
+
+
+def test_cr01_run_cols_contains_alias_candidates():
+    """Phase-8 review CR-01: RUN_COLS must include 'alias_candidates'.
+
+    Two orchestrator paths read alias_candidates from load_run():
+    1. resume_pipeline STEP A — pre-vs-post candidate diff that binds a pending
+       clarify-time token to the newly-resolved employee, and
+    2. _write_aliases_if_safe — the approval-gate write to employees.known_aliases.
+
+    Without the column in RUN_COLS both paths get {} on a real dict_row, so the
+    human-confirmation alias-learning WRITE side is a silent no-op against a live
+    DB. Hermetic tests never caught it because InMemoryRepo.load_run returns the
+    full in-memory run dict INCLUDING alias_candidates — the exact fixture-vs-
+    reality gap that also produced the live-gate dateless-email bug.
+    """
+    assert "alias_candidates" in RUN_COLS, (
+        "RUN_COLS must contain 'alias_candidates' so load_run() returns it and "
+        "the alias-learning loop (resume binding + approval-gate write) works "
+        "against a real database — phase-8 review CR-01."
+    )
+
+
+def test_cr01_alias_candidates_roundtrips_through_real_load_run(fake_conn):
+    """Phase-8 review CR-01: a scripted DB row with alias_candidates set flows
+    through the REAL RUN_COLS-based load_run SQL and comes back on the run dict.
+
+    Mirrors test_run_detail_renders_error_detail_end_to_end's pattern: assert on
+    the actual SQL text AND the round-tripped value — NOT on an InMemoryRepo fake
+    (a fake returning full dicts is exactly what masked the original bug).
+    """
+    run_id = uuid.uuid4()
+    scripted_row = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "awaiting_reply",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "error_detail": None,
+        "alias_candidates": {"Bobby": None},
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    fake_conn.script_fetchone(scripted_row)
+
+    run = repo_mod.load_run(run_id, conn=fake_conn)
+
+    # The actual SELECT column list (not just the Python constant) carries it.
+    assert "alias_candidates" in fake_conn.all_sql(), (
+        "load_run() SQL must include 'alias_candidates' in the SELECT column "
+        "list — phase-8 review CR-01"
+    )
+    # And the value the orchestrator reads (run_data.get('alias_candidates'))
+    # is the persisted candidate map, not a silent {}.
+    assert (run.get("alias_candidates") or {}) == {"Bobby": None}, (
+        "load_run() must surface the persisted alias_candidates map to its "
+        "callers (resume binding + _write_aliases_if_safe) — CR-01"
+    )
+
+
+# ---------------------------------------------------------------------------
 # CR-03 regression: confirmation_subject uses real business_name + pay_period
 # ---------------------------------------------------------------------------
 
