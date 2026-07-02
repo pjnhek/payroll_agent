@@ -202,6 +202,34 @@ class TestEnumCheckDrift:
             "removed (folded todo 260623-06)"
         )
 
+    def test_do_block_constraint_drops_are_column_anchored(self) -> None:
+        """WR-06 (phase-8 review): DO-block DROPs must be column-anchored, not name-fuzzy.
+
+        The old idiom — `SELECT conname INTO _con_name ... WHERE conname LIKE
+        '%status%'` (and the mirrored '%purpose%' block) — silently took one
+        arbitrary matching row (no STRICT) and would DROP-and-never-restore any
+        unrelated future constraint whose NAME merely contained the substring.
+        The fixed blocks select CHECK constraints by their actual column set
+        (conkey -> pg_attribute) instead. This static guard pins the idiom so a
+        future schema edit cannot reintroduce a name-substring DROP.
+        """
+        # Strip line comments first (same normalization the value-set parsers
+        # use) — the WR-06 explanatory comments legitimately mention the old
+        # idiom; only EXECUTABLE SQL must be free of it.
+        sql = re.sub(r"--[^\n]*", "", _SCHEMA_SQL.read_text())
+        assert "conname LIKE" not in sql, (
+            "schema.sql must never DROP a constraint matched by a name substring "
+            "(conname LIKE) — anchor on the constraint's column set via conkey "
+            "instead (WR-06)"
+        )
+        # Both migration DO-blocks (payroll_runs.status, email_messages.purpose)
+        # must use the conkey-anchored matcher.
+        assert sql.count("ANY (c.conkey)") == 2, (
+            "expected exactly 2 conkey-anchored constraint matchers (the status "
+            "and purpose DO-blocks); update this count only alongside a reviewed "
+            "new migration block (WR-06)"
+        )
+
     def test_no_db_connection_needed(self) -> None:
         """Confirm the test file imports no DB module (pure static file test).
 

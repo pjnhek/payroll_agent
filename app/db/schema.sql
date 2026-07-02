@@ -126,42 +126,47 @@ CREATE INDEX IF NOT EXISTS idx_payroll_runs_status
 -- constraint, removing the dead needs-clarification value. Mirrors the D-7.5-03a
 -- atomic DROP+ADD pattern used above for email_messages_purpose_check — the DROP
 -- and re-ADD happen inside one DO $$ ... END $$; block so a failed ADD rolls back
--- the DROP too (no half-migrated table). The pg_constraint lookup is narrowed by
--- BOTH contype='c' AND conrelid='payroll_runs'::regclass before the LIKE pattern
--- (mirrors the defensive matcher used for email_messages_purpose_check).
+-- the DROP too (no half-migrated table).
+-- WR-06 (phase-8 review): the DROP is anchored on the constraint's actual COLUMN
+-- SET (conkey -> pg_attribute), never a name-substring match. The previous
+-- `conname LIKE '%status%'` lookup (no STRICT) took ONE arbitrary matching row
+-- and would have silently dropped-and-never-restored any unrelated future
+-- constraint whose NAME merely contained 'status' (e.g. a send_status CHECK).
+-- Matching conkey = {status} selects exactly the CHECK constraints that
+-- constrain the status column and nothing else, however they are named. The
+-- loop drops ALL of them, so the named re-ADD below can never collide and the
+-- block stays idempotent on every bootstrap re-apply.
 -- NOTE: this DO-block only fixes an EXISTING table (bootstrap re-apply path); the
 -- inline CHECK edit above already gives a fresh bootstrap the correct 10-value set.
 DO $$
 DECLARE
-    _con_name TEXT;
+    _con RECORD;
 BEGIN
-    SELECT conname INTO _con_name
-    FROM pg_constraint
-    WHERE contype = 'c'
-      AND conrelid = 'payroll_runs'::regclass
-      AND conname LIKE '%status%';
-    IF _con_name IS NOT NULL THEN
-        EXECUTE 'ALTER TABLE payroll_runs DROP CONSTRAINT ' || quote_ident(_con_name);
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'payroll_runs_status_check'
-          AND conrelid = 'payroll_runs'::regclass
-    ) THEN
-        ALTER TABLE payroll_runs ADD CONSTRAINT payroll_runs_status_check
-            CHECK (status IN (
-                'received',
-                'extracting',
-                'awaiting_reply',
-                'computed',
-                'awaiting_approval',
-                'approved',
-                'sent',
-                'reconciled',
-                'rejected',
-                'error'
-            ));
-    END IF;
+    FOR _con IN
+        SELECT c.conname
+        FROM pg_constraint c
+        WHERE c.contype = 'c'
+          AND c.conrelid = 'payroll_runs'::regclass
+          AND (SELECT array_agg(a.attname::text)
+               FROM pg_attribute a
+               WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+              ) = ARRAY['status']
+    LOOP
+        EXECUTE 'ALTER TABLE payroll_runs DROP CONSTRAINT ' || quote_ident(_con.conname);
+    END LOOP;
+    ALTER TABLE payroll_runs ADD CONSTRAINT payroll_runs_status_check
+        CHECK (status IN (
+            'received',
+            'extracting',
+            'awaiting_reply',
+            'computed',
+            'awaiting_approval',
+            'approved',
+            'sent',
+            'reconciled',
+            'rejected',
+            'error'
+        ));
 END;
 $$;
 
@@ -226,29 +231,32 @@ ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS send_state
     TEXT CHECK (send_state IN ('reserved','sent','failed'));   -- finding #3, R2-HIGH fix; NULLABLE
 
 -- N4 MONEY-03: Idempotent DROP + RE-ADD of email_messages purpose CHECK constraint
--- (D-7.5-03a atomic DROP+ADD in one transaction). The pg_constraint lookup is narrowed
--- by BOTH contype='c' AND conrelid='email_messages'::regclass before applying the LIKE
--- pattern (Finding 9 defensive matcher). The new CHECK includes 'clarification_field_regression'.
+-- (D-7.5-03a atomic DROP+ADD in one transaction). The new CHECK includes
+-- 'clarification_field_regression'.
+-- WR-06 (phase-8 review): same column-anchored matcher as the payroll_runs status
+-- block above — the DROP selects CHECK constraints by their actual column set
+-- (conkey = {purpose}), never by name substring. The previous
+-- `conname LIKE '%purpose%'` would also have matched any future check whose name
+-- contained 'purpose'; conkey-anchoring cannot. (uq_email_run_purpose is a UNIQUE
+-- constraint, contype='u', so the contype='c' filter already excludes it.)
 DO $$
 DECLARE
-    _con_name TEXT;
+    _con RECORD;
 BEGIN
-    SELECT conname INTO _con_name
-    FROM pg_constraint
-    WHERE contype = 'c'
-      AND conrelid = 'email_messages'::regclass
-      AND conname LIKE '%purpose%';
-    IF _con_name IS NOT NULL THEN
-        EXECUTE 'ALTER TABLE email_messages DROP CONSTRAINT ' || quote_ident(_con_name);
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'email_messages_purpose_check'
-          AND conrelid = 'email_messages'::regclass
-    ) THEN
-        ALTER TABLE email_messages ADD CONSTRAINT email_messages_purpose_check
-            CHECK (purpose IN ('clarification','confirmation','clarification_field_regression'));
-    END IF;
+    FOR _con IN
+        SELECT c.conname
+        FROM pg_constraint c
+        WHERE c.contype = 'c'
+          AND c.conrelid = 'email_messages'::regclass
+          AND (SELECT array_agg(a.attname::text)
+               FROM pg_attribute a
+               WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+              ) = ARRAY['purpose']
+    LOOP
+        EXECUTE 'ALTER TABLE email_messages DROP CONSTRAINT ' || quote_ident(_con.conname);
+    END LOOP;
+    ALTER TABLE email_messages ADD CONSTRAINT email_messages_purpose_check
+        CHECK (purpose IN ('clarification','confirmation','clarification_field_regression'));
 END;
 $$;
 
