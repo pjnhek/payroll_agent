@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
-status: ready_to_plan
-last_updated: 2026-06-28T21:22:23.130Z
-last_activity: 2026-06-28 -- Phase 07.5 execution started
+status: planning
+last_updated: "2026-07-02T07:04:31.488Z"
+last_activity: 2026-06-28
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 9
-  completed_plans: 40
+  completed_plans: 6
   percent: 20
-stopped_at: Phase 07.5 complete (4/4) — ready to discuss Phase 8
 ---
 
 # Project State
@@ -156,6 +155,6 @@ intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; no
 
 ## Session Continuity
 
-Last session: 2026-06-28T03:43:38.382Z
-Stopped at: Phase 7.5 context gathered
-Resume file: .planning/phases/07.5-clarification-reply-field-regression/07.5-CONTEXT.md
+Last session: 2026-07-02T07:04:31.478Z
+Stopped at: Phase 8 context gathered
+Resume file: .planning/phases/08-data-layer-hygiene-diagnostics/08-CONTEXT.md
