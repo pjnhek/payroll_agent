@@ -1211,9 +1211,26 @@ def load_all_runs(conn=None) -> list[dict]:
 
     Used by the runs-list route (DASH-01). Joins businesses to surface business_name
     without requiring a second query in the route layer.
+
+    D-8-07 (OPS2-02): selects an explicit scalar column list — no `pr.*` / `SELECT *`
+    — so a new payroll_runs column can never silently reach the dashboard list view
+    without an explicit, reviewed SQL edit (T-8-07). Two SQL-computed aliases avoid
+    shipping a raw JSONB blob to the list view: `summary_gate_reason` (unchanged,
+    already NULL-safe via `->`/`->>` on a NULL `decision` column) and `employee_count`,
+    guarded by `jsonb_typeof` (review fix #2 / T-8-12) rather than a bare
+    `COALESCE(jsonb_array_length(...), 0)` — the bare form is only NULL-safe for SQL
+    NULL and still raises a Postgres error on a non-array JSON scalar/null literal in
+    `extracted_data->'employees'`; the `CASE WHEN jsonb_typeof(...) = 'array'` guard
+    degrades a corrupt/legacy row to `employee_count = 0` instead of erroring the
+    entire runs list.
     """
     sql = (
-        "SELECT pr.*, b.name as business_name"
+        "SELECT pr.id, pr.business_id, pr.status, pr.created_at, pr.updated_at,"
+        " b.name AS business_name,"
+        " pr.decision->'gate_reasons'->>0 AS summary_gate_reason,"
+        " CASE WHEN jsonb_typeof(pr.extracted_data->'employees') = 'array'"
+        "      THEN jsonb_array_length(pr.extracted_data->'employees')"
+        "      ELSE 0 END AS employee_count"
         " FROM payroll_runs pr"
         " JOIN businesses b ON pr.business_id = b.id"
         " ORDER BY pr.created_at DESC"
