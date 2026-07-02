@@ -697,7 +697,12 @@ class _MiniStore:
         run["status"] = RunStatus(new).value
         return True
 
-    def record_run_error(self, run_id, reason, conn=None):
+    def record_run_error(
+        self, run_id, reason, conn=None, *, detail_exc=None, stage=None, roster=None
+    ):
+        # OPS2-01: accept the new keyword-only extras without erroring — mirrors
+        # the real repo.record_run_error's conn-positional-then-keyword-only shape
+        # (tests/conftest.py's InMemoryRepo mirrors the same shape, review fix #8).
         self.runs[str(run_id)]["error_reason"] = reason
 
     def persist_extracted(self, run_id, extracted, conn=None):

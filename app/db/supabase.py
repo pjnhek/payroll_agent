@@ -14,6 +14,7 @@ Public API:
     close_pool()     → drain the pool and reset the singleton (idempotent)
 """
 
+import threading
 from contextlib import contextmanager
 from typing import Generator
 
@@ -24,6 +25,11 @@ from app.config import get_settings
 
 # Module-level pool singleton — initialised lazily on first call to get_pool().
 _pool: ConnectionPool | None = None
+# WR-02: guards the double-checked-locking construction below so two concurrent
+# first-callers (e.g. FastAPI's threadpool executor running sync routes /
+# BackgroundTasks) cannot both observe `_pool is None` and each construct their
+# own ConnectionPool, leaking one (08-RESEARCH.md Open Question 1).
+_pool_lock = threading.Lock()
 
 
 def get_pool() -> ConnectionPool:
@@ -32,22 +38,29 @@ def get_pool() -> ConnectionPool:
     The pool is opened on first access and reused for the lifetime of the
     process.  Each connection in the pool has prepare_threshold=None so that
     Supavisor transaction-mode (port 6543) works correctly.
+
+    Thread-safe via double-checked locking (WR-02): the outer check avoids
+    taking the lock on the common (already-initialized) path; the inner
+    re-check under the lock closes the race where two threads could both pass
+    the outer check before either constructs the pool.
     """
     global _pool
     if _pool is None:
-        settings = get_settings()
-        _pool = ConnectionPool(
-            conninfo=settings.database_url,
-            min_size=1,
-            max_size=5,
-            open=True,  # explicit; avoids DeprecationWarning about default changing
-            # D-04: disable server-side prepared statements on every connection
-            # so they do not break under Supavisor transaction-mode pooling.
-            kwargs={"prepare_threshold": None},
-            # Short wait timeout so tests and health checks that run without a live
-            # DB fail fast (5s) rather than blocking for the default 30s.
-            timeout=5,
-        )
+        with _pool_lock:
+            if _pool is None:
+                settings = get_settings()
+                _pool = ConnectionPool(
+                    conninfo=settings.database_url,
+                    min_size=1,
+                    max_size=5,
+                    open=True,  # explicit; avoids DeprecationWarning about default changing
+                    # D-04: disable server-side prepared statements on every connection
+                    # so they do not break under Supavisor transaction-mode pooling.
+                    kwargs={"prepare_threshold": None},
+                    # Short wait timeout so tests and health checks that run without a live
+                    # DB fail fast (5s) rather than blocking for the default 30s.
+                    timeout=5,
+                )
     return _pool
 
 

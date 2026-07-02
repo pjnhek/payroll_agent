@@ -313,6 +313,59 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
     assert str(run_id) in response.text
 
 
+# ---------------------------------------------------------------------------
+# OPS2-01 — end-to-end key link: DB column -> RUN_COLS/load_run -> run_detail.html
+# ---------------------------------------------------------------------------
+
+
+def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
+    """Proves the full key link: a scripted DB row with error_detail set flows
+    through the REAL RUN_COLS-based load_run SQL and reaches the rendered
+    run_detail.html HTML — not just that the template has matching text.
+
+    Part 1: RUN_COLS actually includes error_detail in the SQL text, and the
+    scripted row round-trips through the real repo.load_run (not a hardcoded
+    dict route monkeypatch, proving the SQL text + shape both hold).
+    Part 2: the same run dict, fed through the run_detail route (the same
+    monkeypatch pattern as test_run_detail_inflight_run_renders_200_not_500),
+    renders the error_detail text into the response HTML.
+    """
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    scripted_row = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "error",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": "ValueError",
+        "error_detail": "pipeline: [REDACTED] failed validation",
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    fake_conn.script_fetchone(scripted_row)
+
+    run = _repo.load_run(run_id, conn=fake_conn)
+
+    # Part 1: RUN_COLS (and therefore the actual SQL text) includes error_detail.
+    assert "error_detail" in fake_conn.all_sql()
+    assert run["error_detail"] == "pipeline: [REDACTED] failed validation"
+
+    # Part 2: the value load_run produced reaches the rendered HTML.
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: run)
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    response = client.get(f"/runs/{run_id}")
+    assert response.status_code == 200
+    assert "pipeline: [REDACTED] failed validation" in response.text
+
+
 @pytest.mark.parametrize(
     "bad_name",
     [

@@ -66,6 +66,7 @@
 {% if run.status == 'error' %}
 <div class="banner banner-error banner-mb">
   <strong>Error</strong> — {{ run.error_reason }}. Use the Re-trigger button below to restart this run from the beginning.
+  {% if run.error_detail %}<div class="banner-divider">{{ run.error_detail }}</div>{% endif %}
 </div>
 {% elif run.status == 'awaiting_reply' %}
 <div class="banner banner-awaiting banner-mb">
