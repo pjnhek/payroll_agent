@@ -398,7 +398,7 @@ See Pattern 4 above for the full adapted block.
 
 **All other claims in this research were verified directly against live source code in this session** (repo.py, schema.sql, orchestrator.py, main.py, status.py, templates, conftest.py, test_status_drift.py, render.yaml, Dockerfile) or against the project's own committed CONTEXT.md/REQUIREMENTS.md/STATE.md — no training-data guesses about THIS codebase's structure were used unverified.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does `render.yaml`'s single-instance deploy make the WR-02 pool-singleton race purely theoretical, or does uvicorn's threadpool for sync routes/BackgroundTasks make it real even at 1 process?**
    - What we know: `render.yaml` declares one `type: web` service with no `numInstances`/scaling block (effectively 1 instance on Render free tier); the Dockerfile CMD runs `uvicorn app.main:app` with no `--workers` flag (1 process). But FastAPI/Starlette run sync path operations (including `BackgroundTasks`) in a threadpool executor within that single process — so two concurrent first-requests (e.g. an inbound webhook POST and a concurrent dashboard GET) could both hit `get_pool()`'s `if _pool is None:` check before either finishes constructing the pool.
