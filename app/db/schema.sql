@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS businesses (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     name            TEXT        NOT NULL,
     contact_email   TEXT        NOT NULL UNIQUE,
+    -- D-8-09: verify, don't duplicate — the UNIQUE constraint above already
+    -- creates an implicit btree index that serves find_business_by_sender's
+    -- plain-equality lookup (repo.py). No separate CREATE INDEX is added.
     pay_period      TEXT        NOT NULL CHECK (pay_period IN ('weekly','biweekly','semi_monthly','monthly')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -110,6 +113,15 @@ ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS alias_candidates  JSONB;  -- D
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS record_only       BOOLEAN NOT NULL DEFAULT FALSE;  -- 06-08 HIGH-1: compose-created runs skip real Resend send
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS pre_clarify_extracted JSONB;  -- D-19 MONEY-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarified_fields      JSONB;  -- D-13 MONEY-03
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_detail          TEXT;   -- D-8-01/D-8-02: PII-scrubbed, stage-prefixed, truncated exception detail
+
+-- ── OPS2-02 hot-path indexes for payroll_runs ─────────────────────────────────
+-- Serve load_all_runs's ORDER BY created_at DESC and find_awaiting_reply_for_header's
+-- pr.status = 'awaiting_reply' filter (repo.py, confirmed in 08-RESEARCH.md).
+CREATE INDEX IF NOT EXISTS idx_payroll_runs_created_at
+    ON payroll_runs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payroll_runs_status
+    ON payroll_runs (status);
 
 -- ── 4. paystub_line_items ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS paystub_line_items (
@@ -214,6 +226,15 @@ BEGIN
     END IF;
 END;
 $$;
+
+-- ── OPS2-02 hot-path index for email_messages ─────────────────────────────────
+-- D-8-09: column order (run_id, direction, send_state) traced against live query
+-- predicates in repo.py (08-RESEARCH.md Pattern 3), not copied from the audit's
+-- guess. businesses.contact_email is deliberately excluded from any new index
+-- here — it is already covered by its own NOT NULL UNIQUE constraint's implicit
+-- index (see the comment on that column declaration above).
+CREATE INDEX IF NOT EXISTS idx_email_messages_run_direction_state
+    ON email_messages (run_id, direction, send_state);
 
 -- ── 6. eval_results ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS eval_results (
