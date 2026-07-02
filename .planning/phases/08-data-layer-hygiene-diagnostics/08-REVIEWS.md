@@ -161,3 +161,43 @@ Overall risk: **MEDIUM**. The Round 1 structural issues are mostly fixed, includ
 3. **R2-3 LOW (08-02) — short-alias over-redaction:** seed aliases include `Tom`/`Maria`; unbounded substring replacement can redact inside ordinary words. Prefer boundary-aware matching (e.g. `\b`-anchored regex per name) to preserve diagnostic value.
 
 **Codex verdict:** MEDIUM risk — "After those two adjustments, the plans look ready to execute."
+
+---
+
+# Round 3 — Codex Re-Review (post round-3 replan, commit ee20c25)
+
+**Disposition Table**
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| R2-1 Unicode scrub offset bug | PARTIALLY FIXED | The plan drops normalize-then-slice and specifies per-candidate regexes applied to the original message: [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:47>), [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:97>). The constructed accented test is now non-skippable and local-roster based: [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:89>). However, the planned `\b...\b` boundary can still leave a stray combining mark for decomposed names ending in an accented character; see New Concerns. |
+| R2-2 Behavioral roster arg-flow test | FIXED | Plan adds a spy test that wraps `record_run_error`, forces a failure after roster load, and asserts `stage=="pipeline"` plus non-None populated `Roster`: [08-03-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-03-PLAN.md:152>). Live source supports the test path: `run_pipeline` currently catches outside `_run`, while `_run` loads roster before `_run_stages`: [orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:173>), [orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:199>). The monkeypatch target is correct because `orchestrator.py` imports the `app.db.repo` module object: [orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:43>), and `fake_repo` patches that module: [conftest.py](</Users/pnhek/usf msds/github/payroll_agent/tests/conftest.py:606>). |
+| R2-3 Short-alias boundary matching | FIXED | Plan wraps each candidate in `\b...\b` and compiles with `re.IGNORECASE`: [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:100>). It adds a Tom/Tomorrow test: [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:91>). Live seed confirms real short aliases exist: `Maria` and `Tom`: [seed.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/seed.py:82>), [seed.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/seed.py:195>). |
+| Internal-checker blocker: two-way accent map / fixture-lucky test | FIXED | Plan now requires three alternatives per accented char: precomposed, base+combining mark, and bare base: [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:99>). The test includes a no-covering-alias `Ana Núñez` employee and asserts bare surname fragments `GARCIA` / `NUNEZ` do not survive: [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:89>). |
+
+**New Concerns**
+
+- MEDIUM: `\b` is not mark-aware for decomposed text. With the planned pattern shape, a candidate ending in an accented character can partially match the bare-base alternative and leave the combining mark behind. Example: a pattern like `\bJos(?:é|e\u0301|e)\b` against NFD `"José"` can substitute only `"Jose"` and leave `"[REDACTED]\u0301"`. This is caused by the planned three-way alternation plus `\b` anchors at [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:99>) and [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:100>). Fix: use mark-aware lookarounds such as `(?<![\w\u0300-\u036f])` and `(?![\w\u0300-\u036f])`, and add a test with a full name or alias ending in an accent, e.g. NFD `"José"`, asserting no combining mark is adjacent to `[REDACTED]`.
+
+- LOW: The regex-metachar handling is sound: non-mapped characters are emitted with `re.escape` per [08-02-PLAN.md](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/08-data-layer-hygiene-diagnostics/08-02-PLAN.md:100>). I do not see a new metachar injection issue.
+
+- LOW: The three-way accent map does not appear to create broad ordinary-word over-redaction beyond the existing intentional behavior that standalone aliases are PII. `Tom` inside `Tomorrow` is covered by the planned boundary test.
+
+Previously fixed Round 1/2 items were not regressed in the plan text: the 08-01 DO-block status guard and zero `needs_clarification` checks remain, `jsonb_typeof` replaces the unsafe JSONB count, `conn` stays positional-compatible, deploy-order is explicit, `RUN_COLS` gets `error_detail`, `InMemoryRepo.load_all_runs` gets the aliases, the pool singleton gets a lock, and live dashboard verification is deterministic.
+
+**Risk Assessment**
+
+Risk: MEDIUM.
+
+I would not execute unchanged. The remaining scrub boundary issue is small in code size but directly touches the PII-safe guarantee. After replacing `\b` with mark-aware boundaries and adding the ending-accent decomposed-name test, I would execute the plans unchanged.
+
+---
+
+## Round 3 Consensus Summary
+
+- **Disposition:** R2-2 (roster arg-flow spy test) FIXED; R2-3 (boundary-aware matching) FIXED; internal-checker unaccented-leak blocker FIXED; R2-1 (Unicode scrub) PARTIALLY FIXED — offset-safety solved, but one boundary refinement remains.
+- **No regressions:** all Round-1/2 fixes confirmed intact in plan text (DO-block guard, jsonb_typeof, conn signature, deploy-order gate, RUN_COLS/error_detail, InMemoryRepo aliases, pool lock, deterministic live verification).
+- **Reviewer trajectory:** Round 1 → 11 findings; Round 2 → 3 open; Round 3 → 1 open (narrow, mechanical). The loop is converging.
+
+### Open items from Round 3 (to fold into 08-02-PLAN.md before execution)
+1. **R3-1 MEDIUM (08-02) — `\b` is not mark-aware for decomposed text:** a candidate ending in an accented character (NFD "José") can match the bare-base alternative ("Jose") with `\b` succeeding before the combining mark — leaving `[REDACTED]` + a stray U+0301, violating the no-combining-marks guarantee. Fix: replace the `\b...\b` anchors with mark-aware lookarounds `(?<![\w\u0300-\u036f])` ... `(?![\w\u0300-\u036f])` in `_compile_name_pattern`, and add a Test 5 variant with an NFD name ending in an accented character asserting no combining mark survives adjacent to `[REDACTED]`.
