@@ -389,6 +389,44 @@ def test_scrub_case_and_unicode_form_insensitive_longest_first(roster_from_seed)
     assert "NUNEZ" not in scrubbed
 
 
+def test_scrub_nfd_stored_candidate_still_redacts_all_renderings():
+    """WR-01 (phase-8 review) — the STORED candidate itself is NFD-decomposed
+    (e.g. an alias learned from an NFD-encoded client email), and every message
+    rendering — NFC, NFD, and bare-unaccented — must still be redacted.
+
+    The pre-fix scrubber built the pattern from the raw candidate string, and
+    _ACCENT_CLASS_MAP is keyed by PRECOMPOSED characters only — so an NFD-stored
+    candidate bypassed the map and matched only its own NFD rendering: both the
+    NFC and bare renderings of the full name leaked unredacted (total redaction
+    failure for that name). The existing R2-1 test only varies the MESSAGE, never
+    the stored candidate — this test closes that gap.
+    """
+    from app.db import repo
+
+    nfd_name = unicodedata.normalize("NFD", "José García")
+    assert nfd_name != "José García"  # sanity: genuinely decomposed
+    jose = _employee(nfd_name, aliases=[])
+    roster = Roster(business_id=uuid.uuid4(), employees=[jose])
+
+    renderings = {
+        "nfc": "failed for José García at row 3",
+        "nfd": "failed for " + nfd_name + " at row 3",
+        "bare": "failed for Jose Garcia at row 3",
+    }
+    for label, message in renderings.items():
+        scrubbed = repo._scrub(message, roster=roster)
+        assert "[REDACTED]" in scrubbed, (
+            f"{label} rendering of an NFD-stored candidate must be redacted; "
+            f"got {scrubbed!r}"
+        )
+        assert "Garc" not in scrubbed and "GARC" not in scrubbed, (
+            f"name fragment leaked for {label} rendering: {scrubbed!r}"
+        )
+        assert scrubbed == "failed for [REDACTED] at row 3", (
+            f"non-PII text must survive byte-identical for {label}: {scrubbed!r}"
+        )
+
+
 def test_scrub_mark_aware_boundary_trailing_accent_nfd(roster_from_seed):
     """R3-1 — a name ending in an accented character (no trailing consonant) must
     still fully consume an NFD-decomposed trailing combining mark; no character in

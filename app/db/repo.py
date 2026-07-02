@@ -62,6 +62,7 @@ import contextlib
 import json
 import logging
 import re
+import unicodedata
 import uuid
 from typing import Any
 
@@ -425,7 +426,18 @@ def _compile_name_pattern(name: str) -> re.Pattern[str]:
     stranding an NFD trailing combining mark next to [REDACTED]. Strictly
     stronger than \b for plain ASCII, so "Tom" still never matches inside
     "Tomorrow" (R2-3).
+
+    WR-01 (phase-8 review): the CANDIDATE is NFC-normalized first. The
+    _ACCENT_CLASS_MAP is keyed by precomposed characters, so an NFD-stored
+    candidate (e.g. an alias learned from an NFD-encoded client email) would
+    otherwise bypass the map entirely — 'e' + combining acute escapes as two
+    literal chars and the pattern matches ONLY the NFD rendering, letting the
+    NFC and bare-unaccented renderings of the name leak unredacted. Normalizing
+    the candidate is offset-safe: only the PATTERN side changes; the message is
+    never normalized (the R2-1 offset-drift rationale forbids normalizing the
+    message, not the candidate).
     """
+    name = unicodedata.normalize("NFC", name)
     fragments: list[str] = []
     for ch in name:
         mapped = _ACCENT_CLASS_MAP.get(ch.lower())
