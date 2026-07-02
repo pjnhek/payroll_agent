@@ -503,9 +503,20 @@ def approve(
             # PII-safe: type only — str(exc) may echo model output, submitted names,
             # or raw email content (D-A1-03). run_id is the correlation key for debug.
             logger.warning("delivery of run %s failed: %s", run_id, type(exc).__name__)
-            # OPS2-01: no roster= — approve() never loads one; roster=None is correct
-            # by design (D-8-01b), not a gap (this boundary has no roster to pass).
-            repo.record_run_error(run_id, type(exc).__name__, detail_exc=exc, stage="delivery")
+            # OPS2-01 + WR-04 (phase-8 review): approve() never loads a roster itself
+            # (D-8-01b — the error path must never LOAD one), but _deliver stashes the
+            # roster it already loaded for PDF/compose interpolation on any exception
+            # raised past that point (exc.payroll_roster). Forward it so _scrub can
+            # redact employee names from the delivery error_detail — the boundary
+            # where names are MOST likely to appear in exception text. Failures
+            # before _deliver's roster load carry no attribute → None (locked design).
+            repo.record_run_error(
+                run_id,
+                type(exc).__name__,
+                detail_exc=exc,
+                stage="delivery",
+                roster=getattr(exc, "payroll_roster", None),
+            )
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

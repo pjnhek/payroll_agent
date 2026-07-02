@@ -434,3 +434,119 @@ def test_two_concurrent_stale_retriggers_only_one_wins():
     assert store.load_run(run_id)["status"] == RunStatus.EXTRACTING.value, (
         "After both retriggers, run must be in EXTRACTING (the CAS winner's target)"
     )
+
+
+# ---------------------------------------------------------------------------
+# WR-04 (phase-8 review): _deliver stashes its already-loaded roster on any
+# exception raised past the Step-4 roster load, so the approve() error boundary
+# can pass it to record_run_error and _scrub can redact employee names from the
+# delivery error_detail — the boundary where names are MOST likely to appear in
+# exception text (PDF headers, compose/gateway payloads). D-8-01b is preserved:
+# nothing in the error path LOADS a roster; the in-memory object is forwarded.
+# ---------------------------------------------------------------------------
+
+
+def _minimal_roster_and_item(run_id):
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from app.models.contracts import PaystubLineItem
+    from app.models.roster import Employee, Roster
+
+    emp = Employee(
+        id=uuid.uuid4(),
+        business_id=uuid.uuid4(),
+        full_name="Maria Chen",
+        known_aliases=[],
+        pay_type="hourly",
+        hourly_rate=Decimal("20.00"),
+        annual_salary=None,
+        retirement_contribution_pct=Decimal("0.00"),
+        filing_status="single",
+        step_2_checkbox=False,
+        step_3_dependents=Decimal("0"),
+        step_4a_other_income=Decimal("0"),
+        step_4b_deductions=Decimal("0"),
+        ytd_ss_wages=Decimal("0.00"),
+        pay_periods_per_year=52,
+    )
+    roster = Roster(business_id=emp.business_id, employees=[emp])
+    item = PaystubLineItem(
+        id=uuid.uuid4(), run_id=run_id, employee_id=emp.id, submitted_name="Maria Chen",
+        hours_regular=Decimal("40"), hours_overtime=Decimal("0"),
+        hours_vacation=Decimal("0"), hours_sick=Decimal("0"), hours_holiday=Decimal("0"),
+        gross_pay=Decimal("800.00"), pretax_401k=Decimal("0"), fica_ss=Decimal("49.60"),
+        fica_medicare=Decimal("11.60"), federal_withholding=Decimal("30.00"),
+        state_withholding=None, net_pay=Decimal("708.80"),
+        created_at=datetime.now(tz=timezone.utc),
+    )
+    return roster, item
+
+
+def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
+    """WR-04: a failure AFTER _deliver's Step-4 roster load (here: PDF generation)
+    must re-raise the ORIGINAL exception carrying the in-memory roster on
+    exc.payroll_roster — the approve() boundary forwards it to record_run_error
+    so the roster names in str(exc) get scrubbed from error_detail.
+    """
+    from app.pipeline import orchestrator as orch
+
+    run_id = _run_id()
+    roster, item = _minimal_roster_and_item(run_id)
+    run = {"id": run_id, "business_id": roster.business_id,
+           "pay_period_start": None, "pay_period_end": None}
+
+    monkeypatch.setattr(orch.repo, "load_business_name", lambda bid, conn=None: "Coastal")
+    monkeypatch.setattr(
+        orch.repo, "get_outbound_message_id", lambda rid, purpose, conn=None: None
+    )
+    monkeypatch.setattr(orch.repo, "load_line_items", lambda rid, conn=None: [item])
+    monkeypatch.setattr(
+        orch, "compose_confirmation", lambda paystubs, run, timeout_s=3.0: "body"
+    )
+    monkeypatch.setattr(
+        orch.repo, "load_roster_for_business", lambda bid, conn=None: roster
+    )
+
+    def _pdf_boom(*args, **kwargs):
+        raise RuntimeError("reportlab exploded rendering Maria Chen")
+
+    monkeypatch.setattr(orch, "generate_paystub_pdf", _pdf_boom)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        orch._deliver(run_id, run)
+
+    assert getattr(excinfo.value, "payroll_roster", None) is roster, (
+        "_deliver must stash the ALREADY-LOADED roster on the raised exception "
+        "(exc.payroll_roster) so the approve() boundary can scrub names — WR-04"
+    )
+
+
+def test_deliver_failure_before_roster_load_carries_no_roster(monkeypatch):
+    """WR-04 boundary shape: a failure BEFORE the Step-4 roster load re-raises
+    with NO payroll_roster attribute — approve()'s getattr default (None) keeps
+    the locked D-8-01b behavior (email-regex-only scrub) for those failures.
+    """
+    from app.pipeline import orchestrator as orch
+
+    run_id = _run_id()
+    run = {"id": run_id, "business_id": uuid.uuid4(),
+           "pay_period_start": None, "pay_period_end": None}
+
+    monkeypatch.setattr(orch.repo, "load_business_name", lambda bid, conn=None: "Coastal")
+    monkeypatch.setattr(
+        orch.repo, "get_outbound_message_id", lambda rid, purpose, conn=None: None
+    )
+
+    def _items_boom(rid, conn=None):
+        raise RuntimeError("db blip before roster load")
+
+    monkeypatch.setattr(orch.repo, "load_line_items", _items_boom)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        orch._deliver(run_id, run)
+
+    assert not hasattr(excinfo.value, "payroll_roster"), (
+        "a pre-roster-load failure must NOT carry payroll_roster (nothing was "
+        "loaded; the error path never loads one itself — D-8-01b)"
+    )

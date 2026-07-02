@@ -158,3 +158,73 @@ def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
     assert r.status_code == 303, (
         f"retrigger from APPROVED must return 303; got {r.status_code}"
     )
+
+
+def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, monkeypatch):
+    """WR-04 (phase-8 review): when _deliver raises an exception carrying the
+    roster it had already loaded (exc.payroll_roster), the approve() D-13b
+    boundary must forward that roster to record_run_error so _scrub can redact
+    employee names from the delivery error_detail. Traces the ARGUMENT FLOW
+    across the boundary — not just that record_run_error was called.
+    """
+    import app.db.repo as repo_mod
+    from app.pipeline import orchestrator as orch
+
+    run_id = _run_at_awaiting_approval(fake_repo)
+    sentinel_roster = object()  # identity check — must arrive unchanged
+
+    def _deliver_boom(rid, run):
+        exc = RuntimeError("gateway exploded sending Maria Chen's paystub")
+        exc.payroll_roster = sentinel_roster
+        raise exc
+
+    monkeypatch.setattr(orch, "_deliver", _deliver_boom)
+
+    captured = {}
+
+    def _spy(rid, reason, conn=None, *, detail_exc=None, stage=None, roster=None):
+        captured["roster"] = roster
+        captured["stage"] = stage
+        captured["reason"] = reason
+
+    monkeypatch.setattr(repo_mod, "record_run_error", _spy)
+
+    r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
+    assert r.status_code == 303
+
+    assert captured.get("roster") is sentinel_roster, (
+        "approve() must forward exc.payroll_roster (the roster _deliver already "
+        "loaded) to record_run_error's roster= kwarg — WR-04"
+    )
+    assert captured.get("stage") == "delivery"
+    assert captured.get("reason") == "RuntimeError"
+
+
+def test_approve_without_roster_on_exception_passes_none(client, fake_repo, monkeypatch):
+    """WR-04 / D-8-01b locked design: an exception WITHOUT payroll_roster (failure
+    before _deliver's roster load, or load_run itself failing) must pass
+    roster=None — the boundary never loads a roster of its own.
+    """
+    import app.db.repo as repo_mod
+    from app.pipeline import orchestrator as orch
+
+    run_id = _run_at_awaiting_approval(fake_repo)
+
+    def _deliver_boom(rid, run):
+        raise RuntimeError("failure before the roster load")
+
+    monkeypatch.setattr(orch, "_deliver", _deliver_boom)
+
+    captured = {}
+
+    def _spy(rid, reason, conn=None, *, detail_exc=None, stage=None, roster=None):
+        captured["roster"] = roster
+
+    monkeypatch.setattr(repo_mod, "record_run_error", _spy)
+
+    r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
+    assert r.status_code == 303
+    assert captured.get("roster") is None, (
+        "with no payroll_roster on the exception, approve() must pass "
+        "roster=None (D-8-01b: the error path never loads a roster)"
+    )

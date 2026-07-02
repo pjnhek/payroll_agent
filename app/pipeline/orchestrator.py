@@ -34,6 +34,7 @@ resume_pipeline share the exact same gate path — the eval-reusable spine is DR
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import uuid
@@ -1215,83 +1216,100 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
     roster = repo.load_roster_for_business(run["business_id"])
     emp_by_id = {str(e.id): e for e in roster.employees}
 
-    # Step 5 — Generate per-employee PDFs (pure, in-memory — HITL-03).
-    pdf_attachments: list[tuple[str, bytes]] = []
-    for item in paystubs:
-        emp = emp_by_id.get(str(item.employee_id)) if item.employee_id else None
-        emp_name = emp.full_name if emp else (item.submitted_name or "Employee")
-        pdf_bytes = generate_paystub_pdf(
-            item,
-            emp_name,
-            run.get("pay_period_start"),
-            run.get("pay_period_end"),
-            business_name=run.get("business_name"),
-            filing_status=emp.filing_status if emp else None,
-            hourly_rate=emp.hourly_rate if emp else None,
-        )
-        # The attachment filename MUST end in .pdf — Resend forwards the filename
-        # verbatim, and a name without an extension (e.g. "Maria Chen") arrives as an
-        # unrecognized binary blob the recipient's mail client won't open as a PDF.
-        # Sanitize like the /runs/{id}/pdf download route so both produce the same name.
-        safe_name = re.sub(r"[^\w.\-]", "_", emp_name, flags=re.ASCII) or "employee"
-        pdf_attachments.append((f"paystub_{safe_name}.pdf", pdf_bytes))
-
-    # Step 6 — Load the inbound email for the reply-to address.
-    inbound = repo.load_inbound_email(run_id)
-    to_addr = inbound.from_addr if inbound else ""
-
-    # Step 7 — Send. HIGH-1 record-only branch (06-08): check record_only flag.
-    # record_only=True (compose-created runs): write outbound row WITHOUT calling Resend.
-    # record_only=False (live Path-2 runs): keep calling gateway.send_outbound unchanged.
-    # Steps 8-10 (alias write + SENT + RECONCILED) run unconditionally for BOTH branches.
-    record_only = repo.get_record_only_flag(run_id)
-    if record_only:
-        # Path-1 record-only delivery: write the confirmation outbound row WITHOUT Resend.
-        synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
-        repo.insert_email_message(
-            run_id=run_id,
-            direction="outbound",
-            message_id=synthetic_mid,
-            in_reply_to=inbound.message_id if inbound else None,
-            references_header=inbound.message_id if inbound else None,
-            subject=confirmation_subject(run, inbound.subject if inbound else None),
-            from_addr=None,
-            to_addr=to_addr,
-            body_text=body,
-            purpose="confirmation",
-            send_state="sent",
-        )
-        # DO NOT return here — fall through to alias write + status steps below.
-    else:
-        # Phase 6 live-provider swap writes send_state='reserved' BEFORE the provider call
-        # and flips to 'sent'/'failed' after — no code change needed here; the column exists.
-        gateway.send_outbound(
-            run_id=run_id,
-            to_addr=to_addr,
-            subject=confirmation_subject(run, inbound.subject if inbound else None),
-            body=body,
-            attachments=pdf_attachments,
-            purpose="confirmation",
-            send_state="sent",
-        )
-
-    # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias candidates.
-    # MUST be called BEFORE set_status(SENT) (PATTERNS.md line 611 ordering, D-13b).
-    # Wrapped in try/except so an alias-learning failure NEVER strands or fails the run
-    # (D-13b defensive isolation — alias write is independently droppable, D-15).
+    # WR-04 (phase-8 review): steps 5-10 interpolate roster names (PDF headers,
+    # compose/gateway payloads), so an exception raised past this point can carry
+    # employee full names in str(exc). Stash the ALREADY-LOADED in-memory roster
+    # on the exception and re-raise unchanged — the approve() error boundary reads
+    # it via getattr and passes it to record_run_error so _scrub can redact the
+    # names. D-8-01b is preserved: the error path never LOADS a roster (forbidden);
+    # it only forwards the object this happy path already had in scope. _deliver's
+    # contract is also preserved: it still raises freely and never swallows.
     try:
-        _write_aliases_if_safe(run_id, run, roster)
-    except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
-        logger.warning(
-            "alias write skipped for run %s: %s (run continues to SENT)",
-            run_id,
-            type(alias_exc).__name__,
-        )
+        # Step 5 — Generate per-employee PDFs (pure, in-memory — HITL-03).
+        pdf_attachments: list[tuple[str, bytes]] = []
+        for item in paystubs:
+            emp = emp_by_id.get(str(item.employee_id)) if item.employee_id else None
+            emp_name = emp.full_name if emp else (item.submitted_name or "Employee")
+            pdf_bytes = generate_paystub_pdf(
+                item,
+                emp_name,
+                run.get("pay_period_start"),
+                run.get("pay_period_end"),
+                business_name=run.get("business_name"),
+                filing_status=emp.filing_status if emp else None,
+                hourly_rate=emp.hourly_rate if emp else None,
+            )
+            # The attachment filename MUST end in .pdf — Resend forwards the filename
+            # verbatim, and a name without an extension (e.g. "Maria Chen") arrives as an
+            # unrecognized binary blob the recipient's mail client won't open as a PDF.
+            # Sanitize like the /runs/{id}/pdf download route so both produce the same name.
+            safe_name = re.sub(r"[^\w.\-]", "_", emp_name, flags=re.ASCII) or "employee"
+            pdf_attachments.append((f"paystub_{safe_name}.pdf", pdf_bytes))
 
-    # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential in this
-    # synchronous call; RECONCILED is the only terminal-success status).
-    repo.set_status(run_id, RunStatus.SENT)
-    repo.set_status(run_id, RunStatus.RECONCILED)
+        # Step 6 — Load the inbound email for the reply-to address.
+        inbound = repo.load_inbound_email(run_id)
+        to_addr = inbound.from_addr if inbound else ""
+
+        # Step 7 — Send. HIGH-1 record-only branch (06-08): check record_only flag.
+        # record_only=True (compose-created runs): write outbound row WITHOUT calling Resend.
+        # record_only=False (live Path-2 runs): keep calling gateway.send_outbound unchanged.
+        # Steps 8-10 (alias write + SENT + RECONCILED) run unconditionally for BOTH branches.
+        record_only = repo.get_record_only_flag(run_id)
+        if record_only:
+            # Path-1 record-only delivery: write the confirmation outbound row WITHOUT Resend.
+            synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
+            repo.insert_email_message(
+                run_id=run_id,
+                direction="outbound",
+                message_id=synthetic_mid,
+                in_reply_to=inbound.message_id if inbound else None,
+                references_header=inbound.message_id if inbound else None,
+                subject=confirmation_subject(run, inbound.subject if inbound else None),
+                from_addr=None,
+                to_addr=to_addr,
+                body_text=body,
+                purpose="confirmation",
+                send_state="sent",
+            )
+            # DO NOT return here — fall through to alias write + status steps below.
+        else:
+            # Phase 6 live-provider swap writes send_state='reserved' BEFORE the provider call
+            # and flips to 'sent'/'failed' after — no code change needed here; the column exists.
+            gateway.send_outbound(
+                run_id=run_id,
+                to_addr=to_addr,
+                subject=confirmation_subject(run, inbound.subject if inbound else None),
+                body=body,
+                attachments=pdf_attachments,
+                purpose="confirmation",
+                send_state="sent",
+            )
+
+        # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias candidates.
+        # MUST be called BEFORE set_status(SENT) (PATTERNS.md line 611 ordering, D-13b).
+        # Wrapped in try/except so an alias-learning failure NEVER strands or fails the run
+        # (D-13b defensive isolation — alias write is independently droppable, D-15).
+        try:
+            _write_aliases_if_safe(run_id, run, roster)
+        except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
+            logger.warning(
+                "alias write skipped for run %s: %s (run continues to SENT)",
+                run_id,
+                type(alias_exc).__name__,
+            )
+
+        # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential in this
+        # synchronous call; RECONCILED is the only terminal-success status).
+        repo.set_status(run_id, RunStatus.SENT)
+        repo.set_status(run_id, RunStatus.RECONCILED)
+    except Exception as exc:
+        # WR-04: attach the in-memory roster for the caller's scrub boundary, then
+        # re-raise the ORIGINAL exception unchanged. Attribute assignment is
+        # best-effort (suppress) — an exception type rejecting attributes must
+        # never mask the real delivery failure.
+        with contextlib.suppress(Exception):
+            exc.payroll_roster = roster
+        raise
 
 
 def _compute_line_items(run_id, extracted, matches, roster):
