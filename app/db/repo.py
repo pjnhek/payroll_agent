@@ -394,23 +394,45 @@ def claim_status(
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _REDACTED = "[REDACTED]"
 
-# Explicit, transcribed three-way alternation per accented Latin letter likely to
-# appear in a roster name: (precomposed | base + combining mark | bare unaccented
-# base). The bare-base alternative is required because real input (LLM extraction,
-# all-caps email rendering) frequently strips diacritics entirely rather than
-# decomposing them — a map with only the first two alternatives lets a fully
-# unaccented rendering (e.g. "Ana Nunez" for stored "Ana Núñez") leak unredacted.
-# NOT computed via unicodedata.normalize at match time (that is the offset-unsafe
-# approach R2-1 rejects) — this is a small, explicit, transcribed table.
-_ACCENT_CLASS_MAP: dict[str, str] = {
-    "\u00e1": "(?:\u00e1|a\u0301|a)",  # a-acute: precomposed | a+combining acute | bare a
-    "\u00e9": "(?:\u00e9|e\u0301|e)",  # e-acute
-    "\u00ed": "(?:\u00ed|i\u0301|i)",  # i-acute
-    "\u00f3": "(?:\u00f3|o\u0301|o)",  # o-acute
-    "\u00fa": "(?:\u00fa|u\u0301|u)",  # u-acute
-    "\u00f1": "(?:\u00f1|n\u0303|n)",  # n-tilde
-    "\u00e7": "(?:\u00e7|c\u0327|c)",  # c-cedilla
-}
+# Three-way alternation per accented Latin-1 letter that can appear in a roster
+# name: (precomposed | base + combining mark | bare unaccented base). The bare-
+# base alternative is required because real input (LLM extraction, all-caps email
+# rendering) frequently strips diacritics entirely rather than decomposing them —
+# a map with only the first two alternatives lets a fully unaccented rendering
+# (e.g. "Ana Nunez" for stored "Ana Núñez") leak unredacted.
+#
+# WR-02 (phase-8 review): generated ONCE AT IMPORT TIME from
+# unicodedata.decomposition over the Latin-1 Supplement, replacing the previous
+# hand-transcribed 7-entry table (acute vowels + n-tilde + c-cedilla only) whose
+# own justification applied equally to the umlaut/grave/circumflex letters it
+# omitted — for stored "Björn Müller", the common ASCII-ified rendering
+# "Bjorn Muller" leaked entirely. Import-time generation is still STATIC and
+# still offset-safe: nothing is computed at match time, and only the CANDIDATE
+# pattern is affected — the message is never normalized (the offset-unsafe
+# approach R2-1 rejects). Letters with no canonical base+mark decomposition
+# (like o-stroke, ae, thorn, eth, sharp-s) are intentionally absent and fall
+# through to literal escaping, exactly as before.
+def _build_accent_class_map() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for codepoint in range(0x00C0, 0x0100):  # Latin-1 Supplement letters
+        lower = chr(codepoint).lower()
+        if len(lower) != 1 or lower in mapping:
+            continue
+        decomp = unicodedata.decomposition(lower).split()
+        # Only canonical two-part decompositions (base + combining mark);
+        # compatibility decompositions carry a '<tag>' first element — skip.
+        if len(decomp) != 2 or decomp[0].startswith("<"):
+            continue
+        base, mark = (chr(int(part, 16)) for part in decomp)
+        if unicodedata.combining(mark) == 0 or not base.isascii():
+            continue
+        mapping[lower] = (
+            f"(?:{re.escape(lower)}|{re.escape(base)}{re.escape(mark)}|{re.escape(base)})"
+        )
+    return mapping
+
+
+_ACCENT_CLASS_MAP: dict[str, str] = _build_accent_class_map()
 
 
 def _compile_name_pattern(name: str) -> re.Pattern[str]:

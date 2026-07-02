@@ -389,6 +389,50 @@ def test_scrub_case_and_unicode_form_insensitive_longest_first(roster_from_seed)
     assert "NUNEZ" not in scrubbed
 
 
+def test_scrub_umlaut_and_grave_names_redacted_in_all_renderings():
+    """WR-02 (phase-8 review) — the accent class map must cover the full Latin-1
+    accented range, not just acute vowels + n-tilde + c-cedilla. For stored
+    "Björn Müller" the pre-fix map left the bare ASCII-ified rendering
+    "Bjorn Muller" (the single most common real-input form) completely
+    unredacted. Same for grave/circumflex names.
+    """
+    from app.db import repo
+
+    bjorn = _employee("Björn Müller", aliases=[])
+    amelie = _employee("Amélie Lefèvre", aliases=[])
+    roster = Roster(business_id=uuid.uuid4(), employees=[bjorn, amelie])
+
+    cases = [
+        ("bare umlaut", "failed for Bjorn Muller at row 2"),
+        ("precomposed umlaut", "failed for Björn Müller at row 2"),
+        ("nfd umlaut", "failed for " + unicodedata.normalize("NFD", "Björn Müller") + " at row 2"),
+        ("bare grave/acute", "failed for Amelie Lefevre at row 2"),
+        ("precomposed grave/acute", "failed for Amélie Lefèvre at row 2"),
+    ]
+    for label, message in cases:
+        scrubbed = repo._scrub(message, roster=roster)
+        assert scrubbed == "failed for [REDACTED] at row 2", (
+            f"{label} rendering must be fully redacted with surrounding text "
+            f"byte-identical; got {scrubbed!r}"
+        )
+
+
+def test_accent_class_map_covers_latin1_and_keeps_original_entries():
+    """WR-02 — the generated map still contains every original hand-transcribed
+    entry (acute vowels, n-tilde, c-cedilla) AND the previously-missing common
+    diacritics (umlaut/grave/circumflex vowels). Letters with no canonical
+    base+mark decomposition stay absent (they fall through to literal escaping).
+    """
+    from app.db.repo import _ACCENT_CLASS_MAP
+
+    for ch in "áéíóúñç" + "äëïöü" + "àèìòù" + "âêîôû":
+        assert ch in _ACCENT_CLASS_MAP, f"map must cover {ch!r} (WR-02)"
+    for ch in "øæßð":  # no canonical two-part decomposition — literal escape path
+        assert ch not in _ACCENT_CLASS_MAP, (
+            f"{ch!r} has no base+mark decomposition and must not be in the map"
+        )
+
+
 def test_scrub_nfd_stored_candidate_still_redacts_all_renderings():
     """WR-01 (phase-8 review) — the STORED candidate itself is NFD-decomposed
     (e.g. an alias learned from an NFD-encoded client email), and every message
