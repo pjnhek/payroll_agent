@@ -92,7 +92,17 @@ Plans:
   2. The hot query paths have supporting indexes — `businesses.contact_email`, `email_messages(run_id, direction, send_state)`, `payroll_runs(created_at DESC)`, `payroll_runs(status)` — applied via `schema.sql` and verified present after bootstrap; the status-drift / schema guard stays green.
   3. `load_all_runs` selects an explicit column list (no `SELECT *`), so schema creep cannot silently leak new columns to the dashboard — restoring the project's stated explicit-column discipline, with a test asserting the query names its columns.
 
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+**Wave 1**
+
+- [ ] 08-01-PLAN.md — Schema DDL: error_detail column, 3 hot-path indexes, businesses.contact_email coverage comment, payroll_runs.status CHECK swap (NEEDS_CLARIFICATION removal) + RunStatus enum edit
+- [ ] 08-02-PLAN.md — repo.py: centralized PII scrub-then-truncate helper wired into record_run_error; load_all_runs explicit-column projection with SQL-computed aliases
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 08-03-PLAN.md — Wire all 3 record_run_error call sites + templates + pool-singleton lock + test-double updates, then a blocking live-DB checkpoint applying the schema to Supabase
+
 **UI hint**: yes
 
 ### Phase 9: Atomic Data Integrity
