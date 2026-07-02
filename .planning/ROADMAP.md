@@ -96,8 +96,8 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 08-01-PLAN.md — Schema DDL: error_detail column, 3 hot-path indexes, businesses.contact_email coverage comment, payroll_runs.status CHECK swap (NEEDS_CLARIFICATION removal) + RunStatus enum edit
-- [ ] 08-02-PLAN.md — repo.py: centralized PII scrub-then-truncate helper wired into record_run_error; load_all_runs explicit-column projection with SQL-computed aliases
+- [x] 08-01-PLAN.md — Schema DDL: error_detail column, 3 hot-path indexes, businesses.contact_email coverage comment, payroll_runs.status CHECK swap (NEEDS_CLARIFICATION removal) + RunStatus enum edit
+- [x] 08-02-PLAN.md — repo.py: centralized PII scrub-then-truncate helper wired into record_run_error; load_all_runs explicit-column projection with SQL-computed aliases
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -150,6 +150,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
-| 8. Data-Layer Hygiene & Diagnostics | 0/TBD | Not started | - |
+| 8. Data-Layer Hygiene & Diagnostics | 2/3 | In Progress|  |
 | 9. Atomic Data Integrity | 0/TBD | Not started | - |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
