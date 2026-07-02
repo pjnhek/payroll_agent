@@ -138,23 +138,40 @@ def test_absent_hours_treated_as_zero_in_calc():
 
 
 def test_record_run_error_skips_terminal_run(fake_conn):
-    """WR-04 — record_run_error must NOT overwrite a run that is already terminal.
+    """WR-04 guard, WR-03 CAS — record_run_error must NOT clobber a terminal run.
 
-    Uses status='sent' as the canonical terminal example. NOTE: 'approved' was
-    removed from _TERMINAL_STATUSES in Phase 5 Plan 03 (D-13b finding): an approved
-    run that hits a delivery failure MUST be routable to ERROR so the operator can
-    retrigger; leaving 'approved' terminal would silently swallow delivery failures.
-    The genuinely terminal statuses are: sent, reconciled, rejected, error.
+    Phase-8 review WR-03: the guard is an atomic CAS folded into the UPDATE's
+    WHERE clause (`status <> ALL(terminal)` + RETURNING, the claim_status idiom),
+    NOT a SELECT-then-UPDATE — a check-then-act pair lets a concurrent
+    transaction commit `sent`/`reconciled` between the read and the write under
+    READ COMMITTED, and the unconditional UPDATE then clobbers the terminal run.
+
+    A terminal run matches no row, so RETURNING yields None (scripted here) and
+    set_status(ERROR) must never run. The genuinely terminal statuses are:
+    sent, reconciled, rejected, error ('approved' stays claimable — D-13b).
     """
     from app.db import repo
 
-    fake_conn.script_fetchone(("sent",))  # sent is a genuine terminal status
+    fake_conn.script_fetchone(None)  # CAS matched no row — the run is terminal
     repo.record_run_error(uuid.uuid4(), "boom: a late resume hit an exception", conn=fake_conn)
 
     sql = fake_conn.all_sql()
-    assert "SELECT status" in sql, "must read the current status before mutating"
-    assert "SET error_reason" not in sql, (
-        "a terminal run's error_reason must NOT be overwritten (WR-04)"
+    # The guard is INSIDE the write: no separate status read, and the UPDATE
+    # carries the terminal-status predicate + RETURNING (atomic claim).
+    assert "SELECT status" not in sql, (
+        "the terminal guard must be a CAS in the UPDATE WHERE clause, not a "
+        "separate check-then-act SELECT (WR-03)"
+    )
+    assert "status <> ALL(%s)" in sql and "RETURNING" in sql, (
+        "the UPDATE must carry the terminal-status predicate and RETURNING "
+        "so the claim is atomic (WR-03 CAS)"
+    )
+    # The terminal set is parameterized from _TERMINAL_STATUSES (single source
+    # of truth) — never inlined literals.
+    _, params = fake_conn.executed[0]
+    assert sorted(repo._TERMINAL_STATUSES) in list(params), (
+        "the terminal statuses must be passed as a SQL array param sourced "
+        "from _TERMINAL_STATUSES"
     )
     assert "SET status" not in sql, "a terminal run must NOT be flipped to ERROR (WR-04)"
 
@@ -164,13 +181,15 @@ def test_record_run_error_processes_approved_run(fake_conn):
 
     'approved' was removed from _TERMINAL_STATUSES in Phase 5 Plan 03 so that a
     delivery failure after approval can advance the run to ERROR — making it
-    retriggerable. Without this, a crashed delivery would leave the run stuck in
-    'approved' with no way to retry (D-13b critical finding).
+    retriggerable. With the WR-03 CAS, 'approved' is claimable because it is not
+    in the parameterized terminal set (test_approved_not_in_terminal_statuses
+    pins that), so the CAS UPDATE matches and RETURNING yields the row id.
     """
     from app.db import repo
 
-    fake_conn.script_fetchone(("approved",))  # approved is now NON-terminal (D-13b)
-    repo.record_run_error(uuid.uuid4(), "delivery crashed after approval", conn=fake_conn)
+    run_id = uuid.uuid4()
+    fake_conn.script_fetchone((str(run_id),))  # CAS RETURNING id — claim succeeded
+    repo.record_run_error(run_id, "delivery crashed after approval", conn=fake_conn)
 
     sql = fake_conn.all_sql()
     assert "SET error_reason" in sql, (
@@ -188,8 +207,9 @@ def test_record_run_error_writes_for_non_terminal_run(fake_conn):
     original behavior is preserved for in-flight runs)."""
     from app.db import repo
 
-    fake_conn.script_fetchone(("extracting",))  # the run is mid-pipeline (non-terminal)
-    repo.record_run_error(uuid.uuid4(), "boom: a real stage failure", conn=fake_conn)
+    run_id = uuid.uuid4()
+    fake_conn.script_fetchone((str(run_id),))  # CAS claim succeeds (run in-flight)
+    repo.record_run_error(run_id, "boom: a real stage failure", conn=fake_conn)
 
     sql = fake_conn.all_sql()
     assert "SET error_reason" in sql, "a non-terminal run must persist the error_reason"
@@ -335,10 +355,16 @@ def test_record_run_error_fails_open_when_no_roster(fake_conn):
     assert detail is not None
     assert "[REDACTED]" in detail
     assert "ops@acme.test" not in detail
-    # Exactly the terminal-status SELECT plus the UPDATE plus set_status's UPDATE —
-    # no extra roster-loading SELECT appears.
-    select_count = fake_conn.all_sql().count("SELECT status")
-    assert select_count == 1
+    # Exactly the CAS UPDATE plus set_status's UPDATE (WR-03: the terminal guard
+    # is inside the UPDATE's WHERE, no separate status SELECT) — and no extra
+    # roster-loading SELECT appears.
+    assert "SELECT" not in fake_conn.all_sql().upper(), (
+        "record_run_error must issue no SELECT (no status read, no roster load)"
+    )
+    assert len(fake_conn.executed) == 2, (
+        "expected exactly the CAS UPDATE + set_status UPDATE, got "
+        f"{len(fake_conn.executed)} statements"
+    )
 
 
 def test_scrub_case_and_unicode_form_insensitive_longest_first(roster_from_seed):

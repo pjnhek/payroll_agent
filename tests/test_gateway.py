@@ -229,6 +229,9 @@ def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn,
     monkeypatch.setattr(repo, "set_status", _spy)
 
     run_id = uuid.uuid4()
+    # WR-03 CAS: record_run_error's guarded UPDATE ... RETURNING must yield a row
+    # for the claim to succeed (a None row means the run is terminal/missing).
+    fake_conn.script_fetchone((str(run_id),))
     repo.record_run_error(run_id, "extraction failed twice", conn=fake_conn)
 
     # error_reason was written

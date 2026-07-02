@@ -530,10 +530,18 @@ def record_run_error(
     WR-04: this must NOT clobber a run that is already TERMINAL. A late/duplicate
     reply (cf. CR-02) that resumes a run which then hits an exception would otherwise
     flip an approved/sent/reconciled/rejected run to ERROR, destroying the run's real
-    state and the approval audit trail. So read the current status inside the same
-    transaction first; if it is terminal, log and return WITHOUT writing — defense in
-    depth even with CR-02's resume precondition in place. (No-op on terminal includes
-    a run already in ERROR — re-stamping it is pointless.)
+    state and the approval audit trail. (No-op on terminal includes a run already in
+    ERROR — re-stamping it is pointless.)
+
+    WR-03 (phase-8 review): the guard is an atomic compare-and-swap folded into
+    the UPDATE's WHERE clause (`status <> ALL(terminal)` + RETURNING), the same
+    CAS idiom claim_status uses — NOT a separate SELECT-then-UPDATE. Under READ
+    COMMITTED a check-then-act pair lets a concurrent transaction commit a
+    terminal status (e.g. _deliver's set_status(SENT) racing a late resume's
+    error path) between the read and the write, and the unconditional UPDATE
+    would then clobber the terminal run to ERROR — the exact outcome this guard
+    exists to prevent. With the CAS, a run that is terminal (or missing) matches
+    no row, the claim fails, and set_status(ERROR) is never called.
 
     OPS2-01 (D-8-01/D-8-01b/D-8-02): the optional keyword-only `detail_exc`/`stage`/
     `roster` params drive a scrubbed, stage-prefixed, 200-char-truncated
@@ -549,23 +557,25 @@ def record_run_error(
     )
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
-            current = c.execute(
-                "SELECT status FROM payroll_runs WHERE id = %s", (str(run_id),)
+            # WR-03 CAS: the terminal-status predicate lives INSIDE the UPDATE's
+            # WHERE clause (claim_status idiom) so no concurrent transaction can
+            # commit a terminal status between a read and this write. The terminal
+            # set is parameterized from _TERMINAL_STATUSES (single source of
+            # truth) — `status <> ALL(%s)` is the NOT-IN form for an array param.
+            row = c.execute(
+                "UPDATE payroll_runs SET error_reason = %s, error_detail = %s,"
+                " updated_at = now() WHERE id = %s AND status <> ALL(%s)"
+                " RETURNING id",
+                (reason, detail, str(run_id), sorted(_TERMINAL_STATUSES)),
             ).fetchone()
-            if current is not None and current[0] in _TERMINAL_STATUSES:
+            if row is None:
                 logger.info(
-                    "record_run_error skipped: run %s is terminal (%s) — not "
-                    "clobbering to ERROR (WR-04). reason was: %s",
+                    "record_run_error skipped: run %s is terminal or missing — not "
+                    "clobbering to ERROR (WR-04 guard, WR-03 CAS). reason was: %s",
                     run_id,
-                    current[0],
                     reason,
                 )
                 return
-            c.execute(
-                "UPDATE payroll_runs SET error_reason = %s, error_detail = %s,"
-                " updated_at = now() WHERE id = %s",
-                (reason, detail, str(run_id)),
-            )
             set_status(run_id, RunStatus.ERROR, conn=c)
 
 

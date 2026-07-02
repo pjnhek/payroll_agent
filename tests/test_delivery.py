@@ -84,9 +84,9 @@ def test_delivery_error_converts_approved_to_error(fake_conn):
     run_id = _run_id()
     exc = RuntimeError("simulated PDF generation failure")
 
-    # Script the FakeConnection: SELECT returns approved (not in terminal after W1)
-    # and then record_run_error can proceed.
-    fake_conn.script_fetchone(("approved",))  # status check inside record_run_error
+    # Script the FakeConnection: the WR-03 CAS UPDATE ... RETURNING yields a row
+    # ('approved' is not in the terminal set — D-13b), so record_run_error proceeds.
+    fake_conn.script_fetchone((str(run_id),))  # CAS RETURNING id — claim succeeded
 
     # Call record_run_error directly (the D-13b boundary asserts it gets called
     # with type(exc).__name__, not str(exc), to avoid leaking PII from exc message).
