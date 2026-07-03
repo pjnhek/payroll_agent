@@ -118,20 +118,21 @@ Plans:
   2. Two concurrent duplicate webhook deliveries for the same inbound `message_id` (Resend retry) result in exactly one payroll run — dedup and run-creation are resolved in one transaction so only the webhook that actually INSERTed the email row creates the run, and the loser attaches to the existing run; a test races two inserts and asserts a single run exists (the CAS is designed carefully — the audit's own fix sketch had a subtle gap).
   3. A run whose background task died mid-flight (stranded in `extracting`/`computing`) is recoverable without waiting out an over-long stale threshold — via a recovery sweep or an operator force-retrigger path — proven by a test that strands a run and then recovers it to a terminal-or-progressing state.
 
-**Plans**: 4 plans
+**Plans**: 5 plans *(revised 2026-07-03 after cross-AI review, 09-REVIEWS.md: 09-02/09-03/09-04 revised for Codex HIGH-1/2/3 + MEDIUMs/LOW; 09-01 gains a small doc/SQL correction; 09-05 added — a test-only fixture recording a Claude in-session HIGH finding (multi-round context loss) as an explicit deferred known-edge, disposition (c), out of Phase 9's atomicity/concurrency/recovery scope)*
 Plans:
 **Wave 1**
 
-- [ ] 09-01-PLAN.md — repo.py foundations: sweep_stranded_runs + find_run_by_source_email + get_connection test-mockability seam
+- [ ] 09-01-PLAN.md — repo.py foundations: sweep_stranded_runs + find_run_by_message_id + get_connection test-mockability seam
+- [ ] 09-05-PLAN.md — (independent, no atomicity dependency) known-edge fixture + 09-CONTEXT.md deferred entry for the multi-round context-loss finding (09-REVIEWS.md Claude in-session HIGH, disposition (c))
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 09-02-PLAN.md — orchestrator.py DATA-01: _run_stages/_clarify/_deliver transaction boundaries (SC1)
-- [ ] 09-03-PLAN.md — main.py DATA-02/03: webhook dedup transaction (SC2) + recovery sweep wiring + shared threshold
+- [ ] 09-02-PLAN.md — orchestrator.py DATA-01: _run_stages/_clarify/_deliver transaction boundaries (SC1); already-sent guard hardened for idempotent alias finalization (Codex HIGH-2)
+- [ ] 09-03-PLAN.md — main.py DATA-02/03: webhook dedup transaction restructured around a transactional ingest-decision (reply classified BEFORE create_run is reachable, Codex HIGH-1) + recovery sweep wiring + shared threshold
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 09-04-PLAN.md — llm/client.py timeout tightening (RESEARCH Pitfall 1) + SC3 end-to-end sweep→retrigger proof
+- [ ] 09-04-PLAN.md — llm/client.py timeout tightening (call_structured AND compose_clarification's call_text, Codex HIGH-3) + SC3 end-to-end sweep→retrigger proof
 
 ### Phase 10: Concurrency Proof
 

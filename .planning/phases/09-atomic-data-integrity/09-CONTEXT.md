@@ -127,6 +127,42 @@ Not in scope: new run states or state-machine capabilities (loop cap), security-
 ### Noted for later
 - Guard-hardening the pipeline's unguarded `set_status` writes against a swept-to-ERROR run (the D-9-13 accepted tension) — only if Phase 10's concurrency proof shows the window matters in practice.
 
+### Multi-round context loss (09-REVIEWS.md Claude in-session HIGH finding, deferred to a future MONEY-class phase)
+
+Discovered during cross-AI review of Phase 9's plans (not an atomicity/concurrency/
+recovery gap — the same family as Phase 7.5's field-regression work). Verified
+chain: (1) `clean_body` strips quoted reply history at ingest (`app/email/clean.py`);
+(2) `repo.load_source_email` returns only the ingest-time ORIGINAL cleaned body,
+never updated by any reply; (3) `_combined_context_email`
+(`app/pipeline/orchestrator.py:772-785`) combines ORIGINAL body + the LATEST reply
+only — an earlier round's reply never accumulates into a later round's extraction
+context; (4) `detect_field_regression` only fires on paid→unpaid (dropped), so a
+paid→paid VALUE CHANGE across rounds (e.g. 40→30) is invisible to it by design;
+(5) Round-2's classify-first logic only reclassifies fields marked `asked`.
+Concrete failure: a Round-1 reply genuinely corrects a value (e.g. "30, not 40");
+an unrelated Round-2 clarification's combined re-extraction re-reads the ORIGINAL
+body (40) and silently overwrites the Round-1 correction — the client said 30, the
+paystub pays 40. Silent overpay class, no gate, no operator visibility.
+
+**Disposition: (c)** — an explicit deferred known-edge, per the review's own
+guidance ("Consider scope carefully... the FIXTURE (c) is cheap and fits Phase 9's
+test-heavy shape"). A dedicated hermetic fixture (`09-05-PLAN.md`,
+`tests/test_resume_pipeline.py::test_multi_round_context_loss_known_edge`) proves
+this IS current behavior (a red-flag regression target, not a passing-therefore-
+safe test) so a future phase does not have to re-trace the bug from scratch.
+Three candidate fix dispositions for that future phase, per 09-REVIEWS.md:
+  (a) accumulate reply bodies into the resume context — persist/append each
+      reply body and combine original + ALL replies at `_combined_context_email`
+      (smallest-surface, matches the existing lossless-combined-extraction intent,
+      FIX 4);
+  (b) diff the new combined extraction against the LAST PERSISTED extraction (not
+      just the Round-0 snapshot) and treat paid→paid changes on non-asked fields
+      across rounds as clarify-worthy;
+  (c) this plan's fixture, already landed — the floor, not the fix.
+This finding does NOT block Phase 9's DATA-01/02/03 requirements and does not
+change any Phase 9 plan's production code — it is recorded here so it is never
+silently dropped.
+
 </deferred>
 
 ---
