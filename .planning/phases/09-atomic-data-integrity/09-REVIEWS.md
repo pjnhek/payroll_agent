@@ -1,10 +1,11 @@
 ---
 phase: 9
-reviewers: [codex]
+reviewers: [codex, claude-insession]
 reviewed_at: 2026-07-03T00:00:00Z
 plans_reviewed: [09-01-PLAN.md, 09-02-PLAN.md, 09-03-PLAN.md, 09-04-PLAN.md]
 reviewer_models:
   codex: gpt-5.5
+  claude-insession: claude-fable-5
 ---
 
 # Cross-AI Plan Review — Phase 9
@@ -53,6 +54,25 @@ The plans are strong on the basic transaction strategy, but I would not approve 
 
 ---
 
+## Claude (in-session) Review
+
+One additional finding, discovered while tracing the multi-round clarification flow end-to-end and verified against live source (not present in the Codex review):
+
+- **HIGH — Multi-round context loss: a paid→paid correction stated in an intermediate reply and not restated later is silently discarded (overpay).** Verified chain:
+  1. `clean_body` strips quoted reply history (">"-lines, "On … wrote:" blocks) at ingest, before persisting (`app/email/clean.py:35-56`) — so thread quoting cannot preserve intermediate replies.
+  2. `load_source_email` returns only the ingest-time ORIGINAL cleaned body (`app/db/repo.py:279`).
+  3. `_combined_context_email` builds the resume extraction context as ORIGINAL + LATEST reply only (`app/pipeline/orchestrator.py:772`) — intermediate replies never accumulate into the context.
+  4. `detect_field_regression` only fires on paid→unpaid (`app/pipeline/validate.py:147`); a paid→paid value change (40→30) is invisible to it.
+  5. The four-outcome classifier only touches fields marked `asked`; `backfill_extracted` only fills `None` fields.
+
+  Concrete failure: Round-1 reply says "Maria worked 30, not 40" (extraction persists 30). A field-regression clarification triggers Round 2 for unrelated fields; the Round-2 reply answers only those. Round-2 combined extraction re-reads the ORIGINAL body → regular=40 again; 40 is paid → no backfill, not asked → no override, 40 vs 40 → no regression. The paystub pays 40; the client said 30. Silent overpay with no gate, no clarification, no operator visibility of the discrepancy.
+
+  Fix directions (planner to choose): (a) accumulate reply bodies into the resume context (e.g., append each reply to the persisted source context, or store a reply log and combine original + ALL replies at `_combined_context_email`); or (b) diff the new combined extraction against the LAST PERSISTED extraction (not just the Round-0 snapshot) and treat paid→paid changes on non-asked fields across rounds as a clarify-worthy discrepancy; or (c) at minimum, an integration fixture proving current behavior + a documented known-edge. Option (a) is the smallest-surface fix and matches the existing "lossless combined extraction" (FIX 4) intent — the current implementation is lossless for round 1 only.
+
+  Scope note: this touches `resume_pipeline`/`_combined_context_email`/`load_source_email` — the same resume path Phase 9's 09-02 already rewires — and it is MONEY-path (overpay class, same family as the Phase 7.5 CR-01/R2 findings). If the planner judges it out of Phase 9's atomicity scope, it must be recorded as an explicit deferred known-edge with the fixture (option c) still landing in Phase 9's test set, not silently dropped.
+
+---
+
 ## Consensus Summary
 
 Single external reviewer (Codex / gpt-5.5) — no cross-reviewer consensus available. Codex verified plan claims against live source per the review instructions (file:line citations throughout).
@@ -72,4 +92,4 @@ Single external reviewer (Codex / gpt-5.5) — no cross-reviewer consensus avail
 3. **HIGH — 09-04 still underbounds the recovery threshold:** `call_structured` is also used by `suggest_employees` (`suggest.py:81`), `compose_clarification` uses `call_text` with no timeout (`compose_email.py:167`), and resume Round 2 runs two extractions before the next DB write (`orchestrator.py:374, 379`). `_STRUCTURED_TIMEOUT_S × 2` is not the longest real gap between DB writes.
 
 ### Divergent Views
-None (single reviewer). Note: the in-house plan-checker passed these plans after 3 rounds; Codex's three HIGH findings are all in areas the checker did not re-derive from live call flow (reply routing order, gateway send-state flip, non-extraction LLM call sites) — consistent with the project's prior experience that external arg-flow tracing catches what prose review misses.
+None conflicting. The two reviews are complementary: Codex's three HIGHs are call-flow gaps in the plans' own claims (reply routing order, gateway send-state flip, threshold undercount); the in-session HIGH (multi-round context loss) is a live-code money bug adjacent to the same resume path 09-02 rewires. Note: the in-house plan-checker passed these plans after 3 rounds; all four HIGH findings are in areas the checker did not re-derive from live call flow — consistent with the project's prior experience that external arg-flow tracing catches what prose review misses.
