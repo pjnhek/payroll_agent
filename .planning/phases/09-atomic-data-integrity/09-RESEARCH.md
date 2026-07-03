@@ -558,7 +558,7 @@ with get_connection() as conn:
         email_id, inserted = repo.insert_inbound_email(..., conn=conn)
         if not inserted:
             # look up existing run for this message_id's email row (loser path)
-            existing_run_id = repo.find_run_by_source_email(email.message_id, conn=conn)
+            existing_run_id = repo.find_run_by_message_id(email.message_id, conn=conn)
         else:
             business_id = repo.find_business_by_sender(email.from_addr, conn=conn)
             if business_id is not None:
