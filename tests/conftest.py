@@ -20,6 +20,7 @@ injects a FakeOpenAI over app.llm.client.OpenAI); it is re-exported here as
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 from datetime import datetime, timezone
@@ -167,6 +168,20 @@ def fake_conn() -> FakeConnection:
     return FakeConnection()
 
 
+@contextlib.contextmanager
+def _fake_get_connection():
+    """Context manager double for app.db.repo.get_connection (09-01, D-9-03).
+
+    Patched onto app.db.repo.get_connection by the fake_repo fixture below so
+    that `with repo.get_connection() as conn: with conn.transaction(): ...`
+    code (the seam every Wave 2 orchestrator/main.py plan wires in) runs
+    against a FakeConnection instead of opening a real Supabase pool. Without
+    this seam the very first such block added anywhere would make every
+    fake_repo-driven test try to open a live connection and fail/hang.
+    """
+    yield FakeConnection()
+
+
 # ---------------------------------------------------------------------------
 # 2. inbound_email — a canonical cleaned InboundEmail value
 # ---------------------------------------------------------------------------
@@ -216,6 +231,12 @@ def roster_from_seed() -> Roster:
 # persistence, the sole set_status writer, and record_run_error routing.
 
 
+# Mirrors app.db.repo._STRANDED_SCOPE_STATUSES (09-01, D-9-12 scope pin) — kept
+# as a separate local constant (not imported) so this fake never silently
+# inherits a scope change without a corresponding InMemoryRepo test failure.
+_STRANDED_SCOPE_STATUSES = ["received", "extracting", "computed"]
+
+
 class InMemoryRepo:
     """Mirror of the repo surface the webhook + orchestrator exercise, in RAM."""
 
@@ -250,6 +271,24 @@ class InMemoryRepo:
 
     def find_business_by_sender(self, from_addr, conn=None):
         return self.contact_to_business.get(from_addr)
+
+    def find_run_by_message_id(self, message_id, conn=None):
+        """Mirror repo.find_run_by_message_id (09-01, DATA-02 dedup-loser lookup).
+
+        Scans the in-memory email store for a row with this message_id, then
+        returns the run whose source_email_id matches that row's id — the
+        same join repo.py does in SQL, over the in-memory store instead.
+        """
+        row = self.emails.get(message_id)
+        if row is None:
+            return None
+        email_id = row.get("id")
+        for run in self.runs.values():
+            if run.get("source_email_id") == email_id or str(
+                run.get("source_email_id")
+            ) == str(email_id):
+                return run["id"]
+        return None
 
     def create_run(self, *, business_id, source_email_id, pay_period_start=None,
                    pay_period_end=None, record_only=False, conn=None):
@@ -328,6 +367,30 @@ class InMemoryRepo:
             return False
         run["status"] = RunStatus(new).value
         return True
+
+    def sweep_stranded_runs(self, threshold_seconds, conn=None):
+        """Mirror repo.sweep_stranded_runs (09-01, D-9-10/11/12 recovery sweep).
+
+        Scope is hardcoded to EXACTLY {received, extracting, computed} — matches
+        the real repo's scope-pin. error_detail is built from the same static
+        prefix concatenated with the run's OWN pre-mutation status value,
+        mirroring the real SQL's `%s || status` concatenation semantics (not a
+        Python `{status}` placeholder). This in-memory double has no real
+        `updated_at` age check — it sweeps every run currently in scope,
+        since tests script exactly the runs they want swept.
+        """
+        from app.models.status import RunStatus
+
+        swept: list[uuid.UUID] = []
+        prefix = "recovery: stranded in-flight (background task died) — swept from "
+        for run_id_str, run in self.runs.items():
+            if run["status"] in _STRANDED_SCOPE_STATUSES:
+                old_status = run["status"]
+                run["error_reason"] = "StrandedRunSwept"
+                run["error_detail"] = prefix + old_status
+                run["status"] = RunStatus.ERROR.value
+                swept.append(run["id"])
+        return swept
 
     def record_run_error(
         self, run_id, reason, conn=None, *, detail_exc=None, stage=None, roster=None
@@ -636,9 +699,18 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "load_pre_clarify_extracted",
         "set_clarified_fields",
         "load_clarified_fields",
+        # 09-01 additions — DATA-03 stranded-run sweep + DATA-02 dedup-loser lookup
+        "sweep_stranded_runs",
+        "find_run_by_message_id",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
+
+    # 09-01 (D-9-03): patch app.db.repo.get_connection to a FakeConnection-backed
+    # context manager so `with repo.get_connection() as conn: with
+    # conn.transaction(): ...` code (every subsequent Phase 9 plan's seam) runs
+    # against the offline double instead of opening a real Supabase pool.
+    monkeypatch.setattr(repo_mod, "get_connection", _fake_get_connection, raising=False)
 
     # Patch resend.Emails.send to a no-op in the mocked test context so that
     # pipeline tests (fake_repo) do not attempt real Resend API calls.
