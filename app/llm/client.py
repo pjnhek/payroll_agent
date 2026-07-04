@@ -45,6 +45,33 @@ T = TypeVar("T", bound=BaseModel)
 # (RESEARCH Pattern 2 non-negotiable; DeepSeek truncation guard).
 _MAX_TOKENS = 2048
 
+# 09-04 (Codex HIGH-3, closing RESEARCH.md Assumption A1): call_structured's
+# OpenAI(...) client construction previously passed NO explicit `timeout=`, so it
+# inherited the openai library's raw 10-minute HTTP timeout — AND the library's own
+# `max_retries=2` default applies BENEATH (independent of) the app's own single
+# reflective retry-on-parse-failure loop (`for attempt in (1, 2):` below). Without
+# an explicit `max_retries=0` override, the true worst-case single-stage latency was
+# `timeout x 3 library-attempts x 2 app-attempts` = 6x the timeout, not the 2x a
+# reader would assume from the app's own retry loop alone. Setting `max_retries=0`
+# makes the app's single reflective retry the ONLY retry layer for this call,
+# collapsing the ceiling to exactly `_STRUCTURED_TIMEOUT_S x 2 app-attempts`.
+#
+# This same function is the call surface for BOTH extract() (app/pipeline/extract.py)
+# AND suggest_employees() (app/pipeline/suggest.py:81, `llm.call_structured("draft",
+# messages, NameSuggestionResponse)`) — so this one constant + one client-construction
+# change bounds both call sites at once (Codex HIGH-3).
+#
+# resume_pipeline's Round-2 branch (app/pipeline/orchestrator.py:377,380) calls
+# extract() TWICE back-to-back (raw_reply_extracted, then raw_extracted) before its
+# next DB write — the real worst-case gap on THAT path is
+# `_STRUCTURED_TIMEOUT_S x 2 app-attempts x 2 extractions`, not a single-call figure.
+# 45s is scaled up from compose_confirmation's timeout_s=3.0 (a much lighter
+# free-text call) to a bound generous enough for a full structured-JSON extraction
+# round-trip of a real payroll email, while still keeping the sweep threshold
+# (app/main.py's STALE_THRESHOLD_SECONDS) short and useful (RESEARCH.md Pitfall 1
+# recommendation #1).
+_STRUCTURED_TIMEOUT_S = 45.0
+
 # ⚠️ CONFIRM exact param + placement from the DeepSeek console (STATE.md blocker).
 # DeepSeek V4 selects non-thinking via a per-request body toggle; sent through the
 # openai client's `extra_body` passthrough.
@@ -107,7 +134,14 @@ def call_structured(
     the error fed back into the prompt; a second failure raises.
     """
     cfg = _resolve_tier(tier)
-    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
+    # 09-04: explicit bounded timeout= AND max_retries=0 — see _STRUCTURED_TIMEOUT_S's
+    # comment above for the full compounding-retry rationale (Codex HIGH-3).
+    client = OpenAI(
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        timeout=_STRUCTURED_TIMEOUT_S,
+        max_retries=0,
+    )
 
     extra: dict = {}
     if _is_deepseek(cfg.model):
@@ -178,12 +212,29 @@ def call_text(
     to the deterministic template floor (D-10b, T-05-10). Fake-LLM stubs in tests
     must accept **kwargs so passing timeout_s= does not raise TypeError (MEDIUM fix,
     T-05-11b).
+
+    09-04 (Codex round-2, STILL-OPEN HIGH — closed here): `call_text` has NO
+    app-level reflective retry loop (unlike `call_structured`'s `for attempt in
+    (1, 2):`), so the openai library's own `max_retries=2` default was the ONLY
+    retry layer on this call path — meaning even with `timeout_s` set, the true
+    worst case was `timeout_s x 3` (1 original + 2 library retries), not
+    `timeout_s x 1`. `max_retries=0` is therefore set UNCONDITIONALLY below
+    (independent of whether `timeout_s` was passed — a caller may want
+    retry-suppression even without a custom timeout), collapsing every
+    `call_text` caller's worst case to `timeout_s x 1` when a timeout is set (or
+    to the raw library default x 1 when it is not — still no retry compounding).
+    This benefits ALL callers automatically, including compose_confirmation's
+    existing `timeout_s=3.0` (now `3.0 x 1`, not `3.0 x 3`, as a welcome side
+    effect of the fix rather than a scope change to that call site).
     """
     cfg = _resolve_tier(tier)
     # Pass timeout to the OpenAI client if provided (D-10b hard timeout).
     client_kwargs: dict = {}
     if timeout_s is not None:
         client_kwargs["timeout"] = timeout_s
+    # Unconditional (not gated on timeout_s is not None): suppress the library's
+    # own retry layer for every call_text caller (09-04, Codex round-2).
+    client_kwargs["max_retries"] = 0
     client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, **client_kwargs)
 
     extra: dict = {}

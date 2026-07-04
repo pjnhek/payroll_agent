@@ -26,6 +26,17 @@ logger = logging.getLogger("payroll_agent.compose_email")
 
 _SUBJECT = "Quick question before we run your payroll"
 
+# 09-04 (Codex HIGH-3): compose_clarification's call_text invocation previously
+# passed NO timeout_s= at all — the wholly-unbounded gap Codex HIGH-3 flagged
+# (no client-side timeout, and call_text has no app-level retry loop wrapping it
+# either). A clarification draft is free-text prose, not a heavier structured-JSON
+# round-trip (app/llm/client.py's _STRUCTURED_TIMEOUT_S = 45.0), so this uses the
+# lower end of the same 30-60s range RESEARCH.md recommends. Combined with
+# call_text's own new unconditional max_retries=0 (app/llm/client.py), this call's
+# true worst case is now timeout_s x 1, not the previous unbounded (~10-min library
+# default) x 3 (library retries).
+_CLARIFICATION_TIMEOUT_S = 30.0
+
 
 def _field_regression_lines(gate_reasons: list[str]) -> list[str]:
     """Extract field-regression lines from gate_reasons using LAST-DOT SPLIT (rsplit).
@@ -164,7 +175,9 @@ def compose_clarification(
     # is VISIBLE rather than silently templating every clarification.
     api_error = False
     try:
-        body = llm.call_text("draft", messages, temperature=0.3)
+        body = llm.call_text(
+            "draft", messages, temperature=0.3, timeout_s=_CLARIFICATION_TIMEOUT_S
+        )
     except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (CLAR-01)
         # Log the failure TYPE only — no exc_info (a traceback can echo the prompt /
         # submitted names — payroll PII — review fix).

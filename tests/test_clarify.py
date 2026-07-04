@@ -29,14 +29,18 @@ from app.pipeline.orchestrator import run_pipeline
 
 
 class _DraftLLM:
-    """A call_text stand-in returning a scripted body (or None for empty content)."""
+    """A call_text stand-in returning a scripted body (or None for empty content).
+
+    09-04: **kwargs absorbs compose_clarification's new timeout_s= without
+    raising TypeError (mirrors test_compose_confirmation.py's fakes)."""
 
     def __init__(self, body):
         self._body = body
         self.calls: list[tuple] = []
 
-    def call_text(self, tier, messages, temperature=0.7):
+    def call_text(self, tier, messages, temperature=0.7, **kwargs):
         self.calls.append((tier, messages, temperature))
+        self.last_kwargs = kwargs
         return self._body
 
 
@@ -140,6 +144,20 @@ def test_compose_threads_suggestion_into_draft_prompt():
     )
 
 
+def test_compose_clarification_passes_bounded_timeout_s():
+    """09-04 (Codex HIGH-3): compose_clarification's call_text invocation must pass
+    an explicit, non-None timeout_s — previously this call had NO timeout at all,
+    the wholly-unbounded gap Codex HIGH-3 flagged."""
+    llm = _DraftLLM("Hi — we need to confirm one name before we can run payroll.")
+    compose_clarification(_gated_decision(), llm=llm)
+
+    assert llm.calls, "compose must call the draft LLM"
+    assert llm.last_kwargs.get("timeout_s") is not None, (
+        "compose_clarification must pass a non-None timeout_s= to call_text "
+        "(Codex HIGH-3 — this gap was previously wholly unbounded)"
+    )
+
+
 def test_compose_signature_accepts_suggestions():
     """compose_clarification exposes a keyword-only `suggestions` param (the wiring
     contract the orchestrator depends on)."""
@@ -150,13 +168,16 @@ def test_compose_signature_accepts_suggestions():
 
 
 class _RaisingDraftLLM:
-    """A call_text stand-in that RAISES (an API error: auth, rate limit, bad model)."""
+    """A call_text stand-in that RAISES (an API error: auth, rate limit, bad model).
+
+    09-04: **kwargs absorbs compose_clarification's new timeout_s= without
+    raising TypeError (mirrors test_compose_confirmation.py's fakes)."""
 
     def __init__(self, exc=None):
         self._exc = exc or RuntimeError("simulated draft API error (401/429/bad model)")
         self.calls = 0
 
-    def call_text(self, tier, messages, temperature=0.7):
+    def call_text(self, tier, messages, temperature=0.7, **kwargs):
         self.calls += 1
         raise self._exc
 

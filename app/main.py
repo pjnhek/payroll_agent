@@ -58,41 +58,46 @@ from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
 
 # Staleness threshold for stale in-flight state recovery (finding #6, D-13b extension;
-# D-9-13/D-9-10/11/12, 09-03). SHARED by BOTH retrigger()'s stale-in-flight claim
+# D-9-13/D-9-10/11/12, 09-03/09-04). SHARED by BOTH retrigger()'s stale-in-flight claim
 # AND runs_list()'s recovery sweep (repo.sweep_stranded_runs) — ONE constant, two
 # use sites (D-9-13: "keep ONE shared constant unless tracing shows they genuinely
 # need different values" — no such need was found).
 #
-# Codex HIGH-3 (09-REVIEWS.md, sharpening RESEARCH.md Pitfall 1's original "90s-3min"
-# estimate): the TRUE CURRENT (untightened, as of THIS plan) worst-case gap between
-# two consecutive DB writes on a live run is honestly much larger than 90s-3min:
+# 09-04 (closing Codex HIGH-3, both rounds, AND RESEARCH.md Assumption A1): the
+# previous (09-03) 65-minute value was DELIBERATELY CONSERVATIVE, documenting the
+# UNTIGHTENED worst case pending this plan. This plan closes every gap that was
+# counted against that conservative figure, so the threshold is now re-derived
+# against the FULLY-tightened, CORRECTLY-COUNTED ceiling:
 #   (a) call_structured (app/llm/client.py) — used for BOTH extraction AND the
-#       clarification suggestion (app/pipeline/suggest.py:81) — passes no explicit
-#       timeout= to the OpenAI(...) client construction, so it inherits the
-#       library's 10-minute default timeout x max_retries=2 automatic library-level
-#       retries (a layer BELOW and INDEPENDENT of the app's own one reflective
-#       retry-on-parse-failure) => up to ~60 min for a single stage call before the
-#       app's own reflective retry (which re-sends the whole request again) is even
-#       counted.
-#   (b) call_text (app/pipeline/compose_email.py:167, compose_clarification's
-#       draft/clarification path) — ALSO passes no timeout_s= at all, so it is
-#       bounded ONLY by the library's own 10-min timeout x max_retries=2 => up to
-#       ~30 min, with NO app-level retry wrapping it at all.
-#   (c) resume Round-2's back-to-back double extraction (orchestrator.py:377,380 —
+#       clarification suggestion (app/pipeline/suggest.py:81) — now passes an
+#       explicit timeout=_STRUCTURED_TIMEOUT_S (45.0s) AND max_retries=0 to its
+#       OpenAI(...) client construction, so the library's own retry layer can no
+#       longer compound with the app's own `for attempt in (1, 2):` reflective
+#       retry. Ceiling per call: _STRUCTURED_TIMEOUT_S x 2 app-attempts = 90s.
+#   (b) resume Round-2's back-to-back double extraction (orchestrator.py:377,380 —
 #       raw_reply_extracted = extract(inbound, ...) THEN raw_extracted =
-#       extract(combined_email, ...), verified live) — can DOUBLE the
-#       call_structured gap on that one path alone before the next DB write.
-# THIS plan (09-03) does NOT tighten any of these — 09-04 tightens call_structured's
-# timeout AND max_retries, closing the compounding on path (a)/(c); call_text's (b)
-# gap is a documented residual risk 09-04 does not close. The value below is
-# DELIBERATELY CONSERVATIVE — it documents the CURRENT true worst-case ceiling
-# (not a value that only makes sense once 09-04's tightening is assumed already in
-# place) so the sweep cannot fire on a legitimately-slow-but-alive run before 09-04
-# lands. A run in a recoverable in-flight state (RECEIVED/EXTRACTING/COMPUTED, plus
-# SENT for retrigger only — see the scope-divergence comment on retrigger's
-# stale_statuses below) whose updated_at is older than this threshold may be
-# claimed/swept for a fresh start; fresh in-flight runs are never force-restarted.
-STALE_THRESHOLD = timedelta(minutes=65)
+#       extract(combined_email, ...), verified live) — TWO calls through (a) before
+#       the next DB write: _STRUCTURED_TIMEOUT_S x 2 app-attempts x 2 = 180s (3 min).
+#   (c) call_text (app/llm/client.py) — ALL callers, including
+#       compose_clarification (app/pipeline/compose_email.py) — now gets an
+#       UNCONDITIONAL max_retries=0 on its own client construction (closing the
+#       Codex round-2 STILL-OPEN finding that call_text has no app-level retry
+#       loop, so the library's own max_retries=2 was the sole, previously-uncounted
+#       retry layer). compose_clarification's own call now ALSO passes an explicit
+#       timeout_s=_CLARIFICATION_TIMEOUT_S (30.0s, app/pipeline/compose_email.py).
+#       Ceiling: _CLARIFICATION_TIMEOUT_S x 1 = 30s.
+# (b) and (c) are SEQUENTIAL on the clarify branch (extraction happens, THEN,
+# separately, a clarification draft may be composed) — not concurrent — so they
+# SUM, not multiply: 180s + 30s = 210s (3.5 min) is the full, correctly-derived
+# worst-case gap between two consecutive DB writes on the longest real path.
+# STALE_THRESHOLD is tightened to 15 minutes — comfortably (~4x) above the 3.5-min
+# ceiling, while remaining far short of the old 65-minute value now that the true
+# ceiling is known and bounded by construction, not merely assumed. A run in a
+# recoverable in-flight state (RECEIVED/EXTRACTING/COMPUTED, plus SENT for
+# retrigger only — see the scope-divergence comment on retrigger's stale_statuses
+# below) whose updated_at is older than this threshold may be claimed/swept for a
+# fresh start; fresh in-flight runs are never force-restarted.
+STALE_THRESHOLD = timedelta(minutes=15)
 STALE_THRESHOLD_SECONDS = int(STALE_THRESHOLD.total_seconds())
 
 # UAT #3: in-flight statuses — a run in any of these states is still processing.

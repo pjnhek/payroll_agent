@@ -16,7 +16,7 @@ from decimal import Decimal
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.llm.client import call_structured, call_text
+from app.llm.client import _STRUCTURED_TIMEOUT_S, call_structured, call_text
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +77,14 @@ class _FakeOpenAI:
     # instance the wrapper constructs.
     instances: list["_FakeOpenAI"] = []
 
-    def __init__(self, *, base_url=None, api_key=None, **_):
+    def __init__(self, *, base_url=None, api_key=None, timeout=None, max_retries=None, **_):
         self.base_url = base_url
         self.api_key = api_key
+        # 09-04: capture the client-construction kwargs under test (timeout/
+        # max_retries) so tests can assert BOTH call_structured and call_text
+        # suppress the library's own retry layer and bound their timeout.
+        self.timeout = timeout
+        self.max_retries = max_retries
         self.create_calls: list[dict] = []
         # Each instance pulls its scripted responses from the class-level queue.
         self.script: list = list(_FakeOpenAI.next_script)
@@ -297,6 +302,35 @@ def test_double_failure_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 09-04 — call_structured passes an explicit bounded timeout= AND max_retries=0
+# (Codex HIGH-3: without max_retries=0 the library's own retry layer compounds
+# with the app's 2-attempt reflective retry loop, 3x2=6x not 2x).
+# ---------------------------------------------------------------------------
+
+
+def test_call_structured_client_has_explicit_timeout_and_max_retries_zero(monkeypatch):
+    _set_tier_env(monkeypatch, prefix="EXTRACTION", model="deepseek-v4-flash")
+    _FakeOpenAI.next_script = ['{"name": "Ida", "score": "0.5"}']
+
+    call_structured(
+        tier="extraction",
+        messages=[{"role": "user", "content": "json"}],
+        response_model=_Payload,
+    )
+    inst = _FakeOpenAI.instances[0]
+    assert inst.timeout == _STRUCTURED_TIMEOUT_S, (
+        "call_structured must pass the named _STRUCTURED_TIMEOUT_S constant as "
+        "an explicit timeout= to its OpenAI(...) client construction"
+    )
+    assert inst.max_retries == 0, (
+        "call_structured must pass max_retries=0 so the library's own retry "
+        "layer cannot compound with the app's 2-attempt reflective retry loop "
+        "(Codex HIGH-3 — without this the true worst case is timeout x 3 "
+        "library-attempts x 2 app-attempts = 6x, not 2x)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Free-text drafting path: raw string, no json_object, None on empty (no raise)
 # ---------------------------------------------------------------------------
 
@@ -323,3 +357,48 @@ def test_call_text_returns_none_on_empty_without_raising(monkeypatch):
         messages=[{"role": "user", "content": "Draft a clarification email."}],
     )
     assert out is None, "empty drafting content falls back to None so the caller templates"
+
+
+# ---------------------------------------------------------------------------
+# 09-04 (Codex round-2, STILL-OPEN HIGH, closed here) — call_text's OWN client
+# construction gains an UNCONDITIONAL max_retries=0, present whether or not
+# timeout_s was passed (call_text has no app-level retry loop, so the library's
+# own max_retries=2 default was the sole, previously-uncounted retry layer).
+# ---------------------------------------------------------------------------
+
+
+def test_call_text_client_has_max_retries_zero_when_timeout_s_provided(monkeypatch):
+    _set_tier_env(monkeypatch, prefix="DRAFT", model="moonshot-v1-8k")
+    _FakeOpenAI.next_script = ["Some drafted body."]
+
+    call_text(
+        tier="draft",
+        messages=[{"role": "user", "content": "Draft."}],
+        timeout_s=30.0,
+    )
+    inst = _FakeOpenAI.instances[0]
+    assert inst.timeout == 30.0
+    assert inst.max_retries == 0, (
+        "call_text must pass max_retries=0 even when timeout_s is provided — "
+        "the two kwargs are independent"
+    )
+
+
+def test_call_text_client_has_max_retries_zero_when_timeout_s_omitted(monkeypatch):
+    """The unconditional part of the fix: max_retries=0 must be present even when
+    timeout_s is None/omitted, proving the fix does not piggyback on the timeout
+    kwarg's own conditional (Codex round-2 STILL-OPEN HIGH)."""
+    _set_tier_env(monkeypatch, prefix="DRAFT", model="moonshot-v1-8k")
+    _FakeOpenAI.next_script = ["Some drafted body."]
+
+    call_text(
+        tier="draft",
+        messages=[{"role": "user", "content": "Draft."}],
+    )
+    inst = _FakeOpenAI.instances[0]
+    assert inst.timeout is None, "no timeout_s was passed, so no timeout kwarg is set"
+    assert inst.max_retries == 0, (
+        "call_text must pass max_retries=0 UNCONDITIONALLY — even with no "
+        "timeout_s at all, the library's own max_retries=2 default must still "
+        "be suppressed (Codex round-2 STILL-OPEN HIGH)"
+    )
