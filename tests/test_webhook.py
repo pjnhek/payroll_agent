@@ -260,6 +260,97 @@ def test_late_reply_no_new_run_no_background_task(client, fake_repo, mock_llm, m
 
 
 # ---------------------------------------------------------------------------
+# WR-03 (phase-9 review) — real reply/late-reply rows are LINKED to their run
+# inside the ingest transaction, so the run-detail thread view shows them
+# ---------------------------------------------------------------------------
+
+
+def test_reply_and_late_reply_rows_linked_to_run(client, fake_repo, mock_llm, monkeypatch):
+    """The ingest transaction back-fills run_id on classified reply rows (WR-03).
+
+    Before the fix, every real inbound reply row kept run_id=NULL forever (only
+    the simulate-reply demo path passed run_id), so real client replies were
+    invisible in load_thread_messages' run-detail thread view. Both classified
+    outcomes must link: reply_candidate AND late_reply.
+    """
+    from app.models.status import RunStatus
+
+    coastal_email = "payroll@coastalcleaning.example"
+
+    orig_eid, _ = fake_repo.insert_inbound_email(
+        message_id="<orig-003@acme.test>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=coastal_email,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular hours.",
+    )
+    business_id = fake_repo.find_business_by_sender(coastal_email)
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=orig_eid)
+
+    clar_message_id = "<clarify-003@payroll-agent.local>"
+    fake_repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=clar_message_id,
+        purpose="clarification",
+        send_state="sent",
+    )
+    # Keep the resume out of the way — this test asserts the LINK, not the resume.
+    monkeypatch.setattr("app.main._resume_pipeline", lambda *a, **k: None)
+
+    # 1) reply_candidate: run parked at awaiting_reply → reply row must link.
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value
+    reply_mid = "<reply-003@acme.test>"
+    r = client.post(
+        "/webhook/inbound",
+        json={
+            "id": str(uuid.uuid4()),
+            "message_id": reply_mid,
+            "in_reply_to": clar_message_id,
+            "references_header": clar_message_id,
+            "subject": "Re: payroll hours",
+            "from_addr": coastal_email,
+            "to_addr": "agent@payroll-agent.local",
+            "body_text": "Maria Chen actually worked 42 hours.",
+            "created_at": "2026-06-16T09:30:00Z",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "resumed"
+    assert str(fake_repo.emails[reply_mid].get("run_id")) == str(run_id), (
+        "a reply_candidate row must be back-filled with its run_id inside the "
+        "ingest transaction (WR-03) — otherwise real replies never appear in "
+        "the run-detail thread view"
+    )
+
+    # 2) late_reply: run already advanced → the late row must ALSO link.
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.SENT.value
+    late_mid = "<reply-004@acme.test>"
+    r = client.post(
+        "/webhook/inbound",
+        json={
+            "id": str(uuid.uuid4()),
+            "message_id": late_mid,
+            "in_reply_to": clar_message_id,
+            "references_header": clar_message_id,
+            "subject": "Re: payroll hours",
+            "from_addr": coastal_email,
+            "to_addr": "agent@payroll-agent.local",
+            "body_text": "One more thing — add 2 vacation hours for Maria.",
+            "created_at": "2026-06-17T09:30:00Z",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "late_reply"
+    assert str(fake_repo.emails[late_mid].get("run_id")) == str(run_id), (
+        "a late_reply row must be back-filled with its run_id inside the "
+        "ingest transaction (WR-03) — join-based audits must see it"
+    )
+
+
+# ---------------------------------------------------------------------------
 # INGEST-01 / HITL-01 / DEMO-01 — the marquee end-to-end pause
 # ---------------------------------------------------------------------------
 

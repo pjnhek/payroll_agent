@@ -285,6 +285,17 @@ class InMemoryRepo:
     def find_business_by_sender(self, from_addr, conn=None):
         return self.contact_to_business.get(from_addr)
 
+    def link_email_to_run(self, email_id, run_id, conn=None):
+        """Mirror repo.link_email_to_run (WR-03 phase-9 review fix).
+
+        Back-fills run_id on an already-inserted inbound row once the ingest
+        transaction classifies it as reply_candidate/late_reply, so tests can
+        assert real reply rows are linked to their run like the demo path.
+        """
+        row = self.email_by_id.get(str(email_id))
+        if row is not None:
+            row["run_id"] = run_id
+
     def find_run_by_message_id(self, message_id, conn=None):
         """Mirror repo.find_run_by_message_id (09-01, DATA-02 dedup-loser lookup).
 
@@ -715,6 +726,8 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         # 09-01 additions — DATA-03 stranded-run sweep + DATA-02 dedup-loser lookup
         "sweep_stranded_runs",
         "find_run_by_message_id",
+        # phase-9 review WR-03 — reply/late-reply rows linked to their run
+        "link_email_to_run",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)

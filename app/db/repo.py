@@ -16,6 +16,9 @@ FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
                              path (DATA-02): insert_inbound_email returns (None, False)
                              on ON CONFLICT, so the loser has no email_id — only the
                              RFC message_id — to resolve the existing run by
+    link_email_to_run      — back-fill run_id on an inbound row once ingest
+                             classification resolves it to an existing run (WR-03:
+                             real reply/late-reply rows join the thread view)
 
   Status / persistence
     Originally two writers: set_status (unguarded forward transitions inside an
@@ -191,6 +194,33 @@ def insert_inbound_email(
     if row is None:
         return None, False
     return uuid.UUID(str(row[0])), True
+
+
+def link_email_to_run(email_id: uuid.UUID, run_id: uuid.UUID, conn=None) -> None:
+    """Back-fill run_id on an inbound email row after ingest classification (WR-03).
+
+    The ingest transaction inserts every inbound row with run_id=NULL (for a
+    first inbound the run does not exist yet). When classification then resolves
+    the row to an EXISTING run (reply_candidate / late_reply), this links the row
+    so real client replies appear in load_thread_messages' run-detail thread view
+    and in join-based audits — matching the simulate-reply demo path, which passes
+    run_id at insert time (main.py demo affordance).
+
+    Safety (phase-9 review WR-03, traced against every email_messages consumer):
+    - uq_email_run_purpose UNIQUE (run_id, purpose): inbound rows keep
+      purpose=NULL, and Postgres never treats (run_id, NULL) rows as conflicting.
+    - Every routing/idempotency query keyed on email_messages.run_id filters
+      direction='outbound' (find_awaiting_reply_for_header, find_any_run_for_header,
+      get_outbound_message_id, get_outbound_references_chain, load_outbound_emails),
+      so linking inbound rows cannot affect reply routing or send idempotency.
+    - find_run_by_message_id joins via payroll_runs.source_email_id, not run_id.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE email_messages SET run_id = %s WHERE id = %s",
+                (str(run_id), str(email_id)),
+            )
 
 
 def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:

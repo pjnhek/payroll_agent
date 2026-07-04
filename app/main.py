@@ -402,6 +402,14 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
                 )
                 if reply_run_id is not None:
                     outcome = "reply_candidate"
+                    # WR-03 (phase-9 review): back-fill run_id on the reply row
+                    # INSIDE this same transaction so real client replies appear
+                    # in the run-detail thread view (load_thread_messages) like
+                    # the simulate-reply demo path already does. Inbound rows
+                    # keep purpose=NULL, so uq_email_run_purpose never conflicts,
+                    # and every routing query on email_messages.run_id filters
+                    # direction='outbound' — linking cannot affect reply routing.
+                    repo.link_email_to_run(email_id, reply_run_id, conn=conn)
                 else:
                     late_run_id = repo.find_any_run_for_header(
                         in_reply_to=email.in_reply_to,
@@ -410,6 +418,9 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
                     )
                     if late_run_id is not None:
                         outcome = "late_reply"
+                        # WR-03: link late replies too — they are otherwise
+                        # invisible in any join-based audit of the run's thread.
+                        repo.link_email_to_run(email_id, late_run_id, conn=conn)
                     else:
                         # No header match at all — fall through to ordinary
                         # first ingest exactly like a non-reply inbound.
