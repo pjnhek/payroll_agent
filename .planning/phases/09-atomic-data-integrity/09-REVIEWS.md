@@ -93,3 +93,36 @@ Single external reviewer (Codex / gpt-5.5) — no cross-reviewer consensus avail
 
 ### Divergent Views
 None conflicting. The two reviews are complementary: Codex's three HIGHs are call-flow gaps in the plans' own claims (reply routing order, gateway send-state flip, threshold undercount); the in-session HIGH (multi-round context loss) is a live-code money bug adjacent to the same resume path 09-02 rewires. Note: the in-house plan-checker passed these plans after 3 rounds; all four HIGH findings are in areas the checker did not re-derive from live call flow — consistent with the project's prior experience that external arg-flow tracing catches what prose review misses.
+
+---
+
+## Codex Review — Round 2 (re-review of the revised 5-plan set, 2026-07-03)
+
+**Per-Prior-Finding Verdicts**
+
+| Finding | Disposition claimed | Verdict |
+|---|---|---|
+| 09-03 reply routing could create a new run before `_route_reply()` | Move reply classification inside the ingest transaction before `create_run` | **CLOSED.** Live header finders already accept `conn=` ([repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:1190>), [repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:1217>)), and current risky order is real: `_route_reply` precedes `create_run` today ([main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:336>), [main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:350>)). The revised ingest-decision shape closes it if implemented as written. |
+| 09-02 `_deliver` overclaimed atomicity because gateway flips `sent` internally | Accept sent-row-before-finalize window; harden already-sent guard to run alias finalization before statuses | **CLOSED.** Gateway really writes reserved, sends, then flips `sent` before returning ([gateway.py](</Users/pnhek/usf msds/github/payroll_agent/app/email/gateway.py:239>), [gateway.py](</Users/pnhek/usf msds/github/payroll_agent/app/email/gateway.py:295>), [gateway.py](</Users/pnhek/usf msds/github/payroll_agent/app/email/gateway.py:309>)). Current guard skips alias writes ([orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:1197>)); revised retry-over-sent alias attempt closes the specific loss. |
+| 09-04 recovery threshold undercounted live LLM gaps | Bound `call_structured`, add `compose_clarification` `call_text(timeout_s=...)`, count Round-2 double extraction | **STILL OPEN.** The revised plan suppresses OpenAI retries only for `call_structured`. Live `call_text` builds `OpenAI(..., **client_kwargs)` with `timeout` only, no `max_retries=0` ([client.py](</Users/pnhek/usf msds/github/payroll_agent/app/llm/client.py:182>)); local OpenAI defaults `max_retries=2` (`.venv/.../openai/_constants.py:10`, `_client.py:134`). So `compose_clarification` remains `timeout_s × 3` unless `call_text` is also changed or the threshold counts it. The disposition’s threshold math still undercounts. |
+| Sweep becomes a third status writer | Document `sweep_stranded_runs` as sanctioned third writer | **CLOSED.** Current doc says two writers ([repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:16>)); 09-01 explicitly updates this and pins CAS shape. |
+| Reply-derived stranded runs lose reply context on retrigger | Explicitly accept/document limitation | **CLOSED AS DEFERRED, NOT FIXED.** Live risk remains: `_defer_field_regression_clarification` writes `clarified_fields` ([orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:744>)), while retrigger schedules `_run_pipeline`, not `_resume_pipeline` ([main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:611>)). The revised plan now documents this accepted limitation. |
+| SC2 race test could launch real pipeline/LLM | Monkeypatch `_run_pipeline`/`_resume_pipeline` in race test | **CLOSED.** This directly addresses TestClient synchronous BackgroundTasks behavior noted in current docs ([main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:34>)). |
+| Sweep `error_detail` literal `{status}` | Use SQL concatenation with old row status | **CLOSED.** 09-01 specifies `error_detail = %s || status`, which is the correct old-value capture shape. |
+| Multi-round context loss | Disposition (c): documented known-edge fixture + deferred entry | **CLOSED AS DEFERRED, NOT FIXED.** Live chain is real: reply cleaning drops quoted history ([clean.py](</Users/pnhek/usf msds/github/payroll_agent/app/email/clean.py:50>)), source email loads only original body ([repo.py](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo.py:279>)), combined context uses original + latest reply only ([orchestrator.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/orchestrator.py:779>)), and regression detects only paid→unpaid ([validate.py](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/validate.py:143>)). 09-05’s fixture disposition is adequate for deferral. |
+
+**New Concerns**
+
+- **MEDIUM — 09-05 known-edge fixture may be skipped in the normal offline suite.** `tests/test_resume_pipeline.py` has a module-level skip unless shell `DATABASE_URL` is set ([test_resume_pipeline.py](</Users/pnhek/usf msds/github/payroll_agent/tests/test_resume_pipeline.py:41>)). 09-05 says the fixture is hermetic and should run with `-m "not integration"`, but this skip prevents that in DB-less environments.
+
+- **MEDIUM — 09-03 SC2 race test will 400 unless it enables unsigned fixtures or signs the webhook.** `inbound()` rejects unsigned requests when `ALLOW_UNSIGNED_FIXTURES` is false ([main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:277>)); the default is false ([config.py](</Users/pnhek/usf msds/github/payroll_agent/app/config.py:59>)). Existing webhook tests explicitly set the env var ([test_webhook.py](</Users/pnhek/usf msds/github/payroll_agent/tests/test_webhook.py:31>)); the new race test plan does not say to.
+
+- **MEDIUM — SC3 is not truly end-to-end as specified.** 09-04’s test plan calls `repo.claim_status(ERROR, RECEIVED)` directly, bypassing the actual `POST /runs/{run_id}/retrigger` route and its background scheduling ([main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:534>), [main.py](</Users/pnhek/usf msds/github/payroll_agent/app/main.py:611>)). It proves claimability, not the operator recovery path.
+
+- **LOW — Offline transaction-shape tests may overclaim.** Current `FakeTransaction` records no enter/exit boundaries ([conftest.py](</Users/pnhek/usf msds/github/payroll_agent/tests/conftest.py:104>)); `FakeConnection` records SQL only ([conftest.py](</Users/pnhek/usf msds/github/payroll_agent/tests/conftest.py:144>)). Use AST checks or enhance the fake if tests claim a call was inside a transaction.
+
+**Risk Assessment**
+
+Overall risk: **HIGH as written**, because one prior HIGH remains open: `call_text` still has the OpenAI retry layer unless the plan either passes `max_retries=0` in `call_text` or counts `timeout_s × 3` in `STALE_THRESHOLD_SECONDS`.
+
+**NO-GO** until 09-04 is revised for `call_text` retry math. The transaction and webhook ordering revisions are otherwise directionally sound.
