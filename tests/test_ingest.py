@@ -197,6 +197,28 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
         "find_any_run_for_header",
         lambda *, in_reply_to, references_header, conn=None: None,
     )
+    # 09-03 (DATA-02): the dedup-loser branch now calls find_run_by_message_id to
+    # report the existing run's id instead of creating a second one.
+    monkeypatch.setattr(
+        _repo,
+        "find_run_by_message_id",
+        lambda message_id, conn=None: _uuid_module.UUID(
+            "bbbbbbbb-0000-0000-0000-000000000001"
+        ),
+    )
+
+    # 09-03 (DATA-02): inbound() now wraps its ingest sequence in one
+    # `with repo.get_connection() as conn: with conn.transaction(): ...` block.
+    # This test monkeypatches individual _repo functions (not the fake_repo
+    # fixture), so get_connection must be patched to a FakeConnection double too.
+    from tests.conftest import FakeConnection
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _fake_get_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
 
     test_client = TestClient(app, raise_server_exceptions=False)
 

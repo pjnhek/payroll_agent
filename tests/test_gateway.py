@@ -1077,6 +1077,20 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         lambda **kw: (uuid.uuid4(), True),
     )
 
+    # 09-03 (DATA-02): inbound() now wraps dedup + reply-classification + routing in
+    # one `with repo.get_connection() as conn: with conn.transaction(): ...` block.
+    # This test monkeypatches individual _repo functions (not the fake_repo fixture),
+    # so get_connection must be patched to a FakeConnection double too, or the route
+    # attempts a real pool connection with the bogus DATABASE_URL below.
+    from tests.conftest import FakeConnection
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _fake_get_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
+
     # WARNING-1 remediation (06-04 Task 2): route now requires ALLOW_UNSIGNED_FIXTURES=true
     # for canonical dict POSTs without svix-* signature headers.
     from app.config import get_settings
@@ -1523,6 +1537,19 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
     )
     import app.main as _main
     monkeypatch.setattr(_main, "_run_pipeline", lambda run_id, conn=None: None)
+
+    # 09-03 (DATA-02): inbound() now wraps its ingest sequence in one
+    # `with repo.get_connection() as conn: with conn.transaction(): ...` block.
+    # This test monkeypatches individual _repo functions (not the fake_repo
+    # fixture), so get_connection must be patched to a FakeConnection double too.
+    from tests.conftest import FakeConnection
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _fake_get_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
 
     client = TestClient(app, raise_server_exceptions=False)
 

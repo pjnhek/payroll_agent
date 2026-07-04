@@ -158,6 +158,66 @@ def test_find_run_by_message_id_returns_uuid_when_found():
 
 
 # ---------------------------------------------------------------------------
+# runs_list() wiring — the sweep runs before load_all_runs (09-03, D-9-11)
+# ---------------------------------------------------------------------------
+
+
+def test_runs_list_calls_sweep_before_load_all_runs(monkeypatch):
+    """GET /runs must call repo.sweep_stranded_runs BEFORE repo.load_all_runs
+    (D-9-11 — freshly-swept ERROR rows must appear in the SAME page load) and
+    must never 500 if the sweep itself raises (matches the existing
+    try/except-swallow-on-DB-unavailable style already used for load_all_runs)."""
+    from fastapi.testclient import TestClient
+
+    import app.main as app_main
+    from app.db import repo as repo_mod
+
+    call_order: list[str] = []
+    monkeypatch.setattr(
+        repo_mod,
+        "sweep_stranded_runs",
+        lambda threshold_seconds: call_order.append("sweep"),
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "load_all_runs",
+        lambda: call_order.append("load") or [],
+    )
+
+    client = TestClient(app_main.app)
+    response = client.get("/runs")
+
+    assert response.status_code == 200
+    assert call_order == ["sweep", "load"], (
+        f"sweep_stranded_runs must be called BEFORE load_all_runs on every "
+        f"GET /runs (D-9-11); got order={call_order}"
+    )
+
+
+def test_runs_list_never_500s_when_sweep_raises(monkeypatch):
+    """A sweep failure must never 500 the dashboard — log and continue to
+    render (matches the existing route's DB-unavailable philosophy)."""
+    from fastapi.testclient import TestClient
+
+    import app.main as app_main
+    from app.db import repo as repo_mod
+
+    def _raise(threshold_seconds):
+        raise RuntimeError("simulated sweep failure")
+
+    monkeypatch.setattr(repo_mod, "sweep_stranded_runs", _raise)
+    monkeypatch.setattr(repo_mod, "load_all_runs", lambda: [])
+
+    client = TestClient(app_main.app)
+    response = client.get("/runs")
+
+    assert response.status_code == 200, (
+        "a sweep_stranded_runs failure must not 500 the dashboard; the route "
+        "must catch the exception and still render the (empty) runs list"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Integration test — skip unless live DB available (full impl in 09-04)
 # ---------------------------------------------------------------------------
 
