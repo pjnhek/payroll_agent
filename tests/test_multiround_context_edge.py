@@ -311,3 +311,176 @@ def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
         "has been fixed -- update or retire this test, do not chase it back to "
         "failing."
     )
+
+
+# ---------------------------------------------------------------------------
+# CX-03 regression — prior carried_forward terminals must survive later rounds
+# (this one asserts DESIRED behavior, unlike the known-edge fixture above)
+# ---------------------------------------------------------------------------
+
+
+def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm):
+    """CX-03 regression (09-REVIEWS.md Cross-AI CODE review, confirmed bug).
+
+    Unlike the known-edge fixture above, this test asserts DESIRED behavior: a
+    prior-round `carried_forward` TERMINAL outcome must never be re-detected as
+    the same paid->absent drop in a LATER round and flipped back to 'asked'.
+
+    Pre-fix trace (orchestrator.py): `_resolved_by_name` collected only
+    confirmed_dropped/client_supplied, so a prior carried_forward pair was in
+    NEITHER suppression set in round N+1 -> detect_field_regression re-emitted
+    the drop -> _defer_field_regression_clarification's
+    `clarified.setdefault(emp_id, {})[field] = "asked"` overwrote the terminal
+    (setdefault protects only the OUTER dict). Fix: prior carried_forward pairs
+    join suppress_detection (SET A) ONLY -- never backfill_skip (SET B), which
+    must keep carried_forward backfillable from the snapshot (otherwise the
+    paystub pays 0 for a field the client said to carry forward: underpay).
+
+    Scenario (hermetic -- fake_repo + mock_llm, no live DB/LLM):
+      Snapshot: Maria Chen 40 regular, 2 overtime, 8 vacation.
+      Round 1: combined extraction drops hours_overtime -> field_regression ->
+        hours_overtime 'asked', run parks AWAITING_REPLY.
+      Round 2: reply is SILENT on overtime -> classified carried_forward
+        (terminal). The combined extraction ALSO drops hours_vacation (paid 8
+        in snapshot) -> NEW field_regression -> hours_vacation 'asked', run
+        parks AWAITING_REPLY again.
+      Round 3: reply answers ONLY the vacation question ("8 hours") and is
+        again silent on overtime; the combined extraction again lacks overtime
+        while the snapshot holds a positive value (2).
+
+    Assertions (both money-label AND money-value, per the Phase 7.5 lesson):
+      (a) the persisted hours_overtime outcome stays 'carried_forward' -- it is
+          NOT flipped back to 'asked' by the round-3 re-detection;
+      (b) the PAID value: the computed paystub line item still pays the
+          carried-forward snapshot overtime (2), and the run reaches
+          AWAITING_APPROVAL instead of re-asking a resolved question.
+    Without the fix this test fails on both: round 3 re-defers, overwrites the
+    terminal to 'asked', and never computes line items.
+    """
+    run_id = _seed_run(
+        fake_repo,
+        body="Maria Chen worked 40 regular hours, 2 overtime, 8 vacation",
+    )
+
+    # Pre-clarify snapshot: 40 regular, 2 OT, 8 vacation (all paid).
+    snapshot = _mk_extracted(
+        [
+            {
+                "submitted_name": "Maria Chen",
+                "hours_regular": "40",
+                "hours_overtime": "2",
+                "hours_vacation": "8",
+            }
+        ],
+        run_id=run_id,
+    )
+    fake_repo.set_pre_clarify_extracted(run_id, snapshot)
+    fake_repo.persist_reconciliation(run_id, [_mk_match("Maria Chen", CHEN_ID)])
+    _set_run_awaiting_reply(fake_repo, run_id)
+
+    # ---- Round 1: combined extraction drops hours_overtime -> asked ---------
+    mock_llm.script = [
+        _extraction_json(
+            [
+                {
+                    "submitted_name": "Maria Chen",
+                    "hours_regular": "40",
+                    "hours_vacation": "8",
+                }
+            ]
+        ),
+        _suggestion_json({}),
+        "Could you confirm Maria Chen's overtime hours?",
+    ]
+    resume_pipeline(run_id, _inbound("Maria worked her usual 40, vacation was 8."))
+
+    clarified_r1 = fake_repo.load_clarified_fields(run_id)
+    assert clarified_r1.get(CHEN_ID_STR, {}).get("hours_overtime") == "asked", (
+        f"scenario setup: Round 1 must ask about the dropped hours_overtime; "
+        f"got {clarified_r1.get(CHEN_ID_STR, {})!r}"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.AWAITING_REPLY.value
+
+    # ---- Round 2: silence on overtime -> carried_forward TERMINAL; ----------
+    # ---- combined extraction ALSO drops vacation -> NEW asked field ---------
+    mock_llm.script = [
+        # Reply-only extraction (classify): Maria present, ALL hours silent ->
+        # hours_overtime classifies as carried_forward (terminal).
+        _extraction_json([{"submitted_name": "Maria Chen"}]),
+        # Combined extraction (process/backfill): regular retained, overtime
+        # still absent (suppressed this round via newly_classified), vacation
+        # NOW ALSO absent (snapshot 8 -> None) -> NEW field_regression.
+        _extraction_json(
+            [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
+        ),
+        # No further LLM calls: the round-2 clarification send is skipped by the
+        # purpose-scoped idempotency guard (WR-05, separate known limitation) --
+        # the run still parks at AWAITING_REPLY with hours_vacation 'asked'.
+    ]
+    resume_pipeline(run_id, _inbound("Sorry -- I'm not sure about her vacation."))
+
+    clarified_r2 = fake_repo.load_clarified_fields(run_id)
+    assert clarified_r2.get(CHEN_ID_STR, {}).get("hours_overtime") == "carried_forward", (
+        f"scenario setup: Round 2 silence must classify hours_overtime as the "
+        f"carried_forward terminal; got {clarified_r2.get(CHEN_ID_STR, {})!r}"
+    )
+    assert clarified_r2.get(CHEN_ID_STR, {}).get("hours_vacation") == "asked", (
+        f"scenario setup: Round 2 must ask about the newly-dropped hours_vacation; "
+        f"got {clarified_r2.get(CHEN_ID_STR, {})!r}"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.AWAITING_REPLY.value
+
+    # ---- Round 3: answers ONLY vacation; still silent on overtime -----------
+    mock_llm.script = [
+        # Reply-only extraction (classify): vacation answered -> client_supplied.
+        _extraction_json(
+            [{"submitted_name": "Maria Chen", "hours_vacation": "8"}]
+        ),
+        # Combined extraction: AGAIN lacks the carried-forward overtime while
+        # the snapshot holds a positive value (2) -- the CX-03 re-detection bait.
+        _extraction_json(
+            [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
+        ),
+    ]
+    resume_pipeline(run_id, _inbound("Vacation was 8 hours, confirmed."))
+
+    # (a) LABEL: the carried_forward terminal survives the round-3 re-detection.
+    clarified_r3 = fake_repo.load_clarified_fields(run_id)
+    assert clarified_r3.get(CHEN_ID_STR, {}).get("hours_overtime") == "carried_forward", (
+        f"CX-03: prior carried_forward terminal must NOT be flipped back to "
+        f"'asked' by a later round's re-detection; got "
+        f"{clarified_r3.get(CHEN_ID_STR, {})!r}"
+    )
+    assert clarified_r3.get(CHEN_ID_STR, {}).get("hours_vacation") == "client_supplied", (
+        f"Round 3's vacation answer must classify client_supplied; got "
+        f"{clarified_r3.get(CHEN_ID_STR, {})!r}"
+    )
+
+    # The run processes (all fields resolved) instead of re-asking a resolved
+    # question (which WR-05's round-blind send guard would silently never send,
+    # parking the run at AWAITING_REPLY unrecoverable by sweep).
+    run_after_r3 = fake_repo.load_run(run_id)
+    assert run_after_r3["status"] == RunStatus.AWAITING_APPROVAL.value, (
+        f"Round 3 resolves the last asked field and must reach AWAITING_APPROVAL "
+        f"(overtime suppressed as a prior terminal, backfilled from snapshot); "
+        f"got {run_after_r3['status']!r}"
+    )
+
+    # (b) VALUE: the PAID overtime is the carried-forward snapshot value (2) --
+    # assert the money value on the paystub line item, not just the label
+    # (Phase 7.5 lesson: fixing the classify LABEL != fixing the PAID VALUE).
+    line_items = fake_repo.load_line_items(run_id)
+    assert line_items, "paystub must be computed for a process run"
+    chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
+    assert chen_items, f"paystub item for Maria Chen ({CHEN_ID_STR}) must exist"
+    assert chen_items[0].hours_overtime == Decimal("2"), (
+        f"CX-03 money assertion: the paid overtime must be the carried-forward "
+        f"snapshot value (2) -- carried_forward stays OUT of backfill_skip so the "
+        f"backfill fills it (adding it to SET B would pay 0: underpay); got "
+        f"{chen_items[0].hours_overtime!r}"
+    )
+    assert chen_items[0].hours_regular == Decimal("40")
+    assert chen_items[0].hours_vacation == Decimal("8"), (
+        f"Round 3's client-supplied vacation (8) must be the paid value; got "
+        f"{chen_items[0].hours_vacation!r}"
+    )

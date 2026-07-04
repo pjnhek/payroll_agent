@@ -316,14 +316,31 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         snapshot = repo.load_pre_clarify_extracted(run_id)    # None on first resume
         clarified = repo.load_clarified_fields(run_id)          # {} on first resume
 
-        # Step E2: Build _resolved_by_name from clarified TERMINAL outcomes (D-14 + KEY TYPE).
+        # Step E2: Build the prior-terminal sets from clarified outcomes (D-14 + KEY TYPE).
         # KEY TYPE: (employee_id_str, field) — NOT (submitted_name, field).
         # clarified.items() already yields emp_id_str keys — NO reverse-lookup needed.
+        #
+        # CX-03 FIX: the three terminals split across SET A / SET B differently, so
+        # they are collected into TWO distinct sets here:
+        #   _resolved_by_name      — confirmed_dropped + client_supplied. Seeds BOTH
+        #                            suppress_detection (SET A) and backfill_skip (SET B).
+        #   _prior_carried_forward — carried_forward. Seeds suppress_detection (SET A)
+        #                            ONLY, so a prior-round carried_forward field cannot
+        #                            be re-detected as the same paid->absent drop in a
+        #                            later round (which would flip the terminal back to
+        #                            'asked' in _defer_field_regression_clarification).
+        #                            It must NEVER reach backfill_skip: carried_forward
+        #                            fields stay backfillable from the snapshot — adding
+        #                            them to SET B would make the paystub pay 0 for a
+        #                            field the client said to carry forward (underpay).
         _resolved_by_name: set[tuple[str, str]] = set()
+        _prior_carried_forward: set[tuple[str, str]] = set()
         for emp_id_str, field_outcomes in clarified.items():
             for field, outcome in field_outcomes.items():
                 if outcome in ("confirmed_dropped", "client_supplied"):
                     _resolved_by_name.add((emp_id_str, field))
+                elif outcome == "carried_forward":
+                    _prior_carried_forward.add((emp_id_str, field))
 
         # Step E3: Determine which round this is.
         is_round_2 = bool(clarified)  # any clarified_fields entries = at least Round 2
@@ -484,20 +501,32 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
 
             # D-7.5-11 STEP 2: Build TWO DISTINCT sets (the two-set fix).
             #
-            # SET A — suppress_detection: ALL answered asked fields.
-            # = _resolved_by_name (prior terminals) UNION ALL newly_classified.
+            # SET A — suppress_detection: ALL prior terminals + ALL answered asked fields.
+            # = _resolved_by_name (prior confirmed_dropped + client_supplied)
+            #   UNION _prior_carried_forward (prior carried_forward — CX-03 fix)
+            #   UNION ALL newly_classified.
             # Purpose: stop detect_field_regression / N8 from re-emitting field_regression
-            # for any just-answered field. Passed to _run_stages(suppress_detection=) →
-            # validate(resolved_drops=suppress_detection). Does NOT reach backfill_extracted.
+            # for any already-resolved or just-answered field. Passed to
+            # _run_stages(suppress_detection=) → validate(resolved_drops=suppress_detection).
+            # Does NOT reach backfill_extracted.
+            # CX-03: within round N a carried_forward outcome was protected via
+            # newly_classified, but in round N+1 it was in NEITHER set, so the same
+            # paid->absent drop was re-detected and the terminal flipped back to 'asked'.
+            # Prior carried_forward pairs belong in SET A ONLY — never SET B (see E2).
             suppress_detection: set[tuple[str, str]] = set(_resolved_by_name)
+            suppress_detection.update(_prior_carried_forward)
             for pair in newly_classified:
                 suppress_detection.add(pair)
 
             # SET B — backfill_skip: ONLY confirmed_dropped + client_supplied (NOT carried_forward).
-            # = _resolved_by_name (prior terminals) UNION only confirmed_dropped + client_supplied
+            # = _resolved_by_name (prior confirmed_dropped + client_supplied)
+            #   UNION newly-classified confirmed_dropped + client_supplied
             #   UNION _unresolvable_asked (WR-01: conservative fail for unresolvable asked fields).
             # Purpose: tell backfill_extracted which fields to skip.
-            # carried_forward is intentionally ABSENT: backfill FILLS those → paystub OT=2.
+            # carried_forward (both prior-round via _prior_carried_forward and
+            # newly-classified) is intentionally ABSENT: backfill FILLS those → paystub OT=2.
+            # (CX-03: _prior_carried_forward goes to SET A only — adding it here would
+            # zero out a field the client said to carry forward: underpay.)
             # confirmed_dropped IS present: backfill skips → paystub OT=0 (no overpay).
             # _is_paid(Decimal('0')) is False (explicit zero looks backfillable by value alone);
             # the backfill_skip resolved_drops gate is the protection.
@@ -756,7 +785,20 @@ def _defer_field_regression_clarification(
                 submitted_name_p, field_name_p = parts
                 current_emp_id_p = name_to_id_post.get(submitted_name_p)
                 if current_emp_id_p:
-                    clarified.setdefault(str(current_emp_id_p), {})[field_name_p] = "asked"
+                    emp_key = str(current_emp_id_p)
+                    # CX-03 defense-in-depth: never flip a TERMINAL outcome back to
+                    # 'asked'. setdefault protects only the OUTER dict; the field
+                    # assignment below would otherwise clobber a terminal for a
+                    # re-detected drop. With the SET A fix in resume_pipeline this
+                    # branch is unreachable for terminals (their re-detection is
+                    # suppressed upstream); the guard protects future leak paths.
+                    if clarified.get(emp_key, {}).get(field_name_p) in (
+                        "confirmed_dropped",
+                        "client_supplied",
+                        "carried_forward",
+                    ):
+                        continue
+                    clarified.setdefault(emp_key, {})[field_name_p] = "asked"
     # Step 3: Persist 'asked' BEFORE send (N2 invariant — asked-before-send).
     # D-9-06/D-9-01: a single-statement transaction that commits and closes
     # strictly BEFORE Step 5's _clarify(...) call below — no transaction ever
