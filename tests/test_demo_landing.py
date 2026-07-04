@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.conftest import FakeConnection
+from tests.conftest import FakeConnection, patch_get_connection
 
 # ---------------------------------------------------------------------------
 # Task 1: Repo helper tests
@@ -363,6 +363,9 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         lambda **kw: send_outbound_calls.append(kw),
     )
     monkeypatch.setattr("app.db.repo.set_pre_clarify_extracted", lambda *a, **kw: True)
+    # 09-02: the record_only AWAITING_REPLY exit path now opens its own transaction.
+    import app.db.repo as repo_mod
+    patch_get_connection(monkeypatch, repo_mod)
 
     # Mock LLM helpers
     mock_llm = MagicMock()
@@ -479,6 +482,9 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
         "app.pipeline.orchestrator._write_aliases_if_safe",
         lambda *a, **kw: None,
     )
+    # 09-02: _deliver's record_only finalize sequence now opens its own transaction.
+    import app.db.repo as repo_mod
+    patch_get_connection(monkeypatch, repo_mod)
 
     orchestrator._deliver(run_id, run)
 
@@ -539,6 +545,9 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         "app.pipeline.orchestrator.compose_clarification",
         lambda *a, **kw: "body",
     )
+    # 09-02: the live-gateway AWAITING_REPLY exit path now opens its own transaction.
+    import app.db.repo as repo_mod
+    patch_get_connection(monkeypatch, repo_mod)
 
     from app.models.contracts import Extracted
 

@@ -365,6 +365,9 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     # Also stub _write_aliases_if_safe (called inside _deliver before SENT).
     import app.pipeline.orchestrator as orch
     monkeypatch.setattr(orch, "_write_aliases_if_safe", lambda *a, **kw: None, raising=False)
+    # 09-02: _deliver's finalize sequence now opens its own transaction.
+    from tests.conftest import patch_get_connection
+    patch_get_connection(monkeypatch, repo)
 
     _deliver(run_id, run_dict)
 

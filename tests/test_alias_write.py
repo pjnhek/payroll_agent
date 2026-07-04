@@ -40,6 +40,11 @@ from app.pipeline.reconcile_names import _safe_to_learn_alias  # noqa: F401 (RED
 # This import provides get_outbound_message_id for idempotency stub tests.
 from app.db.repo import get_outbound_message_id  # noqa: F401 (already exists; used in stubs)
 
+# 09-02: patches repo_mod.get_connection to the FakeConnection double so tests
+# calling _clarify (which now opens `with repo.get_connection(): with
+# conn.transaction():` blocks, D-9-04..D-9-06) don't try a real pooled connection.
+from tests.conftest import patch_get_connection  # noqa: F401
+
 from app.models.roster import Employee, Roster
 from app.models.contracts import Decision, Extracted, ExtractedEmployee
 from app.models.roster import NameMatchResult
@@ -278,6 +283,8 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
     # N7: set_pre_clarify_extracted is now called in the idempotency-early-return path.
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
+    # 09-02: the idempotency-early-return path now opens its own transaction.
+    patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -374,6 +381,8 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
     # insert_email_message called in live _clarify path.
     monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
+    # 09-02: _clarify's AWAITING_REPLY exit paths now open their own transaction.
+    patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -466,6 +475,8 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
     # insert_email_message called in live _clarify path.
     monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
+    # 09-02: _clarify's AWAITING_REPLY exit paths now open their own transaction.
+    patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -559,6 +570,8 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
     # insert_email_message called in live _clarify path.
     monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
+    # 09-02: _clarify's AWAITING_REPLY exit paths now open their own transaction.
+    patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
     email = InboundEmail(
@@ -651,6 +664,8 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
     # insert_email_message called in live _clarify path.
     monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
+    # 09-02: _clarify's AWAITING_REPLY exit paths now open their own transaction.
+    patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
     email = InboundEmail(

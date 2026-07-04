@@ -741,7 +741,13 @@ def _defer_field_regression_clarification(
                 if current_emp_id_p:
                     clarified.setdefault(str(current_emp_id_p), {})[field_name_p] = "asked"
     # Step 3: Persist 'asked' BEFORE send (N2 invariant — asked-before-send).
-    repo.set_clarified_fields(run_id, clarified)
+    # D-9-06/D-9-01: a single-statement transaction that commits and closes
+    # strictly BEFORE Step 5's _clarify(...) call below — no transaction ever
+    # spans _clarify's LLM/provider calls. Steps 1/2/4 are reads/in-memory
+    # mutation only, not folded in (nothing to gain from widening the txn).
+    with repo.get_connection() as conn:
+        with conn.transaction():
+            repo.set_clarified_fields(run_id, clarified, conn=conn)
 
     # Step 4: Load the persisted decision + extracted for _clarify.
     run_row = repo.load_run(run_id)
@@ -964,8 +970,11 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
         )
         # N7 fix: snapshot BEFORE AWAITING_REPLY (PATH 1: idempotency early-return).
         # IS NULL guard in set_pre_clarify_extracted makes this a no-op if already set.
-        repo.set_pre_clarify_extracted(run_id, extracted)
-        repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+        # D-9-06: both writes commit as one transaction, status-advance last (D-9-02).
+        with repo.get_connection() as conn:
+            with conn.transaction():
+                repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+                repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
         return
 
     # D-04 alias_candidates capture (finding #4 single-token-only + finding #5
@@ -1080,8 +1089,13 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
         )
         # N7 fix: snapshot BEFORE AWAITING_REPLY (PATH 2: record_only).
         # IS NULL guard in set_pre_clarify_extracted makes this idempotent.
-        repo.set_pre_clarify_extracted(run_id, extracted)
-        repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+        # D-9-06: insert_email_message (the intent-recording write, no real Resend
+        # call) stays OUTSIDE this transaction (D-9-01) — this block covers only
+        # what comes strictly after it, status-advance last (D-9-02).
+        with repo.get_connection() as conn:
+            with conn.transaction():
+                repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+                repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
         return
     # else: live Path-2 run — fall through to the real Resend gateway call (unchanged)
     gateway.send_outbound(
@@ -1096,11 +1110,16 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
     )
     # N7 fix: snapshot BEFORE AWAITING_REPLY (PATH 3: live gateway).
     # IS NULL guard in set_pre_clarify_extracted makes this idempotent.
-    repo.set_pre_clarify_extracted(run_id, extracted)
-    repo.set_status(run_id, RunStatus.AWAITING_REPLY)  # CLAR-01 pause
+    # D-9-06/D-9-01: gateway.send_outbound (the provider call) has ALREADY returned
+    # above — this transaction opens strictly AFTER it, covering only the writes
+    # that come after the send, status-advance last (D-9-02).
+    with repo.get_connection() as conn:
+        with conn.transaction():
+            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)  # CLAR-01 pause
 
 
-def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster) -> None:
+def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster, conn=None) -> None:
     """Write any unambiguous, non-colliding alias candidates to employees.known_aliases.
 
     Called in _deliver BEFORE set_status(SENT) (D-13b ordering — PATTERNS.md line 611).
@@ -1115,9 +1134,14 @@ def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster) -> None:
     - BATCH-SAFE: refresh current_roster after each accepted alias write so the NEXT
       iteration validates against the updated roster (MEDIUM finding — prevents multiple
       candidates in one approval batch from interacting unsafely).
+
+    conn: optional caller-supplied connection (D-9-04 series) so this call's writes
+    join the caller's enclosing transaction (e.g. _deliver's finalize block) rather
+    than auto-committing independently. When None (default), each internal repo call
+    opens/commits its own pooled connection, exactly as before this plan.
     """
     import uuid as _uuid
-    run_data = repo.load_run(run_id)
+    run_data = repo.load_run(run_id, conn=conn)
     if run_data is None:
         return
     alias_candidates = run_data.get("alias_candidates") or {}
@@ -1163,12 +1187,12 @@ def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster) -> None:
             )
             continue
 
-        written = repo.update_known_alias(employee_id, token)
+        written = repo.update_known_alias(employee_id, token, conn=conn)
         if written:
             logger.info("alias learned: %r → %s", token, employee_id)
             # BATCH-SAFE: refresh the roster after each accepted write so the next
             # iteration validates against the updated roster state (MEDIUM finding).
-            current_roster = repo.load_roster_for_business(run["business_id"])
+            current_roster = repo.load_roster_for_business(run["business_id"], conn=conn)
         else:
             logger.info(
                 "alias write no-op for %r → %s: already present (idempotent)",
@@ -1217,6 +1241,14 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
     # Step 1 — Purpose-aware already-sent guard (finding #1, CLAR-04):
     # Only a row with purpose='confirmation' AND send_state='sent' counts as proof-of-
     # delivery. A reserved/failed row or a clarification row does NOT count.
+    #
+    # gateway.send_outbound already durably flips send_state to 'sent' before returning
+    # (D-13c) — this guard's job on a retry-over-sent is to ensure alias learning,
+    # which the happy path performs BEFORE advancing status, is not silently skipped
+    # just because the send itself was already durable (Codex HIGH-2 fix); the alias
+    # write is idempotent-safe to attempt again (write-only-if-unambiguous-and-new,
+    # per D-01/D-02) — it will no-op on a second attempt if the alias was already
+    # learned.
     existing = repo.get_outbound_message_id(run_id, purpose="confirmation")
     if existing is not None:
         logger.info(
@@ -1225,8 +1257,24 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
             run_id,
             existing,
         )
-        repo.set_status(run_id, RunStatus.SENT)
-        repo.set_status(run_id, RunStatus.RECONCILED)
+        # D-9-08/Codex HIGH-2: the retry-over-sent path needs a roster (this
+        # early-return path returns before Step 4's roster load below) to attempt
+        # the same idempotent alias write the happy path performs — isolated in its
+        # own try/except (mirroring D-13b) since this branch is NOT nested inside
+        # the WR-04 try (it returns before that try opens).
+        existing_roster = repo.load_roster_for_business(run["business_id"])
+        try:
+            _write_aliases_if_safe(run_id, run, existing_roster)
+        except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
+            logger.warning(
+                "alias write skipped for run %s: %s (run continues to SENT)",
+                run_id,
+                type(alias_exc).__name__,
+            )
+        with repo.get_connection() as conn:
+            with conn.transaction():
+                repo.set_status(run_id, RunStatus.SENT, conn=conn)
+                repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
         return
 
     # Step 2 — Load line items (explicit columns, LOW finding fix).
@@ -1308,23 +1356,37 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
                 send_state="sent",
             )
 
-        # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias candidates.
-        # MUST be called BEFORE set_status(SENT) (PATTERNS.md line 611 ordering, D-13b).
-        # Wrapped in try/except so an alias-learning failure NEVER strands or fails the run
-        # (D-13b defensive isolation — alias write is independently droppable, D-15).
-        try:
-            _write_aliases_if_safe(run_id, run, roster)
-        except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
-            logger.warning(
-                "alias write skipped for run %s: %s (run continues to SENT)",
-                run_id,
-                type(alias_exc).__name__,
-            )
+        # Steps 8-10 — D-9-07/D-9-08: the email row's send_state flip to 'sent'
+        # already committed inside gateway.send_outbound (D-13c) before this
+        # transaction opens — this block covers ONLY what remains atomic on this
+        # side: alias learning + status advance. A crash between send_outbound's
+        # return and this transaction's commit leaves send_state='sent' +
+        # status='approved'; a retry hits the hardened already-sent guard above,
+        # which completes the alias write and advances status — this is D-9-08's
+        # documented at-least-once semantics, now closing the alias-skip gap
+        # Codex HIGH-2 found.
+        with repo.get_connection() as conn:
+            with conn.transaction():
+                # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias
+                # candidates. MUST be called BEFORE set_status(SENT) (PATTERNS.md
+                # line 611 ordering, D-13b). Wrapped in try/except NESTED STRICTLY
+                # INSIDE this transaction block (Pitfall 2) so an alias-learning
+                # failure NEVER rolls back a genuine delivery — it only skips the
+                # alias write itself (D-13b defensive isolation, D-15).
+                try:
+                    _write_aliases_if_safe(run_id, run, roster, conn=conn)
+                except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
+                    logger.warning(
+                        "alias write skipped for run %s: %s (run continues to SENT)",
+                        run_id,
+                        type(alias_exc).__name__,
+                    )
 
-        # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential in this
-        # synchronous call; RECONCILED is the only terminal-success status).
-        repo.set_status(run_id, RunStatus.SENT)
-        repo.set_status(run_id, RunStatus.RECONCILED)
+                # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential
+                # in this synchronous call; RECONCILED is the only terminal-success
+                # status). Status-advance last (D-9-02).
+                repo.set_status(run_id, RunStatus.SENT, conn=conn)
+                repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
     except Exception as exc:
         # WR-04: attach the in-memory roster for the caller's scrub boundary, then
         # re-raise the ORIGINAL exception unchanged. Attribute assignment is

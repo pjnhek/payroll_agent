@@ -182,6 +182,19 @@ def _fake_get_connection():
     yield FakeConnection()
 
 
+def patch_get_connection(monkeypatch, repo_mod) -> None:
+    """Monkeypatch repo_mod.get_connection to the FakeConnection double (09-02).
+
+    For tests that monkeypatch individual app.db.repo.* helpers directly
+    (rather than using the fake_repo fixture) and call orchestrator functions
+    that now open `with repo.get_connection() as conn: with conn.transaction():`
+    blocks (09-02 D-9-04..D-9-08 transaction wiring) — without this patch such
+    a test would attempt to open a real pooled Supabase connection and hang /
+    time out. Call this once per test alongside the other repo_mod monkeypatches.
+    """
+    monkeypatch.setattr(repo_mod, "get_connection", _fake_get_connection, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # 2. inbound_email — a canonical cleaned InboundEmail value
 # ---------------------------------------------------------------------------
