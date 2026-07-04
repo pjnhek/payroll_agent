@@ -57,11 +57,43 @@ from app.email.clean import clean_body
 from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
 
-# Staleness threshold for stale in-flight state recovery (finding #6, D-13b extension).
-# A run in a recoverable in-flight state (RECEIVED/EXTRACTING/COMPUTED/SENT) whose
-# updated_at is older than this threshold may be claimed by retrigger for a fresh start.
-# Fresh in-flight runs (recently updated) are never force-restarted.
-STALE_THRESHOLD = timedelta(minutes=5)
+# Staleness threshold for stale in-flight state recovery (finding #6, D-13b extension;
+# D-9-13/D-9-10/11/12, 09-03). SHARED by BOTH retrigger()'s stale-in-flight claim
+# AND runs_list()'s recovery sweep (repo.sweep_stranded_runs) — ONE constant, two
+# use sites (D-9-13: "keep ONE shared constant unless tracing shows they genuinely
+# need different values" — no such need was found).
+#
+# Codex HIGH-3 (09-REVIEWS.md, sharpening RESEARCH.md Pitfall 1's original "90s-3min"
+# estimate): the TRUE CURRENT (untightened, as of THIS plan) worst-case gap between
+# two consecutive DB writes on a live run is honestly much larger than 90s-3min:
+#   (a) call_structured (app/llm/client.py) — used for BOTH extraction AND the
+#       clarification suggestion (app/pipeline/suggest.py:81) — passes no explicit
+#       timeout= to the OpenAI(...) client construction, so it inherits the
+#       library's 10-minute default timeout x max_retries=2 automatic library-level
+#       retries (a layer BELOW and INDEPENDENT of the app's own one reflective
+#       retry-on-parse-failure) => up to ~60 min for a single stage call before the
+#       app's own reflective retry (which re-sends the whole request again) is even
+#       counted.
+#   (b) call_text (app/pipeline/compose_email.py:167, compose_clarification's
+#       draft/clarification path) — ALSO passes no timeout_s= at all, so it is
+#       bounded ONLY by the library's own 10-min timeout x max_retries=2 => up to
+#       ~30 min, with NO app-level retry wrapping it at all.
+#   (c) resume Round-2's back-to-back double extraction (orchestrator.py:377,380 —
+#       raw_reply_extracted = extract(inbound, ...) THEN raw_extracted =
+#       extract(combined_email, ...), verified live) — can DOUBLE the
+#       call_structured gap on that one path alone before the next DB write.
+# THIS plan (09-03) does NOT tighten any of these — 09-04 tightens call_structured's
+# timeout AND max_retries, closing the compounding on path (a)/(c); call_text's (b)
+# gap is a documented residual risk 09-04 does not close. The value below is
+# DELIBERATELY CONSERVATIVE — it documents the CURRENT true worst-case ceiling
+# (not a value that only makes sense once 09-04's tightening is assumed already in
+# place) so the sweep cannot fire on a legitimately-slow-but-alive run before 09-04
+# lands. A run in a recoverable in-flight state (RECEIVED/EXTRACTING/COMPUTED, plus
+# SENT for retrigger only — see the scope-divergence comment on retrigger's
+# stale_statuses below) whose updated_at is older than this threshold may be
+# claimed/swept for a fresh start; fresh in-flight runs are never force-restarted.
+STALE_THRESHOLD = timedelta(minutes=65)
+STALE_THRESHOLD_SECONDS = int(STALE_THRESHOLD.total_seconds())
 
 # UAT #3: in-flight statuses — a run in any of these states is still processing.
 # Templates receive an `auto_refresh` boolean driven from this constant so no status
@@ -662,7 +694,25 @@ def retrigger(
     leaves the run stuck with no recovery UI otherwise.
 
     Stale guard: in-flight claims require updated_at older than STALE_THRESHOLD
-    (5 minutes). A freshly-started in-flight run is never force-restarted.
+    (09-03: shared with runs_list()'s recovery sweep — see the constant's own
+    comment for the honest current worst-case rationale). A freshly-started
+    in-flight run is never force-restarted.
+
+    09-03 (Codex MEDIUM, reply-context-loss on retrigger — accepted, documented):
+    a stranded run that entered via a clarification REPLY (i.e. one with non-empty
+    clarified_fields or a pre_clarify_extracted snapshot), once claimed here
+    (whether by the ERROR/APPROVED CAS above or the stale in-flight branch below),
+    is dispatched to _run_pipeline — NOT _resume_pipeline — because retrigger has
+    no way to know a stranded run was originally entered via a reply. Per D-9-10
+    ("never auto-restart" — the operator retrigger IS the accepted recovery
+    mechanism), this is NOT changed here: adding reply-aware retrigger dispatch is
+    new state-machine capability, out of scope (deferred alongside 260623-08, see
+    09-CONTEXT.md Deferred Ideas). The retriggered run restarts cleanly from the
+    ORIGINAL inbound email; the in-flight reply context that was being processed
+    when it stranded is lost. This is a known, accepted limitation — the operator
+    retains full visibility (the run reaches ERROR, diagnosable) and can manually
+    re-send the clarification's context via a fresh email if the retriggered run's
+    result looks wrong.
 
     R2-HIGH stale CAS exclusivity (finding #6): the claim target MUST differ from the
     current status so the conditional UPDATE genuinely changes the row and two
@@ -697,6 +747,17 @@ def retrigger(
                 updated_at is not None
                 and datetime.now(tz=timezone.utc) - updated_at > STALE_THRESHOLD
             )
+            # 09-03 (checker WARNING 3, prior review round): this scope is FOUR
+            # statuses, including SENT — deliberately DIVERGENT from
+            # repo.sweep_stranded_runs's D-9-12 scope (EXACTLY THREE:
+            # received/extracting/computed). "Keep ONE shared constant" (the
+            # THRESHOLD VALUE, STALE_THRESHOLD_SECONDS) does NOT mean "keep ONE
+            # shared scope LIST" — the two lists structurally diverge by design
+            # and must NOT be made to converge: a SENT run has already durably
+            # committed the provider-send evidence (D-13c) and belongs to
+            # retrigger's own re-run path (safe via _deliver's already-sent
+            # idempotency guard), not the sweep's "background task died before
+            # persisting anything durable" scope. Do NOT "fix" this into parity.
             stale_statuses = {
                 RunStatus.RECEIVED.value,
                 RunStatus.EXTRACTING.value,
@@ -983,7 +1044,20 @@ def demo_compose(
 
 @app.get("/runs")
 def runs_list(request: Request):
-    """DASH-01: Render the reverse-chronological runs list with status badges."""
+    """DASH-01: Render the reverse-chronological runs list with status badges.
+
+    D-9-10/11 (09-03): sweeps stranded in-flight runs to ERROR BEFORE loading the
+    list, so a run whose background task died mid-flight becomes visible as a
+    diagnosable ERROR on the very NEXT dashboard load — GET /runs is the one HTTP
+    entry point Render's free tier guarantees will be hit periodically. The sweep
+    call is wrapped in the SAME try/except-swallow-on-DB-unavailable style the
+    route already uses for load_all_runs — a sweep failure must never 500 the
+    dashboard.
+    """
+    try:
+        repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
+    except Exception:
+        logger.debug("sweep_stranded_runs unavailable — skipping this page load")
     try:
         runs = repo.load_all_runs()
     except Exception:
