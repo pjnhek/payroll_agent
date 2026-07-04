@@ -12,10 +12,19 @@ FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
     create_run             — open a payroll_runs row (status='received')
     load_run               — explicit-column dict_row read of one run
     load_source_email      — the original CLEANED inbound body, NOT re-cleaned (FIX C)
+    find_run_by_message_id — join-based loser lookup for the webhook's dedup-loser
+                             path (DATA-02): insert_inbound_email returns (None, False)
+                             on ON CONFLICT, so the loser has no email_id — only the
+                             RFC message_id — to resolve the existing run by
 
   Status / persistence
-    two writers: set_status (unguarded forward transitions inside an owned path)
-    and claim_status (atomic guarded claim at every contended gate)
+    Originally two writers: set_status (unguarded forward transitions inside an
+    owned path) and claim_status (atomic guarded claim at every contended gate).
+    Now three writers — the third is sweep_stranded_runs (D-9-10/11/12 recovery
+    sweep), a SANCTIONED THIRD status writer using the SAME single-statement
+    CAS-UPDATE-WHERE-RETURNING idiom as claim_status, scoped to EXACTLY
+    {received, extracting, computed} (never the parked awaiting_reply/
+    awaiting_approval/approved statuses).
     record_run_error       — the ONE documented exception: writes error_reason AND
                              routes its ERROR transition THROUGH set_status (FIX B,
                              so there is still exactly one status-write path)
@@ -210,6 +219,35 @@ def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
         return uuid.UUID(str(binding_row[0])) if binding_row else None
 
 
+def find_run_by_message_id(message_id: str, conn=None) -> uuid.UUID | None:
+    """Resolve the existing run for an RFC message_id (webhook dedup-loser lookup).
+
+    Keyed on `message_id: str`, deliberately NOT `email_id: uuid.UUID` — checker
+    BLOCKER 1 fix. `insert_inbound_email` returns `(None, False)` on `ON CONFLICT
+    (message_id) DO NOTHING`, so the webhook's dedup-loser branch never has an
+    email_id to pass; `message_id` (the RFC header, already parsed by
+    gateway.parse_inbound before the dedup insert runs) is the only key the loser
+    possesses. Joins email_messages (uq_message_id UNIQUE, schema.sql:218) to
+    payroll_runs via the deferred FK payroll_runs.source_email_id ->
+    email_messages.id (schema.sql:312-326).
+
+    Read-only single-lookup (mirrors find_business_by_sender's shape) — no
+    c.transaction(), since nothing is written. Returns None if no run's source
+    email carries this message_id.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT payroll_runs.id
+            FROM payroll_runs
+            JOIN email_messages ON email_messages.id = payroll_runs.source_email_id
+            WHERE email_messages.message_id = %s
+            """,
+            (message_id,),
+        ).fetchone()
+    return uuid.UUID(str(row[0])) if row else None
+
+
 def load_business_name(business_id: uuid.UUID, conn=None) -> str | None:
     """Return the display name for a business, or None if not found.
 
@@ -377,6 +415,59 @@ def claim_status(
                 (RunStatus(new).value, str(run_id), RunStatus(expected).value),
             ).fetchone()
     return row is not None
+
+
+# Stranded-run scope (D-9-12): EXACTLY these three in-flight statuses are eligible
+# for the recovery sweep. A run parked in awaiting_reply/awaiting_approval/approved
+# is waiting on a HUMAN (client reply or operator approval) — that is normal, not
+# stranded — so those statuses must NEVER appear here. This list is pinned by an
+# explicit unit test (Task 2) asserting both the presence of these three values and
+# the absence of the three parked statuses.
+_STRANDED_SCOPE_STATUSES: list[str] = ["received", "extracting", "computed"]
+
+
+def sweep_stranded_runs(threshold_seconds: int, conn=None) -> list[uuid.UUID]:
+    """Recover runs stranded mid-flight by a dead background task (D-9-10/11/12).
+
+    SANCTIONED THIRD status writer (alongside set_status/claim_status) — same
+    single-statement CAS-UPDATE-WHERE-RETURNING idiom as claim_status, so there
+    is no read-then-write TOCTOU window (T-09-01).
+
+    Scope is hardcoded to EXACTLY {received, extracting, computed} — a run
+    sitting in awaiting_reply/awaiting_approval/approved is waiting on a human,
+    not stranded, and must never be swept (D-9-12, T-09-02). The scope list is
+    NOT caller-supplied; widening it requires editing this function's own body,
+    which the Task 2 scope-pin unit test immediately fails.
+
+    error_detail is built via SQL CONCATENATION of a static prefix with the
+    run's OWN pre-update `status` column value (`%s || status`) — NOT a Python
+    literal string containing an unresolved "{status}" placeholder (Codex LOW,
+    closed). Postgres evaluates every SET expression against the row's OLD
+    values, so `%s || status` on the right-hand side correctly captures the
+    PRE-update status even though the same statement's SET clause also
+    overwrites `status` to 'error' — this is standard SQL UPDATE semantics
+    (the SET list is evaluated once per row against the values as they were
+    BEFORE this UPDATE statement runs), not a per-row iteration order effect.
+
+    Returns the list of run ids that were swept (possibly empty).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            rows = c.execute(
+                "UPDATE payroll_runs SET status = %s, error_reason = %s,"
+                " error_detail = %s || status, updated_at = now()"
+                " WHERE status = ANY(%s)"
+                " AND updated_at < now() - (%s || ' seconds')::interval"
+                " RETURNING id",
+                (
+                    RunStatus.ERROR.value,
+                    "StrandedRunSwept",
+                    "recovery: stranded in-flight (background task died) — swept from ",
+                    _STRANDED_SCOPE_STATUSES,
+                    str(threshold_seconds),
+                ),
+            ).fetchall()
+    return [uuid.UUID(str(r[0])) for r in rows]
 
 
 # ---------------------------------------------------------------------------
