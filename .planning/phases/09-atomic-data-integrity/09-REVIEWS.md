@@ -126,3 +126,42 @@ None conflicting. The two reviews are complementary: Codex's three HIGHs are cal
 Overall risk: **HIGH as written**, because one prior HIGH remains open: `call_text` still has the OpenAI retry layer unless the plan either passes `max_retries=0` in `call_text` or counts `timeout_s × 3` in `STALE_THRESHOLD_SECONDS`.
 
 **NO-GO** until 09-04 is revised for `call_text` retry math. The transaction and webhook ordering revisions are otherwise directionally sound.
+
+---
+
+# Cross-AI CODE Review — Phase 9 (post-execution, post-gap-closure)
+
+**Reviewer:** codex (gpt-5.5, codex-cli 0.135.0, read-only sandbox) | **Reviewed:** 2026-07-04, at commit `fd62a04` (after 09-06 gap closure + WR-03/WR-07 fixes) | **Confirming round:** claude-fable-5 (in-session, traced each finding against live source)
+
+## Codex verdict: 1 critical, 2 warning
+
+### CX-01 — Multi-round resume can discard an intermediate paid-hours correction (CRITICAL per Codex)
+
+**Confirming-round disposition: KNOWN — duplicate of the 09-05 deferred finding. Not a new bug.**
+
+Codex's trace (resume rebuilds extraction from original email + current reply only; a Round-1 paid-to-paid correction to a *non-asked* field is silently reverted by Round-2's combined re-extraction; e.g. corrected 40→30 regular hours pays 40 again, $185 gross overpay at $18.50/hr) is exactly the multi-round context-loss finding that plan 09-05 recorded WITHOUT fixing: proven by the known-edge fixture `tests/test_multiround_context_edge.py` and logged in 09-CONTEXT.md as deferred to a future MONEY-class phase (fix direction: accumulate reply bodies or diff against last-persisted extraction). Independent rediscovery by a second model is strong validation that the deferred finding is real and CRITICAL-class — it should stay at the top of the future MONEY-phase queue.
+
+### CX-02 — Recovery paths do not fence off old workers (WARNING)
+
+**Confirming-round disposition: PLAUSIBLE — new advisory, not previously documented.**
+
+After `sweep_stranded_runs` marks a stale `extracting` run `error`, or retrigger moves `approved → received`, a still-live old worker's later writes use plain `set_status WHERE id = %s` (no lease/attempt-token/CAS on the finalize side), so the zombie can overwrite the recovered state (`_clarify` unconditionally writes `awaiting_reply`; a stalled `_deliver` can finalize `sent/reconciled` over a retriggered run). Requires a worker outlasting the 15-min sweep threshold (e.g. `gateway.send_outbound()` has no explicit provider timeout) or a concurrent manual retrigger. Codex confidence medium-high; operationally unlikely at demo scale but a genuine design gap if this ever runs multi-worker. Candidate fix: attempt-token column checked by a CAS variant of `set_status` on finalize writes — belongs with the Phase 10 concurrency work.
+
+### CX-03 — Prior `carried_forward` outcomes can be reopened as `asked` (WARNING)
+
+**Confirming-round disposition: CONFIRMED against live source — new real bug. Also corrects one over-claim in 09-REVIEW.md.**
+
+Trace (verified in-session):
+- `orchestrator.py:322-326` — `_resolved_by_name` includes only `confirmed_dropped`/`client_supplied`, omitting the third terminal `carried_forward`, even though the SET A comment at line 488 says it holds "prior terminals" (intent: all of them).
+- Within round N, `carried_forward` IS suppressed via `newly_classified` (lines 492-494) — but in round N+1 it is in neither set, so `detect_field_regression` can re-emit the same paid-to-absent drop.
+- `orchestrator.py:759` — `clarified.setdefault(emp_id, {})[field] = "asked"`: `setdefault` protects only the outer dict; the field-level assignment OVERWRITES the terminal `carried_forward` back to `asked`. (09-REVIEW.md's claim that the deferred helper "only ADDS new asked entries, never mutating the terminals" is wrong at field level for re-detected fields.)
+- Failure scenario: OT classified `carried_forward` in Round 2; a Round-3 reply answers a different field and is silent on OT; snapshot still has positive OT → re-flagged, terminal flipped to `asked`, run re-asks a resolved question — and combined with WR-05's round-blind send guard, the second same-purpose clarification is silently never sent, parking the run at `awaiting_reply` unrecoverable by sweep.
+- Minimal fix candidate: add `"carried_forward"` to the tuple at line 325 — but this interacts with the WR-05/WR-06 cluster (`is_round_2 = bool(clarified)`, SET B intentionally excludes carried_forward for backfill) and should be designed with them, per the 09-REVIEW-FIX.md skip rationale for that cluster.
+
+## Verified sound by Codex (independent confirmation of the gap fixes)
+
+`_run_stages` persist writes are one transaction with status last; the `_deliver` alias write is isolated by a real nested SAVEPOINT; `link_email_to_run` (WR-03 fix) does not conflict with `uq_email_run_purpose` (inbound rows keep `purpose=NULL`) and routing queries filter `direction='outbound'`.
+
+## Net effect
+
+Phase 9's shipped mechanisms (DATA-01/02/03) survive the external review — no new critical in the phase's own scope. The one CRITICAL is the pre-existing, already-recorded 09-05 deferred finding. New follow-ups for the backlog: CX-03 (confirmed, pairs with WR-05/WR-06 cluster) and CX-02 (pairs with Phase 10 concurrency work).
