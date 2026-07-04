@@ -1126,7 +1126,6 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     get_settings.cache_clear()
 
 
-@pytest.mark.xfail(strict=True, reason="implemented in 06-04")
 @pytest.mark.integration
 def test_inbound_reply_routes_to_correct_run_integration():
     """Real-DB integration: reply-routing uses the real SQL predicate end-to-end.
