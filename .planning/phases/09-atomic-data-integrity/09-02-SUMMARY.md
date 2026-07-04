@@ -136,3 +136,11 @@ None - no external service configuration required.
 ---
 *Phase: 09-atomic-data-integrity*
 *Completed: 2026-07-04*
+
+## Self-Check: PASSED
+
+- FOUND: tests/test_atomic_persist.py
+- FOUND: .planning/phases/09-atomic-data-integrity/09-02-SUMMARY.md
+- FOUND: ce4bbad (Task 1 commit)
+- FOUND: 275f4ed (Task 2 commit)
+- FOUND: 54c5622 (SUMMARY.md commit)
