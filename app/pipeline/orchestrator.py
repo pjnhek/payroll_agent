@@ -1390,8 +1390,23 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
                 # INSIDE this transaction block (Pitfall 2) so an alias-learning
                 # failure NEVER rolls back a genuine delivery — it only skips the
                 # alias write itself (D-13b defensive isolation, D-15).
+                #
+                # D-9-06 gap closure (WR-01): the nested `with conn.transaction()`
+                # below is a psycopg3 SAVEPOINT (psycopg3 automatically issues
+                # SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT instead of
+                # BEGIN/COMMIT/ROLLBACK when conn.transaction() is entered while
+                # already inside an outer transaction). This is what makes the
+                # isolation hold for genuine DB-level errors (constraint violations,
+                # undefined columns, lock timeouts), not just pure-Python exceptions
+                # — without it, a DB-level failure here poisons the WHOLE outer
+                # transaction via InFailedSqlTransaction on the very next statement
+                # (09-REVIEW.md WR-01): the alias write's own repo helpers run under
+                # _nulltx() (a bare no-op) whenever a caller-supplied conn is
+                # present, so no savepoint exists at that layer — it must be added
+                # by the caller (here), wrapping the whole alias-write call once.
                 try:
-                    _write_aliases_if_safe(run_id, run, roster, conn=conn)
+                    with conn.transaction():
+                        _write_aliases_if_safe(run_id, run, roster, conn=conn)
                 except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
                     logger.warning(
                         "alias write skipped for run %s: %s (run continues to SENT)",

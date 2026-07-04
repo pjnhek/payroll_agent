@@ -756,6 +756,67 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
+def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
+    seeded_db, monkeypatch
+):
+    """09-06 gap closure (WR-01): a GENUINE DB-level error inside the alias-write
+    path (not a monkeypatched Python `raise`) must NOT poison _deliver's finalize
+    transaction. Before the fix, update_known_alias runs under _nulltx() (a bare
+    no-op) whenever a caller-supplied conn is present — a DB-level failure there
+    (e.g. UndefinedColumn) leaves the connection in a failed-transaction state, and
+    the very next statement (set_status(SENT)) raises psycopg.errors.InFailedSqlTransaction,
+    rolling back the ENTIRE finalize block including the already-genuinely-sent
+    email's status advance.
+
+    Seeds a run at APPROVED with a resolvable alias_candidates entry (an
+    unambiguous, non-colliding token for Maria Chen) so _write_aliases_if_safe
+    actually reaches repo.update_known_alias. Monkeypatches update_known_alias to
+    execute a genuinely-invalid SQL statement against the shared conn (raising
+    psycopg.errors.UndefinedColumn — a real DB-level failure). Asserts the run
+    still reaches 'reconciled' — the exact must-have the nested SAVEPOINT
+    (conn.transaction() around the alias-write call) is meant to guarantee.
+    """
+    import psycopg
+
+    from app.db import repo
+    from app.pipeline.orchestrator import _deliver
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+
+    run_id = _seed_live_run(body="Maria Chen 40 regular")
+    repo.set_status(run_id, RunStatus.APPROVED)
+
+    # Seed an unambiguous, non-colliding alias candidate for Maria Chen so
+    # _write_aliases_if_safe actually reaches repo.update_known_alias.
+    # "Maria C." is not already one of Chen's known_aliases (["Maria", "M. Chen"])
+    # and does not collide with any other employee's name/alias in the seeded
+    # Coastal roster — _safe_to_learn_alias's collision guard passes.
+    repo.set_alias_candidates(run_id, {"Maria C.": str(CHEN_ID)})
+    run = repo.load_run(run_id)
+
+    def _boom_update_known_alias(employee_id, new_alias, conn=None):
+        # A GENUINE DB-level error — not a Python `raise` — executed against the
+        # shared conn, so psycopg poisons the connection's transaction state
+        # exactly as a real constraint violation / undefined column would.
+        conn.execute(
+            "UPDATE employees SET nonexistent_column = 1 WHERE id = %s",
+            (str(employee_id),),
+        )
+
+    monkeypatch.setattr(repo, "update_known_alias", _boom_update_known_alias)
+
+    _deliver(run_id, run)
+
+    post_run = repo.load_run(run_id)
+    assert post_run["status"] == "reconciled", (
+        "a genuine DB-level error (psycopg.errors.UndefinedColumn) inside the "
+        "alias-write path must NOT poison _deliver's finalize transaction — the "
+        f"run must still reach 'reconciled'; got {post_run['status']!r}"
+    )
+
+
+@_SKIP_LIVE_DB
+@pytest.mark.integration
 def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeypatch):
     """Force repo.set_status to raise on its FIRST call inside _deliver's
     finalize block (simulating a crash between the alias write and
