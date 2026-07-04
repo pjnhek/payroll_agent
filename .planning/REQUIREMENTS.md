@@ -15,9 +15,9 @@
 
 ### Ring 2 — Data integrity (correct under concurrency and crashes)
 
-- [ ] **DATA-01**: Each multi-write pipeline operation is atomic — the persist+branch+status sequence in `_run_stages` and the send+alias+status sequence in `_deliver` each commit in a single transaction, so a crash mid-sequence never leaves a half-written run (e.g. paystubs replaced but status stale, or email sent but status never advanced). (Audit HIGH-03, `orchestrator.py`.)
-- [ ] **DATA-02**: Duplicate webhook deliveries for the same inbound email (Resend retries) never create a second payroll run, even under concurrent/parallel delivery — dedup and run-creation are resolved transactionally so exactly one run exists per inbound message_id. (Audit HIGH-04, `main.py` + `repo.insert_inbound_email`.)
-- [ ] **DATA-03**: A run whose background task died mid-flight (stuck in `extracting`/`computing`) is recoverable — there is a recovery path (sweep or operator force-retrigger) that does not require waiting out an over-long stale threshold. (Audit MED-05, `main.py` retrigger.)
+- [x] **DATA-01**: Each multi-write pipeline operation is atomic — the persist+branch+status sequence in `_run_stages` and the send+alias+status sequence in `_deliver` each commit in a single transaction, so a crash mid-sequence never leaves a half-written run (e.g. paystubs replaced but status stale, or email sent but status never advanced). (Audit HIGH-03, `orchestrator.py`.)
+- [x] **DATA-02**: Duplicate webhook deliveries for the same inbound email (Resend retries) never create a second payroll run, even under concurrent/parallel delivery — dedup and run-creation are resolved transactionally so exactly one run exists per inbound message_id. (Audit HIGH-04, `main.py` + `repo.insert_inbound_email`.)
+- [x] **DATA-03**: A run whose background task died mid-flight (stuck in `extracting`/`computing`) is recoverable — there is a recovery path (sweep or operator force-retrigger) that does not require waiting out an over-long stale threshold. (Audit MED-05, `main.py` retrigger.)
 
 ### Ring 3 — Operability + evidence (back the "production-grade" claim)
 
@@ -46,9 +46,9 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 | MONEY-03 | Phase 7.5 — Clarification-Reply Field-Regression | Complete |
 | OPS2-01 | Phase 8 — Data-Layer Hygiene & Diagnostics | Complete |
 | OPS2-02 | Phase 8 — Data-Layer Hygiene & Diagnostics | Complete |
-| DATA-01 | Phase 9 — Atomic Data Integrity | Pending |
-| DATA-02 | Phase 9 — Atomic Data Integrity | Pending |
-| DATA-03 | Phase 9 — Atomic Data Integrity | Pending |
+| DATA-01 | Phase 9 — Atomic Data Integrity | Complete |
+| DATA-02 | Phase 9 — Atomic Data Integrity | Complete |
+| DATA-03 | Phase 9 — Atomic Data Integrity | Complete |
 | OPS2-03 | Phase 10 — Concurrency Proof | Pending |
 
 **Coverage:**
