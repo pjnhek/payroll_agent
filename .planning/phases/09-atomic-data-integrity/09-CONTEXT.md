@@ -147,9 +147,16 @@ paystub pays 40. Silent overpay class, no gate, no operator visibility.
 **Disposition: (c)** — an explicit deferred known-edge, per the review's own
 guidance ("Consider scope carefully... the FIXTURE (c) is cheap and fits Phase 9's
 test-heavy shape"). A dedicated hermetic fixture (`09-05-PLAN.md`,
-`tests/test_resume_pipeline.py::test_multi_round_context_loss_known_edge`) proves
-this IS current behavior (a red-flag regression target, not a passing-therefore-
-safe test) so a future phase does not have to re-trace the bug from scratch.
+`tests/test_multiround_context_edge.py::test_multi_round_context_loss_known_edge`)
+proves this IS current behavior (a red-flag regression target, not a passing-
+therefore-safe test) so a future phase does not have to re-trace the bug from
+scratch. **Revision (09-REVIEWS.md Codex Round-2 NEW MEDIUM):** the fixture lands
+in a NEW, dedicated module — NOT `tests/test_resume_pipeline.py` — because that
+module carries a module-level `DATABASE_URL`-gated skip marker
+(tests/test_resume_pipeline.py:41-48) that would silently skip this fixture (and
+any other test added to that module) in any offline/DB-less environment,
+contradicting the "hermetic, runs with `-m not integration`" claim. The new
+module has no such guard and is genuinely offline-runnable.
 Three candidate fix dispositions for that future phase, per 09-REVIEWS.md:
   (a) accumulate reply bodies into the resume context — persist/append each
       reply body and combine original + ALL replies at `_combined_context_email`
