@@ -865,18 +865,39 @@ def _run_stages(
 
     decision = decide(extracted, matches, issues)  # pure: no llm, no score (D-21-01)
 
+    # D-9-04: _compute_line_items is pure computation (no DB, no LLM) — it MUST run
+    # BEFORE the transaction opens so a calc exception (e.g. WR-01 integrity-violation
+    # raise) never opens a doomed transaction. Computed unconditionally here (cheap,
+    # pure) and only USED below on the process branch — this keeps the persist
+    # transaction's body free of anything that can raise for a business reason.
+    line_items = None
+    if decision.final_action == "process":
+        line_items = _compute_line_items(run_id, extracted, matches, roster)
+
     # --- persist DATA on EVERY run BEFORE branching (D-A3-05); OVERWRITES on resume ---
-    repo.persist_extracted(run_id, extracted)
-    repo.persist_decision(run_id, decision)  # data-only (FIX B), two-arg call
-    repo.persist_reconciliation(run_id, matches)  # never NULL on a clean run
+    # D-9-04: one atomic transaction covers persist_extracted/persist_decision/
+    # persist_reconciliation and — on the process branch only —
+    # replace_line_items/set_status(COMPUTED)/set_status(AWAITING_APPROVAL), with the
+    # status-advance LAST (D-9-02). A crash anywhere inside this block rolls back
+    # every write in it, including the persists that "already succeeded" before the
+    # crash — never just the later ones (D-9-14 fault-injection target).
+    with repo.get_connection() as conn:
+        with conn.transaction():
+            repo.persist_extracted(run_id, extracted, conn=conn)
+            repo.persist_decision(run_id, decision, conn=conn)  # data-only (FIX B)
+            repo.persist_reconciliation(run_id, matches, conn=conn)  # never NULL on a clean run
+
+            if decision.final_action == "process":
+                repo.replace_line_items(run_id, line_items, conn=conn)  # DELETE-by-run then insert
+                repo.set_status(run_id, RunStatus.COMPUTED, conn=conn)
+                repo.set_status(run_id, RunStatus.AWAITING_APPROVAL, conn=conn)  # HITL-01 pause
+    # --- transaction block closed above; `_clarify` (an LLM+provider call) is a
+    # SIBLING statement here, never nested inside the `with conn.transaction():`
+    # block (D-9-01 — no transaction may span a network/LLM call). ---
 
     # --- branch SOLELY on final_action (the code-owned deterministic decision) ---
     clarify_deferred = False
     if decision.final_action == "process":
-        line_items = _compute_line_items(run_id, extracted, matches, roster)
-        repo.replace_line_items(run_id, line_items)  # DELETE-by-run then insert
-        repo.set_status(run_id, RunStatus.COMPUTED)
-        repo.set_status(run_id, RunStatus.AWAITING_APPROVAL)  # HITL-01 pause
         clarify_deferred = False
     else:  # request_clarification
         # R3-2 fix: defer whenever ANY field_regression issue exists.
@@ -889,6 +910,8 @@ def _run_stages(
             clarify_deferred = True
         else:
             # Non-field-regression clarification: call _clarify immediately (normal path).
+            # D-9-05: this is a sibling statement AFTER the persist transaction closes,
+            # never nested inside it — _clarify performs two LLM calls + a provider send.
             _clarify(run_id, email, decision, roster, extracted, llm=llm, purpose="clarification")
             clarify_deferred = False
 
