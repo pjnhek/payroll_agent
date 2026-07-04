@@ -1,6 +1,6 @@
 ---
 phase: 09-atomic-data-integrity
-reviewed: 2026-07-04T03:50:41Z
+reviewed: 2026-07-04T07:54:58Z
 depth: standard
 files_reviewed: 18
 files_reviewed_list:
@@ -20,126 +20,135 @@ files_reviewed_list:
   - tests/test_llm_client.py
   - tests/test_multiround_context_edge.py
   - tests/test_stuck_run_recovery.py
-  - tests/test_webhook_dedup_race.py
   - tests/test_webhook.py
+  - tests/test_webhook_dedup_race.py
 findings:
   critical: 0
-  warning: 4
-  info: 6
-  total: 10
+  warning: 5
+  info: 9
+  total: 14
 status: issues_found
 ---
 
-# Phase 9: Code Review Report
+# Phase 9: Code Review Report (Re-review after 09-06 gap closure)
 
-**Reviewed:** 2026-07-04T03:50:41Z
+**Reviewed:** 2026-07-04T07:54:58Z
 **Depth:** standard
 **Files Reviewed:** 18
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the Phase 9 atomic-data-integrity change surface (diff base `d395e64`): the DATA-01 transaction wiring in `orchestrator.py` (`_run_stages` persist block, `_clarify`'s three exit paths, `_deliver`'s finalize block, `_defer_field_regression_clarification`), the DATA-02 transactional ingest classification in `main.py::inbound` plus `repo.find_run_by_message_id`, the DATA-03 stranded-run sweep (`repo.sweep_stranded_runs` wired into `GET /runs` + the retrigger stale claim), and the LLM latency bounding in `client.py` / `compose_email.py`, along with all new/modified tests.
+This is a RE-REVIEW after the 09-06 gap-closure wave (commits `e192c37`, `da1e962`) that fixed the prior review's WR-01 (no SAVEPOINT around `_deliver`'s alias write) and WR-02 (Round-2 `clarified_fields` persisted after the status advance). Both fixes were traced against live source, argument-by-argument, and against their new live-DB crash-injection tests.
 
-The core money-path claims verified as sound:
+**Verdict on the two fixes: both are correct and complete.**
 
-- The `_run_stages` process-branch transaction genuinely covers persist_extracted / persist_decision / persist_reconciliation / replace_line_items / both status advances, with `_compute_line_items` (the one business-raise site) hoisted before the transaction opens, and `_clarify` confirmed a sibling statement outside every `with` block (D-9-01) — both by reading the code and by the AST-pin tests.
-- The `inbound()` ingest transaction correctly makes a header-bearing reply structurally unable to reach `create_run` (Codex HIGH-1), and the dedup race resolves via the unique-index block-then-DO-NOTHING semantics: the loser's `find_run_by_message_id` runs on a fresh READ COMMITTED snapshot after the winner's whole transaction (including `create_run`) has committed, so `test_webhook_dedup_race.py` is asserting a real property.
-- `sweep_stranded_runs` is a single-statement CAS with the D-9-12 scope pinned in SQL params and by two tests; `%s || status` correctly captures the pre-update status (standard UPDATE SET semantics); parked statuses are excluded; concurrent sweep-vs-retrigger resolves via row-lock CAS in both directions.
-- `record_run_error`'s WR-03 CAS row-locks the run between the terminal-guard UPDATE and `set_status(ERROR)` in the same transaction, so the terminal-clobber race is genuinely closed.
-- `call_structured`/`call_text` verified to pass `timeout=`/`max_retries=0` (and API exceptions from attempt 1 correctly bypass the reflective retry, so the 2x ceiling holds).
-- Verified empirically that `ValidationError.from_exception_data(name, [])` does not raise on this pydantic version, so `call_structured`'s double-empty-content fallback path is safe.
+- **Prior WR-02 (gap 1, `e192c37`) — RESOLVED.** `repo.set_clarified_fields(run_id, clarified, conn=conn)` now runs in its own closed `with repo.get_connection(): with conn.transaction():` block at `app/pipeline/orchestrator.py:604-606`, strictly BEFORE the Round-2 `_run_stages` call at line 608. The safety claim ("terminal outcomes do not depend on `_run_stages`' return value") is true: classify-first STEP 1 (lines 431-483) fully resolves `client_supplied`/`confirmed_dropped`/`carried_forward` in memory before the persist, and the deferred helper only ADDS new `asked` entries (line 759), never mutating the terminals. D-9-01 is preserved: the new transaction opens after both `extract()` LLM calls (lines 377/380) and closes before `_run_stages`. The live crash-injection test (`tests/test_atomic_persist.py::test_round2_clarified_fields_persist_before_run_stages`) injects the crash at the correct point — the FIRST `set_status` call on this path is `set_status(COMPUTED)` inside `_run_stages`' own persist transaction (no earlier `set_status` exists on the resume path, which uses `claim_status`) — and asserts on the persisted VALUE (`client_supplied`, not `asked`) plus the run landing at ERROR, not AWAITING_APPROVAL. The AST source-order guard (`test_round2_clarified_fields_persist_call_order_before_run_stages`) correctly pins the write inside a `with` block and before the last `_run_stages` call. One residual consequence of the chosen "independently committed" design is recorded below as WR-06.
 
-Four warnings below. None is a direct wrong-pay or double-pay path — the money values stay correct in every traced failure mode — but three are crash-window integrity gaps that sit squarely inside this phase's own DATA-01/DATA-02 mandate, and one is a claimed isolation guarantee (`_deliver`'s alias-failure isolation) that does not actually hold for database-level errors.
+- **Prior WR-01 (gap 2, `da1e962`) — RESOLVED.** The nested `with conn.transaction():` at `app/pipeline/orchestrator.py:1407-1409` is a psycopg3 SAVEPOINT (nested transaction blocks emit SAVEPOINT/RELEASE/ROLLBACK TO), so a genuine DB-level error inside `_write_aliases_if_safe`'s repo helpers (all of which run under `_nulltx()` when a caller conn is supplied, `app/db/repo.py:134-141, 1416-1419`) now rolls back only to the savepoint; the outer connection stays clean for `set_status(SENT)`/`set_status(RECONCILED)`. The exception ordering is right: the savepoint CM rolls back and re-raises, the surrounding `try/except` (lines 1407-1415) swallows it, and the finalize continues. The new live-DB test (`test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled`) injects a real `UndefinedColumn` against the shared conn — exactly the failure class the prior review said the pure-Python-raise test could not prove — and asserts the run still reaches `reconciled`. The retry-over-sent early-return path (line 1284, no conn) is unaffected and remains correctly isolated by its own try/except.
+
+Offline suite for all 18 reviewed files: **141 passed, 15 skipped** (live-DB tests skip without `DATABASE_URL` + `ALLOW_DB_RESET=1`).
+
+**Still open from the prior review:** WR-03, WR-04, and IN-01 through IN-06 were acknowledged in 09-VERIFICATION.md as real-but-not-phase-blocking and were NOT addressed by the gap-closure commits. They remain present in the code and are carried forward below under their original IDs. Three NEW findings from this pass are numbered WR-05/WR-06/WR-07 and IN-07/IN-08/IN-09.
 
 ## Warnings
 
-### WR-01: `_deliver` finalize try/except cannot isolate a DB error from the alias write — the claimed "alias failure never fails a sent run" invariant is false for psycopg errors
+### WR-03 (carried, still open): Real-webhook reply rows are never linked to their run (`run_id=None`)
 
-**File:** `app/pipeline/orchestrator.py:1368-1389` (finalize transaction), `app/db/repo.py:911-925` / `app/db/repo.py:134-141` + `1416-1419` (`_conn_ctx` → `_nulltx` when conn supplied)
-**Issue:** `_write_aliases_if_safe(run_id, run, roster, conn=conn)` runs inside the finalize `with conn.transaction():` block, wrapped in try/except so "an alias-learning failure NEVER rolls back a genuine delivery." That isolation only works for pure-Python exceptions (which is exactly what `test_deliver_finalize_alias_failure_still_reaches_reconciled` injects — a monkeypatched function that raises before touching the connection). If any SQL statement issued by the alias path fails at the database level (`update_known_alias`, `load_run(conn=conn)`, `load_roster_for_business(conn=conn)` — e.g. a constraint error, lock timeout, or serialization failure), the enclosing Postgres transaction enters the aborted state. The except clause swallows the exception, but the very next statement — `set_status(run_id, RunStatus.SENT, conn=conn)` — raises `InFailedSqlTransaction`, the whole finalize block rolls back, `_deliver` raises, and the run routes to ERROR even though the confirmation email was already durably sent. Because every repo helper uses `_nulltx()` when a caller-supplied `conn` is present, there is no savepoint anywhere in this chain. Recovery exists (retrigger → already-sent guard → no duplicate email), but the run ERRORs after a successful send and the entire pipeline re-runs — the precise outcome the comment claims is impossible.
-**Fix:** Give the alias write its own savepoint so a DB error rolls back only the alias work, not the finalize transaction:
+**File:** `app/main.py:373-383` (ingest insert with `run_id=None` at line 381), `app/db/repo.py:1227-1248` (`load_thread_messages`)
+**Issue:** Unchanged since the prior review. The ingest transaction inserts every inbound row with `run_id=None` and never back-fills it after classifying the row as `reply_candidate`/`late_reply`, so real client replies are invisible in the run-detail thread view and in any join-based audit. The simulate-reply demo path passes `run_id=run_id` (main.py:1381-1390), so the demo shows a complete thread while production shows a hole.
+**Fix:** Inside the ingest transaction, after classification, `UPDATE email_messages SET run_id = %s WHERE id = %s` (or add a `repo.link_email_to_run` helper). Verified no such backfill exists anywhere in `app/` (`grep "SET run_id"` returns nothing).
 
-```python
-try:
-    with conn.transaction():  # psycopg3 nested block = SAVEPOINT
-        _write_aliases_if_safe(run_id, run, roster, conn=conn)
-except Exception as alias_exc:  # noqa: BLE001
-    logger.warning("alias write skipped for run %s: %s (run continues to SENT)",
-                   run_id, type(alias_exc).__name__)
-```
+### WR-04 (carried, still open): A persisted reply can be permanently dropped — duplicate redelivery never re-attempts the resume; a resume task that dies pre-claim has no recovery route
 
-Add a live-DB fault-injection test that makes `update_known_alias` fail with a real SQL error (not a monkeypatched Python raise) and asserts the run still reaches RECONCILED.
+**File:** `app/main.py:385-394` + `445-454` (duplicate outcome), `app/main.py:600-611` (`_resume_pipeline` safety net), `app/main.py:766-771` (retrigger `stale_statuses` excludes `awaiting_reply`)
+**Issue:** Unchanged since the prior review. (1) A post-commit failure before `background_tasks.add_task` makes the provider redeliver, but the redelivery takes the `duplicate` path and returns 200 without re-running reply classification — the reply is durably persisted yet never processed. (2) A resume task dying before `claim_status(AWAITING_REPLY → EXTRACTING)` leaves the run at `awaiting_reply`, which is (correctly) outside the sweep scope but ALSO outside retrigger's claimable set — no operator recovery route.
+**Fix:** On the `duplicate` outcome, when the duplicate carries reply headers and `find_awaiting_reply_for_header` still matches, re-schedule `_resume_pipeline` (the CAS claim already makes double-scheduling safe).
 
-### WR-02: Round-2 terminal classify outcomes persist in a separate transaction AFTER the run has already committed AWAITING_APPROVAL — a crash in between leaves an approvable run with stale 'asked' provenance and skips alias binding
+### WR-05 (NEW): `_clarify`'s purpose-scoped idempotency guard is round-blind — a SECOND clarification with the same purpose is silently never sent, parking the run at `awaiting_reply` with no operator recovery route
 
-**File:** `app/pipeline/orchestrator.py:615-618` (`repo.set_clarified_fields(run_id, clarified)` after the `_run_stages` call), vs. `app/pipeline/orchestrator.py:890-899` (the `_run_stages` persist transaction)
-**Issue:** On the Round-2 non-deferred path, `_run_stages` commits its atomic transaction — including `set_status(AWAITING_APPROVAL)` — and only then does `resume_pipeline` persist the classify-first terminal outcomes via `set_clarified_fields` in its own pooled transaction. A crash between the two commits leaves: (a) a run at AWAITING_APPROVAL whose `clarified_fields` still read `asked` for fields the client actually answered (the run-detail provenance badges then contradict the paid line items — the exact classify-label-vs-paid-value divergence family Phase 7.5 was about, here as a display/audit divergence rather than a pay divergence, since the line items were computed from the corrected `raw_extracted`); and (b) the STEP C/D alias diff never runs, silently dropping the alias-candidate binding. This is the one persist sequence on the resume path that the DATA-01 transaction work did not fold in — note the deferred branch got the ordering right (`set_clarified_fields` commits before `_clarify`), only the fall-through branch is split from the status advance.
-**Fix:** Persist the terminal outcomes atomically with (or strictly before) the status advance. Simplest structure-preserving option: persist `clarified` BEFORE calling `_run_stages` on the Round-2 path (the outcomes are final at the end of STEP 1 and do not depend on `_run_stages`' result), mirroring the asked-before-send ordering the deferred branch already uses. Alternatively pass a `conn` through so `set_clarified_fields` joins the `_run_stages` transaction.
+**File:** `app/pipeline/orchestrator.py:980-995` (idempotency early-return), `app/db/repo.py:1024-1050` (`get_outbound_message_id`), `app/main.py:766-771` (retrigger cannot claim `awaiting_reply`)
+**Issue:** `get_outbound_message_id(run_id, purpose=purpose)` returns the Message-ID of ANY prior sent row with that purpose for the run — it cannot distinguish "re-trigger of the same clarification" (the CLAR-04 case the guard exists for) from "a genuinely NEW question in a later round." Two reachable multi-round scenarios strand the run:
+1. **Plain `clarification`, repeated.** Round-0 gates on an unresolved name → clarification sent (`purpose='clarification'`, `send_state='sent'`). The client's reply resolves that name but introduces a NEW unknown name (e.g. "also add Bob Smith, 10 hours"). `resume_pipeline` → `_run_stages` → decision = `request_clarification` (unresolved name, no field regression) → `_clarify(purpose='clarification')` → the guard finds the Round-0 row → logs "skipping duplicate send" and re-parks at AWAITING_REPLY **without sending anything**. The client is never asked about Bob.
+2. **`clarification_field_regression`, repeated.** A Round-1 field-regression clarification was sent (e.g. about `hours_overtime`). In a LATER round a DIFFERENT field regresses (or an `_unresolvable_asked` field re-defers, which the WR-01-fix comments in the classify block explicitly describe as "under-fill that re-clarifies") → `_defer_field_regression_clarification` → `_clarify(purpose='clarification_field_regression')` → the guard finds the earlier round's sent row → skips the send. The re-clarify that the money-safety design depends on never reaches the client.
+In both cases the run sits at `awaiting_reply` — a parked status the sweep (correctly) never touches and retrigger cannot claim — so the only recovery is the client spontaneously emailing again (which re-runs the same skip). This is not a wrong-pay path (the run never processes), but it violates the "nothing silently hangs" invariant on a code path the operator has no UI to recover.
+**Fix:** Make the guard round-aware. Options: (a) compare the CURRENT drafted ask against what the existing row asked (cheap: store `gate_reasons`/asked-fields hash on the outbound row and skip only when it matches); (b) scope the guard to the current status transition — only skip when the run is being RE-triggered from `awaiting_reply` (idempotent retry), never when arriving from EXTRACTING with a fresh decision; (c) include a round counter in the purpose/uniqueness key (note `uq_email_run_purpose` currently enforces one row per (run, purpose), so the upsert in `insert_email_message` already supports replacing the row content — only the guard blocks the send).
 
-### WR-03: Real-webhook reply rows are never linked to their run (`run_id=None`) — real client replies are invisible in the thread view and join-based audit queries
+### WR-06 (NEW): Residual crash window from the WR-02 fix — terminal `clarified_fields` labels can survive a rolled-back run, then mislabel provenance after an operator retrigger
 
-**File:** `app/main.py:373-383` (ingest insert with `run_id=None`), `app/db/repo.py:1227-1248` (`load_thread_messages` matches only `run_id = %s OR id = source_email_id`)
-**Issue:** The ingest transaction inserts every inbound row with `run_id=None`, then classifies it. On the `reply_candidate` and `late_reply` outcomes the code has `reply_run_id`/`late_run_id` in hand, inside the same open transaction, but never back-fills `email_messages.run_id`. Result: a real client clarification reply persists as an orphan row that `load_thread_messages` cannot find, so the run-detail thread view shows the clarification question but not the client's answer — and any join-based audit of "which emails belong to this run" misses the reply entirely. The simulate-reply path was explicitly fixed for this (IN-01: it passes `run_id=run_id`), so the demo shows a complete thread while production shows a hole. This gap predates Phase 9, but this phase restructured exactly this block, has the run id in scope inside the transaction, and left it unlinked.
-**Fix:** Inside the ingest transaction, after classification, link the row:
+**File:** `app/pipeline/orchestrator.py:589-618` (the new pre-`_run_stages` persist), `app/main.py:690-798` (retrigger dispatches `_run_pipeline`, losing reply context — documented accepted limitation)
+**Issue:** The fix's chosen design ("independently committed and independently diagnosable") means a crash INSIDE `_run_stages` now leaves the inverse of the old gap: `clarified_fields` durably shows terminal outcomes (`client_supplied`/`confirmed_dropped`) while every value that justified those labels (extracted_data, line items) rolled back, and the run lands at ERROR. That ERROR state itself is fine (diagnosable, and the new test asserts it). The problem appears one step later: the operator's only recovery is retrigger, which restarts from the ORIGINAL email (documented reply-context-loss limitation). The retriggered run re-pays whatever the original email said (e.g. OT=2), while the run-detail provenance badges — driven by `clarified_fields` (main.py:1150-1170) — still show `client-removed`/`client-supplied` for those fields from the crashed round. The operator at the approval gate sees a paid OT=2 line labeled "client explicitly zeroed this," which is actively misleading at the exact human checkpoint the system relies on. Additionally, `is_round_2 = bool(clarified)` (orchestrator.py:329) means any FUTURE clarify/resume cycle on the retriggered run treats those stale terminals as `_resolved_by_name`, feeding `backfill_skip`/`suppress_detection` with outcomes from a round whose values no longer exist.
+**Fix:** At retrigger time (the point where reply context is knowingly discarded), clear or archive `clarified_fields` and `pre_clarify_extracted` for the run so provenance labels cannot outlive the data that produced them — this also keeps the documented reply-context-loss limitation self-consistent (context lost means ALL of it, not just the values). Alternatively, render the provenance badge only when the labeled field's paid value is consistent with the label.
 
-```python
-if reply_run_id is not None or late_run_id is not None:
-    c.execute("UPDATE email_messages SET run_id = %s WHERE id = %s",
-              (str(reply_run_id or late_run_id), str(email_id)))
-```
+### WR-07 (NEW): Stale `strict=True` xfail on an implemented behavior guarantees a live-suite failure
 
-(or add a small `repo.link_email_to_run(email_id, run_id, conn=)` helper to keep SQL out of main.py).
-
-### WR-04: A classified reply can still be permanently dropped: duplicate redelivery never re-attempts the resume, and a resume task that dies pre-claim leaves the run in a state neither the sweep nor retrigger can recover
-
-**File:** `app/main.py:385-394` + `445-454` (duplicate outcome), `app/main.py:600-611` (`_resume_pipeline` safety net), `app/db/repo.py:426` (sweep scope excludes `awaiting_reply` — correctly), `app/main.py:766-771` (retrigger `stale_statuses` excludes `awaiting_reply`)
-**Issue:** Two windows around the DATA-02 work where a reply is received, durably persisted, and then silently never processed:
-1. **Post-commit failure before scheduling.** If anything between the ingest commit and `background_tasks.add_task` raises (e.g. the `repo.load_run` / `find_business_by_sender` reads inside `_finish_reply_resume` hit a pooler blip), the webhook 500s. The provider redelivers — but the redelivery now takes the `duplicate` path (`insert` conflicts), which returns 200 without ever re-running reply classification. The reply is permanently dropped while the run parks at `awaiting_reply`.
-2. **Background task dies before the claim.** `_resume_pipeline`'s catastrophic-failure guard logs and returns; if the task dies before `claim_status(AWAITING_REPLY → EXTRACTING)`, the run is still `awaiting_reply` — deliberately outside the sweep scope (D-9-12, correct) but ALSO outside retrigger's claimable set, so there is no operator recovery route for the lost resume. (Post-claim deaths are covered: the run is EXTRACTING and the sweep/retrigger handle it, with the documented reply-context-loss caveat.)
-In both cases the only recovery is the client sending a fresh reply (new message_id) or the operator using the demo-only simulate-reply form. For a system whose stated phase goal includes "no run silently dropped," a persisted-but-never-processed reply is the same failure class.
-**Fix:** On the `duplicate` outcome, when the duplicate row carries reply headers and `find_awaiting_reply_for_header` still matches a run in `awaiting_reply`, treat the redelivery as a resume retry (schedule `_resume_pipeline` again — `claim_status` already makes double-scheduling safe). That single change closes window 1 and gives window 2 a natural at-least-once recovery via provider retries. Alternatively/additionally: log window-2 drops at WARNING with the run_id so the operator can at least see them.
+**File:** `tests/test_gateway.py:1129-1200` (`test_inbound_reply_routes_to_correct_run_integration`)
+**Issue:** The test is decorated `@pytest.mark.xfail(strict=True, reason="implemented in 06-04")`, but the behavior it exercises (the real `_HEADER_MATCH_PREDICATE` via a direct `find_awaiting_reply_for_header` call — note it never actually POSTs to the route despite its docstring) IS implemented and passes. In any environment with `DATABASE_URL` + `ALLOW_DB_RESET=1`, the test XPASSes, and `strict=True` converts the XPASS into a hard suite FAILURE. The convention documented in the same file (lines 450-456) says an XPASS "is the signal to REMOVE the markers in 06-04" — that removal never happened for this one test. (The deferred-items.md entry attributes this test's live failure to the missing `ALLOW_UNSIGNED_FIXTURES` env var, but the test makes no HTTP request — the actual live failure mode is the strict-xfail XPASS.)
+**Fix:** Remove the `@pytest.mark.xfail(strict=True, ...)` decorator (keep `@pytest.mark.integration` and the in-body skip guard). Correct the deferred-items.md note for this test while touching it.
 
 ## Info
 
-### IN-01: Redundant/over-broad exception tuple on signature verification
+### IN-01 (carried, still open): Redundant/over-broad exception tuple on signature verification
 
-**File:** `app/main.py:311`
-**Issue:** `except (ValueError, Exception) as exc:` — `Exception` subsumes `ValueError`, and the breadth means any programming error inside `gateway.verify` (e.g. an AttributeError) is reported to the caller as "invalid signature" 400 rather than surfacing as a bug.
-**Fix:** Catch `ValueError` (the documented verify failure) plus the specific SDK error type; let genuine bugs 500 loudly or log them distinctly.
+**File:** `app/main.py:310`
+**Issue:** `except (ValueError, Exception) as exc:` — `Exception` subsumes `ValueError`; any programming error inside `gateway.verify` is reported as an "invalid signature" 400.
+**Fix:** Catch `ValueError` + the specific SDK error type; let genuine bugs surface distinctly.
 
-### IN-02: STALE_THRESHOLD derivation comment is mis-composed — it omits the `suggest_employees` structured call (90s ceiling) and the Resend send (30s SDK default) from its "correctly-derived worst-case" accounting
+### IN-02 (carried, still open): STALE_THRESHOLD derivation comment omits the `suggest_employees` 90s ceiling and the Resend SDK 30s timeout
 
-**File:** `app/main.py:66-101`
-**Issue:** The comment sums (b) 180s + (c) 30s = 210s as "the full, correctly-derived worst-case gap between two consecutive DB writes." But (b) and (c) are not the same inter-write gap: the clarify branch's real gap is `suggest_employees` (a `call_structured` caller: 45s x 2 = 90s, acknowledged in point (a) but never counted) + compose (30s) + the Resend provider send (bounded at 30s by the SDK's default `timeout=30`, uncounted). True max single gap is the Round-2 double extraction at 180s, so the 15-minute threshold remains safe with ~5x margin — but given this project's history of retry-math findings, the stated derivation should be corrected before someone tightens the threshold based on it. Also note the backstop if the bound is ever violated is soft: a swept-to-ERROR run whose task is still alive gets its ERROR silently overwritten by the task's unguarded `set_status` calls.
-**Fix:** Correct the comment to enumerate per-gap ceilings (double-extraction 180s; alias-write → AWAITING_REPLY gap = 90s suggest + 30s compose + 30s provider send = 150s) and cite the Resend SDK's 30s default timeout as a counted component.
+**File:** `app/main.py:62-101`
+**Issue:** The comment's 210s "correctly-derived worst-case" mis-composes the clarify-branch gap (suggest 90s + compose 30s + provider send 30s = 150s, vs. the counted 30s). The 15-minute threshold remains safe (~5x margin); only the stated math is wrong — risky if someone later tightens the threshold from it.
+**Fix:** Correct the per-gap enumeration in the comment.
 
-### IN-03: `_NON_THINKING_EXTRA_BODY` handled inconsistently — `call_text` deep-copies it, `call_structured` passes the shared module-level dict by reference
+### IN-03 (carried, still open): `_NON_THINKING_EXTRA_BODY` deep-copied in `call_text` but passed by shared reference in `call_structured`
 
 **File:** `app/llm/client.py:78, 146-148, 240-242`
-**Issue:** If anything downstream ever mutates `extra_body`, `call_structured` corrupts the module constant for every future call while `call_text` is protected. One of the two is wrong; the asymmetry invites drift.
-**Fix:** Deep-copy in both (or make the constant an immutable mapping / factory function).
+**Issue:** Inconsistent handling of the shared mutable module constant; a downstream mutation through `call_structured` would corrupt every future call.
+**Fix:** Deep-copy in both (or freeze the constant).
 
-### IN-04: `approve()` declares an unused `background_tasks` parameter
+### IN-04 (carried, still open): `approve()` declares an unused `background_tasks` parameter
 
-**File:** `app/main.py:631-635`
-**Issue:** Delivery is synchronous in `approve()`; the injected `BackgroundTasks` is never used. Dead parameter suggests a scheduling path that doesn't exist.
+**File:** `app/main.py:632-635`
+**Issue:** Delivery is synchronous; the injected `BackgroundTasks` is never used.
 **Fix:** Remove the parameter.
 
-### IN-05: Sweep failures on GET /runs are logged at DEBUG — a persistently failing recovery sweep is invisible in production
+### IN-05 (carried, still open): Sweep failures on GET /runs logged at DEBUG
 
 **File:** `app/main.py:1062-1065`
-**Issue:** `sweep_stranded_runs` is the DATA-03 recovery mechanism; if it starts failing on every page load (e.g. after a schema drift), `logger.debug` means nobody sees it at default log levels while stranded runs quietly stop being recovered. The load_all_runs debug precedent is weaker justification here because the sweep failure has no user-visible symptom (the list still renders).
+**Issue:** A persistently failing DATA-03 recovery sweep is invisible at default log levels.
 **Fix:** Log at WARNING with the exception type.
 
-### IN-06: Redundant condition in the alias-diff gate
+### IN-06 (carried, still open): Redundant condition in the alias-diff gate
 
-**File:** `app/pipeline/orchestrator.py:624-625`
-**Issue:** `if _none_tokens and _pre_candidates:` — `_none_tokens` is derived from `_pre_candidates`, so a non-empty `_none_tokens` implies a non-empty `_pre_candidates`; the second operand is dead.
+**File:** `app/pipeline/orchestrator.py:641`
+**Issue:** `if _none_tokens and _pre_candidates:` — non-empty `_none_tokens` implies non-empty `_pre_candidates`; the second operand is dead.
 **Fix:** `if _none_tokens:`.
+
+### IN-07 (NEW): Ruff-flagged dead code in the reviewed test files
+
+**File:** `tests/test_atomic_persist.py:36` (`FakeConnection` imported but unused), `tests/test_atomic_persist.py:779` (`import psycopg` unused — ironic in the test that exists to prove a psycopg error class), `tests/test_cr_regressions.py:25` (`Decimal` unused), `:27` (`pytest` unused), `:57` (`result` assigned but never used), `:306` (`PaystubLineItem` unused)
+**Issue:** Six F401/F841 findings; the project's own tooling (`uv run ruff check`) reports them. All are in files this phase touched. The application source files (`repo.py`, `client.py`, `main.py`, `compose_email.py`, `orchestrator.py`) are ruff-clean.
+**Fix:** `uv run ruff check --fix tests/test_atomic_persist.py tests/test_cr_regressions.py` (the F841 needs a manual delete of the assignment).
+
+### IN-08 (NEW): Stray duplicate POST with a repr-encoded body in the prod-auth test
+
+**File:** `tests/test_gateway.py:1440-1446`
+**Issue:** `test_allow_unsigned_fixtures_prod_default_returns_400` first POSTs `resend_envelope.__class__(resend_envelope).__repr__().encode()` (a Python-repr string, not JSON), immediately discards that response, and re-POSTs with `json=`. The first request is dead code that still executes against the route — the inline comment ("Actually use json= ...") shows it is leftover scaffolding.
+**Fix:** Delete lines 1440-1445 (the first `client.post` and its comment).
+
+### IN-09 (NEW): `call_text` silently swallows unknown keyword arguments
+
+**File:** `app/llm/client.py:195-201`
+**Issue:** The `**kwargs` in `call_text`'s signature exists so test fakes tolerate `timeout_s=`, but the real implementation never forwards `kwargs` anywhere — a production caller passing e.g. `max_tokens=` or `top_p=` gets a silent no-op instead of a TypeError.
+**Fix:** Either drop `**kwargs` from the real function (fakes can keep it) or `raise TypeError` on unexpected keys.
+
+## Notes (tracked elsewhere, not re-counted)
+
+- **Multi-round context loss** (a Round-1 paid→paid correction silently reverting in Round-2) is a known, documented edge with a dedicated regression fixture (`tests/test_multiround_context_edge.py`) and a deferred-fix disposition in 09-CONTEXT.md — verified the fixture asserts the CURRENT behavior with clear flip-on-fix instructions. Not re-counted as a finding. Note that WR-05 scenario 1 interacts with this family: a new employee introduced only in a Round-1 reply is both never asked about (WR-05) and lost from later rounds' combined context.
+- **`tests/test_ingest.py::test_duplicate_delivery_pipeline_runs_once` missing `ALLOW_UNSIGNED_FIXTURES=true`** (live-DB 400) is already logged in `.planning/phases/09-atomic-data-integrity/deferred-items.md` with a concrete action; not re-counted. The same deferred entry's claim about `test_inbound_reply_routes_to_correct_run_integration` is inaccurate — see WR-07.
 
 ---
 
-_Reviewed: 2026-07-04T03:50:41Z_
+_Reviewed: 2026-07-04T07:54:58Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
