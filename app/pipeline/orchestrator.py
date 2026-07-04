@@ -585,6 +585,26 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 prior_matches_for_backfill = list(snapshot_matches) + list(prior_matches)
             else:
                 prior_matches_for_backfill = prior_matches
+
+            # D-9-06 gap closure (WR-02): persisted BEFORE _run_stages so a crash in
+            # _run_stages' own transaction cannot leave a stale 'asked' outcome — this
+            # write and the persist-transaction below are independently committed and
+            # independently diagnosable, never coupled.
+            #
+            # The terminal outcomes finalized in STEP 1 above (client_supplied /
+            # confirmed_dropped / carried_forward) are already fully resolved in-memory
+            # and do NOT depend on _run_stages' return value — stage.clarify_deferred
+            # only gates whether _defer_field_regression_clarification ADDS new 'asked'
+            # entries for a NEW regression found THIS round; it never touches the
+            # classify-first terminal outcomes already in `clarified`. So persisting
+            # `clarified` here, before _run_stages runs at all, is safe and mirrors the
+            # already-established invariant used by _defer_field_regression_clarification
+            # (Step 3 there: write commits and closes strictly before the later
+            # LLM/provider-touching call).
+            with repo.get_connection() as conn:
+                with conn.transaction():
+                    repo.set_clarified_fields(run_id, clarified, conn=conn)
+
             stage = _run_stages(
                 run_id,
                 combined_email,
@@ -597,26 +617,23 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 extracted=raw_extracted,                # combined-body extraction for lossless process
             )
 
-            # D-7.5-11 STEP 4: CR-02 FIX — check clarify_deferred BEFORE persisting terminals.
+            # D-7.5-11 STEP 4: CR-02 FIX — check clarify_deferred AFTER persisting terminals.
             # If _run_stages deferred (a NEW field_regression appeared this round), the run
             # must send a clarification and return — NOT fall through to the alias-diff.
             # This mirrors Round-1's deferred handling (step ~316-325) and uses the same
-            # shared helper (IN-01, _defer_field_regression_clarification).
+            # shared helper (IN-01, _defer_field_regression_clarification). The classify-first
+            # terminal outcomes were ALREADY persisted above (D-9-06); this helper only adds
+            # the NEW 'asked' entries for the regression detected THIS round, in its own
+            # separate closed transaction, before sending the clarification.
             if stage.clarify_deferred:
-                # N2 ordering: write 'asked' for the NEW drop + persist clarified BEFORE send.
-                # Then call _clarify(purpose='clarification_field_regression') and return.
-                # The terminal outcomes from classify-first (STEP 1) are already in `clarified`;
-                # the helper adds the NEW 'asked' entries before persisting.
                 _defer_field_regression_clarification(
                     run_id, clarified, stage, combined_email, roster, llm=llm
                 )
                 return  # run is at AWAITING_REPLY — do not run the alias diff
 
-            # Not deferred: persist the terminal outcomes from classify-first STEP 1.
-            # These are already final — do NOT reclassify from stage.issues after the fact.
-            # A post-decide reclassification would reproduce the D-7.5-11 stranding bug.
-            repo.set_clarified_fields(run_id, clarified)
-            # Fall through to STEP C/D alias-diff (the run is at AWAITING_APPROVAL)
+            # Not deferred: terminal outcomes from classify-first STEP 1 were already
+            # persisted above (D-9-06), strictly before _run_stages was called. Fall
+            # through to STEP C/D alias-diff (the run is at AWAITING_APPROVAL).
 
         # STEP C: Capture post-resume resolved employee_id set AFTER _run_stages.
         # _run_stages calls persist_reconciliation which overwrites the reconciliation
@@ -1373,8 +1390,23 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
                 # INSIDE this transaction block (Pitfall 2) so an alias-learning
                 # failure NEVER rolls back a genuine delivery — it only skips the
                 # alias write itself (D-13b defensive isolation, D-15).
+                #
+                # D-9-06 gap closure (WR-01): the nested `with conn.transaction()`
+                # below is a psycopg3 SAVEPOINT (psycopg3 automatically issues
+                # SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT instead of
+                # BEGIN/COMMIT/ROLLBACK when conn.transaction() is entered while
+                # already inside an outer transaction). This is what makes the
+                # isolation hold for genuine DB-level errors (constraint violations,
+                # undefined columns, lock timeouts), not just pure-Python exceptions
+                # — without it, a DB-level failure here poisons the WHOLE outer
+                # transaction via InFailedSqlTransaction on the very next statement
+                # (09-REVIEW.md WR-01): the alias write's own repo helpers run under
+                # _nulltx() (a bare no-op) whenever a caller-supplied conn is
+                # present, so no savepoint exists at that layer — it must be added
+                # by the caller (here), wrapping the whole alias-write call once.
                 try:
-                    _write_aliases_if_safe(run_id, run, roster, conn=conn)
+                    with conn.transaction():
+                        _write_aliases_if_safe(run_id, run, roster, conn=conn)
                 except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
                     logger.warning(
                         "alias write skipped for run %s: %s (run continues to SENT)",

@@ -538,6 +538,191 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
+def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatch):
+    """09-06 gap closure (WR-02): the Round-2 NON-deferred fall-through must persist
+    `clarified_fields`'s terminal outcomes in its OWN closed transaction strictly
+    BEFORE `_run_stages` is called on that path — a crash inside `_run_stages`' own
+    persist transaction must never leave `clarified_fields` stuck at 'asked'.
+
+    Setup: seed a run already at Round 2 (a prior `clarified_fields` entry exists for
+    Chen's hours_overtime = 'asked'), matching prior reconciliation + a pre-clarify
+    snapshot so `resume_pipeline` walks the Round-2 (`is_round_2=True`) branch. The
+    reply answers the asked field with a positive value → classify-first (STEP 1)
+    resolves it to 'client_supplied' in-memory, `stage.clarify_deferred` is False
+    (no NEW field_regression this round).
+
+    Fault injection: monkeypatch repo.set_status to raise on its FIRST call — this
+    fires INSIDE _run_stages' own persist transaction (process branch), i.e. AFTER
+    the fix's own set_clarified_fields commit has already closed.
+
+    Assertions (both in the same test, proving the two writes are independently
+    committed, not silently coupled):
+      (a) repo.load_clarified_fields(run_id) shows 'client_supplied' (terminal), not
+          'asked' — the earlier write survived the later crash.
+      (b) the run's status is NOT 'awaiting_approval' — _run_stages' own crashed
+          transaction rolled back cleanly and never advanced the run that far;
+          resume_pipeline's D-A1-03 error-wrap boundary instead routes the run to
+          the diagnosable ERROR status (its own genuine, second set_status call).
+    """
+    from app.db import repo
+    from app.pipeline.orchestrator import resume_pipeline
+
+    get_settings = __import__("app.config", fromlist=["get_settings"]).get_settings
+    get_settings.cache_clear()
+
+    run_id = _seed_live_run(body="Maria Chen 40 regular 2 overtime")
+    repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+
+    # Snapshot = the pre-clarify extraction (Round-1's original submission).
+    snapshot = _live_snapshot_extracted(
+        "Maria Chen", run_id, hours_regular="40", hours_overtime="2"
+    )
+    repo.set_pre_clarify_extracted(run_id, snapshot)
+
+    # Prior reconciliation: Maria Chen already resolved (Round-1's persisted match).
+    prior_match = NameMatchResult(
+        submitted_name="Maria Chen",
+        matched_employee_id=CHEN_ID,
+        source="exact",
+        resolved=True,
+        reason="exact match",
+    )
+    repo.persist_reconciliation(run_id, [prior_match])
+
+    # Prior clarified_fields entry: hours_overtime is 'asked' — this makes
+    # is_round_2 True (bool(clarified) is truthy) when resume_pipeline loads it.
+    chen_id_str = str(CHEN_ID)
+    repo.set_clarified_fields(run_id, {chen_id_str: {"hours_overtime": "asked"}})
+
+    monkeypatch.setattr("app.llm.client.OpenAI", LiveMockOpenAI)
+    # Round-2 reply: classify extraction (reply-only) AND process extraction
+    # (combined body) both need scripted responses — two extract() calls happen
+    # in the Round-2 non-deferred branch (CR-01 fix: reply-only + combined).
+    LiveMockOpenAI.script = [
+        _extraction_json(
+            [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "3"}]
+        ),
+        _extraction_json(
+            [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "3"}]
+        ),
+    ]
+    LiveMockOpenAI.calls = []
+
+    # Inject the crash INSIDE _run_stages' own persist transaction (process branch) —
+    # set_status is the last write in that transaction (status-advance-last, D-9-02),
+    # so forcing it to raise on its FIRST call proves the whole _run_stages transaction
+    # (including persist_extracted/persist_decision/persist_reconciliation) rolls back.
+    # Only the FIRST call raises — resume_pipeline's own D-A1-03 error-wrap boundary
+    # calls record_run_error, which calls set_status(ERROR) a SECOND time; that call
+    # must succeed genuinely so the run lands in the diagnosable ERROR state instead of
+    # the exception propagating past resume_pipeline's own except clause.
+    real_set_status = repo.set_status
+    _calls = {"n": 0}
+
+    def _boom_set_status_once(run_id_, status, conn=None):
+        _calls["n"] += 1
+        if _calls["n"] == 1:
+            raise RuntimeError("injected crash — _run_stages' own set_status")
+        return real_set_status(run_id_, status, conn=conn)
+
+    monkeypatch.setattr(repo, "set_status", _boom_set_status_once)
+
+    reply = _live_inbound("Maria Chen 40 regular 3 overtime")
+
+    # resume_pipeline's own D-A1-03 error-wrap boundary swallows the forced failure —
+    # it never re-raises (routes the run to ERROR instead).
+    resume_pipeline(run_id, reply)
+    monkeypatch.undo()
+
+    from app.db import repo as real_repo
+
+    clarified = real_repo.load_clarified_fields(run_id)
+    assert clarified.get(chen_id_str, {}).get("hours_overtime") == "client_supplied", (
+        "the D-9-06 fix's set_clarified_fields commit must survive the later crash "
+        f"inside _run_stages' own transaction; got: {clarified!r}"
+    )
+
+    post_run = real_repo.load_run(run_id)
+    assert post_run["status"] != RunStatus.AWAITING_APPROVAL.value, (
+        "SC1: _run_stages' own crashed transaction must roll back cleanly and never "
+        f"advance the run to AWAITING_APPROVAL; got status={post_run['status']!r}"
+    )
+    assert post_run["status"] == RunStatus.ERROR.value, (
+        "the run must land in the diagnosable ERROR state via resume_pipeline's "
+        f"D-A1-03 error-wrap boundary; got status={post_run['status']!r}"
+    )
+
+
+def test_round2_clarified_fields_persist_call_order_before_run_stages():
+    """Offline (AST/source-order check): the Round-2 non-deferred branch's
+    `set_clarified_fields` call is the ONLY such call before `_run_stages` returns
+    on that path, is nested inside a `with conn.transaction():` block (its own
+    closed transaction), and its `with` block closes strictly BEFORE the
+    `stage = _run_stages(...)` call in source order — pinning the D-9-06 fix so a
+    future refactor cannot silently move the write back to the buggy fall-through
+    position (after `_run_stages` returns).
+    """
+    import ast
+
+    import app.pipeline.orchestrator as orch_mod
+
+    src = open(orch_mod.__file__).read()
+    tree = ast.parse(src)
+
+    func = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "resume_pipeline"
+    )
+
+    def _walk(node, in_with=False):
+        results = []
+        for child in ast.iter_child_nodes(node):
+            child_in_with = in_with or isinstance(child, ast.With)
+            if isinstance(child, ast.With):
+                results.append(("WITH", child.lineno))
+            if isinstance(child, ast.Call):
+                f = child.func
+                if isinstance(f, ast.Attribute) and f.attr == "set_clarified_fields":
+                    results.append(("SET_CLARIFIED", child.lineno, in_with))
+                if isinstance(f, ast.Name) and f.id == "_run_stages":
+                    results.append(("RUN_STAGES_CALL", child.lineno, in_with))
+            results.extend(_walk(child, child_in_with))
+        return results
+
+    events = _walk(func)
+
+    set_clarified_events = [e for e in events if e[0] == "SET_CLARIFIED"]
+    run_stages_events = [e for e in events if e[0] == "RUN_STAGES_CALL"]
+
+    assert len(run_stages_events) == 2, (
+        "expected exactly two `_run_stages(...)` calls in resume_pipeline (Round-1 "
+        f"branch + Round-2 branch); found {len(run_stages_events)}"
+    )
+
+    # For every set_clarified_fields call, it must be inside a `with` block (its own
+    # transaction) — no bare, unwrapped call anywhere in resume_pipeline.
+    for lineno, in_with in [(e[1], e[2]) for e in set_clarified_events]:
+        assert in_with is True, (
+            f"set_clarified_fields call at line {lineno} must be INSIDE a "
+            "'with conn.transaction():' block (its own closed transaction) — no bare "
+            "unwrapped call is permitted (D-9-06)"
+        )
+
+    # No `set_clarified_fields` call may appear strictly AFTER the LAST `_run_stages`
+    # call's line — that would be the old buggy fall-through position.
+    last_run_stages_line = max(e[1] for e in run_stages_events)
+    for lineno, _in_with in [(e[1], e[2]) for e in set_clarified_events]:
+        assert lineno < last_run_stages_line, (
+            f"set_clarified_fields call at line {lineno} appears AFTER the last "
+            f"_run_stages(...) call (line {last_run_stages_line}) — the Round-2 "
+            "non-deferred fall-through must persist clarified_fields BEFORE calling "
+            "_run_stages, not after (D-9-06 gap closure regression guard)"
+        )
+
+
+@_SKIP_LIVE_DB
+@pytest.mark.integration
 def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monkeypatch):
     """Pitfall 2 regression: force _write_aliases_if_safe to raise inside
     _deliver's finalize block; assert the run STILL reaches RECONCILED — the
@@ -566,6 +751,67 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
     assert post_run["status"] == "reconciled", (
         "a forced alias-write failure must NOT roll back the delivery finalize — "
         f"the run must still reach 'reconciled'; got {post_run['status']!r}"
+    )
+
+
+@_SKIP_LIVE_DB
+@pytest.mark.integration
+def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
+    seeded_db, monkeypatch
+):
+    """09-06 gap closure (WR-01): a GENUINE DB-level error inside the alias-write
+    path (not a monkeypatched Python `raise`) must NOT poison _deliver's finalize
+    transaction. Before the fix, update_known_alias runs under _nulltx() (a bare
+    no-op) whenever a caller-supplied conn is present — a DB-level failure there
+    (e.g. UndefinedColumn) leaves the connection in a failed-transaction state, and
+    the very next statement (set_status(SENT)) raises psycopg.errors.InFailedSqlTransaction,
+    rolling back the ENTIRE finalize block including the already-genuinely-sent
+    email's status advance.
+
+    Seeds a run at APPROVED with a resolvable alias_candidates entry (an
+    unambiguous, non-colliding token for Maria Chen) so _write_aliases_if_safe
+    actually reaches repo.update_known_alias. Monkeypatches update_known_alias to
+    execute a genuinely-invalid SQL statement against the shared conn (raising
+    psycopg.errors.UndefinedColumn — a real DB-level failure). Asserts the run
+    still reaches 'reconciled' — the exact must-have the nested SAVEPOINT
+    (conn.transaction() around the alias-write call) is meant to guarantee.
+    """
+    import psycopg
+
+    from app.db import repo
+    from app.pipeline.orchestrator import _deliver
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+
+    run_id = _seed_live_run(body="Maria Chen 40 regular")
+    repo.set_status(run_id, RunStatus.APPROVED)
+
+    # Seed an unambiguous, non-colliding alias candidate for Maria Chen so
+    # _write_aliases_if_safe actually reaches repo.update_known_alias.
+    # "Maria C." is not already one of Chen's known_aliases (["Maria", "M. Chen"])
+    # and does not collide with any other employee's name/alias in the seeded
+    # Coastal roster — _safe_to_learn_alias's collision guard passes.
+    repo.set_alias_candidates(run_id, {"Maria C.": str(CHEN_ID)})
+    run = repo.load_run(run_id)
+
+    def _boom_update_known_alias(employee_id, new_alias, conn=None):
+        # A GENUINE DB-level error — not a Python `raise` — executed against the
+        # shared conn, so psycopg poisons the connection's transaction state
+        # exactly as a real constraint violation / undefined column would.
+        conn.execute(
+            "UPDATE employees SET nonexistent_column = 1 WHERE id = %s",
+            (str(employee_id),),
+        )
+
+    monkeypatch.setattr(repo, "update_known_alias", _boom_update_known_alias)
+
+    _deliver(run_id, run)
+
+    post_run = repo.load_run(run_id)
+    assert post_run["status"] == "reconciled", (
+        "a genuine DB-level error (psycopg.errors.UndefinedColumn) inside the "
+        "alias-write path must NOT poison _deliver's finalize transaction — the "
+        f"run must still reach 'reconciled'; got {post_run['status']!r}"
     )
 
 
