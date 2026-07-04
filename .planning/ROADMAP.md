@@ -122,8 +122,8 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 09-01-PLAN.md — repo.py foundations: sweep_stranded_runs + find_run_by_message_id + get_connection test-mockability seam
-- [ ] 09-05-PLAN.md — (independent, no atomicity dependency) known-edge fixture + 09-CONTEXT.md deferred entry for the multi-round context-loss finding (09-REVIEWS.md Claude in-session HIGH, disposition (c))
+- [x] 09-01-PLAN.md — repo.py foundations: sweep_stranded_runs + find_run_by_message_id + get_connection test-mockability seam
+- [x] 09-05-PLAN.md — (independent, no atomicity dependency) known-edge fixture + 09-CONTEXT.md deferred entry for the multi-round context-loss finding (09-REVIEWS.md Claude in-session HIGH, disposition (c))
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -165,5 +165,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 |-------|----------------|--------|-----------|
 | 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
-| 9. Atomic Data Integrity | 0/4 | Not started | - |
+| 9. Atomic Data Integrity | 2/5 | In Progress|  |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
