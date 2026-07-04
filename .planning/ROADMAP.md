@@ -127,8 +127,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 09-02-PLAN.md — orchestrator.py DATA-01: _run_stages/_clarify/_deliver transaction boundaries (SC1); already-sent guard hardened for idempotent alias finalization (Codex HIGH-2)
-- [ ] 09-03-PLAN.md — main.py DATA-02/03: webhook dedup transaction restructured around a transactional ingest-decision (reply classified BEFORE create_run is reachable, Codex HIGH-1) + recovery sweep wiring + shared threshold
+- [x] 09-02-PLAN.md — orchestrator.py DATA-01: _run_stages/_clarify/_deliver transaction boundaries (SC1); already-sent guard hardened for idempotent alias finalization (Codex HIGH-2)
+- [x] 09-03-PLAN.md — main.py DATA-02/03: webhook dedup transaction restructured around a transactional ingest-decision (reply classified BEFORE create_run is reachable, Codex HIGH-1) + recovery sweep wiring + shared threshold
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -165,5 +165,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 |-------|----------------|--------|-----------|
 | 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
-| 9. Atomic Data Integrity | 2/5 | In Progress|  |
+| 9. Atomic Data Integrity | 4/5 | In Progress|  |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
