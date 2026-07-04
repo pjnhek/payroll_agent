@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,6 +90,173 @@ def test_unknown_sender_no_run(client, fake_repo, mock_llm):
     assert r.status_code == 200
     assert r.json()["status"] == "unknown_sender"
     assert len(fake_repo.runs) == 0, "unknown sender must create NO run (INGEST-03)"
+
+
+# ---------------------------------------------------------------------------
+# DATA-02 (D-9-09) — the duplicate-response body reports the existing run_id
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_delivery_reports_existing_run_id(client, fake_repo, mock_llm):
+    """The loser attaches to the existing run: report, never create (D-9-09)."""
+    _script_clean_run(mock_llm)
+    payload = _fixture()
+
+    r1 = client.post("/webhook/inbound", json=payload)
+    assert r1.status_code == 200
+    run_id = r1.json()["run_id"]
+
+    _script_clean_run(mock_llm)
+    r2 = client.post("/webhook/inbound", json=payload)
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "duplicate"
+    assert r2.json()["run_id"] == run_id, (
+        "duplicate response must report the EXISTING run's id (D-9-09) — the "
+        "loser attaches to the winner's run instead of creating a second one"
+    )
+    assert len(fake_repo.runs) == 1
+
+
+# ---------------------------------------------------------------------------
+# Codex HIGH-1 regression guard — a header-bearing reply NEVER spuriously
+# creates a second run under the restructured transactional ingest (09-03)
+# ---------------------------------------------------------------------------
+
+
+def test_reply_never_creates_second_run(client, fake_repo, mock_llm):
+    """A clarification reply resumes its run — it must NEVER open a second one.
+
+    Seeds a run directly at awaiting_reply with a stored outbound clarification
+    Message-ID (bypassing the normal pipeline, mirroring
+    tests/test_resume_pipeline.py's _seed_run/_set_run_awaiting_reply helpers),
+    then POSTs a reply carrying matching In-Reply-To/References headers. The
+    restructured ingest transaction must classify this as a reply-resume
+    candidate BEFORE create_run is ever reachable — proving Codex HIGH-1 is closed.
+    """
+    from app.models.status import RunStatus
+
+    coastal_email = "payroll@coastalcleaning.example"
+
+    # Seed the original inbound + run directly in the fake repo.
+    orig_eid, _ = fake_repo.insert_inbound_email(
+        message_id="<orig-001@acme.test>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=coastal_email,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular hours.",
+    )
+    business_id = fake_repo.find_business_by_sender(coastal_email)
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=orig_eid)
+
+    # Stash a stored outbound clarification Message-ID + park the run at
+    # awaiting_reply (mirrors _set_run_awaiting_reply in test_resume_pipeline.py).
+    clar_message_id = "<clarify-001@payroll-agent.local>"
+    fake_repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=clar_message_id,
+        purpose="clarification",
+        send_state="sent",
+    )
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value
+
+    assert len(fake_repo.runs) == 1
+
+    # POST a reply carrying headers that match the stored outbound Message-ID.
+    reply_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<reply-001@acme.test>",
+        "in_reply_to": clar_message_id,
+        "references_header": clar_message_id,
+        "subject": "Re: payroll hours",
+        "from_addr": coastal_email,
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria Chen actually worked 42 hours.",
+        "created_at": "2026-06-16T09:30:00Z",
+    }
+    r = client.post("/webhook/inbound", json=reply_payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "resumed"
+    assert body["run_id"] == str(run_id)
+
+    # EXACTLY ONE run total — the reply must NEVER spuriously create a second
+    # run (Codex HIGH-1, closed by classifying reply-vs-new-run INSIDE the
+    # ingest transaction, strictly before create_run is reachable).
+    assert len(fake_repo.runs) == 1, (
+        "a header-bearing reply must NEVER create a second run — the reply-"
+        "classification-before-create_run ordering must hold (Codex HIGH-1)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Late-reply regression guard — header match to a non-awaiting_reply run
+# ---------------------------------------------------------------------------
+
+
+def test_late_reply_no_new_run_no_background_task(client, fake_repo, mock_llm, monkeypatch):
+    """A header match to a run NOT in awaiting_reply is a late reply: no new run,
+    no background task scheduled (FIX 10, Codex HIGH-1 regression guard)."""
+    from app.models.status import RunStatus
+
+    coastal_email = "payroll@coastalcleaning.example"
+
+    orig_eid, _ = fake_repo.insert_inbound_email(
+        message_id="<orig-002@acme.test>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=coastal_email,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular hours.",
+    )
+    business_id = fake_repo.find_business_by_sender(coastal_email)
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=orig_eid)
+
+    clar_message_id = "<clarify-002@payroll-agent.local>"
+    fake_repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=clar_message_id,
+        purpose="clarification",
+        send_state="sent",
+    )
+    # Run has already ADVANCED past awaiting_reply (e.g. sent) — a header match
+    # here is a LATE reply, not a resume candidate.
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.SENT.value
+
+    called = {"resume": False, "run": False}
+    monkeypatch.setattr(
+        "app.main._resume_pipeline", lambda *a, **k: called.__setitem__("resume", True)
+    )
+    monkeypatch.setattr(
+        "app.main._run_pipeline", lambda *a, **k: called.__setitem__("run", True)
+    )
+
+    reply_payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": "<reply-002@acme.test>",
+        "in_reply_to": clar_message_id,
+        "references_header": clar_message_id,
+        "subject": "Re: payroll hours",
+        "from_addr": coastal_email,
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria Chen actually worked 42 hours.",
+        "created_at": "2026-06-16T09:30:00Z",
+    }
+    r = client.post("/webhook/inbound", json=reply_payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "late_reply"
+    assert body["run_id"] == str(run_id)
+
+    # No new run created (only the original one exists).
+    assert len(fake_repo.runs) == 1
+    # No background task scheduled (neither resume nor a fresh run pipeline).
+    assert called["resume"] is False
+    assert called["run"] is False
 
 
 # ---------------------------------------------------------------------------

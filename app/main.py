@@ -306,51 +306,145 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     # cleaned text (the single cleaned-body source of truth the extraction reads).
     cleaned = clean_body(email.body_text)
 
-    # Step 4: explicit dedup via ON CONFLICT DO NOTHING RETURNING id.
-    # HIGH-4: enqueue pipeline ONLY if a new row was inserted (not a duplicate).
-    email_id, inserted = repo.insert_inbound_email(
-        message_id=email.message_id,
-        in_reply_to=email.in_reply_to,
-        references_header=email.references_header,
-        subject=email.subject,
-        from_addr=email.from_addr,
-        to_addr=email.to_addr,
-        body_text=cleaned,
-        run_id=None,
-    )
+    # ── DATA-02 (D-9-09, Codex HIGH-1 corrected) ────────────────────────────────
+    # ONE transaction spans dedup-insert + reply-classification + sender-routing +
+    # create_run, committed BEFORE background_tasks.add_task is ever scheduled.
+    # This closes the orphan window (a crash mid-ingest previously could leave an
+    # email row with no run) AND — the Codex HIGH-1 fix — classifies a header-
+    # bearing reply as a reply-resume candidate INSIDE this same transaction,
+    # strictly BEFORE any code path that could reach create_run. A reply is
+    # therefore structurally incapable of spuriously creating a second run: on
+    # the reply_candidate/late_reply/duplicate outcomes, create_run is simply
+    # never reachable in the block below.
+    #
+    # The transaction commits exactly ONE of five outcomes: duplicate /
+    # reply_candidate / late_reply / unknown_sender / new_run. All response
+    # shaping + background task scheduling happens strictly AFTER the `with`
+    # block exits (never inside it, per RESEARCH.md's anti-pattern list) so a
+    # scheduled background task is never rolled back by a mid-transaction crash.
+    outcome: str
+    email_id: uuid.UUID | None = None
+    existing_run_id: uuid.UUID | None = None
+    reply_run_id: uuid.UUID | None = None
+    late_run_id: uuid.UUID | None = None
+    business_id: uuid.UUID | None = None
+    run_id: uuid.UUID | None = None
 
-    # Duplicate delivery (ON CONFLICT DO NOTHING → not inserted): no second run.
-    if not inserted:
+    with repo.get_connection() as conn:
+        with conn.transaction():
+            # Step 1: explicit dedup via ON CONFLICT DO NOTHING RETURNING id.
+            email_id, inserted = repo.insert_inbound_email(
+                message_id=email.message_id,
+                in_reply_to=email.in_reply_to,
+                references_header=email.references_header,
+                subject=email.subject,
+                from_addr=email.from_addr,
+                to_addr=email.to_addr,
+                body_text=cleaned,
+                run_id=None,
+                conn=conn,
+            )
+
+            if not inserted:
+                # Duplicate delivery (ON CONFLICT DO NOTHING → not inserted): the
+                # loser attaches to the EXISTING run — report, never create
+                # (D-9-09). insert_inbound_email returns (None, False) on
+                # conflict, so message_id (already parsed above) is the only
+                # usable key to find the existing run.
+                outcome = "duplicate"
+                existing_run_id = repo.find_run_by_message_id(
+                    email.message_id, conn=conn
+                )
+            elif email.in_reply_to or email.references_header:
+                # Reply-classification READS run INSIDE the transaction, BEFORE
+                # any code path that could reach create_run (Codex HIGH-1 fix).
+                reply_run_id = repo.find_awaiting_reply_for_header(
+                    in_reply_to=email.in_reply_to,
+                    references_header=email.references_header,
+                    conn=conn,
+                )
+                if reply_run_id is not None:
+                    outcome = "reply_candidate"
+                else:
+                    late_run_id = repo.find_any_run_for_header(
+                        in_reply_to=email.in_reply_to,
+                        references_header=email.references_header,
+                        conn=conn,
+                    )
+                    if late_run_id is not None:
+                        outcome = "late_reply"
+                    else:
+                        # No header match at all — fall through to ordinary
+                        # first ingest exactly like a non-reply inbound.
+                        business_id = repo.find_business_by_sender(
+                            email.from_addr, conn=conn
+                        )
+                        if business_id is None:
+                            outcome = "unknown_sender"
+                        else:
+                            run_id = repo.create_run(
+                                business_id=business_id,
+                                source_email_id=email_id,
+                                conn=conn,
+                            )
+                            outcome = "new_run"
+            else:
+                # Ordinary (non-reply) inbound: sender-route + create_run.
+                business_id = repo.find_business_by_sender(
+                    email.from_addr, conn=conn
+                )
+                if business_id is None:
+                    outcome = "unknown_sender"
+                else:
+                    run_id = repo.create_run(
+                        business_id=business_id,
+                        source_email_id=email_id,
+                        conn=conn,
+                    )
+                    outcome = "new_run"
+    # ── Transaction committed. Everything below is post-commit response shaping
+    # + background task scheduling — never inside the `with` block above. ──────
+
+    if outcome == "duplicate":
         logger.info("duplicate inbound message_id=%s — no second run", email.message_id)
         return JSONResponse(
             status_code=200,
-            content={"status": "duplicate", "message_id": email.message_id},
+            content={
+                "status": "duplicate",
+                "message_id": email.message_id,
+                "run_id": str(existing_run_id) if existing_run_id else None,
+            },
         )
 
-    # ── Reply routing (CLAR-02/03) ────────────────────────────────────────────
-    # If this inbound carries an In-Reply-To / References header, it may be a
-    # clarification reply to a paused run. Route it on the RFC header chain BEFORE
-    # the ordinary first-ingest path so a reply resumes its run instead of opening
-    # a second one. Returns a response if the inbound was handled as a reply
-    # (resumed, spoof-rejected, or late); None to fall through to first ingest.
-    if email.in_reply_to or email.references_header:
-        handled = _route_reply(email, cleaned, background_tasks)
-        if handled is not None:
-            return handled
+    if outcome == "reply_candidate":
+        # The transaction's classification is authoritative — do NOT re-run
+        # find_awaiting_reply_for_header/find_any_run_for_header here (that would
+        # reintroduce the same race in a different shape). Re-run ONLY the
+        # existing sender-revalidation (FIX 5), a pure read-then-branch with no
+        # write, unchanged in its own logic.
+        return _finish_reply_resume(reply_run_id, email, cleaned, background_tasks)
 
-    # Sender access control (INGEST-03): unknown sender → log + stop, no run.
-    business_id = repo.find_business_by_sender(email.from_addr)
-    if business_id is None:
+    if outcome == "late_reply":
+        logger.info(
+            "late reply: header matched run %s not in awaiting_reply — not resumed "
+            "(FIX 10)",
+            late_run_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={"status": "late_reply", "run_id": str(late_run_id)},
+        )
+
+    if outcome == "unknown_sender":
         logger.warning("unknown sender from_addr=%s — stopped, no run", email.from_addr)
         return JSONResponse(
             status_code=200,
             content={"status": "unknown_sender", "from_addr": email.from_addr},
         )
 
-    run_id = repo.create_run(business_id=business_id, source_email_id=email_id)
-
-    # Schedule the LLM-heavy pipeline AFTER the 200 (in prod); SYNCHRONOUS under
-    # TestClient so the end-to-end test can assert the pause immediately.
+    # outcome == "new_run"
+    # Schedule the LLM-heavy pipeline AFTER the commit (in prod); SYNCHRONOUS
+    # under TestClient so the end-to-end test can assert the pause immediately.
     background_tasks.add_task(_run_pipeline, run_id)
 
     return JSONResponse(
@@ -359,10 +453,70 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     )
 
 
+def _finish_reply_resume(
+    run_id: uuid.UUID,
+    email: InboundEmail,
+    cleaned: str,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
+    """Post-commit sender-revalidation + response-shaping for a reply-resume candidate.
+
+    Called AFTER the webhook's ingest transaction has ALREADY classified this
+    inbound as a reply-resume candidate (`find_awaiting_reply_for_header` found
+    `run_id` INSIDE that transaction, Codex HIGH-1 fix) — this helper does NOT
+    re-run that header lookup (re-deriving the classification would reintroduce
+    the same race in a different shape). It only performs FIX 5's sender
+    re-validation (a pure read-then-branch with no write, so it stays OUTSIDE
+    the transaction unchanged in its own logic) and shapes the response /
+    schedules the background resume.
+    """
+    # FIX 5 — re-assert the reply sender against the matched run's business
+    # (the original inbound sender / businesses.contact_email). Reuse the SAME
+    # comparison find_business_by_sender performs at first ingest (INGEST-03).
+    run = repo.load_run(run_id)
+    expected_business_id = run["business_id"] if run else None
+    reply_business_id = repo.find_business_by_sender(email.from_addr)
+    if reply_business_id is None or str(reply_business_id) != str(
+        expected_business_id
+    ):
+        logger.warning(
+            "reply sender from_addr=%s does NOT match run %s business — "
+            "not resumed (spoof guard, FIX 5)",
+            email.from_addr,
+            run_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={"status": "sender_mismatch", "run_id": str(run_id)},
+        )
+
+    # Sender revalidated → schedule the resume (idempotent + lossless, FIX 4).
+    # CR-02: do NOT flip EXTRACTING here. The orchestrator owns that transition
+    # (resume_pipeline, after re-asserting the run is still awaiting_reply under
+    # the same code path that mutates it). Setting EXTRACTING in the webhook —
+    # a DIFFERENT context from the BackgroundTask that does the work — is the
+    # exact seam the status race lived in: it would also defeat resume_pipeline's
+    # new precondition (the run would already be EXTRACTING, never awaiting_reply).
+    # The run stays awaiting_reply until the background resume claims it.
+    reply_for_resume = email.model_copy(update={"body_text": cleaned})
+    background_tasks.add_task(_resume_pipeline, run_id, reply_for_resume)
+    return JSONResponse(
+        status_code=200,
+        content={"status": "resumed", "run_id": str(run_id)},
+    )
+
+
 def _route_reply(
     email: InboundEmail, cleaned: str, background_tasks: BackgroundTasks
 ) -> JSONResponse | None:
     """Route a header-bearing inbound as a clarification reply, or None to fall through.
+
+    Used by `simulate_reply` (the demo-only affordance) and any other caller that
+    has NOT already classified the inbound inside a transaction — it performs its
+    OWN header lookups. The real webhook's `inbound()` route does NOT call this;
+    it classifies the reply INSIDE its ingest transaction (Codex HIGH-1 fix) and
+    then calls `_finish_reply_resume` for the sender-revalidation + response
+    shaping, so the header lookups are never re-derived a second time on that path.
 
     The header chain is the primary AND only Phase 2 routing path (CLAR-02): the
     reply's In-Reply-To / References are matched against stored outbound Message-IDs.
@@ -371,10 +525,8 @@ def _route_reply(
 
     Decision flow:
       1. find_awaiting_reply_for_header — match restricted to status='awaiting_reply'.
-         On a match: RE-ASSERT the reply sender against the matched run's business
-         (review FIX 5) before resuming — a spoofed reply on a guessed/leaked
-         Message-ID must not bypass INGEST-03. Sender mismatch → log + NOT resumed.
-         Sender match → set EXTRACTING (sole writer) + schedule resume_pipeline.
+         On a match: delegate to `_finish_reply_resume` (FIX 5 sender re-assertion +
+         response shaping + background scheduling).
       2. Else find_any_run_for_header — a header match to a run in ANY OTHER status
          (sent/reconciled/rejected/computed) is a LATE REPLY: log it, do NOT resume
          (FIX 10; CLAR-03 invariant 4).
@@ -386,40 +538,7 @@ def _route_reply(
         references_header=email.references_header,
     )
     if run_id is not None:
-        # FIX 5 — re-assert the reply sender against the matched run's business
-        # (the original inbound sender / businesses.contact_email). Reuse the SAME
-        # comparison find_business_by_sender performs at first ingest (INGEST-03).
-        run = repo.load_run(run_id)
-        expected_business_id = run["business_id"] if run else None
-        reply_business_id = repo.find_business_by_sender(email.from_addr)
-        if reply_business_id is None or str(reply_business_id) != str(
-            expected_business_id
-        ):
-            logger.warning(
-                "reply sender from_addr=%s does NOT match run %s business — "
-                "not resumed (spoof guard, FIX 5)",
-                email.from_addr,
-                run_id,
-            )
-            return JSONResponse(
-                status_code=200,
-                content={"status": "sender_mismatch", "run_id": str(run_id)},
-            )
-
-        # Sender revalidated → schedule the resume (idempotent + lossless, FIX 4).
-        # CR-02: do NOT flip EXTRACTING here. The orchestrator owns that transition
-        # (resume_pipeline, after re-asserting the run is still awaiting_reply under
-        # the same code path that mutates it). Setting EXTRACTING in the webhook —
-        # a DIFFERENT context from the BackgroundTask that does the work — is the
-        # exact seam the status race lived in: it would also defeat resume_pipeline's
-        # new precondition (the run would already be EXTRACTING, never awaiting_reply).
-        # The run stays awaiting_reply until the background resume claims it.
-        reply_for_resume = email.model_copy(update={"body_text": cleaned})
-        background_tasks.add_task(_resume_pipeline, run_id, reply_for_resume)
-        return JSONResponse(
-            status_code=200,
-            content={"status": "resumed", "run_id": str(run_id)},
-        )
+        return _finish_reply_resume(run_id, email, cleaned, background_tasks)
 
     # No awaiting_reply match — is it a LATE reply to an already-advanced run? (FIX 10)
     late_run_id = repo.find_any_run_for_header(
