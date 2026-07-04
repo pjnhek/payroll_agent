@@ -1,19 +1,34 @@
-"""Unit tests for repo.sweep_stranded_runs + repo.find_run_by_message_id (09-01).
+"""Unit tests for repo.sweep_stranded_runs + repo.find_run_by_message_id (09-01),
+plus the SC3 end-to-end live-DB proof (09-04).
 
 All FakeConnection-based tests mirror test_claim_status.py's SQL-shape-pinning
-style — no live DB needed. The full live sweep -> ERROR -> retrigger interplay
-is stubbed here (integration-marked, skip-guarded) and gets its real
-implementation in 09-04 once main.py's retrigger route wires the same
-threshold constant.
+style — no live DB needed. The live sweep -> ERROR -> retrigger interplay
+(`test_stranded_run_swept_and_retriggerable`) is the real implementation,
+replacing the 09-01 stub, now that main.py's retrigger route is wired to the
+same STALE_THRESHOLD_SECONDS constant used by the sweep (09-03/09-04).
 """
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 
 from app.db import repo
+from app.models.status import RunStatus
 from tests.conftest import FakeConnection
+
+_HAS_DB = bool(os.environ.get("DATABASE_URL"))
+_HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
+
+_SKIP_LIVE_DB = pytest.mark.skipif(
+    not (_HAS_DB and _HAS_RESET),
+    reason="Live-DB tests require DATABASE_URL and ALLOW_DB_RESET=1 (two-factor guard)",
+)
+
+# Shared seed identifiers (mirrors tests/test_atomic_persist.py).
+COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
+COASTAL_EMAIL = "payroll@coastalcleaning.example"
 
 
 # ---------------------------------------------------------------------------
@@ -218,20 +233,129 @@ def test_runs_list_never_500s_when_sweep_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Integration test — skip unless live DB available (full impl in 09-04)
+# SC3 end-to-end integration test (09-04) — strand, sweep, retrigger via the
+# ACTUAL POST /runs/{run_id}/retrigger route (Codex Round-2 MEDIUM fix: not a
+# direct repo.claim_status(...) call, which only proves claimability, not the
+# operator recovery path).
 # ---------------------------------------------------------------------------
 
 
+def _seed_live_run() -> uuid.UUID:
+    """Insert a fresh inbound email + run against the REAL DB (mirrors
+    test_atomic_persist.py's _seed_live_run)."""
+    eid, _ = repo.insert_inbound_email(
+        message_id=f"<{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+    )
+    return repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=eid)
+
+
+def _backdate_updated_at(run_id: uuid.UUID, seconds_ago: int) -> None:
+    """Directly backdate a run's updated_at via a raw UPDATE — no repo helper
+    exposes a raw updated_at write, since every writer sets it to now()."""
+    from app.db.supabase import get_connection
+
+    with get_connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "UPDATE payroll_runs SET updated_at = now() - (%s || ' seconds')::interval"
+                " WHERE id = %s",
+                (str(seconds_ago), str(run_id)),
+            )
+
+
 @pytest.mark.integration
-def test_sweep_then_retrigger_interplay_live():
-    """Integration: a run swept to ERROR by sweep_stranded_runs is then
-    recoverable via the dashboard's retrigger route.
-
-    This test requires a live Supabase/Postgres connection (DATABASE_URL env
-    var). Stub only in this plan — the real implementation lands in 09-04 once
-    main.py's retrigger route is wired to the same threshold constant.
+@_SKIP_LIVE_DB
+def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
+    """SC3 end-to-end (DATA-03): a run stranded mid-flight is swept to ERROR
+    with a distinguishing sentinel, then successfully retriggered to a
+    progressing status via the ACTUAL operator-facing retrigger route (not the
+    underlying claim primitive) — proving the recovery path a human operator
+    actually uses, per Codex Round-2's MEDIUM finding.
     """
-    if not os.environ.get("DATABASE_URL"):
-        pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
+    from app.main import STALE_THRESHOLD_SECONDS
 
-    pytest.skip("Integration test stub — full impl in 09-04")
+    # --- Strand a run in EXTRACTING with a backdated updated_at ------------
+    run_id = _seed_live_run()
+    repo.set_status(run_id, RunStatus.EXTRACTING)
+    _backdate_updated_at(run_id, STALE_THRESHOLD_SECONDS + 60)
+
+    # --- Sweep: the stranded run must be swept to ERROR --------------------
+    swept_ids = repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
+    assert run_id in swept_ids, "the stranded run must appear in the swept list"
+
+    run = repo.load_run(run_id)
+    assert run["status"] == "error"
+    assert run["error_reason"] == "StrandedRunSwept"
+    assert run["error_detail"] is not None
+    assert "stranded" in run["error_detail"].lower(), (
+        "error_detail must be distinguishable from a real exception-driven ERROR"
+    )
+
+    # --- Operator recovery: the ACTUAL POST /runs/{run_id}/retrigger route -
+    # Monkeypatch the background-task target to a no-op so this proves the
+    # CLAIM + ROUTE behavior against the real DB without triggering a real
+    # LLM/pipeline run.
+    import app.main as app_main
+    from fastapi.testclient import TestClient
+
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        app_main, "_run_pipeline", lambda rid: dispatched.append(rid)
+    )
+
+    client = TestClient(app_main.app)
+    response = client.post(f"/runs/{run_id}/retrigger")
+
+    assert response.status_code in (200, 303), (
+        f"retrigger route must return a success status; got {response.status_code}"
+    )
+    reloaded = repo.load_run(run_id)
+    assert reloaded["status"] == "received", (
+        "the swept-to-ERROR run must be claimed to a progressing status "
+        "(received) by the actual retrigger route"
+    )
+    assert dispatched == [run_id], (
+        "the retrigger route must schedule the background pipeline task for "
+        "this run_id, proving it actually dispatched recovery work (not just "
+        "flipped a status column)"
+    )
+
+
+@pytest.mark.integration
+@_SKIP_LIVE_DB
+def test_parked_statuses_never_swept_live(seeded_db):
+    """Second, real-DB confirmation of D-9-12 (closing the loop with the
+    FakeConnection-based test_sweep_stranded_runs_scope_pin_d_9_12 unit test
+    above): a run in awaiting_reply/awaiting_approval/approved with a
+    backdated updated_at must NEVER be swept — it is waiting on a HUMAN, not
+    stranded."""
+    from app.main import STALE_THRESHOLD_SECONDS
+
+    parked_statuses = [
+        RunStatus.AWAITING_REPLY,
+        RunStatus.AWAITING_APPROVAL,
+        RunStatus.APPROVED,
+    ]
+    parked_run_ids: list[uuid.UUID] = []
+    for status in parked_statuses:
+        run_id = _seed_live_run()
+        repo.set_status(run_id, status)
+        _backdate_updated_at(run_id, STALE_THRESHOLD_SECONDS + 60)
+        parked_run_ids.append(run_id)
+
+    swept_ids = repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
+
+    for run_id in parked_run_ids:
+        assert run_id not in swept_ids, (
+            f"a parked-by-design run ({run_id}) must never be swept — it is "
+            "waiting on a human, not stranded (D-9-12)"
+        )
+        # Confirm the status is untouched.
+        run = repo.load_run(run_id)
+        assert run["status"] != "error"
