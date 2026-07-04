@@ -1,28 +1,34 @@
 ---
 phase: 09-atomic-data-integrity
-fixed_at: 2026-07-04T09:05:00Z
-review_path: .planning/phases/09-atomic-data-integrity/09-REVIEW.md
-iteration: 1
-findings_in_scope: 5
-fixed: 2
-skipped: 3
+fixed_at: 2026-07-04T00:00:00Z
+review_path: .planning/phases/09-atomic-data-integrity/09-REVIEWS.md
+iteration: 2
+findings_in_scope: 7
+fixed: 3
+skipped: 4
 status: partial
 ---
 
 # Phase 9: Code Review Fix Report
 
-**Fixed at:** 2026-07-04T09:05:00Z
-**Source review:** .planning/phases/09-atomic-data-integrity/09-REVIEW.md
-**Iteration:** 1
+**Fixed at:** 2026-07-04 (iteration 2)
+**Source reviews:** .planning/phases/09-atomic-data-integrity/09-REVIEW.md (iteration 1, in-house)
++ .planning/phases/09-atomic-data-integrity/09-REVIEWS.md § Cross-AI CODE Review (iteration 2, codex)
+**Iteration:** 2
 
-**Summary:**
-- Findings in scope: 5 (WR-03, WR-04, WR-05, WR-06, WR-07 — 0 Critical)
-- Fixed: 2 (WR-03, WR-07)
-- Skipped: 3 (WR-04, WR-05, WR-06 — each requires design work on the money path; see reasons)
+**Summary (cumulative across both iterations):**
+- Findings in scope: 7 (WR-03..WR-07 from 09-REVIEW.md; CX-02, CX-03 from the cross-AI review.
+  CX-01 is NOT counted — it is a confirmed duplicate of the already-recorded 09-05 deferred
+  multi-round context-loss finding, tracked in 09-CONTEXT.md Deferred Ideas, not a new item.)
+- Fixed: 3 (WR-03, WR-07 in iteration 1; CX-03 in iteration 2)
+- Skipped: 4 (WR-04, WR-05, WR-06 — money-path design work; CX-02 — Phase 10 concurrency
+  design work; see reasons)
 
 Verification after each fix: `uv run ruff check` on touched files + targeted test module,
-then the FULL offline suite. Final state: **547 passed, 48 skipped** (live-DB tests skip
-without `DATABASE_URL` + `ALLOW_DB_RESET=1`, as expected).
+then the FULL offline suite. Iteration-1 final state: **547 passed, 48 skipped**.
+Iteration-2 final state: **548 passed, 48 skipped** — exactly +1 (the new CX-03 regression
+test) vs the HEAD baseline re-measured in the same environment; the live-DB tests skip
+without `DATABASE_URL` + `ALLOW_DB_RESET=1`, as expected.
 
 ## Fixed Issues
 
@@ -70,6 +76,36 @@ still-valid `test_ingest.py::test_duplicate_delivery_pipeline_runs_once` action 
 Note: `uv run ruff check tests/test_gateway.py` reports 4 findings (E402/F841/F401 x2) — all
 verified PRE-EXISTING at HEAD (identical output with the fix stashed); not introduced or
 addressed here (they are also outside this review's IN-07 list).
+
+### CX-03: Prior `carried_forward` terminal outcomes can be reopened as `asked` (iteration 2)
+
+**Files modified:** `app/pipeline/orchestrator.py`, `tests/test_multiround_context_edge.py`
+**Commit:** a6d4e2e
+**Applied fix:** Suppress-detection-only protection for prior carried_forward terminals —
+backfill behavior deliberately unchanged:
+1. Step E2 (`resume_pipeline`) now builds a second set, `_prior_carried_forward`, from
+   clarified outcomes alongside `_resolved_by_name` (which stays confirmed_dropped +
+   client_supplied only). The new set is unioned into `suppress_detection` (SET A) ONLY,
+   so a prior-round carried_forward field can no longer be re-detected as the same
+   paid→absent drop in round N+1 (which flipped the terminal back to `asked` via
+   `_defer_field_regression_clarification`'s field-level assignment). It is deliberately
+   kept OUT of `backfill_skip` (SET B): carried_forward fields must stay backfillable
+   from the snapshot — adding them to SET B would pay 0 for a field the client said to
+   carry forward (underpay). The SET A / SET B comments were updated to describe the
+   new construction accurately.
+2. Defense-in-depth in `_defer_field_regression_clarification`: the `"asked"` write now
+   skips any field whose existing outcome is one of the three terminals
+   (`confirmed_dropped`, `client_supplied`, `carried_forward`) — `setdefault` only ever
+   protected the outer dict. With fix 1 this branch is unreachable for terminals; the
+   guard protects future leak paths.
+3. New hermetic regression test
+   `tests/test_multiround_context_edge.py::test_prior_carried_forward_terminal_survives_later_round`
+   (3-round scenario: OT carried_forward in Round 2, new vacation question deferred,
+   Round-3 reply silent on OT). Asserts BOTH the label (outcome stays `carried_forward`,
+   not `asked`) AND the money value (paystub line item pays the carried-forward snapshot
+   OT of 2, run reaches AWAITING_APPROVAL). Verified to FAIL on pre-fix code (fails
+   exactly on the terminal flip) and pass with the fix; the CX-01 known-edge fixture in
+   the same module passes UNCHANGED.
 
 ## Skipped Issues
 
@@ -134,8 +170,28 @@ terminal `clarified_fields` labels whose justifying values rolled back; after an
 retrigger (which restarts from the original email), the run-detail provenance badges mislabel
 paid values at the approval gate, and stale terminals feed future round logic.
 
+### CX-02: Recovery paths do not fence off old workers (iteration 2)
+
+**File:** `app/pipeline/orchestrator.py` (`_clarify`, `_deliver` finalize writes), `app/db/repo.py` (`set_status`)
+**Reason:** Skipped — intentionally deferred to the Phase 10 concurrency work, per the
+cross-AI review's own disposition ("belongs with the Phase 10 concurrency work"). The
+candidate fix (an attempt-token column checked by a CAS variant of `set_status` on
+finalize writes) is new persisted state + a new write protocol across every finalize
+path — design work, not a review-fix change. Operationally unlikely at demo scale
+(requires a worker outlasting the 15-min sweep threshold or a concurrent manual
+retrigger).
+**Original issue:** After `sweep_stranded_runs` marks a stale run `error` (or retrigger
+moves `approved → received`), a still-live old worker's later plain `set_status` writes
+can overwrite the recovered state (zombie finalize).
+
+**CX-01 (not counted in scope):** Confirmed duplicate of the 09-05 deferred multi-round
+context-loss finding — already proven by the known-edge fixture in
+`tests/test_multiround_context_edge.py` and logged in 09-CONTEXT.md Deferred Ideas for a
+future MONEY-class phase. Independent rediscovery by codex validates the deferral record;
+no new action taken here.
+
 ---
 
-_Fixed: 2026-07-04T09:05:00Z_
+_Fixed: 2026-07-04 (iteration 2)_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 1_
+_Iteration: 2_
