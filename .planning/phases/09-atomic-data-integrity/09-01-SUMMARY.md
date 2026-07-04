@@ -104,3 +104,11 @@ None - no external service configuration required.
 ---
 *Phase: 09-atomic-data-integrity*
 *Completed: 2026-07-04*
+
+## Self-Check: PASSED
+
+- FOUND: tests/test_stuck_run_recovery.py
+- FOUND: .planning/phases/09-atomic-data-integrity/09-01-SUMMARY.md
+- FOUND: 114cb16 (Task 1 commit)
+- FOUND: 4edd660 (Task 2 commit)
+- FOUND: c1f4f37 (SUMMARY.md commit)
