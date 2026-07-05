@@ -25,6 +25,18 @@
 - [x] **OPS2-02**: Hot query paths have supporting indexes (`businesses.contact_email`, `email_messages(run_id, direction, send_state)`, `payroll_runs(created_at DESC)`, `payroll_runs(status)`) and `load_all_runs` uses an explicit column list (no `SELECT *`), restoring the project's stated schema-hygiene discipline. (Audit HIGH-01/HIGH-02 data-layer.)
 - [ ] **OPS2-03**: A concurrency proof test fires N simultaneous operations (concurrent runs, duplicate webhooks, simultaneous approvals on one run) and asserts the invariants hold — no double-approval, no lost update, no duplicate run, no half-written state. This is the evidence behind the production-grade claim.
 
+### Ring 4 — Clarification round machine & alias learning (Phase 11; MONEY-class follow-ups)
+
+*Registered 2026-07-05 at plan time from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01, per the ROADMAP Phase 11 note. IDs proposed in 11-RESEARCH.md.*
+
+- [ ] **CLAR2-01**: A genuinely new clarification question always sends; a true duplicate (re-trigger of the same round) is still suppressed. No run can silently park at `awaiting_reply` with no email out. (WR-05, `orchestrator._clarify` purpose-only guard; 260705-02.)
+- [ ] **CLAR2-02**: After 3 total clarification rounds, the run escalates to a first-class `needs_operator` status instead of sending; the operator can resolve names deterministically and resume, or reject. (260623-08, premise-corrected: the failure is silent-stall, not spam.)
+- [ ] **CLAR2-03**: The resume extraction context includes a code-owned "questions we asked" anchor, and the extraction prompt enforces absent-if-unaddressed; a bare "40" is never blindly attributed. (260705-02 item 2.)
+- [ ] **CLAR2-04**: The alias-learning write side is reachable: a client-confirmed suggestion binds `{token: suggested_id}` deterministically; the misname guard's never-learn-from-inference intent survives; a full-loop test proves the system stops asking. (260705-01.)
+- [ ] **CLAR2-05**: Multi-round context loss is closed: the combined context accumulates ORIGINAL + ALL consumed replies in round order; the known-edge fixture flips its assertion (Round-1 "30, not 40" pays 30, not 40). (CX-01 / T-09-21.)
+- [ ] **CLAR2-06**: A redelivered, still-unconsumed reply re-schedules the resume (no permanently-dropped replies); a consumed reply's redelivery stays a no-op. A stranded unconsumed reply is auto-re-scheduled from the runs-list load. (WR-04.)
+- [ ] **CLAR2-07**: Retrigger clears ALL reply context (`clarified_fields`, `pre_clarify_extracted`, round counter, suggestion/candidate state) so provenance badges cannot outlive the data that produced them. (WR-06.)
+
 ## Out of Scope
 
 | Feature | Reason |
@@ -34,6 +46,9 @@
 | Additional Medicare 0.9% surtax modeling | Intentional documented decision (never triggers at demo wages); a tax-completeness feature, not hardening |
 | SS wage-base straddle exactness (per-employee YTD Medicare ledger) | Accepted limitation of the static-seed model; schema-level feature, not v2 hardening |
 | Real-email A5 threading verification | Path-2 inbound already proven; deep header-survival check stays in backlog (live-gate task, not a code change) |
+| Courtesy email to client at operator escalation | Deliberately not built (D-11-09); silent handoff |
+| Paid→paid cross-round value-change diff (CX-01 fix (b)) | Rejected in favor of accumulation (D-11-12); no second diff state machine |
+| Widening alias capture beyond single-token (D-04) | Bind redesign works within existing single-candidate capture |
 
 ## Traceability
 
@@ -50,10 +65,17 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 | DATA-02 | Phase 9 — Atomic Data Integrity | Complete |
 | DATA-03 | Phase 9 — Atomic Data Integrity | Complete |
 | OPS2-03 | Phase 10 — Concurrency Proof | Pending |
+| CLAR2-01 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-02 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-03 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-04 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-05 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-06 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-07 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
 
 **Coverage:**
-- v2 requirements: 9 total
-- Mapped to phases: 9 ✓
+- v2 requirements: 16 total
+- Mapped to phases: 16 ✓
 - Unmapped: 0 ✓
 
 Mapping by phase:
@@ -62,7 +84,8 @@ Mapping by phase:
 - **Phase 8 — Data-Layer Hygiene & Diagnostics:** OPS2-01, OPS2-02
 - **Phase 9 — Atomic Data Integrity:** DATA-01, DATA-02, DATA-03
 - **Phase 10 — Concurrency Proof:** OPS2-03 (depends on Phase 9 — validates the atomicity/dedup/recovery invariants)
+- **Phase 11 — Clarification Round Machine & Alias Learning:** CLAR2-01…CLAR2-07 (soft-depends on Phase 10: the round machine composes with, never depends on, future fencing primitives)
 
 ---
 *Requirements defined: 2026-06-26*
-*Last updated: 2026-06-26 after v2 roadmap creation — all 9 requirements mapped to Phases 7–10*
+*Last updated: 2026-07-05 — Phase 11 requirements CLAR2-01…07 registered at plan time*
