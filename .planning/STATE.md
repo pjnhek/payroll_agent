@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
-status: ready_to_plan
-last_updated: 2026-07-04T08:06:27.213Z
-last_activity: 2026-07-04 -- Phase 09 execution started
+status: planning
+last_updated: "2026-07-05T08:06:58.185Z"
+last_activity: 2026-07-04
 progress:
-  total_phases: 5
-  completed_phases: 2
+  total_phases: 6
+  completed_phases: 3
   total_plans: 18
-  completed_plans: 49
-  percent: 40
-stopped_at: Phase 09 complete (6/6) — ready to discuss Phase 10
+  completed_plans: 15
+  percent: 50
 ---
 
 # Project State
@@ -120,6 +119,7 @@ Recent decisions affecting current work:
 [From .planning/todos/pending/ — ideas captured during sessions]
 
 8 pending (see `.planning/todos/pending/`). Highest-priority for the next design phase:
+
 - **260705-02 — clarify round machine redesign** (high): WR-05 round-blind guard silently parks runs at awaiting_reply (no email sent, unrecoverable by sweep/retrigger); ambiguous bare replies ("40") have no attribution anchor; folds in WR-04/WR-06 + 260623-08's round cap.
 - **260705-01 — alias-learning bind unreachable** (medium): the nickname-learning WRITE side can never fire (misname guard's evidence requirement is circular); fix = bind on explicit client confirmation of the clarification suggestion; design together with 260705-02.
 
@@ -164,6 +164,6 @@ intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; no
 
 ## Session Continuity
 
-Last session: 2026-07-03T02:19:52.521Z
-Stopped at: Phase 9 context gathered
-Resume file: .planning/phases/09-atomic-data-integrity/09-CONTEXT.md
+Last session: 2026-07-05T08:06:58.174Z
+Stopped at: Phase 11 context gathered
+Resume file: .planning/phases/11-clarification-round-machine-alias-learning/11-CONTEXT.md
