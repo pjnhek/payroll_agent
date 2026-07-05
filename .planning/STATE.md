@@ -115,7 +115,9 @@ Recent decisions affecting current work:
 
 [From .planning/todos/pending/ — ideas captured during sessions]
 
-None yet.
+8 pending (see `.planning/todos/pending/`). Highest-priority for the next design phase:
+- **260705-02 — clarify round machine redesign** (high): WR-05 round-blind guard silently parks runs at awaiting_reply (no email sent, unrecoverable by sweep/retrigger); ambiguous bare replies ("40") have no attribution anchor; folds in WR-04/WR-06 + 260623-08's round cap.
+- **260705-01 — alias-learning bind unreachable** (medium): the nickname-learning WRITE side can never fire (misname guard's evidence requirement is circular); fix = bind on explicit client confirmation of the clarification suggestion; design together with 260705-02.
 
 ### Blockers/Concerns
 

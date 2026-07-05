@@ -22,3 +22,10 @@ v2 consideration (NOT a Phase 5 bug): add a clarification-round counter on the r
 unresolved rounds, route to a dedicated operator-review state (or surface a "needs manual
 resolution" flag on the dashboard) instead of auto-sending another clarification. Keep the
 deterministic no-guess guarantee — the escape hands off to a human, it does not start guessing.
+
+**UPDATE 2026-07-05 (phase 9 tracing):** the premise above is now known to be WRONG — the
+loop does NOT send a fresh email each round. `_clarify`'s purpose-scoped idempotency guard
+(WR-05, 09-REVIEW.md) suppresses every same-purpose re-send, so round 2+ silently parks the
+run at `awaiting_reply` with no email out. The real problem is silent-stall, not spam. The
+round cap + operator escape asked for here is still wanted and is folded into
+[260705-02-clarify-round-machine-redesign], which supersedes this todo's analysis.
