@@ -2,7 +2,7 @@
 id: 260623-08
 created: 2026-06-23
 source: Phase 05 UAT discussion (off-roster reply behavior)
-resolves_phase:
+resolves_phase: 11
 priority: low
 ---
 

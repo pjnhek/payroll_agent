@@ -19,6 +19,7 @@
 - [x] **Phase 8: Data-Layer Hygiene & Diagnostics** - Restore schema-hygiene discipline (hot-path indexes, explicit column lists) and make production failures diagnosable from the DB (PII-safe `error_detail`) — the clean baseline the atomicity work builds on (completed 2026-07-02)
 - [x] **Phase 9: Atomic Data Integrity** - The senior-engineer ring: atomic multi-write pipeline transactions (no half-written runs on crash), a transactional webhook-dedup CAS (Resend redelivery never duplicates a run), and a stuck-run recovery path for orphaned in-flight runs (completed 2026-07-04)
 - [ ] **Phase 10: Concurrency Proof** - The evidence capstone: a test fires N simultaneous runs / duplicate webhooks / concurrent approvals and asserts the invariants hold — no double-approval, lost update, duplicate run, or half-write — backing the production-grade claim
+- [ ] **Phase 11: Clarification Round Machine & Alias Learning** - The clarify-cluster design phase: round-aware clarification (WR-05 silent-park fix + round cap/operator escape), question-anchored reply extraction, alias learning that binds on explicit client confirmation, and closure of the CX-01 multi-round context-loss deferred finding
 
 ## Phase Details
 
@@ -151,6 +152,16 @@ Plans:
   2. The test asserts every invariant holds: no double-approval (the `claim_status` CAS wins exactly once), no lost update, no duplicate run per inbound `message_id`, and no half-written run state — and fails loudly if any invariant is violated, so it stands as a genuine regression guard rather than a smoke test.
 
 **Plans**: TBD
+
+### Phase 11: Clarification Round Machine & Alias Learning
+
+**Goal:** The multi-round clarification state machine becomes correct and unstrandable, and the alias-learning loop actually learns. Concretely: (1) WR-05 fix — a genuinely new clarification question always sends (round-aware idempotency instead of the purpose-only guard that today silently parks a run at `awaiting_reply` with no email out), with a round cap + operator-escape state (260623-08); (2) ambiguous replies get an attribution anchor — the outbound clarification's questions are included in the resume extraction context so a bare "40" can't be blindly attributed; (3) the alias-learning WRITE side binds on explicit client confirmation of the clarification *suggestion* (human-stated evidence) instead of the circular re-extraction condition that makes it unreachable today (260705-01), preserving the misname guard's never-learn-from-inference intent; (4) CX-01/T-09-21 multi-round context loss is closed (accumulate reply bodies or diff against last-persisted extraction — the known-edge fixture in `tests/test_multiround_context_edge.py` flips its assertion); (5) WR-06 provenance scoping and WR-04 redelivered-reply handling fold into the same round/consumed state design.
+**Requirements**: TBD (MONEY-class follow-ups; derive at plan time from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01 + 09-CONTEXT.md deferred ideas)
+**Depends on:** Phase 10 (concurrency proof may add fencing primitives the round machine reuses)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 11 to break down)
 
 ## Backlog
 

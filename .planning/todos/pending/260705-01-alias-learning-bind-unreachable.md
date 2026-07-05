@@ -2,7 +2,7 @@
 id: 260705-01
 created: 2026-07-05
 source: Phase 9 post-review conversation tracing (after codex cross-AI review)
-resolves_phase:
+resolves_phase: 11
 priority: medium
 files:
   - app/pipeline/orchestrator.py:667-724 (resume binding + misname guard)

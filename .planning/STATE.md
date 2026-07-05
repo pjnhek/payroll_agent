@@ -77,6 +77,10 @@ Progress: [░░░░░░░░░░] 0% (v2)
 
 ## Accumulated Context
 
+### Roadmap Evolution
+
+- Phase 11 added (2026-07-05): Clarification Round Machine & Alias Learning — clarify-cluster design phase from phase-9 review findings (WR-04/05/06, CX-01) + conversation-traced findings (alias-learning bind unreachable, ambiguous-reply attribution); sources: todos 260705-01, 260705-02, 260623-08
+
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.

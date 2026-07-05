@@ -2,7 +2,7 @@
 id: 260705-02
 created: 2026-07-05
 source: Phase 9 code review (WR-04/05/06) + post-review conversation tracing of ambiguous-reply scenarios
-resolves_phase:
+resolves_phase: 11
 priority: high
 files:
   - app/pipeline/orchestrator.py:986-1010 (_clarify purpose-scoped idempotency guard — WR-05)
