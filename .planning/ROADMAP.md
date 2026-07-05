@@ -156,12 +156,16 @@ Plans:
 ### Phase 11: Clarification Round Machine & Alias Learning
 
 **Goal:** The multi-round clarification state machine becomes correct and unstrandable, and the alias-learning loop actually learns. Concretely: (1) WR-05 fix — a genuinely new clarification question always sends (round-aware idempotency instead of the purpose-only guard that today silently parks a run at `awaiting_reply` with no email out), with a round cap + operator-escape state (260623-08); (2) ambiguous replies get an attribution anchor — the outbound clarification's questions are included in the resume extraction context so a bare "40" can't be blindly attributed; (3) the alias-learning WRITE side binds on explicit client confirmation of the clarification *suggestion* (human-stated evidence) instead of the circular re-extraction condition that makes it unreachable today (260705-01), preserving the misname guard's never-learn-from-inference intent; (4) CX-01/T-09-21 multi-round context loss is closed (accumulate reply bodies or diff against last-persisted extraction — the known-edge fixture in `tests/test_multiround_context_edge.py` flips its assertion); (5) WR-06 provenance scoping and WR-04 redelivered-reply handling fold into the same round/consumed state design.
-**Requirements**: TBD (MONEY-class follow-ups; derive at plan time from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01 + 09-CONTEXT.md deferred ideas)
+**Requirements**: CLAR2-01, CLAR2-02, CLAR2-03, CLAR2-04, CLAR2-05, CLAR2-06, CLAR2-07 (MONEY-class follow-ups derived from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01 + 09-CONTEXT.md deferred ideas)
 **Depends on:** Phase 10 (concurrency proof may add fencing primitives the round machine reuses)
-**Plans:** 0 plans
+**Plans:** 5 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 11 to break down)
+- [ ] 11-01-PLAN.md — Data-layer substrate: round/consumed-round columns, needs_operator status, widened uniqueness, all new repo primitives + InMemoryRepo mirrors (zero behavior change)
+- [ ] 11-02-PLAN.md — Round-aware _clarify: (purpose, round) guard (WR-05), round cap + needs_operator escalation, dashboard badge + scope exclusions
+- [ ] 11-03-PLAN.md — resume_pipeline consumed marker (D-11-02) + accumulated context with code-owned asked anchor (CX-01/D-11-12) + no-guess extraction; flipped known-edge fixture
+- [ ] 11-04-PLAN.md — Alias bind-on-confirmation (nested suggestion shape), operator resolve form + resume route with server-side roster validation, full-loop stops-asking test
+- [ ] 11-05-PLAN.md — main.py wiring: WR-04 redelivery re-schedule + D-11-05 stranded auto-resume + WR-06 retrigger-clears-all-context (CLAR2-06/07)
 
 ## Backlog
 
@@ -174,7 +178,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 
 ## Progress
 
-**Execution Order:** v2 phases execute in numeric order: 7 → 8 → 9 → 10
+**Execution Order:** v2 phases execute in numeric order: 7 → 8 → 9 → 10 → 11
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -182,3 +186,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
 | 9. Atomic Data Integrity | 6/6 | Complete    | 2026-07-04 |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
+| 11. Clarification Round Machine & Alias Learning | 0/5 | Planned | - |

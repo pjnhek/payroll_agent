@@ -468,20 +468,26 @@ Needs `python-multipart` for form POSTs — already a runtime dependency (projec
 
 All other claims verified against live source this session (file:line cited inline).
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+*All four resolved at plan time and locked into the plans (confirmed by plan-checker re-verification). Inline `RESOLVED:` notes cite the resolving plan/task.*
 
 1. **Operator-resume entry point (Claude's discretion, needs a plan-time decision)**
    - What we know: retrigger's `_run_pipeline` is explicitly wrong (discards reply context — the very reason D-11-06 rejected ERROR-with-sentinel). `resume_pipeline` expects a new `inbound` reply and claims from AWAITING_REPLY.
    - What's unclear: whether to (i) generalize `resume_pipeline` to accept `from_status=NEEDS_OPERATOR` and a synthetic/absent reply, rebuilding context purely from consumed rows (D-11-13 makes this possible), or (ii) add a thin `_operator_resume` that assembles the accumulated context and calls `_run_stages` directly.
    - Recommendation: (i) — one resume path, one context-assembly function, no drift; the "current reply" section is simply absent for operator resumes.
+   - **RESOLVED: (i) generalize `resume_pipeline` — adopted in 11-04 Task 2. One resume path; the current-reply section is absent for operator resumes.**
 2. **How the operator mapping is "applied deterministically before reconcile"**
    - What we know: `reconcile_names` resolves exact/stored-alias only; the form's mapping must make the token resolve without guessing.
    - Options: (a) write the mapping as bound alias_candidates and, when the remember-checkbox is ON, let the normal approval-gate write persist it — but reconcile at resume still wouldn't resolve the token unless the mapping is also injected into the resolution step; (b) pass a per-run override map into `reconcile_names` (new optional param: overrides win before exact/alias, tagged `source: "operator"`); (c) write `known_aliases` immediately on resolve (violates the one-human-gate write timing D-11-16 implies for the checkbox-OFF case).
    - Recommendation: (b) + (a): per-run override drives resolution; checkbox ON additionally sets `bound` so the existing approval-gate write path persists it. Checkbox OFF = override only, nothing learned.
+   - **RESOLVED: (b)+(a) — adopted in 11-04. Per-run override drives resolution; remember-checkbox ON sets `bound` so the existing approval-gate write persists it; checkbox OFF = override only, nothing learned.**
 3. **Backfill formula for `clarification_round` on live runs**
    - What we know: sent clarification-purpose outbound rows per run are countable; under the old constraint there is ≤1 per purpose, so the max historical count is 2 (clarification + field_regression).
    - Recommendation: `clarification_round = (SELECT count(*) FROM email_messages WHERE run_id=... AND direction='outbound' AND purpose IN ('clarification','clarification_field_regression') AND send_state='sent')` in the migration DO-block; document it as one-shot.
+   - **RESOLVED: adopted verbatim in 11-01 Task 1 as the one-shot backfill DO-block.**
 4. **Round-3 boundary semantics** — "Cap = 3 total rounds... when `clarification_round >= 3` at the next would-be send" (D-11-07): with increment-at-send, rounds 0→1→2→3 mean three sends have happened when the counter reads 3; the 4th would-be send escalates. Confirm at plan time that "3 total rounds" = 3 sends allowed (the reading above) — off-by-one here changes when a client gets cut off. The single constant + a boundary test pins it either way.
+   - **RESOLVED: 11-02 Task 1 fixes "3 sends allowed, 4th escalates" (counter reads 3 → escalate), pinned by an explicit boundary test.**
 
 ## Environment Availability
 
