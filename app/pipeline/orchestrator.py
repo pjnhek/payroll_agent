@@ -39,6 +39,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.db import repo
@@ -74,6 +75,34 @@ logger = logging.getLogger("payroll_agent.orchestrator")
 # below tests `>= MAX_CLARIFICATION_ROUNDS` so the 4th attempt (counter already
 # at 3) is the one that diverts to needs_operator instead of sending.
 MAX_CLARIFICATION_ROUNDS = 3
+
+
+def _normalize_candidate(value) -> dict:
+    """Normalize an alias_candidates VALUE to the D-11-14 nested shape.
+
+    {token: VALUE} historically stored VALUE as either None (never resolved) or
+    a bare employee_id string (the OLD NEW-2 pre-vs-post-diff bind wrote this
+    flat shape directly). D-11-14 replaces that with a richer per-token record
+    {"suggested": id|None, "bound": id|None} so one column owns the full
+    capture -> suggest -> bind lifecycle. Every site that READS an
+    alias_candidates value (the bind check in resume_pipeline AND
+    _write_aliases_if_safe) must go through this helper so a legacy flat row
+    from before this plan never raises AttributeError (Pitfall #6) — dict.get
+    on a bare string/None would blow up without this normalization.
+
+    - None            -> {"suggested": None, "bound": None}   (never resolved)
+    - a str            -> {"suggested": None, "bound": value}  (OLD flat-bound
+                          shape — the pre-vs-post diff bind wrote the resolved
+                          id directly as the value; treat it as already-bound
+                          so a live legacy row keeps behaving as "learned")
+    - a dict            -> returned AS-IS (already the nested shape; idempotent)
+    """
+    if value is None:
+        return {"suggested": None, "bound": None}
+    if isinstance(value, dict):
+        return value
+    # Legacy flat-bound shape: a bare employee_id string.
+    return {"suggested": None, "bound": value}
 
 
 @dataclass
@@ -237,8 +266,16 @@ def _run(run_id: uuid.UUID, *, llm) -> None:
         repo.record_run_error(run_id, reason, detail_exc=exc, stage="pipeline", roster=roster)
 
 
-def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> None:
-    """Re-enter a paused (awaiting_reply) run at extraction on a clarification reply.
+def resume_pipeline(
+    run_id: uuid.UUID,
+    inbound: InboundEmail | None = None,
+    *,
+    llm=None,
+    from_status: RunStatus = RunStatus.AWAITING_REPLY,
+    overrides: dict[str, str] | None = None,
+) -> None:
+    """Re-enter a paused run at extraction — on a clarification reply, OR (D-11-08,
+    Phase 11 Plan 04) on an operator's needs_operator resolve+resume action.
 
     Idempotent AND lossless (CLAR-03, review FIX 4 + FIX C):
       - The extraction CONTEXT is rebuilt from the ORIGINAL cleaned inbound body
@@ -251,10 +288,25 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         appended); replace_line_items DELETE-by-run then insert. So a re-trigger is
         safe and a resume never accumulates stale data (RESEARCH Pattern 6 inv 1-2).
 
-    The webhook is the sole caller and only invokes this after BOTH the header-chain
-    match (awaiting_reply only) AND the reply-sender revalidation (FIX 5) have passed.
+    The webhook is the sole caller of the default (from_status=AWAITING_REPLY,
+    inbound=<the reply>) path, and only invokes it after BOTH the header-chain
+    match (awaiting_reply only) AND the reply-sender revalidation (FIX 5) have
+    passed.
 
-    Status gate (CR-02, D-12, FOUND-04): uses repo.claim_status(AWAITING_REPLY →
+    Operator-resume generalization (D-11-08, RESEARCH Open Question #1 —
+    resolved (i), one resume path instead of a parallel `_operator_resume`):
+    the `/runs/{run_id}/resolve` route calls this with `from_status=
+    RunStatus.NEEDS_OPERATOR` and `inbound=None`. When `inbound` is None there
+    is no NEW reply to consume — the "current reply" section of the combined
+    extraction context is simply absent (a synthetic empty-body InboundEmail
+    is substituted so the shared `_combined_context_email`/accumulation code
+    stays byte-identical for both callers; the ORIGINAL body + ALL already-
+    consumed replies still populate the context in full, per D-11-13).
+    `overrides` (submitted_name -> employee_id_str) is threaded straight to
+    `_run_stages(overrides=...)` so the operator's server-validated mapping
+    resolves deterministically before reconcile_names's exact/alias tiers.
+
+    Status gate (CR-02, D-12, FOUND-04): uses repo.claim_status(from_status →
     EXTRACTING) — an atomic conditional UPDATE that closes the residual race from
     Phase 2's load-then-check+set pattern. The prior non-atomic pattern left a window
     where a second reply (or an operator approval) could arrive between the status load
@@ -269,17 +321,42 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
     # inside the same try block its except clause guards).
     roster = None
     try:
-        # Atomic compare-and-swap: claim the run from AWAITING_REPLY → EXTRACTING.
+        # Atomic compare-and-swap: claim the run from from_status → EXTRACTING.
         # This closes CR-02's residual race (the prior load-then-check+set was non-atomic).
-        # A duplicate or late reply sees claim=False and drops cleanly — no re-run,
-        # no error. D-12, FOUND-04.
-        claimed = repo.claim_status(run_id, RunStatus.AWAITING_REPLY, RunStatus.EXTRACTING)
+        # A duplicate or late reply/resolve sees claim=False and drops cleanly — no
+        # re-run, no error. D-12, FOUND-04.
+        claimed = repo.claim_status(run_id, from_status, RunStatus.EXTRACTING)
         if not claimed:
             logger.info(
-                "resume aborted: run %s claim failed — late/duplicate reply dropped (CR-02, D-12)",
+                "resume aborted: run %s claim failed from %s — late/duplicate "
+                "reply/resolve dropped (CR-02, D-12)",
                 run_id,
+                from_status,
             )
             return
+
+        # D-11-08: operator-resume has no NEW reply to consume — substitute a
+        # synthetic empty-body InboundEmail so every downstream line that reads
+        # `inbound.message_id`/`inbound.body_text` (mark_reply_consumed, the
+        # prior_replies exclusion filter, _combined_context_email) stays exactly
+        # the same code path for both callers. mark_reply_consumed is a no-op for
+        # a synthetic message_id that was never persisted as an inbound row (the
+        # real repo's UPDATE simply matches zero rows; InMemoryRepo's mirror looks
+        # up self.emails and finds nothing) — nothing to consume when there is no
+        # real reply, by construction.
+        _operator_resume = inbound is None
+        if _operator_resume:
+            inbound = InboundEmail(
+                id=uuid.uuid4(),
+                message_id=f"<operator-resume-{run_id}@payroll-agent.local>",
+                in_reply_to=None,
+                references_header=None,
+                subject="",
+                from_addr="",
+                to_addr="",
+                body_text="",
+                created_at=datetime.now(timezone.utc),
+            )
 
         # D-11-02: write the consumed marker the INSTANT processing actually starts
         # (immediately after the winning CAS claim, before anything else runs). This
@@ -411,6 +488,7 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 prior=snapshot,           # None on very first resume
                 prior_matches=prior_matches,  # [] on very first resume
                 resolved_drops=None,      # no confirmed_dropped pairs yet
+                overrides=overrides,      # D-11-08: operator mapping, else None
             )
             # NOTE: no extracted= kwarg on Round-1. _run_stages calls extract() internally.
 
@@ -700,6 +778,7 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
                 suppress_detection=suppress_detection,  # ALL answered → N8 only
                 resolved_drops=backfill_skip,           # confirmed_dropped+client_supplied → backfill skip
                 extracted=raw_extracted,                # combined-body extraction for lossless process
+                overrides=overrides,                    # D-11-08: operator mapping, else None
             )
 
             # D-7.5-11 STEP 4: CR-02 FIX — check clarify_deferred AFTER persisting terminals.
@@ -720,74 +799,77 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             # persisted above (D-9-06), strictly before _run_stages was called. Fall
             # through to STEP C/D alias-diff (the run is at AWAITING_APPROVAL).
 
-        # STEP C: Capture post-resume resolved employee_id set AFTER _run_stages.
-        # _run_stages calls persist_reconciliation which overwrites the reconciliation
-        # column — load_run here gets the freshly-written post-resume reconciliation.
-        _none_tokens = [tok for tok, val in _pre_candidates.items() if val is None]
-        if _none_tokens and _pre_candidates:
-            from app.pipeline.reconcile_names import _norm
-
+        # STEP C: D-11-15 bind-on-confirmation — replaces the old NEW-2 pre-vs-post
+        # count-diff bind wholesale. That logic required the newly-resolved
+        # employee's id to equal the CANDIDATE TOKEN itself, which can never fire
+        # for a nickname the client only RESTATES canonically (the reply resolves
+        # to the SUGGESTED employee's full_name, not to the original unresolved
+        # token) — the exact unreachable-loop bug D-11-17 exists to close.
+        #
+        # New evidence model: bind {token: {"suggested": S, "bound": S}} iff (a)
+        # the SUGGESTED employee S (persisted at clarify time, D-11-14) newly
+        # appears as resolved in the post-resume reconciliation AND (b) the token
+        # itself is gone from the post-resume unresolved submitted names. Both
+        # facts are deterministic and read directly off persisted reconciliation
+        # state — no LLM call, no confidence number, anywhere in this chain. A
+        # bare confirming "yes" works because the D-11-10 asked-anchor (Plan
+        # 11-03) lets extraction attribute the reply to the suggested canonical
+        # name, which is what causes S to newly-resolve.
+        #
+        # MISNAME GUARD (D-11-15 preserved intent): if the reply resolves a
+        # DIFFERENT id J (not the suggested S) — e.g. "no, I meant James" — S
+        # never appears in the newly-resolved set, so no bind occurs. J is a
+        # non-suggested resolution; nobody proposed J for this token, so the
+        # never-learn-from-inference guarantee holds verbatim.
+        _candidates_normalized = {
+            tok: _normalize_candidate(val) for tok, val in _pre_candidates.items()
+        }
+        _pending_tokens = [
+            tok for tok, cand in _candidates_normalized.items()
+            if cand.get("bound") is None and cand.get("suggested") is not None
+        ]
+        if _pending_tokens:
             post_run_data = repo.load_run(run_id)
             _post_reconciliation = (post_run_data.get("reconciliation") or []) if post_run_data else []
             _post_resolved_ids: set[str] = set()
+            _post_unresolved_names: set[str] = set()
             if isinstance(_post_reconciliation, list):
                 for _m in _post_reconciliation:
-                    if isinstance(_m, dict) and _m.get("matched_employee_id") is not None:
+                    if not isinstance(_m, dict):
+                        continue
+                    if _m.get("matched_employee_id") is not None:
                         _post_resolved_ids.add(str(_m["matched_employee_id"]))
+                    if not _m.get("resolved"):
+                        _post_unresolved_names.add(_m.get("submitted_name") or "")
 
-            # STEP D: Diff and bind — MISNAME GUARD (token-must-match-resolved-name).
-            # The NEWLY-resolved employee is in post but NOT in pre.
             _newly_resolved_ids = _post_resolved_ids - _pre_resolved_ids
-            # CRITICAL: count alone ("1 newly-resolved + 1 pending candidate") is NOT
-            # sufficient to learn an alias. If the client MISNAMED someone — wrote
-            # "Maria" but meant a different person, James — the reply corrects it to
-            # "James Okafor", James newly-resolves, and the old count-only rule would
-            # bind {"Maria": james.id}. "Maria" is NOT James's nickname; learning it
-            # would silently misroute every future "Maria". A legitimate alias is one
-            # the client RE-STATED (e.g. "Dave Reyez"), so its resolved entry's
-            # submitted_name still matches the candidate token. Only bind when the
-            # pending token actually appears as the submitted_name of a resolved,
-            # newly-resolved entry — the token must be evidenced, not inferred.
-            _bound = False
-            if len(_none_tokens) == 1 and len(_newly_resolved_ids) == 1:
-                _token = _none_tokens[0]
-                _norm_token = _norm(_token)
-                _newly_id = next(iter(_newly_resolved_ids))
-                _token_resolved_to_newly = any(
-                    isinstance(_m, dict)
-                    and _m.get("resolved") is True
-                    and str(_m.get("matched_employee_id")) == _newly_id
-                    and _norm(_m.get("submitted_name") or "") == _norm_token
-                    for _m in (_post_reconciliation if isinstance(_post_reconciliation, list) else [])
-                )
-                if _token_resolved_to_newly:
-                    _updated_candidates = dict(_pre_candidates)
-                    _updated_candidates[_token] = str(_newly_id)
-                    repo.set_alias_candidates(run_id, _updated_candidates)
-                    _bound = True
+            _updated_candidates = dict(_pre_candidates)
+            _any_bound = False
+            for _token in _pending_tokens:
+                _suggested_id = str(_candidates_normalized[_token]["suggested"])
+                _sugg_newly_resolved = _suggested_id in _newly_resolved_ids
+                _token_gone = _token not in _post_unresolved_names
+                if _sugg_newly_resolved and _token_gone:
+                    _updated_candidates[_token] = {
+                        "suggested": _suggested_id,
+                        "bound": _suggested_id,
+                    }
+                    _any_bound = True
                     logger.info(
-                        "alias candidate bound at resume: %r → %s "
-                        "(token matched resolved submitted_name; pre-vs-post diff)",
-                        _token,
-                        _newly_id,
+                        "alias candidate bound at resume: token bound to the "
+                        "persisted suggestion %s (D-11-15 bind-on-confirmation)",
+                        _suggested_id,
                     )
                 else:
                     logger.info(
-                        "alias binding skipped for run %s: candidate token %r was not "
-                        "the submitted_name of the newly-resolved employee — likely a "
-                        "misname/correction to a different person, not a nickname "
-                        "(misname guard, NEW-2)",
+                        "alias binding skipped for run %s: suggested employee did "
+                        "not newly resolve and/or token still unresolved — no "
+                        "confirmed evidence to bind (D-11-15, misname guard "
+                        "intent preserved)",
                         run_id,
-                        _token,
                     )
-            if not _bound and not (len(_none_tokens) == 1 and len(_newly_resolved_ids) == 1):
-                logger.info(
-                    "alias binding skipped for run %s: %d newly-resolved, "
-                    "%d pending candidates; expected 1 each (NEW-2)",
-                    run_id,
-                    len(_newly_resolved_ids),
-                    len(_none_tokens),
-                )
+            if _any_bound:
+                repo.set_alias_candidates(run_id, _updated_candidates)
     except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (resume)
         # PII-safe: exception TYPE only — str(exc) can echo submitted names / prompt
         # text, and `reason` is logged AND persisted to error_reason (review fix —
@@ -964,6 +1046,7 @@ def _run_stages(
     resolved_drops=None,
     suppress_detection=None,
     extracted=None,
+    overrides=None,
 ) -> _RunStagesResult:
     """The shared four-stage gate path: extract → reconcile → validate → decide →
     persist → branch. Used by BOTH run_pipeline (first run) and resume_pipeline (the
@@ -982,6 +1065,11 @@ def _run_stages(
       backfill_extracted(resolved_drops=resolved_drops). Does NOT reach validate N8.
     Round-1 and run_pipeline pass neither kwarg → both None → no suppression, no skip.
 
+    overrides= (D-11-08, Phase 11 Plan 04): an optional submitted_name ->
+    employee_id_str map forwarded straight to reconcile_names(overrides=...) so
+    an operator-resolved name wins BEFORE the exact/alias tiers. None (the
+    default, every pre-existing caller) is behavior-identical.
+
     Returns _RunStagesResult(clarify_deferred, matches, issues).
     """
     # D-7.5-11: if caller supplies pre-extracted data (Round-2 classify-first path),
@@ -995,7 +1083,7 @@ def _run_stages(
     # else: use the supplied pre-extracted value directly (no LLM call)
 
     submitted_names = [e.submitted_name for e in extracted.employees]
-    matches = reconcile_names(submitted_names, roster)  # pure: no llm (D-21-01)
+    matches = reconcile_names(submitted_names, roster, overrides=overrides)  # pure: no llm (D-21-01)
 
     # D-7.5-10: DETECT-on-RAW → BACKFILL → CALC (three-phase ordering invariant)
     # Phase 1 — DETECT on raw extracted (pre-backfill): the OT 2→None drop is visible here.
@@ -1188,12 +1276,16 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
     #   1. len(unresolved_names) != 1 → no capture (finding #4 single-token-only)
     #   2. candidate_ids count > 1 for the token → no capture (finding #5 + R2-HIGH)
     #   3. candidate_ids count == 1 → already resolves; not a learning target
-    #   4. candidate_ids count == 0 → genuinely unresolved → capture {token: None}
+    #   4. candidate_ids count == 0 → genuinely unresolved → capture the token
+    #      (the nested {"suggested": id|None, "bound": None} value is filled in
+    #      AFTER suggest_employees runs below, D-11-14 — capture and persist are
+    #      two steps now because the suggestion doesn't exist yet at this point).
     #
     # R2-HIGH COLLISION DETECTION: Do NOT use deterministic_match return value to
     # infer collision. deterministic_match returns None for BOTH zero candidates (no
     # match) AND 2+ candidates (collision). A colliding token like "D. Reyes" returns
     # None yet has 2 candidate_ids. The pre-check MUST count candidate_ids directly.
+    _captured_token: str | None = None
     if len(decision.unresolved_names) == 1:
         candidate_token = decision.unresolved_names[0]
         from app.pipeline.reconcile_names import _norm
@@ -1229,9 +1321,10 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
             )
         else:
             # Zero candidates: token is GENUINELY UNRESOLVED — eligible for alias learning.
-            # Capture {original_token: None}; resolved_employee_id filled at resume.
-            candidates = {candidate_token: None}
-            repo.set_alias_candidates(run_id, candidates)
+            # Defer the actual set_alias_candidates write until the nested
+            # {"suggested": id|None, "bound": None} value can be built below
+            # (D-11-14) — suggest_employees hasn't run yet at this point.
+            _captured_token = candidate_token
             logger.info(
                 "alias candidate captured for run %s: %r "
                 "(single-token, genuinely unresolved, D-04 timing)",
@@ -1256,6 +1349,33 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
     suggestions = suggest_employees(
         decision.unresolved_names, roster, **suggest_kwargs
     )
+
+    # D-11-14: persist the nested {token: {"suggested": id|None, "bound": None}}
+    # candidate shape now that the suggestion is available. suggest_employees
+    # returns {submitted_name: suggested_FULL_NAME} — a NAME, not an id
+    # (Pitfall #5) — so map the suggested full_name to its employee id via the
+    # already-loaded roster (full_name is unique per business). A suggested
+    # name that (for any reason) doesn't match a roster full_name maps to
+    # suggested=None — the bind check simply never fires for that token
+    # (nothing to confirm against). This MUST run AFTER suggest_employees and
+    # BEFORE send_outbound — same timing guarantee the old single-step capture
+    # gave (D-04), just split across two now-adjacent statements.
+    if _captured_token is not None:
+        _suggested_full_name = suggestions.get(_captured_token)
+        _suggested_id: str | None = None
+        if _suggested_full_name is not None:
+            for _emp in roster.employees:
+                if _emp.full_name == _suggested_full_name:
+                    _suggested_id = str(_emp.id)
+                    break
+        candidates = {_captured_token: {"suggested": _suggested_id, "bound": None}}
+        repo.set_alias_candidates(run_id, candidates)
+        logger.info(
+            "alias candidate suggestion persisted for run %s: %d suggestion(s) "
+            "mapped to an employee id (D-11-14 nested shape)",
+            run_id,
+            1 if _suggested_id is not None else 0,
+        )
 
     compose_kwargs = {"suggestions": suggestions}
     if llm is not None:
@@ -1340,8 +1460,12 @@ def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster, conn=None) -> N
     swallowed so an alias-learning failure NEVER strands or fails a successfully-sent run
     (D-13b defensive isolation).
 
-    For each token → employee_id_str in alias_candidates:
-    - Skip if employee_id_str is None (never got resolved — name wasn't clarified).
+    For each token → candidate in alias_candidates (D-11-14 nested shape,
+    normalized via _normalize_candidate for legacy-flat-row tolerance,
+    Pitfall #6):
+    - Skip if cand["bound"] is None (never confirmed — no reply resolved the
+      SUGGESTED employee; D-11-15 bind-on-confirmation never fired for this
+      token).
     - Call _safe_to_learn_alias (D-01b collision guard) — skip if False.
     - Call update_known_alias (D-01 idempotent JSONB append).
     - BATCH-SAFE: refresh current_roster after each accepted alias write so the NEXT
@@ -1362,11 +1486,14 @@ def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster, conn=None) -> N
         return
 
     current_roster = roster  # start with the roster already loaded by _deliver
-    for token, employee_id_str in alias_candidates.items():
+    for token, value in alias_candidates.items():
+        cand = _normalize_candidate(value)
+        employee_id_str = cand.get("bound")
         if employee_id_str is None:
-            # Never resolved (no clarification reply that identified this employee).
+            # Never confirmed (no reply resolved the SUGGESTED employee — D-11-15
+            # bind-on-confirmation never fired for this token).
             logger.info(
-                "alias write skipped for %r: no resolved employee_id (never clarified)",
+                "alias write skipped for %r: no bound employee_id (never confirmed)",
                 token,
             )
             continue

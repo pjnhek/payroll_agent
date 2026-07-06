@@ -392,3 +392,211 @@ def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
     assert response.status_code == 200
     assert "Needs Operator" in response.text
     assert "badge-escalate" in response.text
+
+
+# ===========================================================================
+# 6. POST /runs/{run_id}/resolve — server-side roster validation (Security V4),
+#    override application, remember-checkbox bind, claim + resume dispatch
+#    (D-11-08, D-11-16, Phase 11 Plan 04)
+# ===========================================================================
+
+
+def _needs_operator_run_row(run_id, business_id, unresolved_names):
+    from app.models.contracts import Decision as _Decision
+
+    decision = _Decision(
+        final_action="request_clarification",
+        gate_reasons=[f"{n}: unresolved" for n in unresolved_names],
+        unresolved_names=unresolved_names,
+        missing_fields=[],
+        resolutions=[
+            NameMatchResult(
+                submitted_name=n,
+                matched_employee_id=None,
+                source="none",
+                resolved=False,
+                reason="no roster match",
+            )
+            for n in unresolved_names
+        ],
+    )
+    return {
+        "id": run_id,
+        "business_id": business_id,
+        "status": "needs_operator",
+        "decision": decision.model_dump(mode="json"),
+        "alias_candidates": {},
+        "clarification_round": MAX_CLARIFICATION_ROUNDS,
+    }
+
+
+def test_resolve_rejects_whole_post_on_invalid_employee_id(monkeypatch, fake_repo):
+    """Security V4: a posted employee_id NOT on the run's own business roster
+    must reject the WHOLE POST — no state change, no partial apply."""
+    from app.models.roster import Employee, Roster
+
+    biz_id = COASTAL_BIZ_ID
+    real_emp_id = uuid.uuid4()
+    roster = Roster(
+        business_id=biz_id,
+        employees=[
+            Employee(
+                id=real_emp_id,
+                business_id=biz_id,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+
+    run_id = uuid.uuid4()
+    run_row = _needs_operator_run_row(run_id, biz_id, ["Jimmy"])
+    fake_repo.runs[str(run_id)] = run_row
+
+    import app.db.repo as repo_mod
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+
+    # A cross-business / arbitrary UUID that is NOT on this roster.
+    bogus_id = str(uuid.uuid4())
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": bogus_id, "remember_0": "on"},
+    )
+    assert response.status_code in (200, 303), (
+        "the route must not 500 on a rejected POST — it redirects as a no-op"
+    )
+    # State must NOT have changed: still needs_operator, no override applied.
+    assert fake_repo.runs[str(run_id)]["status"] == "needs_operator", (
+        "an invalid employee_id must reject the WHOLE POST — the run must "
+        "stay at needs_operator, not silently claim/advance (Security V4)"
+    )
+
+
+def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_repo):
+    """A fully-valid POST (every employee_id on the roster) applies the
+    override, claims NEEDS_OPERATOR -> EXTRACTING, and dispatches resume."""
+    from app.models.roster import Employee, Roster
+
+    biz_id = COASTAL_BIZ_ID
+    real_emp_id = uuid.uuid4()
+    roster = Roster(
+        business_id=biz_id,
+        employees=[
+            Employee(
+                id=real_emp_id,
+                business_id=biz_id,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+
+    run_id = uuid.uuid4()
+    run_row = _needs_operator_run_row(run_id, biz_id, ["Jimmy"])
+    fake_repo.runs[str(run_id)] = run_row
+
+    import app.db.repo as repo_mod
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+
+    resume_calls: list = []
+    monkeypatch.setattr(
+        "app.pipeline.orchestrator.resume_pipeline",
+        lambda *a, **kw: resume_calls.append((a, kw)),
+        raising=False,
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(real_emp_id), "remember_0": "on"},
+    )
+    assert response.status_code in (200, 303)
+    assert fake_repo.runs[str(run_id)]["status"] == "extracting", (
+        "a valid POST must claim NEEDS_OPERATOR -> EXTRACTING"
+    )
+    # The remember-checkbox (checked) must have pre-set the bound candidate so
+    # the existing approval-gate write path persists it (D-11-16).
+    candidates = fake_repo.runs[str(run_id)].get("alias_candidates") or {}
+    assert candidates.get("Jimmy") == {
+        "suggested": str(real_emp_id),
+        "bound": str(real_emp_id),
+    }, f"remember-checked token must be pre-bound; got {candidates!r}"
+
+
+def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
+    """D-11-16: remember-checkbox OFF means override-only — nothing learned."""
+    from app.models.roster import Employee, Roster
+
+    biz_id = COASTAL_BIZ_ID
+    real_emp_id = uuid.uuid4()
+    roster = Roster(
+        business_id=biz_id,
+        employees=[
+            Employee(
+                id=real_emp_id,
+                business_id=biz_id,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+
+    run_id = uuid.uuid4()
+    run_row = _needs_operator_run_row(run_id, biz_id, ["Jimmy"])
+    fake_repo.runs[str(run_id)] = run_row
+
+    import app.db.repo as repo_mod
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+    monkeypatch.setattr(
+        "app.pipeline.orchestrator.resume_pipeline", lambda *a, **kw: None, raising=False
+    )
+
+    # No remember_0 key posted at all (checkbox unchecked never submits its field).
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(real_emp_id)},
+    )
+    assert response.status_code in (200, 303)
+    candidates = fake_repo.runs[str(run_id)].get("alias_candidates") or {}
+    assert "Jimmy" not in candidates, (
+        "checkbox OFF must NOT set a bound candidate — override-only, "
+        "nothing learned (D-11-16)"
+    )

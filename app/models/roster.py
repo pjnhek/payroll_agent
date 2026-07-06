@@ -170,7 +170,13 @@ class NameMatchResult(BaseModel):
 
     submitted_name: str
     matched_employee_id: UUID | None  # None when source == "none" (unresolved)
-    source: Literal["exact", "alias", "none"]
+    # "operator" (D-11-08/Open Question #2, Phase 11 Plan 04): a human-stated
+    # per-run override applied by reconcile_names(overrides=...) BEFORE the
+    # exact/alias tiers. It is still a resolved, non-guessed result — a human
+    # explicitly stated the match — so it carries the same resolution invariant
+    # as "exact"/"alias" below, just with its own distinct provenance tag (the
+    # no-guess guarantee holds: the LLM never decides; a human did here).
+    source: Literal["exact", "alias", "none", "operator"]
     resolved: bool
     reason: str
 
@@ -188,7 +194,7 @@ class NameMatchResult(BaseModel):
                 raise ValueError(
                     "source='none' requires resolved=False and matched_employee_id=None"
                 )
-        else:  # "exact" | "alias"
+        else:  # "exact" | "alias" | "operator"
             if not self.resolved or self.matched_employee_id is None:
                 raise ValueError(
                     f"source={self.source!r} requires resolved=True and a "

@@ -17,6 +17,10 @@ Resolution is pure code over roster facts (D-21-01). Per submitted name:
     name that maps to 2+ employees — degrades to ``source="none"``,
     ``resolved=False``, ``matched_employee_id=None``. The resolver NEVER guesses
     on a money-moving decision.
+  - an optional per-run ``overrides`` mapping (Phase 11 Plan 04, D-11-08) lets a
+    human operator state a name's resolution explicitly at the needs_operator
+    resolve form — ``source="operator"``, ``resolved=True``. Still not a
+    guess: a human, not the LLM, made the call.
 
 Collision safety (D-21-02): if a normalized name (or alias) matches MORE THAN ONE
 employee, the resolver refuses to pick either — it returns unresolved so the name
@@ -27,6 +31,7 @@ cases; here the resolver simply declines to uniquely resolve.
 from __future__ import annotations
 
 import unicodedata
+import uuid
 
 from app.models.roster import Employee, NameMatchResult, Roster
 
@@ -104,6 +109,8 @@ def _unresolved(name: str) -> NameMatchResult:
 def reconcile_names(
     submitted_names: list[str],
     roster: Roster,
+    *,
+    overrides: dict[str, str] | None = None,
 ) -> list[NameMatchResult]:
     """Resolve each submitted name against the roster (pure deterministic code).
 
@@ -111,11 +118,50 @@ def reconcile_names(
     uniquely resolves via exact/alias is resolved=True; everything else degrades to
     source="none", resolved=False — there is no model layer and no fuzzy guessing
     (D-21-01). decide() owns the run-level decision over these facts.
+
+    overrides (D-11-08/Open Question #2, Phase 11 Plan 04): an optional
+    submitted_name -> employee_id_str mapping supplied by a human operator at
+    the needs_operator resolve form. When present, an override WINS BEFORE the
+    exact/stored-alias tiers for that name — this is still a resolved,
+    non-guessed result (source="operator"): a human explicitly stated the
+    match, so the no-guess guarantee holds (the LLM never decides; here a
+    human did). Default None keeps every existing caller behavior-identical
+    (no override map means every name still resolves via exact/alias/none
+    exactly as before this param existed).
+
+    Validation: an override id that does NOT belong to a roster employee is
+    silently ignored for that name (falls through to the normal exact/alias/
+    none resolution) — the caller (the /resolve route) is responsible for
+    rejecting an invalid employee_id at the HTTP boundary (Security V4); this
+    function never invents/accepts an id that isn't actually on the roster,
+    so a malformed or stale override map can never bind a person who isn't on
+    this business's roster.
     """
-    return [
-        deterministic_match(name, roster) or _unresolved(name)
-        for name in submitted_names
-    ]
+    overrides = overrides or {}
+    roster_ids = {emp.id for emp in roster.employees}
+    results: list[NameMatchResult] = []
+    for name in submitted_names:
+        override_id_str = overrides.get(name)
+        if override_id_str is not None:
+            try:
+                override_id = uuid.UUID(str(override_id_str))
+            except (ValueError, AttributeError):
+                override_id = None
+            if override_id is not None and override_id in roster_ids:
+                results.append(
+                    NameMatchResult(
+                        submitted_name=name,
+                        matched_employee_id=override_id,
+                        source="operator",
+                        resolved=True,
+                        reason="operator-resolved",
+                    )
+                )
+                continue
+            # Invalid/unknown override id — fall through to normal resolution
+            # rather than trusting an id that isn't actually on this roster.
+        results.append(deterministic_match(name, roster) or _unresolved(name))
+    return results
 
 
 def _safe_to_learn_alias(

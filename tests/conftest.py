@@ -525,6 +525,33 @@ class InMemoryRepo:
         if run is not None:
             run["alias_candidates"] = candidates
 
+    def update_known_alias(self, employee_id, new_alias, conn=None):
+        """Idempotently append new_alias to an in-memory Employee's known_aliases
+        (D-01, mirrors repo.update_known_alias — Phase 11 Plan 04, D-11-17).
+
+        Mutates the SAME seeded Employee object(s) held in
+        self.business_employees so a later load_roster_for_business call (the
+        BATCH-SAFE roster refresh inside _write_aliases_if_safe, and any
+        subsequent real run) sees the newly-learned alias — this is the
+        load-bearing seam that makes the full-loop stops-asking test's SECOND
+        submission actually resolve via the stored alias. Employee is a frozen
+        Pydantic model in this codebase's style (model_copy, never in-place
+        field assignment) EXCEPT known_aliases is a plain list — the real
+        repo mutates the DB row's TEXT[] column; here the equivalent is
+        appending directly to the list object's contents (list.append does
+        mutate in place, so the SAME Employee instance shared across every
+        roster this test loads reflects the write immediately). Returns True
+        if the alias was newly added, False if already present (idempotent).
+        """
+        for employees in self.business_employees.values():
+            for emp in employees:
+                if emp.id == employee_id:
+                    if new_alias in emp.known_aliases:
+                        return False
+                    emp.known_aliases.append(new_alias)
+                    return True
+        return False
+
     def set_pre_clarify_extracted(self, run_id, extracted, conn=None):
         """Snapshot pre-clarify extracted (IS NULL write-once guard, D-19 MONEY-03).
 
@@ -867,6 +894,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "load_line_items",
         "load_all_runs",
         "set_alias_candidates",
+        "update_known_alias",
         "insert_email_message",
         "get_outbound_message_id",
         "find_awaiting_reply_for_header",

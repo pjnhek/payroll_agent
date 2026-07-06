@@ -447,7 +447,12 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
 
     When _clarify runs with decision.unresolved_names containing exactly ONE
     genuinely unresolved token ("Dave Reyez" — zero candidate_ids in seed_roster),
-    set_alias_candidates IS called with {"Dave Reyez": None}.
+    set_alias_candidates IS called with the D-11-14 nested shape
+    {"Dave Reyez": {"suggested": None, "bound": None}} — "suggested" is None
+    here because this test does not mock suggest_employees (it degrades to {}
+    on the real client's ValidationError in this offline environment, per
+    suggest.py's never-strand-the-run contract), so no full_name->id mapping
+    exists to persist.
 
     "Dave Reyez" does NOT appear in any employee's full_name or known_aliases in
     the D-01b roster, so it has zero candidates — genuinely unresolved.
@@ -528,9 +533,10 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     assert "Dave Reyez" in candidates, (
         "set_alias_candidates must be called with the unresolved token as the key"
     )
-    assert candidates["Dave Reyez"] is None, (
-        "the value must be None at capture time — resolved_employee_id filled at "
-        "resume (D-04: capture {original_token: None} before send)"
+    assert candidates["Dave Reyez"] == {"suggested": None, "bound": None}, (
+        "the nested value must be {'suggested': None, 'bound': None} at persist "
+        "time when no suggestion mapping exists — bound is filled at resume via "
+        "the D-11-15 bind-on-confirmation check, never at capture (D-11-14)"
     )
 
 
@@ -727,17 +733,21 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
 
 
 def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypatch):
-    """NEW-2 fix: pre-vs-post diff binding correctly handles multi-employee runs.
+    """D-11-15 bind-on-confirmation correctly handles multi-employee runs.
 
     Setup:
-    - alias_candidates = {"Dave Reyez": None} (the single captured token)
+    - alias_candidates = {"Dave Reyez": {"suggested": str(david.id), "bound": None}}
+      (the persisted D-11-14 suggestion — david was suggested at clarify time)
     - PRE-resume reconciliation: maria already resolved + Dave Reyez unresolved
       pre_resolved_ids = {str(maria.id)}
-    - POST-resume reconciliation: maria + david both resolved
+    - POST-resume reconciliation: maria + david both resolved, "Dave Reyez" is
+      GONE from the submitted names (re-extraction replaced it with "David
+      Reyes", which resolves to the same suggested id)
       post_resolved_ids = {str(maria.id), str(david.id)}
 
-    Expected: repo.set_alias_candidates is called with {"Dave Reyez": str(david.id)}
-    The diff (post minus pre) = {str(david.id)} — the newly-resolved employee.
+    Expected: repo.set_alias_candidates is called with
+    {"Dave Reyez": {"suggested": str(david.id), "bound": str(david.id)}}
+    — the suggested id newly resolved AND the token is gone from unresolved.
 
     Verification that "exactly one resolved match" would have FAILED here: there are
     2 resolved employees post-resume (maria + david), so any "count resolved == 1"
@@ -752,8 +762,8 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     _david_id = uuid.UUID("e0000003-0000-0000-0000-000000000003")
     _maria_id = uuid.UUID("e0000099-0000-0000-0000-000000000099")
 
-    # alias_candidates: the single captured token (Dave Reyez → None, awaiting resolution)
-    _alias_candidates = {"Dave Reyez": None}
+    # alias_candidates: the persisted D-11-14 suggestion (david suggested, not yet bound)
+    _alias_candidates = {"Dave Reyez": {"suggested": str(_david_id), "bound": None}}
 
     # Pre-resume reconciliation: maria resolved, Dave Reyez unresolved
     _pre_reconciliation = [
@@ -773,7 +783,10 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
         },
     ]
 
-    # Post-resume reconciliation: both maria and david resolved
+    # Post-resume reconciliation: both maria and david resolved. "Dave Reyez"
+    # is GONE — re-extraction replaced it with "David Reyes" (a confirming
+    # reply restating the suggested canonical name), which resolves to the
+    # SAME suggested id — both bind conditions hold (D-11-15).
     _post_reconciliation = [
         {
             "submitted_name": "Maria Perez",
@@ -783,11 +796,11 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
             "reason": "exact match",
         },
         {
-            "submitted_name": "Dave Reyez",
+            "submitted_name": "David Reyes",
             "matched_employee_id": str(_david_id),
-            "source": "alias",
+            "source": "exact",
             "resolved": True,
-            "reason": "known alias",
+            "reason": "exact match",
         },
     ]
 
@@ -900,28 +913,33 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     # Verify set_alias_candidates was called with the bound employee_id
     assert len(_set_alias_candidates_calls) == 1, (
         "set_alias_candidates must be called once at resume to bind the token "
-        "to the newly-resolved employee (NEW-2 pre-vs-post diff fix). "
-        "With 2 resolved employees post-resume (maria + david), 'exactly one "
-        "resolved match' check would have silently no-oped — diff correctly "
-        "isolates the NEWLY-resolved employee."
+        "to the confirmed suggestion (D-11-15 bind-on-confirmation). "
+        "With 2 resolved employees post-resume (maria + david), a naive "
+        "'exactly one resolved match' check would have silently no-oped — the "
+        "suggested-id-newly-resolved check correctly isolates the confirmed employee."
     )
     bound = _set_alias_candidates_calls[0]["candidates"]
     assert "Dave Reyez" in bound, "token 'Dave Reyez' must be in the bound candidates"
-    assert bound["Dave Reyez"] == str(_david_id), (
-        f"'Dave Reyez' must be bound to david.id ({_david_id}), got {bound['Dave Reyez']!r}. "
-        "The diff (post minus pre) = {{str(david.id)}} isolates the newly-resolved employee."
+    assert bound["Dave Reyez"] == {"suggested": str(_david_id), "bound": str(_david_id)}, (
+        f"'Dave Reyez' must be bound to the suggested david.id ({_david_id}), "
+        f"got {bound['Dave Reyez']!r}. The suggested id newly resolved AND the "
+        "token is gone from unresolved names — both D-11-15 conditions hold."
     )
 
 
 def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
-    """NEW-2 fix: alias binding is skipped when no new employee is resolved.
+    """D-11-15: alias binding is skipped when the SUGGESTED employee never
+    newly resolves (the reply didn't confirm anything actionable).
 
     Setup:
-    - alias_candidates = {"Dave Reyez": None}
+    - alias_candidates = {"Dave Reyez": {"suggested": str(david.id), "bound": None}}
+      (a suggestion WAS persisted at clarify time)
     - PRE-resume reconciliation: maria resolved (pre_resolved_ids = {str(maria.id)})
-    - POST-resume reconciliation: same — maria still resolved, Dave Reyez still unresolved
-      (the reply did not resolve any new employee)
-    - newly_resolved_ids = post minus pre = {} (empty)
+    - POST-resume reconciliation: same — maria still resolved, Dave Reyez still
+      unresolved (the reply did not resolve any new employee, so the suggested
+      david.id never appears in the post-resume resolved set)
+    - newly_resolved_ids = post minus pre = {} (empty) — the suggested id is
+      NOT in it, so the D-11-15 bind condition fails.
 
     Expected: repo.set_alias_candidates is NOT called (no binding to do).
     """
@@ -932,8 +950,9 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
 
     _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     _maria_id = uuid.UUID("e0000099-0000-0000-0000-000000000099")
+    _david_id = uuid.UUID("e0000003-0000-0000-0000-000000000003")
 
-    _alias_candidates = {"Dave Reyez": None}
+    _alias_candidates = {"Dave Reyez": {"suggested": str(_david_id), "bound": None}}
     _same_reconciliation = [
         {
             "submitted_name": "Maria Perez",
@@ -1020,32 +1039,37 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
     resume_pipeline(run_id, inbound, llm=None)
 
     assert len(_set_alias_candidates_calls) == 0, (
-        "set_alias_candidates must NOT be called when no new employee was resolved "
-        "by the reply (newly_resolved_ids = post minus pre = empty). "
-        "The binding is skipped — no partial/incorrect bind (NEW-2 fix)."
+        "set_alias_candidates must NOT be called when the suggested employee "
+        "never newly resolved by the reply (newly_resolved_ids = post minus "
+        "pre = empty). The binding is skipped — no partial/incorrect bind "
+        "(D-11-15)."
     )
 
 
 def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
-    """MISNAME GUARD: a corrected misname must NOT be learned as an alias.
+    """MISNAME GUARD (D-11-15): a corrected misname must NOT be learned as an alias.
 
-    Scenario (the real bug): the client wrote "Maria" but there is NO Maria — they
-    actually meant a DIFFERENT person, James Okafor. They reply "I meant James Okafor,
-    not Maria." On resume, re-extraction REPLACES "Maria" with "James Okafor" (the
-    corrected token), James resolves, and the run proceeds.
+    Scenario (the real bug): the client wrote "Maria" but there is NO Maria — the
+    clarification suggested a DIFFERENT employee (Priya Singh) as the likely intended
+    match. The client's reply corrects to yet ANOTHER, unrelated person: "I meant
+    James Okafor, not Maria." On resume, re-extraction REPLACES "Maria" with "James
+    Okafor"; James resolves, and the run proceeds.
 
-    "Maria" is NOT James's nickname — it was a misname. Learning "Maria" → James would
-    silently route every future "Maria" to James (a silent misroute on a money-moving
-    decision). The bind MUST be skipped because the resolved entry's submitted_name
-    ("James Okafor") does NOT match the candidate token ("Maria").
+    "Maria" is NOT James's nickname — nobody suggested James for this token, and the
+    resolved employee (James) is NOT the one that was suggested (Priya). Learning
+    "Maria" -> James would silently route every future "Maria" to James (a silent
+    misroute on a money-moving decision). The bind MUST be skipped because the
+    SUGGESTED id (Priya) never appears in the post-resume newly-resolved set — D-11-15
+    requires the CONFIRMED evidence to be about the SUGGESTED employee specifically,
+    not merely "some employee newly resolved."
 
-    Contrast with the legit nickname case (test ...binds_newly_resolved_employee): there
-    the reply RE-STATES the shorthand ("Dave Reyez"), so a resolved entry's
-    submitted_name matches the candidate token and learning is correct.
+    Contrast with the legit nickname case (test ...uses_pre_vs_post_diff...): there
+    the reply RE-STATES the SUGGESTED canonical name, so the suggested id itself newly
+    resolves and learning is correct.
 
     The OLD (buggy) logic bound on count alone — "1 newly-resolved employee + 1 pending
-    candidate" — and would write {"Maria": james.id}. The fix requires the token to
-    match a resolved submitted_name.
+    candidate" — and would write {"Maria": james.id}. The D-11-15 fix requires the
+    NEWLY-RESOLVED id to equal the persisted SUGGESTED id.
     """
     import app.db.repo as repo_mod
     from app.pipeline.orchestrator import resume_pipeline
@@ -1054,9 +1078,11 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
 
     _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     _james_id = uuid.UUID("e0000010-0000-0000-0000-000000000010")
+    _priya_id = uuid.UUID("e0000011-0000-0000-0000-000000000011")
 
-    # Capture phase wrote {"Maria": None} — "Maria" matched no roster employee.
-    _alias_candidates = {"Maria": None}
+    # Capture phase persisted the D-11-14 suggestion — Priya was the suggested
+    # (advisory, non-guessed) match for "Maria", never confirmed yet.
+    _alias_candidates = {"Maria": {"suggested": str(_priya_id), "bound": None}}
 
     # PRE-resume reconciliation: "Maria" unresolved (nothing resolved yet).
     _pre_reconciliation = [
@@ -1068,9 +1094,11 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
             "reason": "no roster match",
         },
     ]
-    # POST-resume reconciliation: the client corrected to a DIFFERENT name. Re-extraction
-    # replaced "Maria" with "James Okafor"; James resolves. "Maria" is GONE from the
-    # submitted names — it was a misname, not a nickname for James.
+    # POST-resume reconciliation: the client corrected to a DIFFERENT, unrelated
+    # person (James) — NOT the suggested Priya. Re-extraction replaced "Maria"
+    # with "James Okafor"; James resolves. "Maria" is GONE from the submitted
+    # names, but the suggested id (Priya) never newly-resolves — this is the
+    # misname case, not a confirmed nickname.
     _post_reconciliation = [
         {
             "submitted_name": "James Okafor",
@@ -1155,15 +1183,108 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
 
     resume_pipeline(run_id, inbound, llm=None)
 
-    # The bug: old logic bound {"Maria": james.id} on count alone. The fix: the resolved
-    # entry's submitted_name ("James Okafor") != the candidate token ("Maria"), so no bind.
-    bound_to_james = [
-        c for c in _set_alias_candidates_calls
-        if c["candidates"].get("Maria") == str(_james_id)
+    # The bug: old logic bound on count alone regardless of WHICH employee
+    # resolved. The D-11-15 fix: the newly-resolved id (James) != the
+    # persisted SUGGESTED id (Priya), so no bind — nobody proposed James for
+    # this token, so nothing can be silently learned toward him.
+    bound_candidates = [
+        c["candidates"].get("Maria")
+        for c in _set_alias_candidates_calls
+        if isinstance(c["candidates"].get("Maria"), dict)
+        and c["candidates"]["Maria"].get("bound") is not None
     ]
-    assert not bound_to_james, (
-        "MISNAME must NOT be learned: 'Maria' was a misname for James (the client meant "
-        "a different person), not James's nickname. Binding 'Maria' → James would silently "
-        "misroute every future 'Maria'. The resolved submitted_name was 'James Okafor', "
-        "which does not match the candidate token 'Maria' — so the alias must be skipped."
+    assert not bound_candidates, (
+        "MISNAME must NOT be learned: 'Maria' was a misname — the client actually "
+        "meant James, an employee who was never suggested for this token (Priya "
+        "was suggested and never resolved). Binding 'Maria' -> anyone here would "
+        "silently misroute every future 'Maria'. D-11-15 requires the SUGGESTED "
+        "id itself to newly resolve — it never did, so the alias must be skipped."
+    )
+    # Sanity: also assert the exact non-bind reason directly — the suggested
+    # Priya id must never appear in any set_alias_candidates call's bound value.
+    for c in _set_alias_candidates_calls:
+        maria_cand = c["candidates"].get("Maria")
+        if isinstance(maria_cand, dict):
+            assert maria_cand.get("bound") != str(_james_id), (
+                "James (a non-suggested resolution) must never be written as "
+                "the bound value for 'Maria'"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Group 5: _normalize_candidate legacy-shape tolerance (D-11-14 Pitfall #6)
+#
+# A live row written BEFORE this plan carries the OLD flat alias_candidates
+# shape: {token: None} (never resolved) or {token: "employee_id_str"} (the OLD
+# NEW-2 pre-vs-post-diff bind wrote the resolved id directly as the value).
+# Every site that reads an alias_candidates value MUST go through
+# _normalize_candidate so these legacy rows never raise AttributeError.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_candidate_none_value():
+    """A flat None value (never resolved, pre-Phase-11 shape) normalizes to
+    {"suggested": None, "bound": None} — behaves as still-pending."""
+    from app.pipeline.orchestrator import _normalize_candidate
+
+    assert _normalize_candidate(None) == {"suggested": None, "bound": None}
+
+
+def test_normalize_candidate_legacy_flat_bound_string():
+    """A flat employee_id string value (the OLD NEW-2 bind's flat-bound shape)
+    normalizes to {"suggested": None, "bound": <the string>} — a legacy row
+    that was ALREADY bound under the old logic keeps behaving as bound (the
+    write side will still learn it), even though "suggested" is unknown."""
+    from app.pipeline.orchestrator import _normalize_candidate
+
+    legacy_id = str(uuid.uuid4())
+    assert _normalize_candidate(legacy_id) == {"suggested": None, "bound": legacy_id}
+
+
+def test_normalize_candidate_nested_dict_is_idempotent():
+    """A value that is ALREADY the D-11-14 nested shape passes through
+    unchanged (idempotent) — _normalize_candidate never double-wraps a dict."""
+    from app.pipeline.orchestrator import _normalize_candidate
+
+    nested = {"suggested": "abc", "bound": None}
+    assert _normalize_candidate(nested) is nested or _normalize_candidate(nested) == nested
+
+
+def test_write_aliases_if_safe_handles_legacy_flat_shape_without_raising(monkeypatch):
+    """_write_aliases_if_safe must not raise AttributeError on a legacy flat
+    alias_candidates row — {token: "employee_id_str"} — and must still learn
+    the alias (the value IS the bound id under legacy semantics, Pitfall #6)."""
+    import app.db.repo as repo_mod
+    from app.pipeline.orchestrator import _write_aliases_if_safe
+
+    roster, david, _daniel = _make_roster()
+    legacy_candidates = {"Dave Reyez": str(david.id)}  # OLD flat-bound shape
+
+    run_data = {
+        "id": uuid.uuid4(),
+        "business_id": roster.business_id,
+        "alias_candidates": legacy_candidates,
+    }
+
+    monkeypatch.setattr(repo_mod, "load_run", lambda rid, conn=None: run_data, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+    written_calls: list = []
+
+    def _fake_update_known_alias(employee_id, alias, conn=None):
+        written_calls.append((employee_id, alias))
+        return True
+
+    monkeypatch.setattr(
+        repo_mod, "update_known_alias", _fake_update_known_alias, raising=False
+    )
+
+    # Must not raise.
+    _write_aliases_if_safe(run_data["id"], run_data, roster)
+
+    assert written_calls == [(david.id, "Dave Reyez")], (
+        "a legacy flat-bound row must still be learned via update_known_alias "
+        "— _normalize_candidate's legacy-string handling makes this reachable "
+        "without an AttributeError (Pitfall #6)"
     )
