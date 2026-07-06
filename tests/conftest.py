@@ -305,10 +305,18 @@ class InMemoryRepo:
         Back-fills run_id on an already-inserted inbound row once the ingest
         transaction classifies it as reply_candidate/late_reply, so tests can
         assert real reply rows are linked to their run like the demo path.
+
+        GAP-2/GAP-3 (11-06): also stamps the linked row's epoch key from the
+        CURRENT reply_epoch of the target run at link time (mirrors repo's
+        correlated subquery). Defaults to 0 via .get for both sides so a run
+        or row that predates the epoch mechanism behaves exactly like a real
+        NOT NULL DEFAULT 0 column.
         """
         row = self.email_by_id.get(str(email_id))
         if row is not None:
             row["run_id"] = run_id
+            run = self.runs.get(str(run_id))
+            row["epoch"] = run.get("reply_epoch", 0) if run is not None else 0
 
     def find_run_by_message_id(self, message_id, conn=None):
         """Mirror repo.find_run_by_message_id (09-01, DATA-02 dedup-loser lookup).
@@ -618,6 +626,10 @@ class InMemoryRepo:
         clarification_round, AND alias_candidates together — matches the real
         repo's single-statement clear so a hermetic retrigger test can assert
         every one of these was actually reset, not just some of them.
+
+        GAP-2/GAP-3 (11-06): also increments reply_epoch (default 0 via .get)
+        on the fake run dict, mirroring the real repo's `reply_epoch =
+        reply_epoch + 1` in the same statement.
         """
         run = self.runs.get(str(run_id))
         if run is not None:
@@ -625,6 +637,7 @@ class InMemoryRepo:
             run["pre_clarify_extracted"] = None
             run["clarification_round"] = 0
             run["alias_candidates"] = None
+            run["reply_epoch"] = run.get("reply_epoch", 0) + 1
 
     def get_record_only_flag(self, run_id, conn=None):
         """Return the record_only flag for a run (06-08, mirrors repo.get_record_only_flag).
@@ -675,8 +688,18 @@ class InMemoryRepo:
         round always appends a NEW row (no upsert-replace of prior-round history,
         D-11-01). `round` defaults to 0 so pre-Phase-11 callers (none of which pass
         it yet) are behavior-identical to the old (run_id, purpose) upsert key.
+
+        GAP-2/GAP-3 (11-06): the OUTBOUND path also stamps epoch from the
+        target run's CURRENT reply_epoch at write time (mirrors repo's
+        correlated subquery in the INSERT). The upsert key is widened to
+        (purpose, round, epoch) — mirrors the widened uq_email_run_purpose_round_epoch
+        constraint and repo's ON CONFLICT (run_id, purpose, round, epoch)
+        arbiter (GAP-2 fix): a retriggered run's fresh round-0 send (new
+        epoch) must always APPEND a new row, never upsert-mutate the stale
+        pre-retrigger round-0 row from a prior epoch.
         """
         purpose = kw.get("purpose")
+        run = self.runs.get(str(run_id)) if run_id is not None else None
         row = {
             "run_id": run_id,
             "direction": direction,
@@ -687,11 +710,18 @@ class InMemoryRepo:
             **kw,
         }
         if direction == "outbound" and run_id is not None:
+            epoch = run.get("reply_epoch", 0) if run is not None else 0
+            row["epoch"] = epoch
             rows = self.outbound.setdefault(str(run_id), [])
             if purpose is not None:
-                # Upsert key: (run_id, purpose, round) — mirrors uq_email_run_purpose_round.
+                # Upsert key: (run_id, purpose, round, epoch) — mirrors
+                # uq_email_run_purpose_round_epoch (GAP-2 widened constraint).
                 for existing in rows:
-                    if existing.get("purpose") == purpose and existing.get("round") == round:
+                    if (
+                        existing.get("purpose") == purpose
+                        and existing.get("round") == round
+                        and existing.get("epoch", 0) == epoch
+                    ):
                         existing.update(row)
                         return uuid.uuid4()
             rows.append(row)
@@ -721,16 +751,23 @@ class InMemoryRepo:
         purpose, send_state='sent', AND round; returns {"message_id", "round"}
         (not just the message_id) so a caller derives the next round from the
         FOUND row, never a blind +1 (Pitfall #3).
+
+        GAP-2 (11-06): also filters on row.get("epoch", 0) == the run's
+        CURRENT reply_epoch — the actual GAP-2 fix, mirroring repo's
+        correlated subquery scope.
         """
         rows = self.outbound.get(str(run_id))
         if not rows:
             return None
+        run = self.runs.get(str(run_id))
+        current_epoch = run.get("reply_epoch", 0) if run is not None else 0
         matching = [
             r
             for r in rows
             if r.get("purpose") == purpose
             and r.get("send_state") == "sent"
             and r.get("round") == round
+            and r.get("epoch", 0) == current_epoch
         ]
         if not matching:
             return None
@@ -752,12 +789,20 @@ class InMemoryRepo:
 
         Mirrors repo.load_consumed_replies: filters inbound + consumed_round is
         not None, sorted by consumed_round ascending.
+
+        GAP-3 (11-06): also filters on row.get("epoch", 0) == the run's
+        CURRENT reply_epoch — the actual GAP-3 fix, mirroring repo's
+        correlated subquery scope. A stale consumed reply from a pre-retrigger
+        epoch is invisible here even though the row is never deleted.
         """
+        run = self.runs.get(str(run_id))
+        current_epoch = run.get("reply_epoch", 0) if run is not None else 0
         matching = [
             row
             for row in self.emails.values()
             if row.get("direction") == "inbound"
             and row.get("consumed_round") is not None
+            and row.get("epoch", 0) == current_epoch
             and (
                 str(row.get("run_id")) == str(run_id)
                 if row.get("run_id") is not None
@@ -784,6 +829,12 @@ class InMemoryRepo:
         Mirrors repo.find_stranded_unconsumed_replies: applies the awaiting_reply
         + unconsumed + age filter using the row's created_at (every fake row now
         carries one, from insert_inbound_email/insert_email_message).
+
+        GAP-2/GAP-3 (11-06): also requires row.get("epoch", 0) == the run's
+        CURRENT reply_epoch — mirrors repo's `em.epoch = pr.reply_epoch` JOIN
+        condition. A genuinely stale epoch-0 unconsumed reply must never be
+        auto-resumed against a run that has since been retriggered into a
+        NEW epoch-1 awaiting_reply state.
         """
         threshold = timedelta(seconds=threshold_seconds)
         now = datetime.now(timezone.utc)
@@ -796,6 +847,8 @@ class InMemoryRepo:
                 continue
             run = self.runs.get(str(run_id))
             if not run or run.get("status") != "awaiting_reply":
+                continue
+            if row.get("epoch", 0) != run.get("reply_epoch", 0):
                 continue
             created_at = row.get("created_at")
             if created_at is not None and now - created_at < threshold:

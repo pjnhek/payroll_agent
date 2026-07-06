@@ -98,6 +98,13 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     -- needs_operator escalation. NOT NULL DEFAULT 0 — every run starts at round 0
     -- and old code never writes it, so the default is always correct for pre-Phase-11 rows.
     clarification_round  INT     NOT NULL DEFAULT 0,
+    -- Phase 11 gap-closure (GAP-2/GAP-3, 11-06): bumped by clear_reply_context
+    -- on every retrigger (D-11-04 extension) — scopes every round-machine
+    -- email_messages read/write to the CURRENT conversation without deleting
+    -- or mutating the append-only audit log's historical rows. NOT NULL
+    -- DEFAULT 0 so every pre-existing run (which never retriggered) stays at
+    -- epoch 0 forever, behavior-identical to pre-fix.
+    reply_epoch     INT     NOT NULL DEFAULT 0,
     error_reason    TEXT,       -- D-A1-03 / FIX 7: orchestrator's persisted ERROR reason
     pay_period_start DATE,
     pay_period_end   DATE,
@@ -120,6 +127,7 @@ ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS pre_clarify_extracted JSONB;  
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarified_fields      JSONB;  -- D-13 MONEY-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_detail          TEXT;   -- D-8-01/D-8-02: PII-scrubbed, stage-prefixed, truncated exception detail
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarification_round   INT NOT NULL DEFAULT 0;  -- D-11-01 (Phase 11 round machine)
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reply_epoch            INT NOT NULL DEFAULT 0;  -- GAP-2/GAP-3 (Plan 11-06 epoch mechanism)
 
 -- ── OPS2-02 hot-path indexes for payroll_runs ─────────────────────────────────
 -- Serve load_all_runs's ORDER BY created_at DESC and find_awaiting_reply_for_header's
@@ -229,12 +237,32 @@ CREATE TABLE IF NOT EXISTS email_messages (
     -- Phase 11 (D-11-02): NULL = unconsumed (the D-11-13 resume-read/redelivery
     -- signal). Set once, write-once, by repo.mark_reply_consumed.
     consumed_round   INT,
+    -- Phase 11 gap-closure (GAP-2/GAP-3, 11-06): stamped at write time from the
+    -- OWNING RUN's reply_epoch at the moment the row is created/linked
+    -- (outbound send, or inbound reply linkage) — NEVER read back and mutated
+    -- afterward. A row's epoch is a permanent, point-in-time fact about which
+    -- conversation it belonged to. NOT NULL DEFAULT 0 so every pre-existing row
+    -- (created before any run ever retriggered) is correctly epoch 0.
+    epoch            INT         NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_message_id UNIQUE (message_id),
-    -- uq_email_run_purpose_round (widened from uq_email_run_purpose, D-11-01):
-    -- each run has at most one clarification (per round) and one confirmation
-    -- outbound row. Postgres NULL != NULL so inbound rows (purpose=NULL) never conflict.
-    CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round)
+    -- uq_email_run_purpose_round_epoch (widened from uq_email_run_purpose_round,
+    -- GAP-2 11-06 fix): each run has at most one clarification (per round, per
+    -- epoch) and one confirmation outbound row. Postgres NULL != NULL so
+    -- inbound rows (purpose=NULL) never conflict.
+    --
+    -- WHY epoch MUST be in this constraint (not just in the WHERE-clause reads):
+    -- a retrigger resets clarification_round to 0, so the retriggered run's
+    -- fresh round-0 send has the SAME (run_id, purpose, round) tuple as the
+    -- stale pre-retrigger round-0 row. Without epoch in the constraint,
+    -- insert_email_message's `ON CONFLICT (run_id, purpose, round) DO UPDATE`
+    -- would silently UPSERT (mutate) the historical row instead of appending a
+    -- new one — corrupting the append-only audit log on every retrigger, the
+    -- exact invariant this plan's threat model requires. Widening to include
+    -- epoch makes the two rows distinct conflict targets, so the retriggered
+    -- send always INSERTs a genuinely new row (Pitfall #1 preserved: the
+    -- constraint and every ON CONFLICT clause must never drift apart).
+    CONSTRAINT uq_email_run_purpose_round_epoch UNIQUE (run_id, purpose, round, epoch)
 );
 
 -- ── Idempotent column adds for email_messages (Plan 05-03) ───────────────────
@@ -250,6 +278,10 @@ ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS send_state
 -- consumed_round stays nullable (NULL = unconsumed).
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS round INT NOT NULL DEFAULT 0;
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS consumed_round INT;
+-- GAP-2/GAP-3 (Plan 11-06): epoch idempotent add for a running DB. NOT NULL
+-- DEFAULT 0 — every existing row predates the epoch mechanism and belongs to
+-- epoch 0, matching every existing run's reply_epoch default.
+ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS epoch INT NOT NULL DEFAULT 0;
 
 -- N4 MONEY-03: Idempotent DROP + RE-ADD of email_messages purpose CHECK constraint
 -- (D-7.5-03a atomic DROP+ADD in one transaction). The new CHECK includes
@@ -305,6 +337,31 @@ BEGIN
     ) THEN
         ALTER TABLE email_messages
             ADD CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round);
+    END IF;
+END;
+$$;
+
+-- GAP-2 (Plan 11-06): widen uq_email_run_purpose_round -> uq_email_run_purpose_round_epoch.
+-- Same atomic DROP+ADD-in-one-DO-block idiom as the D-11-01 widening above —
+-- a failed ADD rolls back the DROP too, so a live migration can never end up
+-- with neither constraint present (Pitfall #1, extended: insert_email_message's
+-- ON CONFLICT arbiter must always have a match, now on 4 columns).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_email_run_purpose_round'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages DROP CONSTRAINT uq_email_run_purpose_round;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_email_run_purpose_round_epoch'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages
+            ADD CONSTRAINT uq_email_run_purpose_round_epoch UNIQUE (run_id, purpose, round, epoch);
     END IF;
 END;
 $$;
