@@ -301,8 +301,10 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
     monkeypatch,
 ):
     """Offline: _clarify's idempotency early-return path (PATH 1) calls
-    set_pre_clarify_extracted THEN set_status(AWAITING_REPLY), both carrying
-    conn=, inside one transaction block (Test 3 of Task 2's behavior spec).
+    set_pre_clarify_extracted, THEN set_clarification_round (D-11-01 idempotent
+    round advance), THEN set_status(AWAITING_REPLY), all carrying conn=, inside
+    one transaction block (Test 3 of Task 2's behavior spec, extended for D-11-01
+    in Phase 11 Plan 02).
     """
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
@@ -317,8 +319,17 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
     monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
     monkeypatch.setattr(
         repo_mod,
-        "get_outbound_message_id",
-        lambda run_id, purpose=None, conn=None: "<already-sent@test>",
+        "get_clarification_round",
+        lambda run_id, conn=None: 0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "get_outbound_for_round",
+        lambda run_id, purpose=None, round=0, conn=None: {
+            "message_id": "<already-sent@test>",
+            "round": round,
+        },
         raising=False,
     )
 
@@ -326,10 +337,14 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
         ordering.append(("set_pre_clarify_extracted", conn is not None))
         return True
 
+    def _spy_round(run_id, value, conn=None):
+        ordering.append(("set_clarification_round", conn is not None))
+
     def _spy_status(run_id, status, conn=None):
         ordering.append(("set_status", conn is not None))
 
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", _spy_snapshot, raising=False)
+    monkeypatch.setattr(repo_mod, "set_clarification_round", _spy_round, raising=False)
     monkeypatch.setattr(repo_mod, "set_status", _spy_status, raising=False)
     patch_get_connection(monkeypatch, repo_mod)
 
@@ -347,11 +362,13 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
 
     assert ordering == [
         ("set_pre_clarify_extracted", True),
+        ("set_clarification_round", True),
         ("set_status", True),
     ], (
         "PATH 1 (idempotency early-return): set_pre_clarify_extracted must run "
-        "BEFORE set_status(AWAITING_REPLY), both carrying conn= (one transaction, "
-        "status-advance-last, D-9-02/D-9-06); got: " + repr(ordering)
+        "BEFORE set_clarification_round (D-11-01 idempotent advance), which must "
+        "run BEFORE set_status(AWAITING_REPLY), all carrying conn= (one "
+        "transaction, status-advance-last, D-9-02/D-9-06); got: " + repr(ordering)
     )
 
 
