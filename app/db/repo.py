@@ -36,12 +36,31 @@ FIX 9) so Plans 02/03/04 never discover a missing helper mid-wave:
     persist_reconciliation — list[NameMatchResult] JSONB only (D-A3-05)
     replace_line_items     — DELETE-by-run then insert (idempotency invariant)
     set_alias_candidates   — write alias_candidates JSONB column (D-04)
+    get_clarification_round / set_clarification_round — payroll_runs.clarification_round
+                             read/write (D-11-01, Phase 11 round machine; zero behavior
+                             change until a later plan wires the increment)
+    clear_reply_context    — nulls clarified_fields, pre_clarify_extracted,
+                             clarification_round, AND alias_candidates in one
+                             statement (D-11-04: "context lost means ALL of it")
 
   Email / threading
     insert_email_message       — generic append to email_messages (audit log); upserts
-                                 on (run_id, purpose) for non-NULL purpose outbound rows
+                                 on (run_id, purpose, round) for non-NULL purpose outbound
+                                 rows (D-11-01: widened from (run_id, purpose); round
+                                 defaults to 0 so existing callers are behavior-identical)
     get_outbound_message_id    — purpose-aware + send_state='sent'-filtered read of the
                                  outbound Message-ID (finding #1 + R2-HIGH fix, CLAR-04)
+    get_outbound_for_round     — round-aware sibling of get_outbound_message_id; returns
+                                 the found row's round so callers derive the next round
+                                 from it, never a blind +1 (D-11-01/13, Pitfall #3)
+    mark_reply_consumed        — write-once (consumed_round IS NULL guard) marker for an
+                                 inbound reply (D-11-02)
+    load_consumed_replies      — all consumed inbound replies for a run, round-ordered
+                                 (D-11-10/12/13 accumulated-context source)
+    get_inbound_by_message_id  — load the PERSISTED inbound row by message_id (D-11-13;
+                                 WR-04 redelivery reads this, never the redelivered body)
+    find_stranded_unconsumed_replies — stale unconsumed replies against awaiting_reply
+                                 runs (D-11-05 auto-resume sweep scope)
     update_email_message_sent  — flip send_state to 'sent' WHERE message_id=synthetic_id
                                  (06-04 D-13c success path; HIGH-1 schema-verified SQL)
     update_email_message_state — parameterized flip of send_state WHERE message_id=synthetic_id
@@ -919,6 +938,61 @@ def load_clarified_fields(
     return json.loads(row[0]) if isinstance(row[0], str) else row[0]
 
 
+def get_clarification_round(run_id: uuid.UUID, conn=None) -> int:
+    """Read payroll_runs.clarification_round (D-11-01). Returns 0 if row missing.
+
+    Zero behavior change in Plan 11-01: nothing calls this yet — the round-guard
+    orchestrator work lands in a later plan. The column defaults to 0 for every
+    run (old and new), so a caller reading it before that later plan wires the
+    increment always sees the pre-Phase-11 value (0).
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT clarification_round FROM payroll_runs WHERE id = %s",
+            (str(run_id),),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return 0
+    return int(row[0])
+
+
+def set_clarification_round(run_id: uuid.UUID, value: int, conn=None) -> None:
+    """Write payroll_runs.clarification_round (D-11-01).
+
+    Caller-joinable transaction (copy of link_email_to_run's shape) so a later
+    plan's `_clarify` finalize path can write this in the SAME transaction as
+    set_status(AWAITING_REPLY) (D-9-02: status-advance-last).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET clarification_round = %s, updated_at = now() WHERE id = %s",
+                (value, str(run_id)),
+            )
+
+
+def clear_reply_context(run_id: uuid.UUID, conn=None) -> None:
+    """Null ALL reply-round context on a run in one statement (D-11-04).
+
+    "Context lost means ALL of it": the pre-clarify snapshot, the field-
+    regression outcomes, the round counter, AND the suggestion/candidate state
+    are cleared together — a retrigger that wipes only some of these would
+    leave the round machine (or the alias-suggestion state) referencing a
+    conversation that no longer exists. Caller-joinable transaction so a later
+    plan's retrigger route can clear strictly AFTER a winning claim_status, in
+    the same transaction that commits before _run_pipeline is scheduled
+    (Pitfall #8).
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE payroll_runs SET clarified_fields = NULL, pre_clarify_extracted = NULL,"
+                " clarification_round = 0, alias_candidates = NULL, updated_at = now()"
+                " WHERE id = %s",
+                (str(run_id),),
+            )
+
+
 def update_known_alias(
     employee_id: uuid.UUID,
     new_alias: str,
@@ -973,14 +1047,24 @@ def insert_email_message(
     body_text: str | None = None,
     purpose: str | None = None,
     send_state: str | None = None,
+    round: int = 0,
     conn=None,
 ) -> uuid.UUID:
     """Append an email_messages row (the append-only audit log). Returns its id.
 
     When purpose is non-NULL (outbound rows with a purpose value), the INSERT
-    upserts on the uq_email_run_purpose constraint (run_id, purpose). This turns a
-    retry over a prior 'reserved' or 'failed' row into an advancement to 'sent'
-    rather than a unique-constraint crash (NEW-1 D-13c sharpening).
+    upserts on the uq_email_run_purpose_round constraint (run_id, purpose, round)
+    (D-11-01: widened from the old 2-column uq_email_run_purpose in the SAME plan
+    step as this arbiter change — Pitfall #1, the constraint and the ON CONFLICT
+    clause must never drift apart). This turns a retry WITHIN a round over a
+    prior 'reserved' or 'failed' row into an advancement to 'sent' rather than a
+    unique-constraint crash (NEW-1 D-13c sharpening); a NEW round is a NEW row
+    (D-11-01: no upsert-replace of prior-round history).
+
+    `round` defaults to 0, so every existing caller (none of which passes it yet
+    in this plan) is behavior-identical: a round-0 row upserts exactly like the
+    old (run_id, purpose) arbiter did, because round=0 is now baked into both
+    the row and the constraint.
 
     Inbound rows (purpose=NULL) are unaffected: Postgres treats NULLs as distinct
     in UNIQUE constraints, so inbound rows never conflict.
@@ -988,17 +1072,17 @@ def insert_email_message(
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             if purpose is not None:
-                # Outbound path with a purpose: upsert on (run_id, purpose) so a
-                # retry over a reserved/failed row advances to the new send_state
-                # rather than crashing with a unique constraint violation.
+                # Outbound path with a purpose: upsert on (run_id, purpose, round) so a
+                # retry WITHIN a round over a reserved/failed row advances to the new
+                # send_state rather than crashing with a unique constraint violation.
                 row = c.execute(
                     """
                     INSERT INTO email_messages (
                         run_id, direction, message_id, in_reply_to,
                         references_header, subject, from_addr, to_addr, body_text,
-                        purpose, send_state
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (run_id, purpose) DO UPDATE
+                        purpose, send_state, round
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (run_id, purpose, round) DO UPDATE
                         SET send_state = EXCLUDED.send_state,
                             message_id = EXCLUDED.message_id,
                             subject = EXCLUDED.subject,
@@ -1018,6 +1102,7 @@ def insert_email_message(
                         body_text,
                         purpose,
                         send_state,
+                        round,
                     ),
                 ).fetchone()
             else:
@@ -1028,8 +1113,8 @@ def insert_email_message(
                     INSERT INTO email_messages (
                         run_id, direction, message_id, in_reply_to,
                         references_header, subject, from_addr, to_addr, body_text,
-                        purpose, send_state
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        purpose, send_state, round
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -1044,6 +1129,7 @@ def insert_email_message(
                         body_text,
                         purpose,
                         send_state,
+                        round,
                     ),
                 ).fetchone()
     # In real Postgres RETURNING always yields a row; the fallback only matters
@@ -1078,6 +1164,138 @@ def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str |
             (str(run_id), purpose),
         ).fetchone()
     return row[0] if row else None
+
+
+def get_outbound_for_round(
+    run_id: uuid.UUID, purpose: str, round: int, conn=None
+) -> dict | None:
+    """Round-aware and send_state-filtered outbound row lookup (D-11-01/D-11-13).
+
+    Same shape as get_outbound_message_id — the invalid-purpose guard (T-05-09b)
+    and the `send_state = 'sent'` proof-of-delivery filter are both preserved —
+    with an added `round` filter. Returns a dict (not just the message_id) so
+    callers can read the FOUND ROW's round back: the idempotent next round is
+    always derived from this row's round (`row["round"] + 1`), never a blind
+    `round + 1` on the caller's own counter (Pitfall #3 — crash-safety of the
+    round increment depends on re-deriving from what was actually sent).
+
+    Raises ValueError on an unrecognised purpose value (same guard as
+    get_outbound_message_id).
+    """
+    if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
+        raise ValueError(
+            f"purpose must be 'clarification', 'confirmation', or 'clarification_field_regression', got {purpose!r}"
+        )
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT message_id, round FROM email_messages
+            WHERE run_id = %s AND direction = 'outbound'
+              AND purpose = %s AND send_state = 'sent' AND round = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (str(run_id), purpose, round),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"message_id": row[0], "round": row[1]}
+
+
+def mark_reply_consumed(message_id: str, round: int, conn=None) -> None:
+    """Write-once marker: this inbound reply has been consumed at `round` (D-11-02).
+
+    `consumed_round IS NULL` in the WHERE clause makes this write-once — a
+    second call (e.g. WR-04 redelivery re-scheduling the same message_id) is a
+    silent no-op rather than overwriting an already-consumed row. Restricted to
+    direction='inbound' so an outbound row can never be marked consumed.
+    """
+    with _conn_ctx(conn) as (c, owns):
+        with c.transaction() if owns else _nulltx():
+            c.execute(
+                "UPDATE email_messages SET consumed_round = %s"
+                " WHERE message_id = %s AND direction = 'inbound' AND consumed_round IS NULL",
+                (round, message_id),
+            )
+
+
+def load_consumed_replies(run_id: uuid.UUID, conn=None) -> list[dict]:
+    """Return all consumed inbound replies for a run, round-ordered (D-11-10/12/13).
+
+    Copies load_thread_messages' dict_row multi-row shape. Filters to
+    direction='inbound' AND consumed_round IS NOT NULL, ordered by
+    consumed_round ASC so a later plan's accumulated-context builder can render
+    every consumed reply in the order it was actually processed (not insertion
+    order, which can differ under redelivery/retry).
+    """
+    sql = (
+        "SELECT direction, purpose, subject, body_text, message_id,"
+        " from_addr, to_addr, consumed_round, created_at"
+        " FROM email_messages"
+        " WHERE run_id = %s AND direction = 'inbound' AND consumed_round IS NOT NULL"
+        " ORDER BY consumed_round ASC"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (str(run_id),))
+            return cur.fetchall() or []
+
+
+def get_inbound_by_message_id(message_id: str, conn=None) -> dict | None:
+    """Load the PERSISTED inbound row by its RFC message_id (D-11-13, Pitfall #11a).
+
+    WR-04 redelivery must resume from the row already written at first ingest
+    (cleaned body_text, run_id via WR-03 linking, consumed_round) — NEVER
+    rebuild an InboundEmail from a redelivered webhook request body, which
+    would re-clean/re-parse and could diverge from what was actually processed.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT run_id, message_id, subject, body_text, from_addr, to_addr,"
+                " consumed_round"
+                " FROM email_messages WHERE message_id = %s AND direction = 'inbound'",
+                (message_id,),
+            )
+            return cur.fetchone()
+
+
+# Round-cap escalation scope (D-11-05): EXACTLY this stale, unconsumed,
+# awaiting_reply combination is eligible for the WR-04 auto-resume sweep — a
+# deliberately DIFFERENT scope from _STRANDED_SCOPE_STATUSES (received/
+# extracting/computed) and from the retrigger stale_statuses list. A reply
+# sitting unconsumed against an awaiting_reply run past the staleness
+# threshold means the resume webhook never fired (dead background task or
+# missed redelivery), not a normal in-flight run — pinned by an explicit unit
+# test alongside the other two scope-pin tests (Pitfall #4 item 7).
+_STRANDED_REPLY_SCOPE_STATUS = "awaiting_reply"
+
+
+def find_stranded_unconsumed_replies(threshold_seconds: int, conn=None) -> list[dict]:
+    """Find stale unconsumed inbound replies against awaiting_reply runs (D-11-05).
+
+    Joins email_messages (direction='inbound', consumed_round IS NULL,
+    run_id IS NOT NULL, created_at older than the staleness threshold) to
+    payroll_runs (status = 'awaiting_reply'). Returns reply-row dicts with the
+    same fields as get_inbound_by_message_id plus run_id, so the D-11-05 sweep
+    hook (a later plan) can re-schedule _resume_pipeline for each one — the CAS
+    claim inside resume_pipeline absorbs any double-schedule.
+    """
+    sql = (
+        "SELECT em.run_id, em.message_id, em.subject, em.body_text,"
+        " em.from_addr, em.to_addr, em.consumed_round"
+        " FROM email_messages em"
+        " JOIN payroll_runs pr ON pr.id = em.run_id"
+        " WHERE em.direction = 'inbound'"
+        "   AND em.consumed_round IS NULL"
+        "   AND em.run_id IS NOT NULL"
+        "   AND pr.status = %s"
+        "   AND em.created_at < now() - (%s || ' seconds')::interval"
+    )
+    with _conn_ctx(conn) as (c, _owns):
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(sql, (_STRANDED_REPLY_SCOPE_STATUS, str(threshold_seconds)))
+            return cur.fetchall() or []
 
 
 def update_email_message_sent(message_id: str, conn=None) -> None:
