@@ -158,12 +158,12 @@ class TestEnumCheckDrift:
         sql_values = _extract_check_in_values(sql, "status")
         enum_values = {member.value for member in RunStatus}
 
-        assert len(sql_values) == 10, (
-            f"Expected 10 unique status values in SQL CHECK, got {len(sql_values)}: "
+        assert len(sql_values) == 11, (
+            f"Expected 11 unique status values in SQL CHECK, got {len(sql_values)}: "
             f"{sorted(sql_values)}"
         )
-        assert len(enum_values) == 10, (
-            f"Expected 10 RunStatus members, got {len(enum_values)}: "
+        assert len(enum_values) == 11, (
+            f"Expected 11 RunStatus members, got {len(enum_values)}: "
             f"{sorted(enum_values)}"
         )
 

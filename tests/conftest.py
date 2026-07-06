@@ -23,7 +23,7 @@ from __future__ import annotations
 import contextlib
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -277,7 +277,21 @@ class InMemoryRepo:
         if mid in self.emails:
             return None, False
         eid = uuid.uuid4()
-        row = {"id": eid, **kw}
+        # Phase 11 (D-11-01/02): every fake email row carries direction (real
+        # insert_inbound_email always inserts 'inbound' — the real SQL hardcodes
+        # it, so kw never actually passes it), round (default 0), and
+        # consumed_round (default None, meaning unconsumed), so
+        # find_stranded_unconsumed_replies / load_consumed_replies /
+        # mark_reply_consumed / get_inbound_by_message_id can read/write these
+        # exactly like the real repo does on the real email_messages columns.
+        row = {
+            "id": eid,
+            "direction": "inbound",
+            "round": 0,
+            "consumed_round": None,
+            "created_at": datetime.now(timezone.utc),
+            **kw,
+        }
         self.emails[mid] = row
         self.email_by_id[str(eid)] = row
         return eid, True
@@ -330,6 +344,9 @@ class InMemoryRepo:
             "pay_period_start": pay_period_start,
             "pay_period_end": pay_period_end,
             "record_only": record_only,
+            # Phase 11 (D-11-01): every run starts at round 0, matching the real
+            # column's NOT NULL DEFAULT 0 — old code never sets this key.
+            "clarification_round": 0,
         }
         return rid
 
@@ -549,6 +566,39 @@ class InMemoryRepo:
             return {}
         return run.get("clarified_fields") or {}
 
+    def get_clarification_round(self, run_id, conn=None):
+        """Read the fake run's clarification_round key (D-11-01, mirrors repo).
+
+        Returns 0 if the run is missing or the key is absent — matches create_run
+        below, which does not set the key (Python dict default via .get, exactly
+        like the real column's NOT NULL DEFAULT 0).
+        """
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return 0
+        return run.get("clarification_round", 0)
+
+    def set_clarification_round(self, run_id, value, conn=None):
+        """Write the fake run's clarification_round key (D-11-01, mirrors repo)."""
+        run = self.runs.get(str(run_id))
+        if run is not None:
+            run["clarification_round"] = value
+
+    def clear_reply_context(self, run_id, conn=None):
+        """Null ALL reply-round context on the fake run (D-11-04, mirrors repo).
+
+        "Context lost means ALL of it": clarified_fields, pre_clarify_extracted,
+        clarification_round, AND alias_candidates together — matches the real
+        repo's single-statement clear so a hermetic retrigger test can assert
+        every one of these was actually reset, not just some of them.
+        """
+        run = self.runs.get(str(run_id))
+        if run is not None:
+            run["clarified_fields"] = None
+            run["pre_clarify_extracted"] = None
+            run["clarification_round"] = 0
+            run["alias_candidates"] = None
+
     def get_record_only_flag(self, run_id, conn=None):
         """Return the record_only flag for a run (06-08, mirrors repo.get_record_only_flag).
 
@@ -590,10 +640,34 @@ class InMemoryRepo:
         return business_name in seed_business_ids
 
     # --- email / threading (the FIX 3 outbound Message-ID anchor) ---
-    def insert_email_message(self, *, run_id, direction, message_id, conn=None, **kw):
-        row = {"run_id": run_id, "direction": direction, "message_id": message_id, **kw}
+    def insert_email_message(self, *, run_id, direction, message_id, conn=None, round=0, **kw):
+        """Mirror repo.insert_email_message, including the D-11-01 round-aware upsert.
+
+        The real repo upserts outbound purpose rows on (run_id, purpose, round) —
+        a retry WITHIN a round advances send_state/message_id in place, but a NEW
+        round always appends a NEW row (no upsert-replace of prior-round history,
+        D-11-01). `round` defaults to 0 so pre-Phase-11 callers (none of which pass
+        it yet) are behavior-identical to the old (run_id, purpose) upsert key.
+        """
+        purpose = kw.get("purpose")
+        row = {
+            "run_id": run_id,
+            "direction": direction,
+            "message_id": message_id,
+            "round": round,
+            "consumed_round": None,
+            "created_at": datetime.now(timezone.utc),
+            **kw,
+        }
         if direction == "outbound" and run_id is not None:
-            self.outbound.setdefault(str(run_id), []).append(row)
+            rows = self.outbound.setdefault(str(run_id), [])
+            if purpose is not None:
+                # Upsert key: (run_id, purpose, round) — mirrors uq_email_run_purpose_round.
+                for existing in rows:
+                    if existing.get("purpose") == purpose and existing.get("round") == round:
+                        existing.update(row)
+                        return uuid.uuid4()
+            rows.append(row)
         return uuid.uuid4()
 
     def get_outbound_message_id(self, run_id, purpose=None, conn=None):
@@ -612,6 +686,95 @@ class InMemoryRepo:
             matching = [r for r in rows if r.get("purpose") == purpose and r.get("send_state") == "sent"]
             return matching[-1]["message_id"] if matching else None
         return rows[-1]["message_id"]
+
+    def get_outbound_for_round(self, run_id, purpose, round, conn=None):
+        """Round-aware sibling of get_outbound_message_id (D-11-01/13, mirrors repo).
+
+        Filters direction (implicit — only self.outbound rows are stored),
+        purpose, send_state='sent', AND round; returns {"message_id", "round"}
+        (not just the message_id) so a caller derives the next round from the
+        FOUND row, never a blind +1 (Pitfall #3).
+        """
+        rows = self.outbound.get(str(run_id))
+        if not rows:
+            return None
+        matching = [
+            r
+            for r in rows
+            if r.get("purpose") == purpose
+            and r.get("send_state") == "sent"
+            and r.get("round") == round
+        ]
+        if not matching:
+            return None
+        found = matching[-1]
+        return {"message_id": found["message_id"], "round": found.get("round", 0)}
+
+    def mark_reply_consumed(self, message_id, round, conn=None):
+        """Write-once consumed_round marker on the matching inbound row (D-11-02).
+
+        Mirrors the real repo's `consumed_round IS NULL` write-once guard: a
+        second call for an already-consumed message_id is a no-op.
+        """
+        row = self.emails.get(message_id)
+        if row is not None and row.get("direction") == "inbound" and row.get("consumed_round") is None:
+            row["consumed_round"] = round
+
+    def load_consumed_replies(self, run_id, conn=None):
+        """Return consumed inbound replies for a run, round-ordered (D-11-10/12/13).
+
+        Mirrors repo.load_consumed_replies: filters inbound + consumed_round is
+        not None, sorted by consumed_round ascending.
+        """
+        matching = [
+            row
+            for row in self.emails.values()
+            if row.get("direction") == "inbound"
+            and row.get("consumed_round") is not None
+            and (
+                str(row.get("run_id")) == str(run_id)
+                if row.get("run_id") is not None
+                else False
+            )
+        ]
+        return sorted(matching, key=lambda r: r["consumed_round"])
+
+    def get_inbound_by_message_id(self, message_id, conn=None):
+        """Return the stored inbound row dict, or None (D-11-13, mirrors repo).
+
+        WR-04 redelivery reads the PERSISTED row (Pitfall #11a) — this fake
+        returns exactly what insert_inbound_email stored, never a freshly-built
+        InboundEmail from a redelivered request.
+        """
+        row = self.emails.get(message_id)
+        if row is None or row.get("direction") != "inbound":
+            return None
+        return row
+
+    def find_stranded_unconsumed_replies(self, threshold_seconds, conn=None):
+        """Stale unconsumed inbound replies against awaiting_reply runs (D-11-05).
+
+        Mirrors repo.find_stranded_unconsumed_replies: applies the awaiting_reply
+        + unconsumed + age filter using the row's created_at (every fake row now
+        carries one, from insert_inbound_email/insert_email_message).
+        """
+        threshold = timedelta(seconds=threshold_seconds)
+        now = datetime.now(timezone.utc)
+        found: list[dict] = []
+        for row in self.emails.values():
+            if row.get("direction") != "inbound" or row.get("consumed_round") is not None:
+                continue
+            run_id = row.get("run_id")
+            if run_id is None:
+                continue
+            run = self.runs.get(str(run_id))
+            if not run or run.get("status") != "awaiting_reply":
+                continue
+            created_at = row.get("created_at")
+            if created_at is not None and now - created_at < threshold:
+                continue
+            found.append(row)
+        return found
 
     # --- 06-04 new repo helpers (D-13c crash-safe ordering + D-14 threading) ---
     def get_outbound_references_chain(self, run_id, conn=None):
@@ -728,6 +891,15 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "find_run_by_message_id",
         # phase-9 review WR-03 — reply/late-reply rows linked to their run
         "link_email_to_run",
+        # Phase 11 (11-01) additions — round machine data-layer primitives
+        "get_clarification_round",
+        "set_clarification_round",
+        "get_outbound_for_round",
+        "mark_reply_consumed",
+        "load_consumed_replies",
+        "get_inbound_by_message_id",
+        "clear_reply_context",
+        "find_stranded_unconsumed_replies",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
