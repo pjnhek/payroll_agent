@@ -988,6 +988,17 @@ def retrigger(
                     )
 
     if claimed:
+        # WR-06 (D-11-04, Plan 11-05): "context lost means ALL of it" — clear
+        # clarified_fields + pre_clarify_extracted + the round counter +
+        # suggestion/candidate state AFTER the winning claim (both branches
+        # above converge here) and BEFORE _run_pipeline is scheduled, so
+        # is_round_2 = bool(clarified) sees a genuinely fresh run and no
+        # provenance badge can outlive the data that produced it.
+        # clear_reply_context opens its own committed transaction (conn=None)
+        # — a durable unit that does NOT span the LLM-heavy _run_pipeline
+        # background task (Pitfall #8).
+        repo.clear_reply_context(run_id)
+        logger.info("run_id=%s reply context cleared on retrigger (WR-06)", run_id)
         background_tasks.add_task(_run_pipeline, run_id)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
