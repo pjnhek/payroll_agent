@@ -1,8 +1,13 @@
 ---
 phase: 11-clarification-round-machine-alias-learning
 verified: 2026-07-06T03:11:41Z
-status: passed
-score: 7/7 must-haves verified
+status: gaps_found
+superseded_note: "Initial verification passed (7/7) but was FALSIFIED by the 2026-07-06 cross-AI code review (11-REVIEW.md): 5 CONFIRMED critical money/security bugs in the recovery/re-entry seams this report marked ✓ VERIFIED. Status flipped passed→gaps_found so /gsd-plan-phase --gaps closes them. See the Gaps Summary (Corrected) section at the end. Authoritative gap source: 11-REVIEW.md."
+status_history:
+  - "2026-07-06T03:11:41Z passed (7/7) — initial gsd-verifier"
+  - "2026-07-06 gaps_found — cross-AI review (Codex + internal) confirmed 5 criticals the initial pass missed"
+score: 2/7 must-haves hold (CR-1..CR-5 falsify CLAR2-02/03/04/06/07 recovery paths; CLAR2-01/05 single-run happy paths hold)
+gap_source: 11-REVIEW.md
 overrides_applied: 0
 must_haves:
   truths:
@@ -132,5 +137,23 @@ None. All 7 CLAR2 requirements were traced against the actual merged code (not S
 
 ---
 
-_Verified: 2026-07-06T03:11:41Z_
-_Verifier: Claude (gsd-verifier)_
+## Gaps Summary (CORRECTED — supersedes the "None" above)
+
+The initial pass (above) confirmed the seams by tracing that the code *exists and is wired*, but did not adversarially trace the **recovery/re-entry** argument flow. A 2026-07-06 cross-AI review (Codex CLI + internal gsd-code-reviewer, findings source-verified — full detail in **`11-REVIEW.md`**) found **5 CONFIRMED critical bugs**, four of them one class: *the Phase 11 recovery seams read round-machine state from `email_messages` and re-key CAS transitions, but the surrounding code clears the wrong table, double-claims the same status, or skips the sender check.* None was caught because the tests mock the exact seam that fails. These are the gap set for `--gaps` closure:
+
+| Gap | Requirement falsified | Bug (see 11-REVIEW.md for full trace) | Fix direction |
+|-----|----------------------|----------------------------------------|---------------|
+| **GAP-1 (CR-1)** | CLAR2-02 | Operator `/resolve` claims `NEEDS_OPERATOR→EXTRACTING` (main.py:859), then `resume_pipeline` claims it AGAIN (orchestrator.py:328) → 2nd CAS fails → resume returns early → run stuck in `EXTRACTING` forever, operator's resolution silently dropped. Test mocked `resume_pipeline` so never exercised the real double-claim. | `/resolve` must not pre-claim; let `resume_pipeline` own the single `NEEDS_OPERATOR→EXTRACTING` CAS. Add an end-to-end test driving REAL `resume_pipeline` to `AWAITING_APPROVAL`. |
+| **GAP-2 (CR-2)** | CLAR2-07 (+ regresses CLAR2-01) | Retrigger's `clear_reply_context` resets `payroll_runs.clarification_round=0` but does NOT touch `email_messages`; the old round-0 `sent` outbound row survives → `_clarify`'s `get_outbound_for_round(round=0)` finds it → suppresses the fresh send → parks at `awaiting_reply` with NO email = WR-05 reintroduced. | Delete/tombstone prior outbound clarification rows on retrigger, or add a per-retrigger epoch to the round space (closes GAP-2 + GAP-3 together). Test: retrigger a run that already sent round-0, assert a NEW outbound clarification row is written. |
+| **GAP-3 (CR-3)** | CLAR2-07 | Same `clear_reply_context` leaves `email_messages.consumed_round` stamped → `load_consumed_replies` re-injects a stale prior reply ("John 30, not 40") into the retriggered run's extraction → mispay. | Null/namespace `consumed_round` for the run's inbound rows on retrigger (or scope `load_consumed_replies` to the current epoch). Test: retrigger after a consumed reply, assert it is NOT re-accumulated. |
+| **GAP-4 (CR-4, dual-source)** | CLAR2-04 | Bind-on-confirmation (orchestrator.py:845-857) fires when "suggested id newly resolved SOMEWHERE" AND "token gone from unresolved" are both true — computed independently over the whole run, not tied to the token's OWN resolution. "No, Dave didn't work; David worked separately" binds `Dave→David` with no confirmation = the never-learn-from-inference/misname class the guard exists to block. | Bind only when the SAME submitted-name record for the token resolves to the suggested id S. Test: the "suggested resolves via an unrelated line while token independently drops out" case binds NOTHING. |
+| **GAP-5 (CR-5)** | CLAR2-06 | Ingest links a header-matched reply to its run INSIDE the committed txn (RFC-header-based, attacker-controllable), `consumed_round=NULL`; FIX-5 sender revalidation runs POST-commit in `_finish_reply_resume`. A FIX-5-failed reply stays linked+unconsumed → WR-04 redelivery AND the stranded sweep re-resume it checking only `consumed_round`/status, NOT the sender → spoofed reply drives the victim's payroll (reopens the class FIX-5 closed). | Both re-schedule seams must re-assert FIX-5 (`find_business_by_sender(from_addr)==run.business_id`) before dispatching resume — route through `_finish_reply_resume`'s guard. Test: persist a FIX-5-failed linked reply, trigger redelivery + sweep, assert NO resume. |
+
+**Also fold in (Warning, same effort):** WR-1 — `set_alias_candidates` (repo.py:831-846) is a full-column overwrite, not a merge; with ≥2 tokens across ≥2 rounds the last write clobbers a client-confirmed bind before `_write_aliases_if_safe` reads it. Fix as a JSONB merge or read-modify-write under the run lock. Add a two-tokens/two-rounds test. (WR-3 `/resolve` auth is KNOWN/ACCEPTED — the whole dashboard is intentionally unauthenticated single-operator; not in scope.)
+
+**Still hold (do not re-open):** CLAR2-01 same-run new-round-sends/duplicate-suppress (GAP-2 is the *retrigger* regression only), CLAR2-05 multi-round accumulation happy path, and Security V4 server-side roster validation on `/resolve` (present + correct, no cross-business leak).
+
+---
+
+_Verified: 2026-07-06T03:11:41Z (initial, passed) → 2026-07-06 corrected to gaps_found (cross-AI review)_
+_Verifier: Claude (gsd-verifier); Corrected-by: cross-AI review reconciliation (see 11-REVIEW.md)_
