@@ -286,6 +286,14 @@ td a:hover {
   background: #FEE2E2;
 }
 
+/* needs_operator (D-11-06): distinct attention-drawing class — neither the
+   routine "pending" (awaiting_approval) nor a failure "bad" (rejected/error);
+   an explicit escalation that needs the operator's attention now. */
+.badge-escalate {
+  color: #9A3412;
+  background: #FFEDD5;
+}
+
 /* Badge used inline in a heading (run detail status) — slightly larger, no dot */
 .badge-inline {
   font-size: 13px;
