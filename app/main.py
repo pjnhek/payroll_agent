@@ -791,8 +791,16 @@ async def resolve(run_id: uuid.UUID, request: Request, background_tasks: Backgro
     each remember-checked token, ALSO pre-set the candidate's `bound` field so
     the existing single-human-gate write path (_write_aliases_if_safe, called
     from _deliver at approval) persists it — checkbox OFF means override-only,
-    nothing learned (D-11-16). THEN claim_status(NEEDS_OPERATOR → EXTRACTING);
-    on a successful claim, dispatch the operator-resume in the background.
+    nothing learned (D-11-16). The route does NOT claim NEEDS_OPERATOR ->
+    EXTRACTING itself (GAP-1/CR-1 fix, 11-REVIEW.md): it unconditionally
+    schedules the operator-resume in the background, and resume_pipeline's own
+    claim_status(NEEDS_OPERATOR -> EXTRACTING) CAS is the SOLE claim in this
+    path — exactly mirroring how the webhook's reply-resume path never
+    pre-claims either. A concurrent double-submit or a stale reload is
+    absorbed by resume_pipeline's existing "late/duplicate reply/resolve
+    dropped" no-op (a failed claim there just returns early), not by a
+    route-level pre-check — the prior pre-claim raced resume_pipeline's own
+    claim and always lost, silently stranding the run in EXTRACTING forever.
     Always 303 — post-commit scheduling only (no LLM/provider call in this
     request's synchronous path).
     """
@@ -856,9 +864,12 @@ async def resolve(run_id: uuid.UUID, request: Request, background_tasks: Backgro
             updated_candidates[token] = {"suggested": employee_id, "bound": employee_id}
         repo.set_alias_candidates(run_id, updated_candidates)
 
-    claimed = repo.claim_status(run_id, RunStatus.NEEDS_OPERATOR, RunStatus.EXTRACTING)
-    if claimed:
-        background_tasks.add_task(_operator_resume, run_id, overrides)
+    # GAP-1/CR-1 fix: no route-level pre-claim. resume_pipeline (invoked via
+    # _operator_resume) performs its OWN claim_status(NEEDS_OPERATOR ->
+    # EXTRACTING) CAS exactly once — this is now the ONLY claim in the entire
+    # path. Unconditionally schedule; resume_pipeline's claim is what actually
+    # gates whether the run advances.
+    background_tasks.add_task(_operator_resume, run_id, overrides)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

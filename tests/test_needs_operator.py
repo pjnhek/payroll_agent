@@ -35,6 +35,7 @@ never log strings.
 from __future__ import annotations
 
 import ast
+import json
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -44,6 +45,7 @@ from fastapi.testclient import TestClient
 from app.main import IN_FLIGHT_STATUSES, app
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
+from app.models.status import RunStatus
 from app.pipeline.orchestrator import MAX_CLARIFICATION_ROUNDS, _clarify
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -487,7 +489,19 @@ def test_resolve_rejects_whole_post_on_invalid_employee_id(monkeypatch, fake_rep
 
 def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_repo):
     """A fully-valid POST (every employee_id on the roster) applies the
-    override, claims NEEDS_OPERATOR -> EXTRACTING, and dispatches resume."""
+    override and dispatches resume — but does NOT itself claim
+    NEEDS_OPERATOR -> EXTRACTING (GAP-1/CR-1 fix, 11-REVIEW.md).
+
+    This test deliberately mocks resume_pipeline — it is a narrow unit test of
+    the route's validation/override/remember-checkbox logic in isolation, NOT
+    a proof that the run actually advances (see
+    test_resolve_drives_real_resume_pipeline_to_awaiting_approval below for
+    the real end-to-end proof that does NOT mock resume_pipeline). Because
+    resume_pipeline is mocked here and never performs its own claim, the run's
+    status must stay UNCHANGED at needs_operator immediately after the route
+    returns — this positively proves the route itself no longer claims
+    NEEDS_OPERATOR -> EXTRACTING (the prior double-CAS bug pre-claimed here,
+    which this assertion would have caught)."""
     from app.models.roster import Employee, Roster
 
     biz_id = COASTAL_BIZ_ID
@@ -536,8 +550,32 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
         data={"employee_id_0": str(real_emp_id), "remember_0": "on"},
     )
     assert response.status_code in (200, 303)
-    assert fake_repo.runs[str(run_id)]["status"] == "extracting", (
-        "a valid POST must claim NEEDS_OPERATOR -> EXTRACTING"
+    # GAP-1/CR-1 fix: the route must NOT claim NEEDS_OPERATOR -> EXTRACTING
+    # itself. resume_pipeline is mocked (never claims), so if the route no
+    # longer pre-claims either, the run's status is left UNCHANGED at
+    # needs_operator. (Before the fix, this assertion would see 'extracting'
+    # — the route's own now-removed claim_status call.)
+    assert fake_repo.runs[str(run_id)]["status"] == "needs_operator", (
+        "the /resolve route must NOT claim NEEDS_OPERATOR -> EXTRACTING "
+        "itself (GAP-1/CR-1) — resume_pipeline (mocked here) is the SOLE "
+        f"claimer; got status={fake_repo.runs[str(run_id)]['status']!r}"
+    )
+    # resume_pipeline (via _operator_resume) must still have been scheduled
+    # and invoked with the correct run_id and the validated override mapping.
+    assert len(resume_calls) == 1, (
+        f"expected exactly one resume_pipeline call, got {resume_calls!r}"
+    )
+    call_args, call_kwargs = resume_calls[0]
+    assert call_args[0] == run_id, (
+        f"resume_pipeline must be invoked with this run's id; got {call_args!r}"
+    )
+    assert call_kwargs.get("from_status") == RunStatus.NEEDS_OPERATOR, (
+        f"resume_pipeline must be invoked with from_status=NEEDS_OPERATOR; "
+        f"got {call_kwargs!r}"
+    )
+    assert call_kwargs.get("overrides") == {"Jimmy": str(real_emp_id)}, (
+        f"resume_pipeline must receive the validated override mapping; "
+        f"got {call_kwargs!r}"
     )
     # The remember-checkbox (checked) must have pre-set the bound candidate so
     # the existing approval-gate write path persists it (D-11-16).
@@ -599,4 +637,143 @@ def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
     assert "Jimmy" not in candidates, (
         "checkbox OFF must NOT set a bound candidate — override-only, "
         "nothing learned (D-11-16)"
+    )
+
+
+# ===========================================================================
+# 7. GAP-1 (CR-1) regression — /resolve must NOT double-CAS with
+#    resume_pipeline (Phase 11 Plan 07). This test drives the REAL
+#    resume_pipeline (no monkeypatch of resume_pipeline or _operator_resume)
+#    end-to-end from a genuinely-reached needs_operator run, through the real
+#    HTTP /resolve route, all the way to awaiting_approval. Per 11-REVIEW.md
+#    CR-1, the ORIGINAL bug was hidden precisely because
+#    test_resolve_applies_override_and_claims_on_valid_post (above) mocks
+#    resume_pipeline and only asserts the route's OWN claim — this test
+#    exercises the real seam that bug lived in.
+# ===========================================================================
+
+
+def _seed_needs_operator_run_real(fake_repo, *, business_id, from_addr, unresolved_token):
+    """Seed a run that has genuinely reached needs_operator via a real inbound
+    email + create_run (mirrors _seed_inbound_run in test_alias_full_loop.py),
+    then directly set clarification_round/status/decision/reconciliation to
+    exactly the state _clarify's round-cap branch leaves behind (orchestrator.py
+    :1226-1231 — status is the ONLY field _clarify's escalation touches; it
+    does not rewrite decision/reconciliation/alias_candidates). This is a
+    legitimately reachable state, not a fabrication of unrelated fields.
+    """
+    eid, _ = fake_repo.insert_inbound_email(
+        message_id=f"<{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=from_addr,
+        to_addr="agent@payroll-agent.local",
+        body_text=f"{unresolved_token} worked 40 regular hours this week.",
+    )
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=eid)
+
+    from app.models.contracts import Decision as _Decision
+
+    decision = _Decision(
+        final_action="request_clarification",
+        gate_reasons=[f"{unresolved_token}: unresolved"],
+        unresolved_names=[unresolved_token],
+        missing_fields=[],
+        resolutions=[
+            NameMatchResult(
+                submitted_name=unresolved_token,
+                matched_employee_id=None,
+                source="none",
+                resolved=False,
+                reason="no roster match",
+            )
+        ],
+    )
+    run = fake_repo.runs[str(run_id)]
+    run["status"] = "needs_operator"
+    run["clarification_round"] = MAX_CLARIFICATION_ROUNDS
+    run["decision"] = decision.model_dump(mode="json")
+    run["reconciliation"] = [
+        m.model_dump(mode="json") for m in decision.resolutions
+    ]
+    run["alias_candidates"] = {}
+    return run_id
+
+
+def test_resolve_drives_real_resume_pipeline_to_awaiting_approval(fake_repo, mock_llm):
+    """GAP-1/CR-1 regression (11-REVIEW.md): a valid /resolve POST must drive
+    the run all the way to awaiting_approval via the REAL resume_pipeline —
+    never stranded at extracting.
+
+    Before the fix: resolve() pre-claims NEEDS_OPERATOR -> EXTRACTING at
+    main.py:859, THEN _operator_resume -> resume_pipeline(from_status=
+    NEEDS_OPERATOR) attempts a SECOND claim_status(NEEDS_OPERATOR ->
+    EXTRACTING), which always fails (status is already EXTRACTING) and
+    resume_pipeline returns early doing nothing (orchestrator.py:328-336) —
+    the run is stranded at 'extracting' forever. This test MUST fail against
+    that code and PASS once resolve() stops pre-claiming (resume_pipeline
+    becomes the sole claimer).
+    """
+    unresolved_token = "Jimmy"
+    run_id = _seed_needs_operator_run_real(
+        fake_repo,
+        business_id=COASTAL_BIZ_ID,
+        from_addr=COASTAL_EMAIL,
+        unresolved_token=unresolved_token,
+    )
+
+    # A REAL roster employee on the run's OWN business (James Okafor,
+    # Business 1) — resolves the Security V4 server-side validation naturally
+    # via fake_repo's real seeded roster (no roster monkeypatch needed).
+    james_id = uuid.UUID("e0000002-0000-0000-0000-000000000002")
+
+    # The operator-resume path has NO new reply to consume (inbound=None in
+    # resume_pipeline) — is_round_2 stays False (clarified_fields is empty),
+    # so _run_stages takes the Round-1 path with exactly ONE internal
+    # extract() call. The override resolves "Jimmy" -> james_id deterministically
+    # (reconcile_names(overrides=...)), so decide() reaches "process" and
+    # _run_stages advances the run to COMPUTED then AWAITING_APPROVAL
+    # (orchestrator.py:1148-1149) — no suggestion/draft LLM calls fire on the
+    # process branch.
+    mock_llm.script = [
+        json.dumps(
+            {
+                "employees": [
+                    {"submitted_name": unresolved_token, "hours_regular": "40"}
+                ],
+                "pay_period_start": "2026-06-15",
+                "pay_period_end": None,
+            }
+        ),
+    ]
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(james_id), "remember_0": "on"},
+    )
+    assert response.status_code in (200, 303)
+
+    final_run = fake_repo.load_run(run_id)
+    assert final_run["status"] != "extracting", (
+        "GAP-1 (CR-1): the run must NEVER be stranded at 'extracting' after a "
+        "valid /resolve POST — this is exactly the double-CAS strand the fix "
+        f"closes; got status={final_run['status']!r}"
+    )
+    assert final_run["status"] == RunStatus.AWAITING_APPROVAL.value, (
+        "a valid /resolve POST must drive the REAL resume_pipeline all the way "
+        f"to awaiting_approval; got status={final_run['status']!r}"
+    )
+
+    # Money-path assertion (Phase 7.5 lesson): a real paystub line item was
+    # actually computed for James at 40 hours — proving _run_stages' process
+    # branch genuinely ran (not just a status flip).
+    line_items = fake_repo.line_items.get(str(run_id)) or []
+    assert line_items, "the process branch must have computed real line items"
+    james_items = [
+        li for li in line_items if str(getattr(li, "employee_id", None)) == str(james_id)
+    ]
+    assert james_items, (
+        f"expected a computed line item for James Okafor ({james_id}); "
+        f"got employee_ids={[getattr(li, 'employee_id', None) for li in line_items]!r}"
     )
