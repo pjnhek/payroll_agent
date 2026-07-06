@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
-status: executing
-last_updated: "2026-07-06T00:53:44.092Z"
-last_activity: 2026-07-06 -- Phase 11 execution started
+status: completed
+last_updated: "2026-07-06T03:00:42.748Z"
+last_activity: 2026-07-06
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 23
-  completed_plans: 15
-  percent: 50
+  completed_plans: 20
+  percent: 67
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-06-26)
 ## Current Position
 
 Milestone: v2 — Production Hardening (planning → ready to execute)
-Phase: 11 (clarification-round-machine-alias-learning) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 11
-Last activity: 2026-07-06 -- Phase 11 execution started
+Phase: 11 (clarification-round-machine-alias-learning) — COMPLETE (5 of 5 plans)
+Plan: 5 of 5
+Status: Phase 11 complete — all plans executed
+Last activity: 2026-07-06
 
-Progress: [░░░░░░░░░░] 0% (v2)
+Progress: [██████░░░░] 67% (v2, 20 of 23 plans)
 
 ## Performance Metrics
 
@@ -73,6 +73,7 @@ Progress: [░░░░░░░░░░] 0% (v2)
 | Phase 02.1 P04 | 5m | 2 tasks | 7 files |
 | Phase 02.1 P05 | 14min | 3 tasks | 13 files |
 | Phase 05-dashboard-delivery P03 | 35 | 3 tasks | 8 files |
+| Phase 11 P05 | 50min | 4 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -113,6 +114,8 @@ Recent decisions affecting current work:
 - [Phase ?]: D-13b: RunStatus.APPROVED removed from _TERMINAL_STATUSES — delivery failure after approval routes to ERROR for retriggering
 - [Phase ?]: D-13c sharpened NEW-1: insert_email_message upserts on (run_id, purpose) for outbound rows — retry-over-reserved advances to sent instead of crashing on uq_email_run_purpose
 - [Phase ?]: D-05 OT explicit-zero decision: hours_overtime=0 treated same as absent — never silently underpays a weekly employee
+- [Phase 11 P05]: clear_reply_context is called ONCE at the retrigger route's single 'if claimed:' post-claim convergence point (reached by both the ERROR/APPROVED CAS and the stale in-flight CAS) rather than duplicated inside each branch — satisfies WR-06/D-11-04 clearing ALL reply-round context (clarified_fields, pre_clarify_extracted, clarification_round, alias_candidates) before _run_pipeline is scheduled.
+- [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).
 
 ### Pending Todos
 
@@ -164,6 +167,6 @@ intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; no
 
 ## Session Continuity
 
-Last session: 2026-07-05T08:06:58.174Z
-Stopped at: Phase 11 context gathered
-Resume file: .planning/phases/11-clarification-round-machine-alias-learning/11-CONTEXT.md
+Last session: 2026-07-06T03:00:42.743Z
+Stopped at: Completed 11-05-PLAN.md — Phase 11 (Clarification Round Machine & Alias Learning) fully complete
+Resume file: None
