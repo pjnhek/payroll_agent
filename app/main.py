@@ -508,6 +508,35 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     )
 
 
+def _row_to_inbound(row: dict) -> InboundEmail:
+    """Build an InboundEmail from a PERSISTED email_messages row dict (Plan 11-05).
+
+    The single conversion point reused by both the WR-04 duplicate-redelivery
+    re-schedule and the D-11-05 stranded-unconsumed-reply runs-list auto-resume.
+    Pure — no DB I/O. Uses `row["body_text"]` VERBATIM: it is already the body
+    cleaned at first ingest (the authoritative, actually-processed text) — this
+    helper must NEVER re-clean it (Pitfall #11a; a redelivered webhook request
+    body could diverge from what was actually persisted/processed).
+
+    `row` must supply the full InboundEmail field set (id, message_id,
+    in_reply_to, references_header, subject, from_addr, to_addr, body_text,
+    created_at) — both `repo.get_inbound_by_message_id` and
+    `repo.find_stranded_unconsumed_replies` are widened to return exactly this
+    shape (plus run_id, which this helper ignores; the caller already has it).
+    """
+    return InboundEmail(
+        id=row["id"],
+        message_id=row["message_id"],
+        in_reply_to=row.get("in_reply_to"),
+        references_header=row.get("references_header"),
+        subject=row.get("subject") or "",
+        from_addr=row.get("from_addr") or "",
+        to_addr=row.get("to_addr") or "",
+        body_text=row["body_text"],
+        created_at=row["created_at"],
+    )
+
+
 def _finish_reply_resume(
     run_id: uuid.UUID,
     email: InboundEmail,
