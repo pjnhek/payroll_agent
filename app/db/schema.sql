@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS employees (
 -- payroll_runs.source_email_id references email_messages.id).
 --
 -- D-02/D-03: status is TEXT + CHECK (not a native ENUM) so adding a value is a
--- one-line CHECK edit that can run inside a transaction. The 10 values mirror
+-- one-line CHECK edit that can run inside a transaction. The 11 values mirror
 -- RunStatus in app/models/status.py exactly — a CI test asserts set-equality.
 CREATE TABLE IF NOT EXISTS payroll_runs (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
                                     'sent',
                                     'reconciled',
                                     'rejected',
-                                    'error'
+                                    'error',
+                                    'needs_operator'
                                 )),
     extracted_data  JSONB,      -- D-06: persisted from Extracted.model_dump(mode="json")
     decision        JSONB,      -- D-06: persisted from Decision.model_dump(mode="json")
@@ -92,6 +93,11 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     alias_candidates JSONB,
     pre_clarify_extracted JSONB,    -- D-19 MONEY-03: snapshot at awaiting_reply (IS NULL write-once guard)
     clarified_fields      JSONB,    -- D-13 MONEY-03: {employee_id: {field: outcome}} field-regression outcomes
+    -- Phase 11 (D-11-01): counts clarification/clarification_field_regression sends
+    -- for this run. Drives the round-aware send guard + the D-11-07 cap-to-
+    -- needs_operator escalation. NOT NULL DEFAULT 0 — every run starts at round 0
+    -- and old code never writes it, so the default is always correct for pre-Phase-11 rows.
+    clarification_round  INT     NOT NULL DEFAULT 0,
     error_reason    TEXT,       -- D-A1-03 / FIX 7: orchestrator's persisted ERROR reason
     pay_period_start DATE,
     pay_period_end   DATE,
@@ -113,6 +119,7 @@ ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS record_only       BOOLEAN NOT 
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS pre_clarify_extracted JSONB;  -- D-19 MONEY-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarified_fields      JSONB;  -- D-13 MONEY-03
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_detail          TEXT;   -- D-8-01/D-8-02: PII-scrubbed, stage-prefixed, truncated exception detail
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarification_round   INT NOT NULL DEFAULT 0;  -- D-11-01 (Phase 11 round machine)
 
 -- ── OPS2-02 hot-path indexes for payroll_runs ─────────────────────────────────
 -- Serve load_all_runs's ORDER BY created_at DESC and find_awaiting_reply_for_header's
@@ -137,7 +144,7 @@ CREATE INDEX IF NOT EXISTS idx_payroll_runs_status
 -- loop drops ALL of them, so the named re-ADD below can never collide and the
 -- block stays idempotent on every bootstrap re-apply.
 -- NOTE: this DO-block only fixes an EXISTING table (bootstrap re-apply path); the
--- inline CHECK edit above already gives a fresh bootstrap the correct 10-value set.
+-- inline CHECK edit above already gives a fresh bootstrap the correct 11-value set.
 DO $$
 DECLARE
     _con RECORD;
@@ -165,7 +172,8 @@ BEGIN
             'sent',
             'reconciled',
             'rejected',
-            'error'
+            'error',
+            'needs_operator'
         ));
 END;
 $$;
@@ -214,11 +222,19 @@ CREATE TABLE IF NOT EXISTS email_messages (
     -- (R2-MEDIUM/HIGH finding). Outbound rows: 'reserved' before provider call,
     -- 'sent' on success, 'failed' on error (Phase 6). Phase 5 stub writes 'sent'.
     send_state       TEXT        CHECK (send_state IN ('reserved','sent','failed')),
+    -- Phase 11 (D-11-01): NOT NULL DEFAULT 0 — a nullable round would let Postgres
+    -- treat every confirmation row as distinct under the widened UNIQUE below,
+    -- silently disabling the one-confirmation-per-run dedup guard (Pitfall #2).
+    round            INT         NOT NULL DEFAULT 0,
+    -- Phase 11 (D-11-02): NULL = unconsumed (the D-11-13 resume-read/redelivery
+    -- signal). Set once, write-once, by repo.mark_reply_consumed.
+    consumed_round   INT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_message_id UNIQUE (message_id),
-    -- uq_email_run_purpose: each run has at most one clarification and one confirmation
+    -- uq_email_run_purpose_round (widened from uq_email_run_purpose, D-11-01):
+    -- each run has at most one clarification (per round) and one confirmation
     -- outbound row. Postgres NULL != NULL so inbound rows (purpose=NULL) never conflict.
-    CONSTRAINT uq_email_run_purpose UNIQUE (run_id, purpose)
+    CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round)
 );
 
 -- ── Idempotent column adds for email_messages (Plan 05-03) ───────────────────
@@ -229,6 +245,11 @@ ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS purpose
     TEXT CHECK (purpose IN ('clarification','confirmation','clarification_field_regression'));  -- finding #1, D-13c sharpening; N4 MONEY-03 adds clarification_field_regression
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS send_state
     TEXT CHECK (send_state IN ('reserved','sent','failed'));   -- finding #3, R2-HIGH fix; NULLABLE
+-- Phase 11 (D-11-01/D-11-02): round/consumed_round idempotent adds for a running DB.
+-- round is NOT NULL DEFAULT 0 (Pitfall #2 — see the inline CREATE TABLE comment);
+-- consumed_round stays nullable (NULL = unconsumed).
+ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS round INT NOT NULL DEFAULT 0;
+ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS consumed_round INT;
 
 -- N4 MONEY-03: Idempotent DROP + RE-ADD of email_messages purpose CHECK constraint
 -- (D-7.5-03a atomic DROP+ADD in one transaction). The new CHECK includes
@@ -260,20 +281,84 @@ BEGIN
 END;
 $$;
 
--- Idempotent unique-constraint add for (run_id, purpose) on email_messages (Plan 05-03).
+-- Phase 11 (D-11-01): widen uq_email_run_purpose -> uq_email_run_purpose_round.
 -- NOTE: Postgres does NOT support ADD CONSTRAINT IF NOT EXISTS — the DO $$ pg_constraint
 -- guard is the ONLY correct idempotent pattern for adding a named constraint on an existing
--- table. Mirror of the fk_payroll_runs_source_email DO $$ block above.
+-- table (mirror of the fk_payroll_runs_source_email DO $$ block above).
+-- Per the D-7.5-03a comment: the DROP of the old 2-column constraint and the ADD of
+-- the new 3-column constraint live in ONE atomic DO-block — a failed ADD rolls back
+-- the DROP too, so a live migration can never end up with neither constraint present
+-- (Pitfall #1: insert_email_message's ON CONFLICT arbiter must always have a match).
 DO $$
 BEGIN
-    IF NOT EXISTS (
+    IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'uq_email_run_purpose'
           AND conrelid = 'email_messages'::regclass
     ) THEN
-        ALTER TABLE email_messages
-            ADD CONSTRAINT uq_email_run_purpose UNIQUE (run_id, purpose);
+        ALTER TABLE email_messages DROP CONSTRAINT uq_email_run_purpose;
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_email_run_purpose_round'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages
+            ADD CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round);
+    END IF;
+END;
+$$;
+
+-- Phase 11 (D-11-01) one-shot backfill: live payroll_runs rows that already sent
+-- clarification(s) before this migration predate clarification_round entirely.
+-- Deterministic and idempotent (re-running recomputes the same count from the
+-- immutable sent-row history — RESEARCH Open Question #3): clarification_round
+-- becomes the count of this run's SENT outbound clarification-purpose rows.
+UPDATE payroll_runs pr
+SET clarification_round = sub.sent_count
+FROM (
+    SELECT run_id, count(*) AS sent_count
+    FROM email_messages
+    WHERE direction = 'outbound'
+      AND purpose IN ('clarification', 'clarification_field_regression')
+      AND send_state = 'sent'
+    GROUP BY run_id
+) sub
+WHERE pr.id = sub.run_id
+  AND pr.clarification_round <> sub.sent_count;
+
+-- Phase 11 (Pitfall #6) one-shot alias_candidates shape migration: live rows carry
+-- the old flat shape ({token: null} or {token: "uuid-str"}); D-11-14 needs the
+-- nested {token: {"suggested": id|null, "bound": id|null}} shape. Idempotent:
+-- entries whose jsonb_typeof is already 'object' are left untouched, so re-running
+-- this block on an already-migrated (or fresh) DB is a no-op.
+DO $$
+DECLARE
+    _run RECORD;
+    _migrated JSONB;
+BEGIN
+    FOR _run IN
+        SELECT id, alias_candidates
+        FROM payroll_runs
+        WHERE alias_candidates IS NOT NULL
+    LOOP
+        SELECT jsonb_object_agg(
+                   key,
+                   CASE
+                       WHEN jsonb_typeof(value) = 'object' THEN value
+                       WHEN jsonb_typeof(value) = 'null' THEN
+                           jsonb_build_object('suggested', NULL, 'bound', NULL)
+                       ELSE
+                           jsonb_build_object('suggested', NULL, 'bound', value)
+                   END
+               )
+        INTO _migrated
+        FROM jsonb_each(_run.alias_candidates);
+
+        IF _migrated IS NOT NULL AND _migrated IS DISTINCT FROM _run.alias_candidates THEN
+            UPDATE payroll_runs SET alias_candidates = _migrated WHERE id = _run.id;
+        END IF;
+    END LOOP;
 END;
 $$;
 

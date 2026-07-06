@@ -118,12 +118,12 @@ def test_imports() -> None:
 
 
 def test_run_status_count() -> None:
-    """RunStatus has exactly 10 members (D-02 / D-03)."""
-    assert len(RunStatus) == 10
+    """RunStatus has exactly 11 members (D-02 / D-03; Phase 11 adds needs_operator)."""
+    assert len(RunStatus) == 11
 
 
 def test_run_status_values() -> None:
-    """RunStatus values match the 10-value set verbatim (mirrors Plan 02 CHECK)."""
+    """RunStatus values match the 11-value set verbatim (mirrors Plan 02 CHECK + Phase 11)."""
     expected = {
         "received",
         "extracting",
@@ -135,6 +135,7 @@ def test_run_status_values() -> None:
         "reconciled",
         "rejected",
         "error",
+        "needs_operator",
     }
     assert {s.value for s in RunStatus} == expected
 
