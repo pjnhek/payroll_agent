@@ -1480,3 +1480,90 @@ def test_write_aliases_if_safe_handles_legacy_flat_shape_without_raising(monkeyp
         "— _normalize_candidate's legacy-string handling makes this reachable "
         "without an AttributeError (Pitfall #6)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Group 6: set_alias_candidates is a MERGE write, not an overwrite (WR-1, 11-09)
+#
+# 11-REVIEW.md WR-1: the old set_alias_candidates was a full-column overwrite
+# (`UPDATE ... SET alias_candidates = %s`). With 2+ distinct tokens across 2+
+# rounds, the LAST writer erased every OTHER token's candidate — a
+# client-confirmed bind from an earlier round could be silently wiped by a
+# later, unrelated capture/suggest/bind write before _write_aliases_if_safe
+# ever read it at the approval gate. Fixed via a JSONB `||` merge
+# (COALESCE-wrapped) in app/db/repo.py, mirrored as a dict-merge in
+# tests/conftest.py's InMemoryRepo.
+# ---------------------------------------------------------------------------
+
+
+def test_set_alias_candidates_merges_across_two_tokens_two_rounds(fake_repo):
+    """WR-1 regression (11-09): a confirmed bind from an earlier round must
+    survive a later, unrelated candidate write for a DIFFERENT token.
+
+    Round 1: TokenA is captured, suggested, and CONFIRMED (bound) — the
+    client already confirmed this token in an earlier round.
+    Round 2: TokenB is captured + suggested for the FIRST time (bound=None) —
+    a completely unrelated token, in a later round of the SAME run.
+
+    MUST FAIL under a full-column overwrite (round 2's write would erase
+    TokenA's confirmed bind entirely — the fake_repo mirror historically did
+    exactly this). MUST PASS after the merge fix: both tokens' candidates
+    coexist in the same alias_candidates column.
+    """
+    from app.db import repo
+
+    biz_id = uuid.uuid4()
+    eid, _ = fake_repo.insert_inbound_email(
+        message_id=f"<{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr="hr@test.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="hours",
+    )
+    run_id = fake_repo.create_run(business_id=biz_id, source_email_id=eid)
+
+    id_a = uuid.uuid4()
+    id_b = uuid.uuid4()
+
+    # Round 1: TokenA captured, suggested, and CONFIRMED (bound) in one write
+    # (mirrors what STEP C's bind-on-confirmation persists once evidence ties
+    # the token to the suggestion).
+    repo.set_alias_candidates(
+        run_id, {"TokenA": {"suggested": str(id_a), "bound": str(id_a)}}
+    )
+
+    # Round 2: a LATER, UNRELATED write for a DIFFERENT token — a fresh
+    # capture/suggest for TokenB, which knows NOTHING about TokenA and does
+    # not intend to touch it.
+    repo.set_alias_candidates(
+        run_id, {"TokenB": {"suggested": str(id_b), "bound": None}}
+    )
+
+    persisted = repo.load_run(run_id)["alias_candidates"]
+
+    assert persisted.get("TokenA") == {"suggested": str(id_a), "bound": str(id_a)}, (
+        "WR-1: TokenA's CONFIRMED bind from round 1 must survive TokenB's "
+        f"later, unrelated round-2 write. Got: {persisted!r}"
+    )
+    assert persisted.get("TokenB") == {"suggested": str(id_b), "bound": None}, (
+        f"TokenB's fresh round-2 suggestion must also be present. Got: {persisted!r}"
+    )
+
+
+def test_repo_set_alias_candidates_sql_uses_jsonb_merge_not_overwrite():
+    """Static assertion (WR-1): the real repo.set_alias_candidates SQL string
+    must use the JSONB `||` merge operator, not a bare column overwrite —
+    this is the load-bearing acceptance criterion for the plan's grep check,
+    pinned as an actual test rather than only a shell grep."""
+    import inspect
+
+    from app.db import repo
+
+    src = inspect.getsource(repo.set_alias_candidates)
+    assert "|| %s::jsonb" in src and "COALESCE(alias_candidates" in src, (
+        "set_alias_candidates must merge via a COALESCE-wrapped JSONB || "
+        "(COALESCE(alias_candidates, '{}'::jsonb) || %s::jsonb), not "
+        "overwrite the whole column"
+    )

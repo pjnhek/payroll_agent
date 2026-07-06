@@ -528,10 +528,16 @@ class InMemoryRepo:
         return "Test Business"
 
     def set_alias_candidates(self, run_id, candidates, conn=None):
-        """Store alias candidates in the in-memory run dict (D-04, mirrors repo)."""
+        """MERGE alias candidates into the in-memory run dict (D-04, WR-1 fix,
+        mirrors repo's JSONB `||` merge — not an overwrite). A confirmed bind
+        for one token, written in an earlier round or an earlier call, must
+        survive a later, unrelated candidate write for a DIFFERENT token."""
         run = self.runs.get(str(run_id))
         if run is not None:
-            run["alias_candidates"] = candidates
+            run["alias_candidates"] = {
+                **(run.get("alias_candidates") or {}),
+                **candidates,
+            }
 
     def update_known_alias(self, employee_id, new_alias, conn=None):
         """Idempotently append new_alias to an in-memory Employee's known_aliases
