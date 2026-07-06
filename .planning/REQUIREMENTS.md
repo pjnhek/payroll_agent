@@ -29,8 +29,8 @@
 
 *Registered 2026-07-05 at plan time from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01, per the ROADMAP Phase 11 note. IDs proposed in 11-RESEARCH.md.*
 
-- [ ] **CLAR2-01**: A genuinely new clarification question always sends; a true duplicate (re-trigger of the same round) is still suppressed. No run can silently park at `awaiting_reply` with no email out. (WR-05, `orchestrator._clarify` purpose-only guard; 260705-02.)
-- [ ] **CLAR2-02**: After 3 total clarification rounds, the run escalates to a first-class `needs_operator` status instead of sending; the operator can resolve names deterministically and resume, or reject. (260623-08, premise-corrected: the failure is silent-stall, not spam.)
+- [x] **CLAR2-01**: A genuinely new clarification question always sends; a true duplicate (re-trigger of the same round) is still suppressed. No run can silently park at `awaiting_reply` with no email out. (WR-05, `orchestrator._clarify` purpose-only guard; 260705-02.)
+- [x] **CLAR2-02**: After 3 total clarification rounds, the run escalates to a first-class `needs_operator` status instead of sending; the operator can resolve names deterministically and resume, or reject. (260623-08, premise-corrected: the failure is silent-stall, not spam.)
 - [x] **CLAR2-03**: The resume extraction context includes a code-owned "questions we asked" anchor, and the extraction prompt enforces absent-if-unaddressed; a bare "40" is never blindly attributed. (260705-02 item 2.)
 - [x] **CLAR2-04**: The alias-learning write side is reachable: a client-confirmed suggestion binds `{token: suggested_id}` deterministically; the misname guard's never-learn-from-inference intent survives; a full-loop test proves the system stops asking. (260705-01.)
 - [x] **CLAR2-05**: Multi-round context loss is closed: the combined context accumulates ORIGINAL + ALL consumed replies in round order; the known-edge fixture flips its assertion (Round-1 "30, not 40" pays 30, not 40). (CX-01 / T-09-21.)
@@ -65,8 +65,8 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 | DATA-02 | Phase 9 — Atomic Data Integrity | Complete |
 | DATA-03 | Phase 9 — Atomic Data Integrity | Complete |
 | OPS2-03 | Phase 10 — Concurrency Proof | Pending |
-| CLAR2-01 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
-| CLAR2-02 | Phase 11 — Clarification Round Machine & Alias Learning | Pending |
+| CLAR2-01 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
+| CLAR2-02 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
 | CLAR2-03 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
 | CLAR2-04 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
 | CLAR2-05 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
