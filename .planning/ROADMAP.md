@@ -158,7 +158,7 @@ Plans:
 **Goal:** The multi-round clarification state machine becomes correct and unstrandable, and the alias-learning loop actually learns. Concretely: (1) WR-05 fix — a genuinely new clarification question always sends (round-aware idempotency instead of the purpose-only guard that today silently parks a run at `awaiting_reply` with no email out), with a round cap + operator-escape state (260623-08); (2) ambiguous replies get an attribution anchor — the outbound clarification's questions are included in the resume extraction context so a bare "40" can't be blindly attributed; (3) the alias-learning WRITE side binds on explicit client confirmation of the clarification *suggestion* (human-stated evidence) instead of the circular re-extraction condition that makes it unreachable today (260705-01), preserving the misname guard's never-learn-from-inference intent; (4) CX-01/T-09-21 multi-round context loss is closed (accumulate reply bodies or diff against last-persisted extraction — the known-edge fixture in `tests/test_multiround_context_edge.py` flips its assertion); (5) WR-06 provenance scoping and WR-04 redelivered-reply handling fold into the same round/consumed state design.
 **Requirements**: CLAR2-01, CLAR2-02, CLAR2-03, CLAR2-04, CLAR2-05, CLAR2-06, CLAR2-07 (MONEY-class follow-ups derived from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01 + 09-CONTEXT.md deferred ideas)
 **Depends on:** Phase 10 (concurrency proof may add fencing primitives the round machine reuses)
-**Plans:** 6/9 plans executed
+**Plans:** 8/9 plans executed
 
 Plans:
 - [x] 11-01-PLAN.md — Data-layer substrate: round/consumed-round columns, needs_operator status, widened uniqueness, all new repo primitives + InMemoryRepo mirrors (zero behavior change)
@@ -168,10 +168,10 @@ Plans:
 - [x] 11-05-PLAN.md — main.py wiring: WR-04 redelivery re-schedule + D-11-05 stranded auto-resume + WR-06 retrigger-clears-all-context (CLAR2-06/07)
 
 Gap closure (2026-07-06, cross-AI review findings — 11-REVIEW.md):
-- [ ] 11-06-PLAN.md — GAP-2/GAP-3 (CR-2/CR-3): payroll_runs.reply_epoch + email_messages.epoch so retrigger's clear_reply_context scopes the round machine to a fresh conversation without deleting the append-only audit log
+- [x] 11-06-PLAN.md — GAP-2/GAP-3 (CR-2/CR-3): payroll_runs.reply_epoch + email_messages.epoch so retrigger's clear_reply_context scopes the round machine to a fresh conversation without deleting the append-only audit log
 - [x] 11-07-PLAN.md — GAP-1 (CR-1): remove /resolve's pre-claim double-CAS race that stranded operator-resolved runs in EXTRACTING forever
 - [ ] 11-09-PLAN.md — GAP-4 (CR-4, dual-source) + WR-1: bind-on-confirmation tied to the SAME reconciliation record (not two independent whole-run facts); set_alias_candidates becomes a JSONB merge, not an overwrite
-- [ ] 11-10-PLAN.md — GAP-5 (CR-5): re-assert FIX-5 sender revalidation at both the WR-04 redelivery re-schedule and the D-11-05 stranded-reply sweep
+- [x] 11-10-PLAN.md — GAP-5 (CR-5): re-assert FIX-5 sender revalidation at both the WR-04 redelivery re-schedule and the D-11-05 stranded-reply sweep
 
 ## Backlog
 
@@ -192,4 +192,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
 | 9. Atomic Data Integrity | 6/6 | Complete    | 2026-07-04 |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
-| 11. Clarification Round Machine & Alias Learning | 6/9 | In Progress|  |
+| 11. Clarification Round Machine & Alias Learning | 8/9 | In Progress|  |
