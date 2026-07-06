@@ -864,6 +864,12 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
+    # Phase 11 (D-11-02): resume_pipeline writes the consumed marker right after
+    # the CAS claim — this test's bare-function monkeypatches must intercept both
+    # calls or they fall through to the real (DB-backed) repo.
+    monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
+    monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
 
     # Mock _run_stages to simulate the post-resume state without running actual stages.
     # Returns _RunStagesResult(clarify_deferred=False) so stage.clarify_deferred is accessible.
@@ -983,6 +989,12 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
+    # Phase 11 (D-11-02): resume_pipeline writes the consumed marker right after
+    # the CAS claim — this test's bare-function monkeypatches must intercept both
+    # calls or they fall through to the real (DB-backed) repo.
+    monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
+    monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
 
     import app.pipeline.orchestrator as orch_mod
     from app.pipeline.orchestrator import _RunStagesResult
@@ -1113,6 +1125,12 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
+    # Phase 11 (D-11-02): resume_pipeline writes the consumed marker right after
+    # the CAS claim — this test's bare-function monkeypatches must intercept both
+    # calls or they fall through to the real (DB-backed) repo.
+    monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
+    monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
 
     import app.pipeline.orchestrator as orch_mod
     from app.pipeline.orchestrator import _RunStagesResult

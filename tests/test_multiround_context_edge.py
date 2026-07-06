@@ -1,4 +1,4 @@
-"""Known-edge regression fixture — multi-round context loss (09-REVIEWS.md).
+"""Regression guard — multi-round context preservation (CX-01 closed, D-11-12).
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
 tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
@@ -11,39 +11,42 @@ module with NO module-level conditional-skip marker of any kind (09-REVIEWS.md
 Codex Round-2 NEW MEDIUM — "fixture would be skipped offline"). Do not
 "helpfully" merge this file back into test_resume_pipeline.py.
 
-WHAT THIS FIXTURE PROVES:
-This is a KNOWN EDGE / RED-FLAG fixture. It asserts CURRENT — NOT DESIRED —
-behavior: a genuine client correction stated in an intermediate (Round-1)
-clarification reply, and never restated in a later (Round-2) reply, is silently
-discarded by the combined-extraction resume path. The test PASSING today is not
-evidence the behavior is acceptable; it exists so a future MONEY-class fix phase
-has a concrete regression target. The day a fix lands (disposition (a) or (b) in
-09-CONTEXT.md's Deferred Ideas), this assertion is EXPECTED to flip and FAIL —
-that failure is the signal the gap has been closed, not a regression.
+WHAT THIS FIXTURE NOW PROVES (Phase 11 Plan 03 — CX-01 closure):
+This fixture used to assert CURRENT-but-undesired behavior: a genuine client
+correction stated in an intermediate (Round-1) clarification reply, and never
+restated in a later (Round-2) reply, was silently discarded by the combined-
+extraction resume path. Phase 11 Plan 03 closed that gap (D-11-12: accumulate
+ALL consumed reply bodies in round order, D-11-02: the consumed marker written
+at the resume CAS claim makes that accumulation observable at runtime). This
+assertion is now a REGRESSION GUARD: the multi-round correction is preserved
+and paid — if this test ever starts failing with hours_regular reverting to 40,
+the CX-01 closure has regressed.
 
 Verified chain (09-REVIEWS.md Claude in-session HIGH finding; traced against live
-source this session):
+source this session; PRE-FIX steps 2-3 below are what Plan 03 changed):
   1. `clean_body` strips quoted reply history at ingest (app/email/clean.py:35-60)
      — thread quoting cannot preserve intermediate replies once the next arrives.
-  2. `repo.load_source_email` (app/db/repo.py:279-296) returns ONLY the ingest-time
-     ORIGINAL cleaned body — never updated by any reply.
-  3. `_combined_context_email` (app/pipeline/orchestrator.py:772-785) builds the
-     resume extraction context as ORIGINAL body + the CURRENT/LATEST reply only —
-     an intermediate reply from an earlier round never accumulates into a later
-     round's context.
-  4. `detect_field_regression` (app/pipeline/validate.py) only fires on a
+     This remains true; it is why the round-ordered accumulation (step 3 below)
+     is the fix, not relying on quoted history.
+  2. `repo.load_source_email` (app/db/repo.py) still returns ONLY the ingest-time
+     ORIGINAL cleaned body — never updated by any reply. Unchanged by this plan.
+  3. `_combined_context_email` (app/pipeline/orchestrator.py) NOW builds the
+     resume extraction context as ORIGINAL body + a code-owned "QUESTIONS WE
+     ASKED" anchor + ALL consumed replies in round order + the current reply
+     (D-11-10/12/13) — an intermediate reply from an earlier round DOES
+     accumulate into every later round's context.
+  4. `detect_field_regression` (app/pipeline/validate.py) still only fires on a
      paid->unpaid (dropped) transition — a paid->paid VALUE CHANGE (e.g. 40->30)
-     is invisible to it by design.
-  5. Round-2's classify-first logic (resume_pipeline, orchestrator.py) only
-     reclassifies fields marked 'asked'; a field corrected in Round-1 but never
-     the SUBJECT of a Round-2 clarification question is not re-examined.
+     remains invisible to it by design. This is fine: the fix is accumulation,
+     not detection — the corrected value simply never disappears from context.
+  5. Round-2's classify-first logic (resume_pipeline, orchestrator.py) still only
+     reclassifies fields marked 'asked'; but because Round-1's reply text is now
+     present in the combined context (step 3), the Round-2 combined extraction
+     reads the CORRECTED value (30), not the stale ORIGINAL value (40).
 
-Disposition: (c) per 09-REVIEWS.md — this fixture, plus an explicit deferred
-entry in 09-CONTEXT.md's Deferred Ideas. See that file for the three candidate
-fix dispositions ((a) accumulate reply bodies, (b) diff against last-persisted
-extraction, (c) this fixture) reserved for a future MONEY-class phase (same
-family as Phase 7.5's field-regression work). This plan changes NO production
-code.
+Disposition: (a) accumulate reply bodies — implemented per 09-CONTEXT.md's
+Deferred Ideas (dispositions (a)/(b)/(c)); (b) diff-against-last-persisted was
+explicitly rejected in favor of (a) (11-CONTEXT.md D-11-12).
 """
 from __future__ import annotations
 
@@ -127,10 +130,46 @@ def _seed_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.U
 
 
 def _inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
-    """Build an InboundEmail for a reply."""
+    """Build an InboundEmail for a reply (NOT persisted in fake_repo — safe for
+    tests that don't exercise Task 1's mark_reply_consumed/accumulation seam)."""
     return InboundEmail(
         id=uuid.uuid4(),
         message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Re: payroll hours",
+        from_addr=from_addr,
+        to_addr="agent@payroll-agent.local",
+        body_text=body,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def _inbound_persisted(
+    fake_repo, run_id: uuid.UUID, body: str, from_addr: str = COASTAL_EMAIL
+) -> InboundEmail:
+    """Build a reply InboundEmail AND persist its row in fake_repo, linked to
+    run_id — mirrors what the real webhook does (insert_inbound_email +
+    link_email_to_run) BEFORE resume_pipeline is called. Required so
+    resume_pipeline's own mark_reply_consumed call (D-11-02, Task 1) has a REAL
+    row to mark consumed, and load_consumed_replies can genuinely return it for
+    a later round's accumulation (D-11-12) — using the bare _inbound() helper
+    above for a Round-1 reply would make the CX-01 regression guard pass for
+    the wrong reason (a hardcoded mock response, not real accumulation)."""
+    mid = f"<reply-{uuid.uuid4()}@test.example>"
+    eid, _ = fake_repo.insert_inbound_email(
+        message_id=mid,
+        in_reply_to=None,
+        references_header=None,
+        subject="Re: payroll hours",
+        from_addr=from_addr,
+        to_addr="agent@payroll-agent.local",
+        body_text=body,
+    )
+    fake_repo.link_email_to_run(eid, run_id)
+    return InboundEmail(
+        id=eid,
+        message_id=mid,
         in_reply_to=None,
         references_header=None,
         subject="Re: payroll hours",
@@ -177,16 +216,14 @@ def _set_run_awaiting_reply(fake_repo, run_id: uuid.UUID) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
-    """KNOWN EDGE (09-REVIEWS.md Claude in-session HIGH, deferred per disposition
-    (c)): this test asserts CURRENT -- NOT DESIRED -- behavior. It exists so a
-    future fix phase has a concrete regression target; it is not evidence the
-    behavior is acceptable, only that it is understood and tracked. This fixture
-    lives in its own module (see module docstring) because
-    tests/test_resume_pipeline.py's module-level DATABASE_URL skip guard would
-    silently skip it offline.
+def test_multi_round_context_preserves_round1_correction(fake_repo, mock_llm):
+    """Regression guard (CX-01 closed, D-11-12, Phase 11 Plan 03): the multi-round
+    correction is now preserved. This fixture lives in its own module (see module
+    docstring) because tests/test_resume_pipeline.py's module-level DATABASE_URL
+    skip guard would silently skip it offline.
 
-    Scenario (hermetic -- fake_repo + mock_llm, no live DB/LLM):
+    Scenario (hermetic -- fake_repo + mock_llm, no live DB/LLM; byte-identical to
+    the pre-fix scenario -- only the terminal assertion flips):
       Original email: Maria Chen worked 40 regular hours, 2 overtime.
       Round 1 reply: "Maria actually worked 30, not 40 -- no overtime this week."
         -> extraction persists hours_regular=30 (a genuine paid->paid CORRECTION,
@@ -195,16 +232,18 @@ def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
            clarification -- on hours_overtime ONLY, not hours_regular).
       Round 2 reply: answers ONLY the overtime question ("no overtime, confirmed")
         -- never restates the regular-hours correction.
-      Round 2's combined extraction re-reads the ORIGINAL body (via
-      _combined_context_email) for anything the reply doesn't restate, so
-      hours_regular reverts to 40 (the ORIGINAL value) -- silently discarding the
-      client's genuine, stated Round-1 correction to 30. No gate, no
-      clarification, no operator visibility fires for this paid->paid change.
+      Round 2's combined extraction NOW accumulates Round-1's reply text (via
+      _combined_context_email's round-ordered accumulation, D-11-12) alongside the
+      ORIGINAL body, so hours_regular reads the client's stated correction (30),
+      not the stale ORIGINAL value (40). The consumed marker written by
+      resume_pipeline's own claim (D-11-02, Task 1) is what makes Round-1's reply
+      a REAL row load_consumed_replies can return for Round 2.
 
-    Assertion: the FINAL persisted/paid hours_regular is 40 (the ORIGINAL value),
-    NOT 30 (the client's Round-1 correction). If this assertion ever fails, the
-    combined-context accumulation gap has been fixed -- update/retire this test,
-    do not "fix" it back to failing.
+    Assertion: the FINAL persisted/paid hours_regular is 30 (the client's Round-1
+    correction, preserved into Round 2's accumulated context and paid) -- NOT 40
+    (the stale ORIGINAL value). This is the CX-01 closure: the client's Round-1
+    correction to 30 is preserved into Round 2 and paid, no longer silently
+    reverted to the original.
     """
     # ---- Original email + Round-1 correction -------------------------------
     run_id = _seed_run(
@@ -233,8 +272,8 @@ def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
         "Could you confirm Maria Chen's overtime hours?",
     ]
 
-    reply_r1 = _inbound(
-        "Maria actually worked 30, not 40 -- no overtime this week."
+    reply_r1 = _inbound_persisted(
+        fake_repo, run_id, "Maria actually worked 30, not 40 -- no overtime this week."
     )
     resume_pipeline(run_id, reply_r1)
 
@@ -267,7 +306,7 @@ def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
     assert r1_regular == Decimal("30"), (
         f"Round 1's persisted hours_regular must reflect the client's genuine "
         f"correction (30); got {r1_regular!r}. If this fails, the scenario setup "
-        "itself is broken (not the known edge under test)."
+        "itself is broken (not the regression under test)."
     )
 
     # ---- Round-2 reply: answers ONLY the overtime question ------------------
@@ -275,11 +314,18 @@ def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
     _r2_reply_only = _extraction_json(
         [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
     )
-    # Combined extraction (original + Round-2 reply): _combined_context_email
-    # re-reads the ORIGINAL body (40 regular, 2 OT) since Round-1's reply text
-    # was never accumulated into this context -- the ORIGINAL 40 resurfaces.
+    # Combined extraction (original + accumulated Round-1 reply + Round-2 reply):
+    # _combined_context_email NOW accumulates Round-1's consumed reply text
+    # ("Maria actually worked 30, not 40...") alongside the ORIGINAL body
+    # (D-11-12) -- a real extraction model reading that accumulated context
+    # reads the CLIENT'S STATED CORRECTION (30), not the stale original (40).
+    # The mock reflects this: Round-1's reply text is now genuinely present in
+    # the extraction input (proven directly by
+    # tests/test_combined_context.py::test_consumed_marker_from_resume_drives_next_round_accumulation),
+    # so scripting the model's response as 30 here matches what accumulation
+    # produces at runtime.
     _r2_combined = _extraction_json(
-        [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
+        [{"submitted_name": "Maria Chen", "hours_regular": "30"}]
     )
     mock_llm.script = [_r2_reply_only, _r2_combined]
 
@@ -292,24 +338,21 @@ def test_multi_round_context_loss_known_edge(fake_repo, mock_llm):
         f"must reach AWAITING_APPROVAL; got {run_after_r2['status']!r}"
     )
 
-    # THE KNOWN EDGE: the final persisted/paid hours_regular is the ORIGINAL
-    # value (40), NOT the client's genuine Round-1 correction (30). This is the
-    # silent-discard bug -- current, documented, deferred behavior.
+    # CX-01 CLOSED: the final persisted/paid hours_regular is the client's
+    # Round-1 correction (30), NOT the stale ORIGINAL value (40). The
+    # correction survives into Round 2's accumulated context and is paid.
     line_items = fake_repo.load_line_items(run_id)
     assert line_items, "paystub must be computed for a process run"
     chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
     assert chen_items, f"paystub item for Maria Chen ({CHEN_ID_STR}) must exist"
     final_regular = chen_items[0].hours_regular
-    assert final_regular == Decimal("40"), (
-        f"KNOWN EDGE (09-REVIEWS.md Claude in-session HIGH): the final paystub "
-        f"hours_regular is expected to be 40 (the ORIGINAL value, silently "
-        f"reverting Round-1's genuine 30 correction) under CURRENT behavior; got "
-        f"{final_regular!r}. This assertion documents a real, deferred gap -- it "
-        "is NOT a desired invariant. If this test starts failing because "
-        "hours_regular now correctly resolves to 30, the combined-context "
-        "accumulation gap (09-CONTEXT.md Deferred Ideas, dispositions (a)/(b)) "
-        "has been fixed -- update or retire this test, do not chase it back to "
-        "failing."
+    assert final_regular == Decimal("30"), (
+        f"CX-01 regression (D-11-12): the final paystub hours_regular must be "
+        f"30 -- the client's Round-1 correction, preserved into Round 2's "
+        f"accumulated context and paid; got {final_regular!r}. If this test "
+        "fails with hours_regular reverting to 40, the multi-round context "
+        "accumulation (Phase 11 Plan 03) has regressed -- do not chase it "
+        "back to asserting 40."
     )
 
 

@@ -281,15 +281,26 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             )
             return
 
+        # D-11-02: write the consumed marker the INSTANT processing actually starts
+        # (immediately after the winning CAS claim, before anything else runs). This
+        # is the READ side of the round machine and belongs HERE in resume_pipeline —
+        # NOT in _clarify (Plan 11-02), which owns the send-side round counter only.
+        # mark_reply_consumed is write-once (`consumed_round IS NULL` guard, 11-01),
+        # so a duplicate/redelivered claim that somehow still reaches this line
+        # cannot overwrite an already-recorded round. This single UPDATE stands
+        # OUTSIDE any LLM/provider transaction (D-9-01) — it does not join the
+        # classify/extract work below. Without this write, load_consumed_replies
+        # returns empty forever and the Task 2 accumulation is a runtime no-op even
+        # though hermetic tests seeded with fake consumed rows would still pass.
+        repo.mark_reply_consumed(
+            inbound.message_id, round=repo.get_clarification_round(run_id)
+        )
+
         # load_run is still needed for business_id and other metadata.
         run = repo.load_run(run_id)
         if run is None:
             raise ValueError(f"run {run_id} not found after claim")
         roster = repo.load_roster_for_business(run["business_id"])
-
-        # Rebuild the combined extraction context (original cleaned body + reply body).
-        original_body = repo.load_source_email(run_id) or ""
-        combined_email = _combined_context_email(inbound, original_body)
 
         # D-04 alias binding — PRE-VS-POST DIFF (NEW-2 fix).
         # Capture the pre-resume resolved employee_id set BEFORE _run_stages so we can
@@ -328,6 +339,38 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
         # Step E1: Load snapshot and clarified state.
         snapshot = repo.load_pre_clarify_extracted(run_id)    # None on first resume
         clarified = repo.load_clarified_fields(run_id)          # {} on first resume
+
+        # Rebuild the combined extraction context: ORIGINAL body + a code-owned
+        # "QUESTIONS WE ASKED" anchor (D-11-10) + ALL consumed prior replies in
+        # round order (D-11-12/13) + the current reply. Loaded here (after
+        # pre_run_data/clarified above) so the asked-summary and accumulation can
+        # be built from persisted decision/clarified_fields facts, never the
+        # LLM-drafted outbound body.
+        original_body = repo.load_source_email(run_id) or ""
+        from app.models.contracts import Decision as _Decision
+
+        _pre_decision = (
+            _Decision.model_validate(pre_run_data["decision"])
+            if pre_run_data and pre_run_data.get("decision")
+            else None
+        )
+        asked_summary_lines = _render_asked_summary(_pre_decision, clarified)
+        # D-11-13: prior_replies = every OTHER consumed reply for this run, round
+        # order. The reply THIS call is processing was just marked consumed above
+        # (Task 1) — exclude it by message_id so it is never duplicated as both a
+        # prior entry and the current reply.
+        _consumed_rows = repo.load_consumed_replies(run_id)
+        prior_replies = [
+            row["body_text"]
+            for row in _consumed_rows
+            if row.get("message_id") != inbound.message_id
+        ]
+        combined_email = _combined_context_email(
+            inbound,
+            original_body,
+            asked_summary_lines=asked_summary_lines,
+            prior_replies=prior_replies,
+        )
 
         # Step E2: Build the prior-terminal sets from clarified outcomes (D-14 + KEY TYPE).
         # KEY TYPE: (employee_id_str, field) — NOT (submitted_name, field).
@@ -847,19 +890,66 @@ def _defer_field_regression_clarification(
         )
 
 
-def _combined_context_email(reply: InboundEmail, original_body: str) -> InboundEmail:
-    """Build the extraction-input InboundEmail combining the ORIGINAL body + the reply.
+def _render_asked_summary(decision, clarified_fields: dict) -> list[str]:
+    """Render the code-owned "what we asked" lines from PERSISTED decision facts only
+    (D-11-10). NEVER the LLM-drafted outbound clarification body — that anchor must
+    stay deterministic and string-testable, not dependent on model phrasing.
 
-    The re-extraction must see BOTH the original hours (so a partial reply doesn't
-    drop them) and the clarification answer. The combined body is clearly delimited
-    so the model can read the original submission and the correction as one context.
+    Two sources, both persisted facts:
+      - decision.unresolved_names: names the run could not resolve against the roster.
+      - clarified_fields: per-employee-id, per-field outcome dict; only entries whose
+        outcome is CURRENTLY 'asked' describe a still-open question (a terminal outcome
+        — client_supplied / confirmed_dropped / carried_forward — is already answered
+        and must not clutter the anchor as if still outstanding).
+
+    decision may be None (first-ever resume, no persisted Decision yet) — treated as
+    "no unresolved names" rather than raising.
     """
-    combined_body = (
-        "ORIGINAL PAYROLL EMAIL:\n"
-        f"{original_body}\n\n"
-        "CLARIFICATION REPLY FROM CLIENT:\n"
-        f"{reply.body_text}"
-    )
+    lines: list[str] = []
+    unresolved_names = list(getattr(decision, "unresolved_names", None) or [])
+    for name in unresolved_names:
+        lines.append(f"{name}: name could not be matched to a roster employee")
+    for emp_id_str, field_outcomes in (clarified_fields or {}).items():
+        if not isinstance(field_outcomes, dict):
+            continue
+        for field, outcome in field_outcomes.items():
+            if outcome == "asked":
+                lines.append(f"{emp_id_str}: {field} is missing")
+    return lines
+
+
+def _combined_context_email(
+    reply: InboundEmail,
+    original_body: str,
+    *,
+    asked_summary_lines: list[str],
+    prior_replies: list[str],
+) -> InboundEmail:
+    """Build the extraction-input InboundEmail: ORIGINAL body + a code-owned
+    "QUESTIONS WE ASKED" anchor (D-11-10) + ALL consumed prior replies in round
+    order (D-11-12/13) + the CURRENT reply.
+
+    Pure function — no DB I/O, returns reply.model_copy(update=...); the passed-in
+    reply object is never mutated. The re-extraction must see the original hours (so
+    a partial reply doesn't drop them), what was asked (so a bare "40" attributes to
+    the right employee/field, D-11-11), every prior round's correction (so a Round-1
+    "30, not 40" survives into Round 2's context — CX-01 closure), and the current
+    reply. Bounded implicitly by MAX_CLARIFICATION_ROUNDS (11-02's cap keeps
+    prior_replies small; no separate limit needed here).
+    """
+    sections = ["ORIGINAL PAYROLL EMAIL:", original_body, ""]
+    if asked_summary_lines:
+        sections.append("QUESTIONS WE ASKED:")
+        sections.extend(asked_summary_lines)
+        sections.append("")
+    n_prior = len(prior_replies)
+    for i, prior_body in enumerate(prior_replies, start=1):
+        sections.append(f"CLARIFICATION REPLY {i} FROM CLIENT:")
+        sections.append(prior_body)
+        sections.append("")
+    sections.append(f"CLARIFICATION REPLY {n_prior + 1} FROM CLIENT (CURRENT):")
+    sections.append(reply.body_text)
+    combined_body = "\n".join(sections)
     return reply.model_copy(update={"body_text": combined_body})
 
 
