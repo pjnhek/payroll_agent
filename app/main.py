@@ -182,6 +182,11 @@ templates = Jinja2Templates(directory="app/templates")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 # Badge class mapping (UI-SPEC Badge Contract)
+# needs_operator (D-11-06): its own distinct attention-drawing class — "pending"
+# is already taken by awaiting_approval (a routine settled gate state) and
+# "bad" is already taken by rejected/error (failure states); needs_operator is
+# neither routine nor a failure, it is an explicit escalation that needs the
+# operator's attention NOW, so it gets "escalate" (own CSS rule below).
 _BADGE_CLASS: dict[str, str] = {
     "received": "neutral",
     "extracting": "neutral",
@@ -194,6 +199,7 @@ _BADGE_CLASS: dict[str, str] = {
     "reconciled": "good",
     "rejected": "bad",
     "error": "bad",
+    "needs_operator": "escalate",
 }
 
 # Badge label mapping (UI-SPEC Badge Contract copywriting)
@@ -209,6 +215,7 @@ _BADGE_LABEL: dict[str, str] = {
     "reconciled": "Complete",
     "rejected": "Rejected",
     "error": "Error",
+    "needs_operator": "Needs Operator",
 }
 
 

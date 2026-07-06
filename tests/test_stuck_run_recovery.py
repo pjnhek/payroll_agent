@@ -91,6 +91,14 @@ def test_sweep_stranded_runs_scope_pin_d_9_12():
             f"sweep_stranded_runs scope must NEVER include parked status "
             f"'{parked}' — a run waiting on a human is not stranded (D-9-12)"
         )
+    # D-11-06: needs_operator is a settled human-gate escalation state (like
+    # awaiting_approval), NOT a stranded background-task failure — it must
+    # NEVER join the sweep scope. Phase 11 CONTEXT.md: "must be added to the
+    # exclusion tests."
+    assert "needs_operator" not in scope_lists[0], (
+        "sweep_stranded_runs scope must NEVER include 'needs_operator' — it is "
+        "a settled human-gate escalation state, not a stranded run (D-11-06)"
+    )
 
 
 def test_sweep_stranded_runs_returns_empty_list_when_no_rows():

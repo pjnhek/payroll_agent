@@ -246,14 +246,13 @@ def test_safe_to_learn_alias_idempotent_unambiguous():
 
 
 def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
-    """CLAR-04 finding #2 — Wave 3 implementation target: _clarify idempotency guard.
+    """CLAR-04 finding #2 — _clarify idempotency guard, re-keyed to (purpose, round)
+    per D-11-01 (Phase 11 Plan 02).
 
-    When a clarification outbound row already exists for the run (i.e.,
-    get_outbound_message_id returns a non-None message_id), re-triggering _clarify
-    must NOT call send_outbound a second time.
-
-    This test WILL FAIL RED until Wave 3 adds the idempotency guard to _clarify
-    in app/pipeline/orchestrator.py.
+    When a clarification outbound row already exists for the run AT THE CURRENT
+    ROUND (i.e., get_outbound_for_round returns a non-None dict), re-triggering
+    _clarify must NOT call send_outbound a second time — this is the CLAR-04 true-
+    duplicate case (same round re-trigger), preserved by the round-aware guard.
     """
     import app.email.gateway as gateway_mod
     from app.pipeline.orchestrator import _clarify
@@ -269,14 +268,24 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     # Mock send_outbound to track calls
     monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
 
-    # Mock get_outbound_message_id to return an EXISTING message_id (already sent)
+    # Mock get_outbound_for_round to return an EXISTING row at round 0 (already sent
+    # at the current round — a true duplicate, D-11-01).
     existing_mid = f"<{uuid.uuid4()}@payroll-agent.local>"
     import app.db.repo as repo_mod
     monkeypatch.setattr(
         repo_mod,
-        "get_outbound_message_id",
-        lambda run_id, purpose=None, conn=None: existing_mid,
+        "get_clarification_round",
+        lambda run_id, conn=None: 0,
         raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "get_outbound_for_round",
+        lambda run_id, purpose=None, round=0, conn=None: {"message_id": existing_mid, "round": round},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod, "set_clarification_round", lambda *a, **kw: None, raising=False
     )
 
     # Mock set_status (no-op for this test)

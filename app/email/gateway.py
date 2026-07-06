@@ -191,9 +191,14 @@ def send_outbound(
     attachments: list[tuple[str, bytes]] | None = None,
     purpose: str | None = None,
     send_state: str = "sent",
+    round: int = 0,
     conn=None,
 ) -> str:
     """Send an outbound email via Resend with D-13c crash-safe ordering.
+
+    round: D-11-01 round-aware upsert key, threaded straight through to
+    repo.insert_email_message (defaults to 0 — confirmation sends never pass a
+    round and stay at the default, matching pre-Phase-11 behavior exactly).
 
     HIGH-1-AUTH (R5): resend.api_key is set here so send_outbound is always
     authenticated, even when called from /demo/send-test without prior parse_inbound.
@@ -248,6 +253,7 @@ def send_outbound(
         body_text=body,
         purpose=purpose,
         send_state="reserved",
+        round=round,
         conn=conn,
     )
 
