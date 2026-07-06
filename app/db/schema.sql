@@ -246,10 +246,23 @@ CREATE TABLE IF NOT EXISTS email_messages (
     epoch            INT         NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_message_id UNIQUE (message_id),
-    -- uq_email_run_purpose_round (widened from uq_email_run_purpose, D-11-01):
-    -- each run has at most one clarification (per round) and one confirmation
-    -- outbound row. Postgres NULL != NULL so inbound rows (purpose=NULL) never conflict.
-    CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round)
+    -- uq_email_run_purpose_round_epoch (widened from uq_email_run_purpose_round,
+    -- GAP-2 11-06 fix): each run has at most one clarification (per round, per
+    -- epoch) and one confirmation outbound row. Postgres NULL != NULL so
+    -- inbound rows (purpose=NULL) never conflict.
+    --
+    -- WHY epoch MUST be in this constraint (not just in the WHERE-clause reads):
+    -- a retrigger resets clarification_round to 0, so the retriggered run's
+    -- fresh round-0 send has the SAME (run_id, purpose, round) tuple as the
+    -- stale pre-retrigger round-0 row. Without epoch in the constraint,
+    -- insert_email_message's `ON CONFLICT (run_id, purpose, round) DO UPDATE`
+    -- would silently UPSERT (mutate) the historical row instead of appending a
+    -- new one — corrupting the append-only audit log on every retrigger, the
+    -- exact invariant this plan's threat model requires. Widening to include
+    -- epoch makes the two rows distinct conflict targets, so the retriggered
+    -- send always INSERTs a genuinely new row (Pitfall #1 preserved: the
+    -- constraint and every ON CONFLICT clause must never drift apart).
+    CONSTRAINT uq_email_run_purpose_round_epoch UNIQUE (run_id, purpose, round, epoch)
 );
 
 -- ── Idempotent column adds for email_messages (Plan 05-03) ───────────────────
@@ -324,6 +337,31 @@ BEGIN
     ) THEN
         ALTER TABLE email_messages
             ADD CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round);
+    END IF;
+END;
+$$;
+
+-- GAP-2 (Plan 11-06): widen uq_email_run_purpose_round -> uq_email_run_purpose_round_epoch.
+-- Same atomic DROP+ADD-in-one-DO-block idiom as the D-11-01 widening above —
+-- a failed ADD rolls back the DROP too, so a live migration can never end up
+-- with neither constraint present (Pitfall #1, extended: insert_email_message's
+-- ON CONFLICT arbiter must always have a match, now on 4 columns).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_email_run_purpose_round'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages DROP CONSTRAINT uq_email_run_purpose_round;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_email_run_purpose_round_epoch'
+          AND conrelid = 'email_messages'::regclass
+    ) THEN
+        ALTER TABLE email_messages
+            ADD CONSTRAINT uq_email_run_purpose_round_epoch UNIQUE (run_id, purpose, round, epoch);
     END IF;
 END;
 $$;

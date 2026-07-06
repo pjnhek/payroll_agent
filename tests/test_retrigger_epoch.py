@@ -96,7 +96,7 @@ def _bare_extracted(run_id: uuid.UUID) -> Extracted:
 
 
 def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
-    monkeypatch, fake_repo
+    monkeypatch, fake_repo, mock_llm
 ):
     """A run already sent its round-0 clarification (still 'sent' in
     email_messages, pre-retrigger). The operator retriggers: repo.clear_reply_context

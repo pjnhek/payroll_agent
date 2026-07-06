@@ -233,12 +233,21 @@ def link_email_to_run(email_id: uuid.UUID, run_id: uuid.UUID, conn=None) -> None
       get_outbound_message_id, get_outbound_references_chain, load_outbound_emails),
       so linking inbound rows cannot affect reply routing or send idempotency.
     - find_run_by_message_id joins via payroll_runs.source_email_id, not run_id.
+
+    GAP-2/GAP-3 (11-06): also stamps epoch = the target run's CURRENT
+    reply_epoch (a correlated subquery, no extra round trip). This is the
+    only stamping point that can never race a retrigger — the row either
+    links before or after the epoch bump, either way it is correctly scoped
+    to whichever epoch was current at link time. Never re-read or mutated
+    afterward (a row's epoch is a permanent, point-in-time fact).
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             c.execute(
-                "UPDATE email_messages SET run_id = %s WHERE id = %s",
-                (str(run_id), str(email_id)),
+                "UPDATE email_messages SET run_id = %s,"
+                " epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)"
+                " WHERE id = %s",
+                (str(run_id), str(run_id), str(email_id)),
             )
 
 
@@ -982,12 +991,26 @@ def clear_reply_context(run_id: uuid.UUID, conn=None) -> None:
     plan's retrigger route can clear strictly AFTER a winning claim_status, in
     the same transaction that commits before _run_pipeline is scheduled
     (Pitfall #8).
+
+    GAP-2/GAP-3 (11-06): this statement ALSO bumps reply_epoch = reply_epoch + 1.
+    Without this bump, a retrigger resets clarification_round to 0 but leaves
+    the run's PRIOR round-0 'sent' outbound row and any consumed reply rows
+    fully intact in email_messages (the append-only audit log is never touched
+    here, by design) — so the retriggered run's first clarification would see
+    the stale round-0 row and silently suppress the send (GAP-2, WR-05
+    reintroduced), and a resume would re-accumulate a stale consumed reply
+    from a conversation that no longer exists (GAP-3, mispay risk). The epoch
+    bump gives every round-machine read (get_outbound_for_round,
+    load_consumed_replies, find_stranded_unconsumed_replies) a scope boundary
+    that the retrigger crosses but no stale row can — the historical rows
+    remain fully queryable, just invisible to the CURRENT epoch's reads.
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             c.execute(
                 "UPDATE payroll_runs SET clarified_fields = NULL, pre_clarify_extracted = NULL,"
-                " clarification_round = 0, alias_candidates = NULL, updated_at = now()"
+                " clarification_round = 0, alias_candidates = NULL,"
+                " reply_epoch = reply_epoch + 1, updated_at = now()"
                 " WHERE id = %s",
                 (str(run_id),),
             )
@@ -1068,21 +1091,44 @@ def insert_email_message(
 
     Inbound rows (purpose=NULL) are unaffected: Postgres treats NULLs as distinct
     in UNIQUE constraints, so inbound rows never conflict.
+
+    GAP-2/GAP-3 (11-06): the OUTBOUND path (purpose is not None) also stamps
+    epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s) — a single
+    correlated subquery against the run being written to, in the INSERT
+    column list/values. This reads the CURRENT run epoch at write time (never
+    re-read/mutated afterward).
+
+    The ON CONFLICT arbiter is (run_id, purpose, round, epoch) — widened from
+    (run_id, purpose, round), matching the widened uq_email_run_purpose_round_epoch
+    constraint (GAP-2 fix). This is NOT optional: a retrigger resets
+    clarification_round to 0, so the retriggered run's fresh round-0 send has
+    the SAME (run_id, purpose, round) tuple as a stale pre-retrigger round-0
+    row. Arbiting on the narrower 3-column key would silently UPSERT (mutate)
+    that historical row instead of inserting a new one — corrupting the
+    append-only audit log on every retrigger. Epoch in the arbiter makes the
+    two rows distinct conflict targets, so the retriggered send always INSERTs
+    a genuinely new row; an in-round retry (same epoch) still correctly
+    upserts in place (Pitfall #1 preserved). Zero caller changes: run_id is
+    already a parameter every existing call site (gateway.send_outbound,
+    _clarify's record_only branch) passes.
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             if purpose is not None:
-                # Outbound path with a purpose: upsert on (run_id, purpose, round) so a
-                # retry WITHIN a round over a reserved/failed row advances to the new
-                # send_state rather than crashing with a unique constraint violation.
+                # Outbound path with a purpose: upsert on (run_id, purpose, round, epoch)
+                # so a retry WITHIN a round AND epoch over a reserved/failed row advances
+                # to the new send_state rather than crashing with a unique constraint
+                # violation — while a NEW epoch's same-round send is a genuinely
+                # different conflict target and always inserts a new row (GAP-2 fix).
                 row = c.execute(
                     """
                     INSERT INTO email_messages (
                         run_id, direction, message_id, in_reply_to,
                         references_header, subject, from_addr, to_addr, body_text,
-                        purpose, send_state, round
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (run_id, purpose, round) DO UPDATE
+                        purpose, send_state, round, epoch
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        (SELECT reply_epoch FROM payroll_runs WHERE id = %s))
+                    ON CONFLICT (run_id, purpose, round, epoch) DO UPDATE
                         SET send_state = EXCLUDED.send_state,
                             message_id = EXCLUDED.message_id,
                             subject = EXCLUDED.subject,
@@ -1103,6 +1149,7 @@ def insert_email_message(
                         purpose,
                         send_state,
                         round,
+                        str(run_id) if run_id else None,
                     ),
                 ).fetchone()
             else:
@@ -1181,6 +1228,12 @@ def get_outbound_for_round(
 
     Raises ValueError on an unrecognised purpose value (same guard as
     get_outbound_message_id).
+
+    GAP-2 (11-06): also scoped to the run's CURRENT epoch via a correlated
+    subquery on the SAME run_id parameter (no new function parameter). This
+    is the actual GAP-2 fix — a stale pre-retrigger round-0 row belongs to
+    epoch 0, but a retriggered run is now at epoch 1, so this query literally
+    cannot see it anymore.
     """
     if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
         raise ValueError(
@@ -1192,10 +1245,11 @@ def get_outbound_for_round(
             SELECT message_id, round FROM email_messages
             WHERE run_id = %s AND direction = 'outbound'
               AND purpose = %s AND send_state = 'sent' AND round = %s
+              AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (str(run_id), purpose, round),
+            (str(run_id), purpose, round, str(run_id)),
         ).fetchone()
     if row is None:
         return None
@@ -1227,17 +1281,23 @@ def load_consumed_replies(run_id: uuid.UUID, conn=None) -> list[dict]:
     consumed_round ASC so a later plan's accumulated-context builder can render
     every consumed reply in the order it was actually processed (not insertion
     order, which can differ under redelivery/retry).
+
+    GAP-3 (11-06): also scoped to the run's CURRENT epoch via a correlated
+    subquery. This is the actual GAP-3 fix — a stale consumed reply from a
+    pre-retrigger epoch is invisible to the post-retrigger accumulation, even
+    though the row is never deleted (append-only preserved).
     """
     sql = (
         "SELECT direction, purpose, subject, body_text, message_id,"
         " from_addr, to_addr, consumed_round, created_at"
         " FROM email_messages"
         " WHERE run_id = %s AND direction = 'inbound' AND consumed_round IS NOT NULL"
+        " AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)"
         " ORDER BY consumed_round ASC"
     )
     with _conn_ctx(conn) as (c, _owns):
         with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id),))
+            cur.execute(sql, (str(run_id), str(run_id)))
             return cur.fetchall() or []
 
 
@@ -1290,13 +1350,19 @@ def find_stranded_unconsumed_replies(threshold_seconds: int, conn=None) -> list[
     (id, in_reply_to, references_header added; created_at was already
     selected) matching get_inbound_by_message_id's widening, so
     `_row_to_inbound` builds a valid InboundEmail from either query's rows.
+
+    GAP-2/GAP-3 (11-06): the JOIN condition also requires em.epoch = pr.reply_epoch
+    (a column comparison across the existing join, not a new subquery). This
+    closes a subtler epoch variant: a genuinely stale epoch-0 unconsumed reply
+    must never be auto-resumed against a run that has since been retriggered
+    into a NEW epoch-1 awaiting_reply state.
     """
     sql = (
         "SELECT em.id, em.run_id, em.message_id, em.in_reply_to,"
         " em.references_header, em.subject, em.body_text,"
         " em.from_addr, em.to_addr, em.consumed_round, em.created_at"
         " FROM email_messages em"
-        " JOIN payroll_runs pr ON pr.id = em.run_id"
+        " JOIN payroll_runs pr ON pr.id = em.run_id AND em.epoch = pr.reply_epoch"
         " WHERE em.direction = 'inbound'"
         "   AND em.consumed_round IS NULL"
         "   AND em.run_id IS NOT NULL"
