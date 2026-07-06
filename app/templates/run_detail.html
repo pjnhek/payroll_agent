@@ -68,6 +68,39 @@
   <strong>Error</strong> — {{ run.error_reason }}. Use the Re-trigger button below to restart this run from the beginning.
   {% if run.error_detail %}<div class="banner-divider">{{ run.error_detail }}</div>{% endif %}
 </div>
+{% elif run.status == 'needs_operator' %}
+<div class="banner banner-clarify banner-mb">
+  <strong>Needs Operator</strong> — the client did not resolve every name after {{ run.clarification_round if run.clarification_round else 3 }} clarification round(s). Resolve each unresolved name below, or reject this run.
+  <div class="banner-divider">
+    <p class="column-label" style="margin-bottom: 6px;">Resolve unresolved names</p>
+    <form method="post" action="/runs/{{ run.id }}/resolve" class="composer">
+      {% for token in (run.decision.unresolved_names if run.decision else []) %}
+      <div class="form-inline" style="align-items: center;">
+        <label style="min-width: 160px;">{{ token }}</label>
+        <select name="employee_id_{{ loop.index0 }}">
+          <option value="">— select employee —</option>
+          {% for emp in roster_employees %}
+          <option value="{{ emp.id }}" {% if unresolved_suggestions.get(token) == (emp.id | string) %}selected{% endif %}>{{ emp.full_name }}</option>
+          {% endfor %}
+        </select>
+        <label style="font-weight: 400; text-transform: none; letter-spacing: 0;">
+          <input type="checkbox" name="remember_{{ loop.index0 }}" checked>
+          remember this alias
+        </label>
+      </div>
+      {% endfor %}
+      <div class="form-inline" style="margin-bottom: 0;">
+        <button type="submit" class="btn-approve">Resolve &amp; Resume</button>
+        <span class="form-help">Every name must be mapped to a roster employee before resuming.</span>
+      </div>
+    </form>
+    <form method="post" action="/runs/{{ run.id }}/reject"
+          onsubmit="return confirm('Reject this payroll run? This cannot be undone.')"
+          style="margin-top: 8px;">
+      <button type="submit" class="btn-reject">Reject</button>
+    </form>
+  </div>
+</div>
 {% elif run.status == 'awaiting_reply' %}
 <div class="banner banner-awaiting banner-mb">
   <strong>Awaiting client reply</strong> — A clarification email has been sent. Waiting for the client to respond.

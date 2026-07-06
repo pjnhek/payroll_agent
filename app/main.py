@@ -696,13 +696,135 @@ def approve(
 
 @app.post("/runs/{run_id}/reject")
 def reject(run_id: uuid.UUID) -> RedirectResponse:
-    """Hardened reject: CAS claim (AWAITING_APPROVAL → REJECTED) → 303.
+    """Hardened reject: CAS claim (AWAITING_APPROVAL OR NEEDS_OPERATOR → REJECTED) → 303.
 
     claim_status is atomic — a concurrent rejection or approval sees False and no-ops
     (D-12, FOUND-04). Always 303 to run detail regardless of claim outcome.
+
+    D-11-08 extension: needs_operator is also a valid reject source (one of the
+    escalation's two exits — resolve+resume, or reject). The `or` short-circuits:
+    if the first CAS wins (run was awaiting_approval), the second is skipped; if
+    it loses, the second CAS attempts the needs_operator claim. At most one of
+    the two can ever succeed for a given run (they target mutually exclusive
+    prior statuses), so there is no risk of a double-claim race between them.
     """
-    repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED)
+    repo.claim_status(
+        run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED
+    ) or repo.claim_status(run_id, RunStatus.NEEDS_OPERATOR, RunStatus.REJECTED)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+@app.post("/runs/{run_id}/resolve")
+async def resolve(run_id: uuid.UUID, request: Request, background_tasks: BackgroundTasks) -> RedirectResponse:
+    """Operator resolve+resume for a needs_operator run (D-11-08, D-11-16, Security V4).
+
+    Form shape (per unresolved name/token, dynamic field names keyed by the
+    LOOP INDEX over decision.unresolved_names — never the raw token text, so a
+    field name can never collide with an ill-formed/injected token string):
+      - employee_id_{i}: the operator-selected roster employee id for token i
+      - remember_{i}: checkbox, present (any value) = ON, absent = OFF (D-11-16
+        default-checked in the template; unchecked posts nothing for that key)
+
+    Security V4 (server-side roster validation): every posted employee_id MUST
+    belong to `load_roster_for_business(run.business_id)` — never trust the
+    dropdown. ANY invalid/unknown/cross-business id rejects the WHOLE POST (no
+    partial apply, no state change) — the run stays needs_operator and the
+    operator sees the same page again (a malformed/tampered request is simply
+    a no-op, not a partial misroute).
+
+    On a valid POST: apply the mapping as the per-run override (drives
+    resolution via reconcile_names(overrides=...) inside resume_pipeline); for
+    each remember-checked token, ALSO pre-set the candidate's `bound` field so
+    the existing single-human-gate write path (_write_aliases_if_safe, called
+    from _deliver at approval) persists it — checkbox OFF means override-only,
+    nothing learned (D-11-16). THEN claim_status(NEEDS_OPERATOR → EXTRACTING);
+    on a successful claim, dispatch the operator-resume in the background.
+    Always 303 — post-commit scheduling only (no LLM/provider call in this
+    request's synchronous path).
+    """
+    try:
+        run = repo.load_run(run_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if run.get("status") != RunStatus.NEEDS_OPERATOR.value:
+        # Not (or no longer) awaiting an operator resolution — no-op redirect
+        # rather than erroring; a stale page reload/double-submit is harmless.
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    decision = run.get("decision") or {}
+    unresolved_names = decision.get("unresolved_names") or []
+    if not unresolved_names:
+        # Nothing to resolve (shouldn't normally happen for a needs_operator
+        # run, but fail safe rather than 500 on a malformed/legacy row).
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    try:
+        roster = repo.load_roster_for_business(run["business_id"])
+    except Exception:
+        logger.warning("resolve: roster load failed for run %s", run_id)
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+    roster_ids = {str(emp.id) for emp in roster.employees}
+
+    form = await request.form()
+
+    # Security V4: validate EVERY posted employee_id against the run's OWN
+    # business roster before applying anything. Reject the WHOLE POST (no
+    # partial apply) on any invalid/unknown/cross-business id.
+    overrides: dict[str, str] = {}
+    remember_tokens: set[str] = set()
+    for i, token in enumerate(unresolved_names):
+        posted_id = form.get(f"employee_id_{i}")
+        if posted_id is None or str(posted_id) not in roster_ids:
+            logger.warning(
+                "resolve: rejected whole POST for run %s — invalid/missing "
+                "employee_id at index %d (Security V4)",
+                run_id,
+                i,
+            )
+            return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        overrides[token] = str(posted_id)
+        if form.get(f"remember_{i}") is not None:
+            remember_tokens.add(token)
+
+    # Apply the validated mapping as the per-run override (drives resolution
+    # deterministically before reconcile_names's exact/alias tiers) AND, for
+    # each remember-checked token, pre-set `bound` on the candidate so the
+    # existing single-human-gate write path persists the alias at approval
+    # (D-11-16: checkbox OFF = override only, nothing learned).
+    if remember_tokens:
+        existing_candidates = run.get("alias_candidates") or {}
+        updated_candidates = dict(existing_candidates)
+        for token in remember_tokens:
+            employee_id = overrides[token]
+            updated_candidates[token] = {"suggested": employee_id, "bound": employee_id}
+        repo.set_alias_candidates(run_id, updated_candidates)
+
+    claimed = repo.claim_status(run_id, RunStatus.NEEDS_OPERATOR, RunStatus.EXTRACTING)
+    if claimed:
+        background_tasks.add_task(_operator_resume, run_id, overrides)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+def _operator_resume(run_id: uuid.UUID, overrides: dict[str, str]) -> None:
+    """Background wrapper for the operator-resume path (mirrors _resume_pipeline).
+
+    resume_pipeline owns its own try/except error-wrap (D-A1-03); this outer
+    guard only ensures a catastrophic start failure cannot escape the
+    BackgroundTask (the /resolve route already returned 303)."""
+    try:
+        from app.pipeline.orchestrator import resume_pipeline
+
+        resume_pipeline(
+            run_id,
+            None,
+            from_status=RunStatus.NEEDS_OPERATOR,
+            overrides=overrides,
+        )
+    except Exception:  # noqa: BLE001 — background safety net; route already 303'd
+        logger.exception("operator resume failed to start for run_id=%s", run_id)
 
 
 @app.post("/runs/{run_id}/retrigger")
@@ -1186,6 +1308,29 @@ def run_detail(request: Request, run_id: uuid.UUID):
     except Exception:
         logger.debug("load_clarified_fields unavailable for run %s", run_id)
         clarified_fields_by_name = {}
+    # D-11-08: for a needs_operator run, the template needs (a) the business's
+    # roster employees to populate each unresolved name's dropdown and (b) the
+    # persisted per-token suggestion (D-11-14 nested alias_candidates shape) to
+    # pre-select the LLM's advisory guess. Both are best-effort — a load
+    # failure degrades to an empty dropdown/no pre-selection rather than a
+    # 500, matching every other try/except-debug block on this route.
+    roster_employees: list = []
+    unresolved_suggestions: dict[str, str] = {}
+    if run.get("status") == RunStatus.NEEDS_OPERATOR.value:
+        try:
+            roster_employees = repo.load_roster_for_business(run["business_id"]).employees
+        except Exception:
+            logger.debug("load_roster_for_business unavailable for run %s", run_id)
+            roster_employees = []
+        try:
+            alias_candidates = run.get("alias_candidates") or {}
+            for token, value in alias_candidates.items():
+                cand = value if isinstance(value, dict) else {}
+                suggested = cand.get("suggested")
+                if suggested is not None:
+                    unresolved_suggestions[token] = str(suggested)
+        except Exception:
+            unresolved_suggestions = {}
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -1198,6 +1343,8 @@ def run_detail(request: Request, run_id: uuid.UUID):
             "alias_rationale_notes": alias_rationale_notes,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),
             "clarified_fields_by_name": clarified_fields_by_name,
+            "roster_employees": roster_employees,
+            "unresolved_suggestions": unresolved_suggestions,
         },
     )
 
