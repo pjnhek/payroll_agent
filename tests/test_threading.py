@@ -317,7 +317,7 @@ def test_partial_reply_preserves_hours():
             # Phase 11 (D-11-02): resume_pipeline now writes the consumed marker
             # right after the CAS claim — this test's mini-store must intercept
             # both calls or they fall through to the real (DB-backed) repo.
-            "get_clarification_round", "mark_reply_consumed",
+            "get_clarification_round", "mark_reply_consumed", "load_consumed_replies",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         monkey.setattr(orchestrator, "extract", _spy_extract)
@@ -388,7 +388,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
             # Phase 11 (D-11-02): claim_status returns False here (non-awaiting_reply
             # precondition), so mark_reply_consumed/get_clarification_round are never
             # reached — patched anyway for consistency/defense-in-depth.
-            "get_clarification_round", "mark_reply_consumed",
+            "get_clarification_round", "mark_reply_consumed", "load_consumed_replies",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         # If the precondition fails to short-circuit, these spies prove the mutation.
@@ -750,3 +750,7 @@ class _MiniStore:
     def mark_reply_consumed(self, message_id, round, conn=None):
         """D-11-02: no-op in mini-store — this test does not exercise accumulation."""
         pass
+
+    def load_consumed_replies(self, run_id, conn=None):
+        """D-11-10/12/13: no prior consumed replies in this mini-store (single-round test)."""
+        return []

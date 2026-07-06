@@ -869,6 +869,7 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     # calls or they fall through to the real (DB-backed) repo.
     monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
     monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
 
     # Mock _run_stages to simulate the post-resume state without running actual stages.
     # Returns _RunStagesResult(clarify_deferred=False) so stage.clarify_deferred is accessible.
@@ -993,6 +994,7 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
     # calls or they fall through to the real (DB-backed) repo.
     monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
     monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
 
     import app.pipeline.orchestrator as orch_mod
     from app.pipeline.orchestrator import _RunStagesResult
@@ -1128,6 +1130,7 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
     # calls or they fall through to the real (DB-backed) repo.
     monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
     monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
 
     import app.pipeline.orchestrator as orch_mod
     from app.pipeline.orchestrator import _RunStagesResult
