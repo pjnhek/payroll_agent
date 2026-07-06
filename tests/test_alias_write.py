@@ -449,21 +449,34 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     genuinely unresolved token ("Dave Reyez" — zero candidate_ids in seed_roster),
     set_alias_candidates IS called with the D-11-14 nested shape
     {"Dave Reyez": {"suggested": None, "bound": None}} — "suggested" is None
-    here because this test does not mock suggest_employees (it degrades to {}
-    on the real client's ValidationError in this offline environment, per
-    suggest.py's never-strand-the-run contract), so no full_name->id mapping
-    exists to persist.
+    here because suggest_employees is stubbed to return {} (the never-strand
+    degradation path), so no full_name->id mapping exists to persist. The stub
+    is deterministic and hermetic: without it, _clarify's suggest_employees call
+    hits the LIVE draft LLM (this repo's .env carries real DRAFT_API_KEY), which
+    nondeterministically suggests "David Reyes" for the typo "Dave Reyez" — a
+    correct suggestion that maps to e0000003 and makes "suggested" non-None,
+    flaking the assert. Stubbing it isolates THIS test to the capture-shape
+    contract (D-11-14) rather than the LLM's suggestion behavior (covered
+    separately by the mocked-response suggest tests).
 
     "Dave Reyez" does NOT appear in any employee's full_name or known_aliases in
     the D-01b roster, so it has zero candidates — genuinely unresolved.
-
-    This test WILL FAIL RED until Wave 4 implements the alias capture in _clarify.
     """
     import app.email.gateway as gateway_mod
     import app.db.repo as repo_mod
+    import app.pipeline.orchestrator as orchestrator_mod
     from app.pipeline.orchestrator import _clarify
     from app.models.contracts import InboundEmail
     from datetime import datetime, timezone
+
+    # Deterministic stub for the never-strand degradation path — see docstring.
+    # _clarify imports suggest_employees into its own module namespace, so patch
+    # it there. Returning {} means no full_name->id mapping, so the captured
+    # candidate's "suggested" is None, isolating this test to the D-11-14
+    # capture-shape contract and off the live draft LLM's nondeterminism.
+    monkeypatch.setattr(
+        orchestrator_mod, "suggest_employees", lambda *a, **kw: {}, raising=True
+    )
 
     set_alias_candidates_calls: list = []
 
