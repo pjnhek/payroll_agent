@@ -1248,12 +1248,17 @@ def get_inbound_by_message_id(message_id: str, conn=None) -> dict | None:
     (cleaned body_text, run_id via WR-03 linking, consumed_round) — NEVER
     rebuild an InboundEmail from a redelivered webhook request body, which
     would re-clean/re-parse and could diverge from what was actually processed.
+
+    Plan 11-05: the column list is widened to the FULL InboundEmail field set
+    (id, in_reply_to, references_header, created_at added) so app.main's
+    `_row_to_inbound` helper can build a valid InboundEmail (extra="forbid")
+    directly from this row with no second lookup.
     """
     with _conn_ctx(conn) as (c, _owns):
         with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
-                "SELECT run_id, message_id, subject, body_text, from_addr, to_addr,"
-                " consumed_round"
+                "SELECT id, run_id, message_id, in_reply_to, references_header,"
+                " subject, body_text, from_addr, to_addr, consumed_round, created_at"
                 " FROM email_messages WHERE message_id = %s AND direction = 'inbound'",
                 (message_id,),
             )
@@ -1278,12 +1283,18 @@ def find_stranded_unconsumed_replies(threshold_seconds: int, conn=None) -> list[
     run_id IS NOT NULL, created_at older than the staleness threshold) to
     payroll_runs (status = 'awaiting_reply'). Returns reply-row dicts with the
     same fields as get_inbound_by_message_id plus run_id, so the D-11-05 sweep
-    hook (a later plan) can re-schedule _resume_pipeline for each one — the CAS
+    hook (Plan 11-05) can re-schedule _resume_pipeline for each one — the CAS
     claim inside resume_pipeline absorbs any double-schedule.
+
+    Plan 11-05: the column list is widened to the FULL InboundEmail field set
+    (id, in_reply_to, references_header added; created_at was already
+    selected) matching get_inbound_by_message_id's widening, so
+    `_row_to_inbound` builds a valid InboundEmail from either query's rows.
     """
     sql = (
-        "SELECT em.run_id, em.message_id, em.subject, em.body_text,"
-        " em.from_addr, em.to_addr, em.consumed_round"
+        "SELECT em.id, em.run_id, em.message_id, em.in_reply_to,"
+        " em.references_header, em.subject, em.body_text,"
+        " em.from_addr, em.to_addr, em.consumed_round, em.created_at"
         " FROM email_messages em"
         " JOIN payroll_runs pr ON pr.id = em.run_id"
         " WHERE em.direction = 'inbound'"

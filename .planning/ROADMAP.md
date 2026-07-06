@@ -19,7 +19,7 @@
 - [x] **Phase 8: Data-Layer Hygiene & Diagnostics** - Restore schema-hygiene discipline (hot-path indexes, explicit column lists) and make production failures diagnosable from the DB (PII-safe `error_detail`) — the clean baseline the atomicity work builds on (completed 2026-07-02)
 - [x] **Phase 9: Atomic Data Integrity** - The senior-engineer ring: atomic multi-write pipeline transactions (no half-written runs on crash), a transactional webhook-dedup CAS (Resend redelivery never duplicates a run), and a stuck-run recovery path for orphaned in-flight runs (completed 2026-07-04)
 - [ ] **Phase 10: Concurrency Proof** - The evidence capstone: a test fires N simultaneous runs / duplicate webhooks / concurrent approvals and asserts the invariants hold — no double-approval, lost update, duplicate run, or half-write — backing the production-grade claim
-- [ ] **Phase 11: Clarification Round Machine & Alias Learning** - The clarify-cluster design phase: round-aware clarification (WR-05 silent-park fix + round cap/operator escape), question-anchored reply extraction, alias learning that binds on explicit client confirmation, and closure of the CX-01 multi-round context-loss deferred finding
+- [x] **Phase 11: Clarification Round Machine & Alias Learning** - The clarify-cluster design phase: round-aware clarification (WR-05 silent-park fix + round cap/operator escape), question-anchored reply extraction, alias learning that binds on explicit client confirmation, and closure of the CX-01 multi-round context-loss deferred finding (completed 2026-07-06)
 
 ## Phase Details
 
@@ -158,14 +158,14 @@ Plans:
 **Goal:** The multi-round clarification state machine becomes correct and unstrandable, and the alias-learning loop actually learns. Concretely: (1) WR-05 fix — a genuinely new clarification question always sends (round-aware idempotency instead of the purpose-only guard that today silently parks a run at `awaiting_reply` with no email out), with a round cap + operator-escape state (260623-08); (2) ambiguous replies get an attribution anchor — the outbound clarification's questions are included in the resume extraction context so a bare "40" can't be blindly attributed; (3) the alias-learning WRITE side binds on explicit client confirmation of the clarification *suggestion* (human-stated evidence) instead of the circular re-extraction condition that makes it unreachable today (260705-01), preserving the misname guard's never-learn-from-inference intent; (4) CX-01/T-09-21 multi-round context loss is closed (accumulate reply bodies or diff against last-persisted extraction — the known-edge fixture in `tests/test_multiround_context_edge.py` flips its assertion); (5) WR-06 provenance scoping and WR-04 redelivered-reply handling fold into the same round/consumed state design.
 **Requirements**: CLAR2-01, CLAR2-02, CLAR2-03, CLAR2-04, CLAR2-05, CLAR2-06, CLAR2-07 (MONEY-class follow-ups derived from 260705-01/260705-02/260623-08 + 09-REVIEW.md WR-04/05/06 + 09-REVIEWS.md CX-01 + 09-CONTEXT.md deferred ideas)
 **Depends on:** Phase 10 (concurrency proof may add fencing primitives the round machine reuses)
-**Plans:** 5 plans
+**Plans:** 5/5 plans complete
 
 Plans:
-- [ ] 11-01-PLAN.md — Data-layer substrate: round/consumed-round columns, needs_operator status, widened uniqueness, all new repo primitives + InMemoryRepo mirrors (zero behavior change)
-- [ ] 11-02-PLAN.md — Round-aware _clarify: (purpose, round) guard (WR-05), round cap + needs_operator escalation, dashboard badge + scope exclusions
-- [ ] 11-03-PLAN.md — resume_pipeline consumed marker (D-11-02) + accumulated context with code-owned asked anchor (CX-01/D-11-12) + no-guess extraction; flipped known-edge fixture
-- [ ] 11-04-PLAN.md — Alias bind-on-confirmation (nested suggestion shape), operator resolve form + resume route with server-side roster validation, full-loop stops-asking test
-- [ ] 11-05-PLAN.md — main.py wiring: WR-04 redelivery re-schedule + D-11-05 stranded auto-resume + WR-06 retrigger-clears-all-context (CLAR2-06/07)
+- [x] 11-01-PLAN.md — Data-layer substrate: round/consumed-round columns, needs_operator status, widened uniqueness, all new repo primitives + InMemoryRepo mirrors (zero behavior change)
+- [x] 11-02-PLAN.md — Round-aware _clarify: (purpose, round) guard (WR-05), round cap + needs_operator escalation, dashboard badge + scope exclusions
+- [x] 11-03-PLAN.md — resume_pipeline consumed marker (D-11-02) + accumulated context with code-owned asked anchor (CX-01/D-11-12) + no-guess extraction; flipped known-edge fixture
+- [x] 11-04-PLAN.md — Alias bind-on-confirmation (nested suggestion shape), operator resolve form + resume route with server-side roster validation, full-loop stops-asking test
+- [x] 11-05-PLAN.md — main.py wiring: WR-04 redelivery re-schedule + D-11-05 stranded auto-resume + WR-06 retrigger-clears-all-context (CLAR2-06/07)
 
 ## Backlog
 
@@ -186,4 +186,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
 | 9. Atomic Data Integrity | 6/6 | Complete    | 2026-07-04 |
 | 10. Concurrency Proof | 0/TBD | Not started | - |
-| 11. Clarification Round Machine & Alias Learning | 0/5 | Planned | - |
+| 11. Clarification Round Machine & Alias Learning | 5/5 | Complete   | 2026-07-06 |

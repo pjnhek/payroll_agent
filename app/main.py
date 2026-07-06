@@ -462,6 +462,31 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
 
     if outcome == "duplicate":
         logger.info("duplicate inbound message_id=%s — no second run", email.message_id)
+        # WR-04 redelivery re-schedule (D-11-03, Pitfall #11): a redelivered
+        # webhook carrying a reply is normally just a no-op duplicate — but if
+        # the PERSISTED reply row is still unconsumed AND its run is still
+        # awaiting_reply, the original resume never happened (dead background
+        # task / missed delivery) and this redelivery is the only signal we'll
+        # get. Load the row by message_id (never rebuild from this request's
+        # body — Pitfall #11a) and re-schedule iff both conditions hold. A
+        # consumed reply, or a run no longer awaiting_reply, stays a pure
+        # no-op (unchanged duplicate response below). The CAS claim inside
+        # resume_pipeline (AWAITING_REPLY -> EXTRACTING) makes any
+        # double-scheduling safe.
+        reply_row = repo.get_inbound_by_message_id(email.message_id)
+        if (
+            reply_row is not None
+            and reply_row.get("consumed_round") is None
+            and reply_row.get("run_id") is not None
+        ):
+            linked_run = repo.load_run(reply_row["run_id"])
+            if linked_run is not None and linked_run.get("status") == RunStatus.AWAITING_REPLY.value:
+                logger.info(
+                    "run_id=%s redelivery reschedule (WR-04)", reply_row["run_id"]
+                )
+                background_tasks.add_task(
+                    _resume_pipeline, reply_row["run_id"], _row_to_inbound(reply_row)
+                )
         return JSONResponse(
             status_code=200,
             content={
@@ -505,6 +530,35 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     return JSONResponse(
         status_code=200,
         content={"status": "accepted", "run_id": str(run_id)},
+    )
+
+
+def _row_to_inbound(row: dict) -> InboundEmail:
+    """Build an InboundEmail from a PERSISTED email_messages row dict (Plan 11-05).
+
+    The single conversion point reused by both the WR-04 duplicate-redelivery
+    re-schedule and the D-11-05 stranded-unconsumed-reply runs-list auto-resume.
+    Pure — no DB I/O. Uses `row["body_text"]` VERBATIM: it is already the body
+    cleaned at first ingest (the authoritative, actually-processed text) — this
+    helper must NEVER re-clean it (Pitfall #11a; a redelivered webhook request
+    body could diverge from what was actually persisted/processed).
+
+    `row` must supply the full InboundEmail field set (id, message_id,
+    in_reply_to, references_header, subject, from_addr, to_addr, body_text,
+    created_at) — both `repo.get_inbound_by_message_id` and
+    `repo.find_stranded_unconsumed_replies` are widened to return exactly this
+    shape (plus run_id, which this helper ignores; the caller already has it).
+    """
+    return InboundEmail(
+        id=row["id"],
+        message_id=row["message_id"],
+        in_reply_to=row.get("in_reply_to"),
+        references_header=row.get("references_header"),
+        subject=row.get("subject") or "",
+        from_addr=row.get("from_addr") or "",
+        to_addr=row.get("to_addr") or "",
+        body_text=row["body_text"],
+        created_at=row["created_at"],
     )
 
 
@@ -934,6 +988,17 @@ def retrigger(
                     )
 
     if claimed:
+        # WR-06 (D-11-04, Plan 11-05): "context lost means ALL of it" — clear
+        # clarified_fields + pre_clarify_extracted + the round counter +
+        # suggestion/candidate state AFTER the winning claim (both branches
+        # above converge here) and BEFORE _run_pipeline is scheduled, so
+        # is_round_2 = bool(clarified) sees a genuinely fresh run and no
+        # provenance badge can outlive the data that produced it.
+        # clear_reply_context opens its own committed transaction (conn=None)
+        # — a durable unit that does NOT span the LLM-heavy _run_pipeline
+        # background task (Pitfall #8).
+        repo.clear_reply_context(run_id)
+        logger.info("run_id=%s reply context cleared on retrigger (WR-06)", run_id)
         background_tasks.add_task(_run_pipeline, run_id)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
@@ -1188,7 +1253,7 @@ def demo_compose(
 
 
 @app.get("/runs")
-def runs_list(request: Request):
+def runs_list(request: Request, background_tasks: BackgroundTasks):
     """DASH-01: Render the reverse-chronological runs list with status badges.
 
     D-9-10/11 (09-03): sweeps stranded in-flight runs to ERROR BEFORE loading the
@@ -1198,9 +1263,22 @@ def runs_list(request: Request):
     call is wrapped in the SAME try/except-swallow-on-DB-unavailable style the
     route already uses for load_all_runs — a sweep failure must never 500 the
     dashboard.
+
+    D-11-05 (Plan 11-05): beside the sweep, this same try-block also re-schedules
+    _resume_pipeline for every stale, unconsumed reply against an awaiting_reply
+    run (repo.find_stranded_unconsumed_replies) — the recovery route for a
+    redelivery that never arrived. Scope is EXACTLY awaiting_reply + unconsumed +
+    stale, which structurally EXCLUDES needs_operator runs (D-11-06: those exit
+    only via /resolve or reject, never an autonomous re-schedule). The CAS claim
+    inside resume_pipeline absorbs any double-schedule; a failure here must never
+    500 the dashboard, same swallow-on-failure style as the sweep.
     """
     try:
         repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
+        for reply_row in repo.find_stranded_unconsumed_replies(STALE_THRESHOLD_SECONDS):
+            background_tasks.add_task(
+                _resume_pipeline, reply_row["run_id"], _row_to_inbound(reply_row)
+            )
     except Exception:
         logger.debug("sweep_stranded_runs unavailable — skipping this page load")
     try:
