@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
 status: verifying
-last_updated: "2026-07-06T21:22:05.250Z"
+last_updated: "2026-07-06T21:39:48.708Z"
 last_activity: 2026-07-06
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 27
-  completed_plans: 21
+  completed_plans: 23
   percent: 50
 ---
 
@@ -30,7 +30,7 @@ Plan: 5 of 5
 Status: Phase complete — ready for verification
 Last activity: 2026-07-06
 
-Progress: [█████████░] 88%
+Progress: [██████████] 96%
 
 ## Performance Metrics
 
@@ -75,6 +75,7 @@ Progress: [█████████░] 88%
 | Phase 05-dashboard-delivery P03 | 35 | 3 tasks | 8 files |
 | Phase 11 P05 | 50min | 4 tasks | 4 files |
 | Phase 11 P07 | 35min | 1 tasks | 2 files |
+| Phase 11 P10 | 25min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -118,6 +119,7 @@ Recent decisions affecting current work:
 - [Phase 11 P05]: clear_reply_context is called ONCE at the retrigger route's single 'if claimed:' post-claim convergence point (reached by both the ERROR/APPROVED CAS and the stale in-flight CAS) rather than duplicated inside each branch — satisfies WR-06/D-11-04 clearing ALL reply-round context (clarified_fields, pre_clarify_extracted, clarification_round, alias_candidates) before _run_pipeline is scheduled.
 - [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).
 - [Phase 11]: Route validates+applies overrides then unconditionally schedules background resume; resume_pipeline is the sole CAS claimer (no route-level pre-claim), matching the webhook reply-resume path
+- [Phase 11]: Shared _reply_sender_ok(row, run) predicate re-asserts FIX-5 sender revalidation at both the WR-04 redelivery re-schedule and the D-11-05 stranded-sweep seam (GAP-5/CR-5) — A FIX-5-failed linked reply left unconsumed could otherwise be resumed later via redelivery or dashboard load, bypassing sender auth entirely
 
 ### Pending Todos
 
@@ -169,6 +171,6 @@ intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; no
 
 ## Session Continuity
 
-Last session: 2026-07-06T21:22:05.245Z
-Stopped at: Completed 11-07-PLAN.md (GAP-1/CR-1 double-CAS fix)
+Last session: 2026-07-06T21:39:48.702Z
+Stopped at: Completed 11-10-PLAN.md (GAP-5/CR-5 closed)
 Resume file: None

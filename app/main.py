@@ -481,12 +481,23 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
         ):
             linked_run = repo.load_run(reply_row["run_id"])
             if linked_run is not None and linked_run.get("status") == RunStatus.AWAITING_REPLY.value:
-                logger.info(
-                    "run_id=%s redelivery reschedule (WR-04)", reply_row["run_id"]
-                )
-                background_tasks.add_task(
-                    _resume_pipeline, reply_row["run_id"], _row_to_inbound(reply_row)
-                )
+                # GAP-5/CR-5: re-assert FIX-5 before dispatching this redelivery
+                # re-schedule — a reply that already failed sender revalidation
+                # on first delivery (left linked+unconsumed) must never be
+                # resumed via a subsequent redelivery of the same message_id.
+                if _reply_sender_ok(reply_row, linked_run):
+                    logger.info(
+                        "run_id=%s redelivery reschedule (WR-04)", reply_row["run_id"]
+                    )
+                    background_tasks.add_task(
+                        _resume_pipeline, reply_row["run_id"], _row_to_inbound(reply_row)
+                    )
+                else:
+                    logger.warning(
+                        "run_id=%s redelivery blocked — sender mismatch persists "
+                        "(GAP-5/CR-5 fix)",
+                        reply_row["run_id"],
+                    )
         return JSONResponse(
             status_code=200,
             content={
@@ -559,6 +570,30 @@ def _row_to_inbound(row: dict) -> InboundEmail:
         to_addr=row.get("to_addr") or "",
         body_text=row["body_text"],
         created_at=row["created_at"],
+    )
+
+
+def _reply_sender_ok(row: dict, run: dict) -> bool:
+    """Re-assert FIX-5's sender revalidation for an already-persisted reply row (GAP-5/CR-5).
+
+    A reply is linked to its run INSIDE the webhook's ingest transaction based
+    purely on the RFC header chain (in_reply_to/references) — attacker-
+    controllable and NOT authentication. FIX-5 (`find_business_by_sender`
+    matching the run's business) is the actual authentication gate, and it is
+    the SAME comparison `_finish_reply_resume` performs post-commit at first
+    delivery (:582-600 there). That guard only runs once, on the FIRST
+    delivery, though: any OTHER seam capable of re-dispatching `_resume_pipeline`
+    from a persisted, linked-but-unconsumed reply row (a redelivery, a later
+    stranded-reply sweep) must re-assert it too, or a reply that already failed
+    FIX-5 once — and was left linked+unconsumed — can still drive the run via
+    that seam. This is that shared predicate, reused by both re-schedule seams.
+
+    Calls `find_business_by_sender` exactly ONCE (assigned to a local first) —
+    no duplicate lookup.
+    """
+    reply_business_id = repo.find_business_by_sender(row.get("from_addr") or "")
+    return reply_business_id is not None and str(reply_business_id) == str(
+        run.get("business_id")
     )
 
 
@@ -1287,9 +1322,22 @@ def runs_list(request: Request, background_tasks: BackgroundTasks):
     try:
         repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
         for reply_row in repo.find_stranded_unconsumed_replies(STALE_THRESHOLD_SECONDS):
-            background_tasks.add_task(
-                _resume_pipeline, reply_row["run_id"], _row_to_inbound(reply_row)
-            )
+            # GAP-5/CR-5: re-assert FIX-5 before dispatching this stranded-sweep
+            # re-schedule — a reply that already failed sender revalidation on
+            # first delivery (left linked+unconsumed) must never be auto-
+            # resumed by a later dashboard load either. load_run is needed
+            # anyway to get business_id for the check.
+            candidate_run = repo.load_run(reply_row["run_id"])
+            if candidate_run is not None and _reply_sender_ok(reply_row, candidate_run):
+                background_tasks.add_task(
+                    _resume_pipeline, reply_row["run_id"], _row_to_inbound(reply_row)
+                )
+            elif candidate_run is not None:
+                logger.warning(
+                    "run_id=%s stranded-sweep resume blocked — sender mismatch "
+                    "persists (GAP-5/CR-5 fix)",
+                    reply_row["run_id"],
+                )
     except Exception:
         logger.debug("sweep_stranded_runs unavailable — skipping this page load")
     try:

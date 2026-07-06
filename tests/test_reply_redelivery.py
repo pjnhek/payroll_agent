@@ -79,12 +79,20 @@ def _seed_awaiting_reply_run_with_reply(
     consumed: bool = False,
     run_status: str = "awaiting_reply",
     created_at: datetime | None = None,
+    reply_from_addr: str | None = None,
 ) -> tuple[uuid.UUID, dict]:
     """Seed a run + a persisted, LINKED inbound reply row against it.
 
     Mirrors the real webhook's insert_inbound_email + link_email_to_run
     sequence (WR-03) — the exact shape get_inbound_by_message_id/
     find_stranded_unconsumed_replies read at runtime. Returns (run_id, row).
+
+    `reply_from_addr` (GAP-5/CR-5): override for the LINKED REPLY row's
+    from_addr only — the run's owning business is still seeded via
+    COASTAL_EMAIL/COASTAL_BIZ_ID. Defaults to COASTAL_EMAIL (sender-matching,
+    the pre-existing behavior every pre-Plan-11-10 test in this file relies
+    on) so this override is purely additive — no existing call site changes
+    shape or behavior.
     """
     src_eid, _ = fake_repo.insert_inbound_email(
         message_id=f"<{uuid.uuid4()}@test.example>",
@@ -103,7 +111,7 @@ def _seed_awaiting_reply_run_with_reply(
         in_reply_to="<clarify-msg@payroll-agent.local>",
         references_header="<clarify-msg@payroll-agent.local>",
         subject="Re: payroll hours",
-        from_addr=COASTAL_EMAIL,
+        from_addr=reply_from_addr if reply_from_addr is not None else COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="Maria Chen, correct spelling, 40 regular",
     )
@@ -322,3 +330,83 @@ def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resum
         "a needs_operator run must NEVER be auto-resumed by the runs-list "
         f"load (D-11-06); got {len(resume_spy)} unexpected re-schedule(s)"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. GAP-5/CR-5: a FIX-5-failed linked reply is NEVER re-resumed by either seam
+# ---------------------------------------------------------------------------
+
+SPOOFED_FROM_ADDR = "attacker@evil.example"
+
+
+def test_redelivery_never_resumes_fix5_failed_reply(client, fake_repo, resume_spy):
+    """GAP-5/CR-5 regression: a reply linked to a run via the RFC header chain,
+    whose from_addr does NOT match the run's business (i.e. it already failed
+    FIX-5 sender revalidation on first delivery and was left linked+unconsumed),
+    must NEVER be re-resumed by a subsequent redelivery of the same message_id.
+
+    MUST FAIL before the fix (the WR-04 branch only checked consumed_round/
+    status, never the sender) and MUST PASS after (_reply_sender_ok re-asserted
+    before the redelivery dispatch)."""
+    message_id = f"<redeliver-spoofed-{uuid.uuid4()}@metrodeli.example>"
+    run_id, _row = _seed_awaiting_reply_run_with_reply(
+        fake_repo,
+        message_id=message_id,
+        consumed=False,
+        reply_from_addr=SPOOFED_FROM_ADDR,
+    )
+
+    redelivered_payload = InboundEmail(
+        id=uuid.uuid4(),
+        message_id=message_id,
+        in_reply_to="<clarify-msg@payroll-agent.local>",
+        references_header="<clarify-msg@payroll-agent.local>",
+        subject="Re: payroll hours",
+        from_addr=SPOOFED_FROM_ADDR,
+        to_addr="agent@payroll-agent.local",
+        body_text="redelivered body",
+        created_at=datetime.now(timezone.utc),
+    ).model_dump(mode="json")
+
+    r = client.post("/webhook/inbound", json=redelivered_payload)
+    assert r.status_code == 200
+    assert r.json()["status"] == "duplicate"
+
+    assert resume_spy == [], (
+        "a reply that already failed FIX-5 sender revalidation must NEVER be "
+        f"resumed via redelivery (GAP-5/CR-5); got {len(resume_spy)} unexpected "
+        "re-schedule(s)"
+    )
+    assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
+
+
+def test_stranded_sweep_never_resumes_fix5_failed_reply(client, fake_repo, resume_spy):
+    """GAP-5/CR-5 regression: the SAME mismatched-sender, unconsumed,
+    awaiting_reply, STALE reply must NEVER be auto-resumed by the D-11-05
+    stranded-reply sweep on a GET /runs dashboard load either.
+
+    MUST FAIL before the fix (the sweep loop only checked consumed_round/
+    run_id/status, never the sender) and MUST PASS after."""
+    from app.main import STALE_THRESHOLD_SECONDS
+
+    message_id = f"<stranded-spoofed-{uuid.uuid4()}@metrodeli.example>"
+    old_created_at = datetime.now(timezone.utc) - timedelta(
+        seconds=STALE_THRESHOLD_SECONDS + 60
+    )
+    run_id, _row = _seed_awaiting_reply_run_with_reply(
+        fake_repo,
+        message_id=message_id,
+        consumed=False,
+        created_at=old_created_at,
+        reply_from_addr=SPOOFED_FROM_ADDR,
+    )
+
+    r = client.get("/runs")
+    assert r.status_code == 200
+
+    assert resume_spy == [], (
+        "a reply that already failed FIX-5 sender revalidation must NEVER be "
+        f"auto-resumed by the stranded-reply sweep (GAP-5/CR-5); got "
+        f"{len(resume_spy)} unexpected re-schedule(s)"
+    )
+    assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
