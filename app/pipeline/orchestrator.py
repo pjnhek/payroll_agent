@@ -281,6 +281,21 @@ def resume_pipeline(run_id: uuid.UUID, inbound: InboundEmail, *, llm=None) -> No
             )
             return
 
+        # D-11-02: write the consumed marker the INSTANT processing actually starts
+        # (immediately after the winning CAS claim, before anything else runs). This
+        # is the READ side of the round machine and belongs HERE in resume_pipeline —
+        # NOT in _clarify (Plan 11-02), which owns the send-side round counter only.
+        # mark_reply_consumed is write-once (`consumed_round IS NULL` guard, 11-01),
+        # so a duplicate/redelivered claim that somehow still reaches this line
+        # cannot overwrite an already-recorded round. This single UPDATE stands
+        # OUTSIDE any LLM/provider transaction (D-9-01) — it does not join the
+        # classify/extract work below. Without this write, load_consumed_replies
+        # returns empty forever and the Task 2 accumulation is a runtime no-op even
+        # though hermetic tests seeded with fake consumed rows would still pass.
+        repo.mark_reply_consumed(
+            inbound.message_id, round=repo.get_clarification_round(run_id)
+        )
+
         # load_run is still needed for business_id and other metadata.
         run = repo.load_run(run_id)
         if run is None:

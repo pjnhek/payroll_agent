@@ -314,6 +314,10 @@ def test_partial_reply_preserves_hours():
             # 07.5-03: new MONEY-03 repo helpers (snapshot + clarified_fields)
             "load_pre_clarify_extracted", "load_clarified_fields",
             "set_pre_clarify_extracted", "set_clarified_fields",
+            # Phase 11 (D-11-02): resume_pipeline now writes the consumed marker
+            # right after the CAS claim — this test's mini-store must intercept
+            # both calls or they fall through to the real (DB-backed) repo.
+            "get_clarification_round", "mark_reply_consumed",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         monkey.setattr(orchestrator, "extract", _spy_extract)
@@ -381,6 +385,10 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
             # 07.5-03: new MONEY-03 repo helpers (snapshot + clarified_fields)
             "load_pre_clarify_extracted", "load_clarified_fields",
             "set_pre_clarify_extracted", "set_clarified_fields",
+            # Phase 11 (D-11-02): claim_status returns False here (non-awaiting_reply
+            # precondition), so mark_reply_consumed/get_clarification_round are never
+            # reached — patched anyway for consistency/defense-in-depth.
+            "get_clarification_round", "mark_reply_consumed",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         # If the precondition fails to short-circuit, these spies prove the mutation.
@@ -733,4 +741,12 @@ class _MiniStore:
 
     def set_clarified_fields(self, run_id, clarified, conn=None):
         """D-13 MONEY-03: no-op in mini-store."""
+        pass
+
+    def get_clarification_round(self, run_id, conn=None):
+        """D-11-01: always round 0 in this mini-store (no round machine under test here)."""
+        return 0
+
+    def mark_reply_consumed(self, message_id, round, conn=None):
+        """D-11-02: no-op in mini-store — this test does not exercise accumulation."""
         pass
