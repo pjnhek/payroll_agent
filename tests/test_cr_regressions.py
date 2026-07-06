@@ -25,10 +25,21 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+from fastapi.testclient import TestClient
 
 import app.db.repo as repo_mod
 from app.db.repo import RUN_COLS, load_business_name, update_known_alias
+from app.models.status import RunStatus
 from app.pipeline.compose_email import confirmation_subject
+
+
+@pytest.fixture
+def client(fake_repo):
+    """TestClient for the CLAR2-07 retrigger regression tests (mirrors
+    tests/test_hitl.py's client fixture)."""
+    from app.main import app
+
+    return TestClient(app, raise_server_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -415,4 +426,127 @@ def test_cr03_load_business_name_sql_uses_businesses_table(fake_conn):
     ), (
         "load_business_name must pass business_id as a SQL parameter, not embed it "
         "in the SQL string (parameterized-SQL discipline)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLAR2-07 regression (Plan 11-05, D-11-04/WR-06): retrigger clears ALL reply
+# context after the winning claim, before _run_pipeline is scheduled — so a
+# stale provenance badge (is_round_2 = bool(clarified)) cannot outlive the
+# data that produced it.
+# ---------------------------------------------------------------------------
+
+
+def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
+    """Seed a claimable ERROR run carrying non-empty reply-round context —
+    clarified_fields, a pre_clarify_extracted snapshot, clarification_round > 0,
+    and alias_candidates set — the exact state WR-06 must wipe on retrigger."""
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+    run = fake_repo.runs[str(run_id)]
+    run["clarified_fields"] = {
+        "e0000001-0000-0000-0000-000000000001": {"hours_overtime": "asked"}
+    }
+    run["pre_clarify_extracted"] = {"employees": [], "pay_period_start": "2026-06-15"}
+    run["clarification_round"] = 2
+    run["alias_candidates"] = {"Bobby": {"suggested": "e0000001-0000-0000-0000-000000000001", "bound": None}}
+    return run_id
+
+
+def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
+    """CLAR2-07: retrigger clears clarified_fields, pre_clarify_extracted,
+    clarification_round, AND alias_candidates after the winning claim — and
+    still dispatches the re-run (D-11-04, WR-06)."""
+    import app.main as app_main
+
+    dispatched: list = []
+    monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: dispatched.append(rid))
+
+    run_id = _run_at_error_with_stale_reply_context(fake_repo)
+
+    r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+    assert r.status_code == 303
+
+    run = fake_repo.load_run(run_id)
+    assert not run.get("clarified_fields"), (
+        f"retrigger must clear clarified_fields; got {run.get('clarified_fields')!r}"
+    )
+    assert run.get("pre_clarify_extracted") is None, (
+        f"retrigger must clear pre_clarify_extracted; got {run.get('pre_clarify_extracted')!r}"
+    )
+    assert run.get("clarification_round") == 0, (
+        f"retrigger must reset clarification_round to 0; got {run.get('clarification_round')!r}"
+    )
+    assert run.get("alias_candidates") is None, (
+        f"retrigger must clear alias_candidates; got {run.get('alias_candidates')!r}"
+    )
+    assert dispatched == [run_id], (
+        "retrigger must still dispatch _run_pipeline for the claimed run after "
+        f"clearing reply context; got {dispatched}"
+    )
+
+
+def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
+    client, fake_repo, monkeypatch
+):
+    """CLAR2-07: the SAME clear must fire on the stale-in-flight CAS branch
+    (not just the ERROR/APPROVED core CAS) — both winning branches converge on
+    one clear_reply_context call before _run_pipeline is scheduled."""
+    import app.main as app_main
+    from datetime import datetime, timedelta, timezone
+
+    dispatched: list = []
+    monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: dispatched.append(rid))
+
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.RECEIVED)
+    run = fake_repo.runs[str(run_id)]
+    run["clarified_fields"] = {"e0000001-0000-0000-0000-000000000001": {"hours_overtime": "asked"}}
+    run["pre_clarify_extracted"] = {"employees": []}
+    run["clarification_round"] = 1
+    run["alias_candidates"] = {"Bobby": {"suggested": None, "bound": None}}
+    # Stale in-flight requires updated_at older than STALE_THRESHOLD — the fake
+    # repo does not track updated_at automatically, so set it directly.
+    run["updated_at"] = datetime.now(timezone.utc) - timedelta(minutes=30)
+
+    r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+    assert r.status_code == 303
+
+    run_after = fake_repo.load_run(run_id)
+    assert not run_after.get("clarified_fields")
+    assert run_after.get("pre_clarify_extracted") is None
+    assert run_after.get("clarification_round") == 0
+    assert run_after.get("alias_candidates") is None
+    assert dispatched == [run_id], (
+        "the stale in-flight retrigger branch must also dispatch _run_pipeline "
+        f"after clearing reply context; got {dispatched}"
+    )
+
+
+def test_clar207_stale_provenance_cannot_reproduce_after_retrigger(client, fake_repo, monkeypatch):
+    """CLAR2-07: after retrigger wipes clarified_fields, `is_round_2 =
+    bool(clarified)` for the re-run must see an EMPTY clarified_fields — the
+    persisted/derived state a fresh run would see — not the pre-retrigger
+    provenance. Asserted on the persisted column (not a rendered label)."""
+    import app.main as app_main
+
+    monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: None)
+
+    run_id = _run_at_error_with_stale_reply_context(fake_repo)
+    # Sanity: before retrigger, clarified_fields is genuinely non-empty (the
+    # exact provenance state that would make is_round_2 = bool(clarified) True).
+    assert fake_repo.load_run(run_id)["clarified_fields"], (
+        "sanity check: the seeded run must start with non-empty clarified_fields"
+    )
+
+    r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+    assert r.status_code == 303
+
+    clarified_after = fake_repo.load_run(run_id).get("clarified_fields")
+    assert bool(clarified_after) is False, (
+        "after retrigger, clarified_fields must be empty/falsy so "
+        "is_round_2 = bool(clarified) evaluates False for the re-run — a "
+        f"stale provenance badge must not be able to reproduce; got {clarified_after!r}"
     )
