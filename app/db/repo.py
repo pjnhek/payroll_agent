@@ -842,15 +842,36 @@ def set_alias_candidates(
     candidates: dict,
     conn=None,
 ) -> None:
-    """Write alias_candidates to payroll_runs.alias_candidates JSONB column (D-04).
+    """MERGE candidates into payroll_runs.alias_candidates JSONB column (D-04, WR-1 fix).
 
     Separate column (not a key in reconciliation JSONB) so it is NEVER overwritten
     by persist_reconciliation on resume (RESEARCH Open Question #1, D-04 decision).
+
+    WR-1 (11-REVIEW.md): this was a full-column overwrite
+    (`alias_candidates = %s`). With 2+ distinct tokens across 2+ rounds, the
+    last writer erased every OTHER token's candidate — a client-confirmed
+    bind from an earlier round (or an earlier call in the same round) could
+    be silently wiped by a later, unrelated capture/suggest/bind write before
+    `_write_aliases_if_safe` ever read it at the approval gate.
+
+    The fix: a JSONB `||` merge. `COALESCE(alias_candidates, '{}'::jsonb)`
+    handles a NULL starting column (a run that has never captured any
+    candidate yet) without erroring on `NULL || jsonb`. `||` keeps every key
+    NOT present in the new `candidates` dict untouched, and overwrites only
+    the keys the caller passed — exactly the semantics every existing caller
+    needs: `_clarify`'s capture writes ONE new token key, STEP C's bind
+    writes updates for the SAME tokens it read, and `/resolve`'s
+    remember-checkbox writes the tokens it validated. A caller that reads the
+    full existing dict and passes a REDUCED copy back is still correct and
+    backward-compatible under merge semantics — merging a full dict into
+    itself is a no-op for unrelated keys and a correct update for its own.
     """
     with _conn_ctx(conn) as (c, owns):
         with c.transaction() if owns else _nulltx():
             c.execute(
-                "UPDATE payroll_runs SET alias_candidates = %s, updated_at = now() WHERE id = %s",
+                "UPDATE payroll_runs SET alias_candidates = "
+                "COALESCE(alias_candidates, '{}'::jsonb) || %s::jsonb, "
+                "updated_at = now() WHERE id = %s",
                 (json.dumps(candidates), str(run_id)),
             )
 

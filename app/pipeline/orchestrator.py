@@ -105,6 +105,57 @@ def _normalize_candidate(value) -> dict:
     return {"suggested": None, "bound": value}
 
 
+def _bind_evidence_for_token(
+    token: str,
+    suggested_id: str,
+    suggested_full_name: str | None,
+    post_reconciliation: list,
+) -> bool:
+    """GAP-4/CR-4 fix: tie the bind decision to a SINGLE reconciliation record.
+
+    The old bind-on-confirmation (D-11-15/NEW-2) computed two facts INDEPENDENTLY
+    over the WHOLE run's post-resume reconciliation: (a) the suggested employee id
+    newly appears as resolved SOMEWHERE, and (b) the token is gone from unresolved
+    SOMEWHERE. Both facts can be satisfied by two completely UNRELATED
+    reconciliation entries — e.g. "No, Dave didn't work this period; David worked
+    5 hours separately" makes "David" (a new, separate submitted_name) resolve to
+    the suggested id, while "Dave" simply vanishes (dropped, not resolved) — and
+    the old logic bound Dave -> David with no actual confirmation.
+
+    The fix: a bind requires ONE reconciliation entry whose submitted_name,
+    normalized, equals EITHER the token's own normalized text OR the suggested
+    employee's own normalized canonical full_name (a legitimate confirming reply
+    restates that name), AND that SAME entry is resolved=True with
+    matched_employee_id == suggested_id. This is the SAME-RECORD tie: the
+    evidence must all come from one record, never two independently-satisfied
+    whole-run facts.
+
+    suggested_full_name may be None (the suggested employee could not be
+    resolved from the roster at capture time, or is not found now) — the match
+    set then only contains the token's own text, which is fail-closed (never
+    fail-open): a missing full_name can only narrow what matches, never widen it.
+    """
+    from app.pipeline.reconcile_names import _norm
+
+    match_names = {_norm(token)}
+    if suggested_full_name is not None:
+        match_names.add(_norm(suggested_full_name))
+
+    if not isinstance(post_reconciliation, list):
+        return False
+    for entry in post_reconciliation:
+        if not isinstance(entry, dict):
+            continue
+        submitted = _norm(entry.get("submitted_name") or "")
+        if (
+            submitted in match_names
+            and entry.get("resolved") is True
+            and str(entry.get("matched_employee_id")) == suggested_id
+        ):
+            return True
+    return False
+
+
 @dataclass
 class _RunStagesResult:
     """Minimal return value from _run_stages (MONEY-03 D-7.5-02).
@@ -379,27 +430,18 @@ def resume_pipeline(
             raise ValueError(f"run {run_id} not found after claim")
         roster = repo.load_roster_for_business(run["business_id"])
 
-        # D-04 alias binding — PRE-VS-POST DIFF (NEW-2 fix).
-        # Capture the pre-resume resolved employee_id set BEFORE _run_stages so we can
-        # diff against the post-resume set to find the NEWLY-resolved employee.
+        # D-04 alias binding — STEP A: load alias_candidates and pre-resume
+        # reconciliation BEFORE _run_stages (needed for pending-token lookup
+        # below and for Step E0's prior_matches deserialization).
         #
-        # The "exactly one resolved match" assumption is wrong for realistic runs: a
-        # multi-employee submission has MANY resolved employees after resume (the
-        # already-resolved originals PLUS the newly-corrected one). Pre-vs-post diff
-        # isolates exactly the one employee that changed from unresolved to resolved.
-        #
-        # Implementation:
-        # STEP A: Load alias_candidates and pre-resume reconciliation BEFORE _run_stages.
+        # GAP-4/CR-4 fix (11-09): the bind decision itself no longer diffs a
+        # pre-resolved-id SET against a post-resolved-id SET — that whole-run
+        # diff is exactly what let an UNRELATED reconciliation entry satisfy
+        # the bind (see _bind_evidence_for_token). Only _pre_candidates and
+        # _pre_reconciliation (the latter for Step E0) are still needed here.
         pre_run_data = repo.load_run(run_id)
         _pre_candidates = (pre_run_data.get("alias_candidates") or {}) if pre_run_data else {}
         _pre_reconciliation = (pre_run_data.get("reconciliation") or []) if pre_run_data else []
-        # Build the pre-resume resolved employee_id set (strings for reliable comparison).
-        # reconciliation is stored as JSONB list[dict] with key "matched_employee_id".
-        _pre_resolved_ids: set[str] = set()
-        if isinstance(_pre_reconciliation, list):
-            for _m in _pre_reconciliation:
-                if isinstance(_m, dict) and _m.get("matched_employee_id") is not None:
-                    _pre_resolved_ids.add(str(_m["matched_employee_id"]))
 
         # STEP B: D-7.5-11 classify-first + D-7.5-10 three-phase detection block.
         # (Replaces the bare _run_stages call with Round-1/Round-2 logic.)
@@ -799,28 +841,30 @@ def resume_pipeline(
             # persisted above (D-9-06), strictly before _run_stages was called. Fall
             # through to STEP C/D alias-diff (the run is at AWAITING_APPROVAL).
 
-        # STEP C: D-11-15 bind-on-confirmation — replaces the old NEW-2 pre-vs-post
-        # count-diff bind wholesale. That logic required the newly-resolved
-        # employee's id to equal the CANDIDATE TOKEN itself, which can never fire
-        # for a nickname the client only RESTATES canonically (the reply resolves
-        # to the SUGGESTED employee's full_name, not to the original unresolved
-        # token) — the exact unreachable-loop bug D-11-17 exists to close.
+        # STEP C: bind-on-confirmation (D-11-15, rewritten 11-09 to close
+        # GAP-4/CR-4). The OLD logic computed two facts INDEPENDENTLY over the
+        # whole run's post-resume reconciliation — (a) the suggested employee S
+        # newly appears as resolved SOMEWHERE, (b) the token is gone from
+        # unresolved SOMEWHERE — and bound whenever both happened to be true,
+        # even across two completely unrelated reconciliation entries ("No,
+        # Dave didn't work this period; David worked 5 hours separately" bound
+        # Dave -> David with no actual confirmation).
         #
-        # New evidence model: bind {token: {"suggested": S, "bound": S}} iff (a)
-        # the SUGGESTED employee S (persisted at clarify time, D-11-14) newly
-        # appears as resolved in the post-resume reconciliation AND (b) the token
-        # itself is gone from the post-resume unresolved submitted names. Both
-        # facts are deterministic and read directly off persisted reconciliation
-        # state — no LLM call, no confidence number, anywhere in this chain. A
-        # bare confirming "yes" works because the D-11-10 asked-anchor (Plan
-        # 11-03) lets extraction attribute the reply to the suggested canonical
-        # name, which is what causes S to newly-resolve.
+        # New evidence model (_bind_evidence_for_token, GAP-4 fix): bind
+        # {token: {"suggested": S, "bound": S}} iff ONE post-resume
+        # reconciliation entry ties BOTH facts together — its submitted_name
+        # (normalized) equals either the token's own text or S's own canonical
+        # full_name, AND that SAME entry is resolved=True with
+        # matched_employee_id == S. A bare confirming "yes" works because the
+        # D-11-10 asked-anchor (Plan 11-03) lets extraction attribute the
+        # reply to the suggested canonical name, which is what causes that
+        # single record to resolve to S.
         #
         # MISNAME GUARD (D-11-15 preserved intent): if the reply resolves a
-        # DIFFERENT id J (not the suggested S) — e.g. "no, I meant James" — S
-        # never appears in the newly-resolved set, so no bind occurs. J is a
-        # non-suggested resolution; nobody proposed J for this token, so the
-        # never-learn-from-inference guarantee holds verbatim.
+        # DIFFERENT id J (not the suggested S) — e.g. "no, I meant James" — no
+        # reconciliation entry has matched_employee_id == S, so no bind
+        # occurs. J is a non-suggested resolution; nobody proposed J for this
+        # token, so the never-learn-from-inference guarantee holds verbatim.
         _candidates_normalized = {
             tok: _normalize_candidate(val) for tok, val in _pre_candidates.items()
         }
@@ -831,41 +875,45 @@ def resume_pipeline(
         if _pending_tokens:
             post_run_data = repo.load_run(run_id)
             _post_reconciliation = (post_run_data.get("reconciliation") or []) if post_run_data else []
-            _post_resolved_ids: set[str] = set()
-            _post_unresolved_names: set[str] = set()
-            if isinstance(_post_reconciliation, list):
-                for _m in _post_reconciliation:
-                    if not isinstance(_m, dict):
-                        continue
-                    if _m.get("matched_employee_id") is not None:
-                        _post_resolved_ids.add(str(_m["matched_employee_id"]))
-                    if not _m.get("resolved"):
-                        _post_unresolved_names.add(_m.get("submitted_name") or "")
 
-            _newly_resolved_ids = _post_resolved_ids - _pre_resolved_ids
             _updated_candidates = dict(_pre_candidates)
             _any_bound = False
             for _token in _pending_tokens:
                 _suggested_id = str(_candidates_normalized[_token]["suggested"])
-                _sugg_newly_resolved = _suggested_id in _newly_resolved_ids
-                _token_gone = _token not in _post_unresolved_names
-                if _sugg_newly_resolved and _token_gone:
+                # Resolve the suggested employee's OWN canonical full_name from
+                # the already-loaded roster — a legitimate confirming reply
+                # restates THIS name, not the original unresolved token. Not
+                # found (should not happen; the id was persisted from this
+                # same roster at capture time) -> None, so the helper falls
+                # back to matching the token's own text only (fail-closed,
+                # never fail-open).
+                _suggested_full_name = next(
+                    (
+                        _emp.full_name
+                        for _emp in roster.employees
+                        if str(_emp.id) == _suggested_id
+                    ),
+                    None,
+                )
+                if _bind_evidence_for_token(
+                    _token, _suggested_id, _suggested_full_name, _post_reconciliation
+                ):
                     _updated_candidates[_token] = {
                         "suggested": _suggested_id,
                         "bound": _suggested_id,
                     }
                     _any_bound = True
                     logger.info(
-                        "alias candidate bound at resume: token bound to the "
-                        "persisted suggestion %s (D-11-15 bind-on-confirmation)",
-                        _suggested_id,
+                        "alias candidate bound at resume: the token's own "
+                        "submitted-name record resolved to the persisted "
+                        "suggestion (D-11-15/GAP-4 fix)",
                     )
                 else:
                     logger.info(
-                        "alias binding skipped for run %s: suggested employee did "
-                        "not newly resolve and/or token still unresolved — no "
-                        "confirmed evidence to bind (D-11-15, misname guard "
-                        "intent preserved)",
+                        "alias binding skipped for run %s: no reconciliation "
+                        "record ties the token to its persisted suggestion — "
+                        "no confirmed evidence to bind (D-11-15/GAP-4, "
+                        "misname guard intent preserved)",
                         run_id,
                     )
             if _any_bound:
