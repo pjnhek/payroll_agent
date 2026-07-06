@@ -861,8 +861,22 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         _set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
 
-    from app.models.roster import Roster as _Roster
-    _empty_roster = _Roster(business_id=_biz_id, employees=[])
+    # GAP-4 fix (11-09): the bind now looks up the suggested employee's OWN
+    # canonical full_name from the loaded roster (so the same-record tie can
+    # match a reply that restates "David Reyes" against the "Dave Reyez"
+    # suggestion). An EMPTY roster would make _suggested_full_name resolve to
+    # None, which would make the new same-record check fall back to
+    # token-only matching and BREAK this legit test ("Dave Reyez" != "David
+    # Reyes" as raw tokens) — so this fixture MUST seed a roster containing
+    # the real David Reyes employee, not an empty one. _make_roster() already
+    # builds David Reyes at exactly this test's _david_id
+    # (e0000003-0000-0000-0000-000000000003) on this test's _biz_id
+    # (b0000002-0000-0000-0000-000000000002).
+    _fixture_roster, _fixture_david, _fixture_daniel = _make_roster()
+    assert str(_fixture_david.id) == str(_david_id), (
+        "test fixture drift: _make_roster()'s david id must match this test's "
+        "_david_id for the same-record tie to resolve correctly"
+    )
 
     monkeypatch.setattr(repo_mod, "load_run", _fake_load_run, raising=False)
     monkeypatch.setattr(
@@ -874,7 +888,7 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     monkeypatch.setattr(
         repo_mod,
         "load_roster_for_business",
-        lambda *a, **kw: _empty_roster,
+        lambda *a, **kw: _fixture_roster,
         raising=False,
     )
     monkeypatch.setattr(
@@ -926,10 +940,10 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     # Verify set_alias_candidates was called with the bound employee_id
     assert len(_set_alias_candidates_calls) == 1, (
         "set_alias_candidates must be called once at resume to bind the token "
-        "to the confirmed suggestion (D-11-15 bind-on-confirmation). "
-        "With 2 resolved employees post-resume (maria + david), a naive "
-        "'exactly one resolved match' check would have silently no-oped — the "
-        "suggested-id-newly-resolved check correctly isolates the confirmed employee."
+        "to the confirmed suggestion (D-11-15 bind-on-confirmation, GAP-4 "
+        "same-record tie). The post-resume 'David Reyes' entry is the "
+        "suggested employee's OWN canonical full_name resolving to the "
+        "suggested id — a legitimate same-record confirmation."
     )
     bound = _set_alias_candidates_calls[0]["candidates"]
     assert "Dave Reyez" in bound, "token 'Dave Reyez' must be in the bound candidates"
@@ -938,6 +952,171 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
         f"got {bound['Dave Reyez']!r}. The suggested id newly resolved AND the "
         "token is gone from unresolved names — both D-11-15 conditions hold."
     )
+
+
+def test_resume_binding_exploit_unrelated_resolution_binds_nothing(monkeypatch):
+    """GAP-4/CR-4 exploit (11-REVIEW.md CR-4): an UNRELATED reconciliation
+    entry resolving elsewhere in the run must NEVER satisfy the bind.
+
+    Scenario: "Dave" was suggested -> david.id at clarify time. The client
+    replies "No, Dave didn't work this period; David worked 5 hours
+    separately." Post-resume reconciliation now has TWO entries:
+      - "David" — a NEW, SEPARATE submitted_name, resolved=True,
+        matched_employee_id=david.id (the "David worked separately" line).
+      - "Dave" is simply ABSENT — extraction dropped him entirely (he
+        "didn't work"), it did NOT resolve him to anything.
+
+    The OLD (buggy) logic computed two independent whole-run facts: (a)
+    david.id newly resolves SOMEWHERE (true, via "David") and (b) "Dave" is
+    gone from unresolved SOMEWHERE (true, he's simply absent) -> both true,
+    old code bound Dave -> David with NO actual confirmation of Dave himself.
+
+    The FIX (_bind_evidence_for_token, same-record tie): no single
+    reconciliation entry has submitted_name normalizing to EITHER "Dave" (the
+    token) OR "David Reyes" (the suggested employee's own canonical
+    full_name) AND resolved=True AND matched_employee_id=david.id — "David"
+    (the actual post-resume entry) does not match "David Reyes" once
+    normalized, so nothing ties back to the token. Assert NO bind occurs.
+
+    MUST FAIL on the pre-fix code (old code binds Dave -> David here) and
+    PASS after the GAP-4 fix.
+    """
+    import app.db.repo as repo_mod
+    from app.pipeline.orchestrator import resume_pipeline
+    from app.models.contracts import InboundEmail
+    from datetime import datetime, timezone
+
+    _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    _david_id = uuid.UUID("e0000003-0000-0000-0000-000000000003")
+
+    # alias_candidates: "Dave" suggested -> david.id at clarify time, not yet bound.
+    _alias_candidates = {"Dave": {"suggested": str(_david_id), "bound": None}}
+
+    # PRE-resume reconciliation: only "Dave" unresolved (single-token capture
+    # invariant — D-04 finding #4 only ever captures exactly one token).
+    _pre_reconciliation = [
+        {
+            "submitted_name": "Dave",
+            "matched_employee_id": None,
+            "source": "none",
+            "resolved": False,
+            "reason": "no roster match",
+        },
+    ]
+    # POST-resume reconciliation: "David" is a NEW, SEPARATE submitted_name
+    # (the "David worked 5 hours separately" line) that resolves to david.id.
+    # "Dave" is ABSENT entirely — he "didn't work this period", so extraction
+    # dropped him, it did NOT resolve him. This is the exploit shape: the
+    # suggested id resolves via an UNRELATED record while the token
+    # independently vanishes from unresolved.
+    _post_reconciliation = [
+        {
+            "submitted_name": "David",
+            "matched_employee_id": str(_david_id),
+            "source": "exact",
+            "resolved": True,
+            "reason": "exact match",
+        },
+    ]
+
+    _load_run_calls = [0]
+    _set_alias_candidates_calls: list = []
+
+    def _fake_load_run(run_id, conn=None):
+        _load_run_calls[0] += 1
+        recon = _pre_reconciliation if _load_run_calls[0] <= 2 else _post_reconciliation
+        return {
+            "id": str(run_id),
+            "business_id": str(_biz_id),
+            "status": "extracting",
+            "alias_candidates": _alias_candidates,
+            "reconciliation": recon,
+            "extracted_data": None,
+            "decision": None,
+            "error_reason": None,
+            "source_email_id": None,
+            "pay_period_start": None,
+            "pay_period_end": None,
+        }
+
+    def _fake_set_alias_candidates(run_id, candidates, conn=None):
+        _set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
+
+    # Roster DOES contain the real David Reyes (full_name "David Reyes") so
+    # the fix's same-record tie can be exercised honestly — the point of the
+    # exploit is that "David" (the post-resume submitted_name) does NOT equal
+    # "David Reyes" (the suggested employee's canonical full_name) once
+    # normalized, so the same-record match still fails correctly even with a
+    # real, non-empty roster.
+    _fixture_roster, _fixture_david, _ = _make_roster()
+    assert str(_fixture_david.id) == str(_david_id)
+
+    monkeypatch.setattr(repo_mod, "load_run", _fake_load_run, raising=False)
+    monkeypatch.setattr(repo_mod, "claim_status", lambda *a, **kw: True, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: _fixture_roster, raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "load_source_email", lambda *a, **kw: "original body", raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
+    )
+    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
+    monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
+    monkeypatch.setattr(repo_mod, "mark_reply_consumed", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(repo_mod, "load_consumed_replies", lambda *a, **kw: [], raising=False)
+
+    import app.pipeline.orchestrator as orch_mod
+    from app.pipeline.orchestrator import _RunStagesResult
+    monkeypatch.setattr(
+        orch_mod, "_run_stages",
+        lambda *a, **kw: _RunStagesResult(clarify_deferred=False),
+        raising=False,
+    )
+
+    run_id = uuid.uuid4()
+    inbound = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<reply@test.example>",
+        in_reply_to="<orig@test.example>",
+        references_header="<orig@test.example>",
+        subject="Re: hours",
+        from_addr="hr@test.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="No, Dave didn't work this period; David worked 5 hours separately.",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    resume_pipeline(run_id, inbound, llm=None)
+
+    # The exploit must produce NOTHING: no set_alias_candidates call binds
+    # "Dave" to anything at all.
+    bound_dave = [
+        c["candidates"].get("Dave")
+        for c in _set_alias_candidates_calls
+        if isinstance(c["candidates"].get("Dave"), dict)
+        and c["candidates"]["Dave"].get("bound") is not None
+    ]
+    assert not bound_dave, (
+        "GAP-4/CR-4 exploit: 'Dave' must NEVER be bound to David via an "
+        "UNRELATED reconciliation entry ('David worked separately' is a "
+        "different submitted_name record, not a confirmation of 'Dave'). "
+        f"Got a bind: {bound_dave!r}"
+    )
+    # Even stronger: no call at all should carry a bound "Dave" != None, and
+    # ideally set_alias_candidates isn't called at all for this token (no
+    # pending token was resolved by same-record evidence).
+    for c in _set_alias_candidates_calls:
+        dave_cand = c["candidates"].get("Dave")
+        if isinstance(dave_cand, dict):
+            assert dave_cand.get("bound") != str(_david_id), (
+                "'Dave' must never be bound to David's id via an unrelated "
+                "reconciliation entry — the never-learn-from-inference "
+                "guarantee is the exact invariant GAP-4 protects"
+            )
 
 
 def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
