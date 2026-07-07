@@ -18,7 +18,7 @@
 - [x] **Phase 7.5: Clarification-Reply Field-Regression (MONEY-03)** - The clarification-reply field-regression state machine, built on a foundational `_run_stages` split refactor so carry-forward can land between reconcile and validate — detect a dropped money field, clarify once, carry forward (or honor an explicit removal) without an infinite loop (completed 2026-06-28)
 - [x] **Phase 8: Data-Layer Hygiene & Diagnostics** - Restore schema-hygiene discipline (hot-path indexes, explicit column lists) and make production failures diagnosable from the DB (PII-safe `error_detail`) — the clean baseline the atomicity work builds on (completed 2026-07-02)
 - [x] **Phase 9: Atomic Data Integrity** - The senior-engineer ring: atomic multi-write pipeline transactions (no half-written runs on crash), a transactional webhook-dedup CAS (Resend redelivery never duplicates a run), and a stuck-run recovery path for orphaned in-flight runs (completed 2026-07-04)
-- [ ] **Phase 10: Concurrency Proof** - The evidence capstone: a test fires N simultaneous runs / duplicate webhooks / concurrent approvals and asserts the invariants hold — no double-approval, lost update, duplicate run, or half-write — backing the production-grade claim
+- [x] **Phase 10: Concurrency Proof** - The evidence capstone: a test fires N simultaneous runs / duplicate webhooks / concurrent approvals and asserts the invariants hold — no double-approval, lost update, duplicate run, or half-write — backing the production-grade claim (completed 2026-07-07)
 - [x] **Phase 11: Clarification Round Machine & Alias Learning** - The clarify-cluster design phase: round-aware clarification (WR-05 silent-park fix + round cap/operator escape), question-anchored reply extraction, alias learning that binds on explicit client confirmation, and closure of the CX-01 multi-round context-loss deferred finding (completed 2026-07-06)
 
 ## Phase Details
@@ -153,7 +153,7 @@ Plans:
 
 **Plans**: 1 planPlans:
 
-- [ ] 10-01-PLAN.md — Build the OPS2-03 concurrency proof capstone (tests/test_concurrency_proof.py: 3 surfaces, 4 invariants, N=8 real threads) + the CI job (concurrency-proof.yml) that runs it against an ephemeral postgres:16 on every push.
+- [x] 10-01-PLAN.md — Build the OPS2-03 concurrency proof capstone (tests/test_concurrency_proof.py: 3 surfaces, 4 invariants, N=8 real threads) + the CI job (concurrency-proof.yml) that runs it against an ephemeral postgres:16 on every push.
 
 ### Phase 11: Clarification Round Machine & Alias Learning
 
@@ -195,5 +195,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
 | 9. Atomic Data Integrity | 6/6 | Complete    | 2026-07-04 |
-| 10. Concurrency Proof | 0/TBD | Not started | - |
+| 10. Concurrency Proof | 1/1 | Complete   | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | 9/9 | Complete   | 2026-07-06 |
