@@ -180,7 +180,10 @@ def test_dedup_exactly_one_run_per_message_id(seeded_db, monkeypatch):
 
     same_message_id = f"<race-{uuid.uuid4()}@acme.test>"
 
-    barrier = threading.Barrier(N_INGEST)
+    # timeout= is defensive: nothing runs before barrier.wait() so a hang is
+    # unreachable today, but a pathological stall then raises BrokenBarrierError
+    # instead of blocking a CI job indefinitely.
+    barrier = threading.Barrier(N_INGEST, timeout=30)
     results: list[tuple[uuid.UUID | None, bool, uuid.UUID | None]] = []
     lock = threading.Lock()
 
@@ -333,7 +336,10 @@ def test_concurrent_distinct_runs_no_lost_update(seeded_db, monkeypatch):
 
     message_ids = [f"<distinct-{uuid.uuid4()}@acme.test>" for _ in range(N_INGEST)]
 
-    barrier = threading.Barrier(N_INGEST)
+    # timeout= is defensive: nothing runs before barrier.wait() so a hang is
+    # unreachable today, but a pathological stall then raises BrokenBarrierError
+    # instead of blocking a CI job indefinitely.
+    barrier = threading.Barrier(N_INGEST, timeout=30)
     results: list[tuple[str, uuid.UUID, uuid.UUID]] = []
     lock = threading.Lock()
 
