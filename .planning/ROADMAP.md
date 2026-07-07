@@ -151,7 +151,9 @@ Plans:
   1. A concurrency proof test fires N simultaneous operations across the three risk surfaces — concurrent payroll runs, duplicate webhook deliveries for one `message_id`, and simultaneous approvals on a single run — under real parallelism (threads/processes against the DB, not serialized mocks).
   2. The test asserts every invariant holds: no double-approval (the `claim_status` CAS wins exactly once), no lost update, no duplicate run per inbound `message_id`, and no half-written run state — and fails loudly if any invariant is violated, so it stands as a genuine regression guard rather than a smoke test.
 
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 10-01-PLAN.md — Build the OPS2-03 concurrency proof capstone (tests/test_concurrency_proof.py: 3 surfaces, 4 invariants, N=8 real threads) + the CI job (concurrency-proof.yml) that runs it against an ephemeral postgres:16 on every push.
 
 ### Phase 11: Clarification Round Machine & Alias Learning
 
