@@ -1,0 +1,48 @@
+name: concurrency-proof
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+jobs:
+  proof:
+    name: "Concurrency invariants proof (real Postgres)"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # Wait until Postgres accepts connections before any step runs.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Plain local Postgres — NOT a Supavisor pooler URL. prepare_threshold=None
+      # in app/db/supabase.py is a harmless no-op against a vanilla server. The
+      # container password is ephemeral/network-isolated, not a secret.
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+      ALLOW_DB_RESET: "1"
+      ALLOW_UNSIGNED_FIXTURES: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (all groups)
+        run: uv sync
+      - name: Apply schema to ephemeral Postgres
+        run: uv run python -m app.db.bootstrap --reset
+      - name: Run the concurrency proof
+        # -m integration selects the capstone (default suite skips it). The
+        # proof module seeds its own rows via repo.* / the seeded_db fixture.
+        run: uv run pytest tests/test_concurrency_proof.py -m integration -v
