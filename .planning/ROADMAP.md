@@ -153,7 +153,8 @@ Plans:
 
 **Plans**: 1 planPlans:
 
-- [x] 10-01-PLAN.md — Build the OPS2-03 concurrency proof capstone (tests/test_concurrency_proof.py: 3 surfaces, 4 invariants, N=8 real threads) + the CI job (concurrency-proof.yml) that runs it against an ephemeral postgres:16 on every push.
+- [x] 10-01-PLAN.md — Build the OPS2-03 concurrency proof capstone (tests/test_concurrency_proof.py: 3 surfaces, 4 invariants) + the CI job (concurrency-proof.yml) that runs it against an ephemeral postgres:16 on every push.
+- [x] 10-02-PLAN.md — Gap closure (code-review CR-01 + WR-01/02/04): rewrite Surfaces A/C to genuinely race the sync repo seam via threading.Barrier (the async webhook route serialized them on the event loop); N_INGEST=5 pool-fit; explicit winner/loser assertion; non-destructive CI schema step.
 
 ### Phase 11: Clarification Round Machine & Alias Learning
 
@@ -195,5 +196,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
 | 9. Atomic Data Integrity | 6/6 | Complete    | 2026-07-04 |
-| 10. Concurrency Proof | 2/2 | Complete   | 2026-07-07 |
+| 10. Concurrency Proof | 2/2 | Complete    | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | 9/9 | Complete   | 2026-07-06 |
