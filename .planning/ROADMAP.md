@@ -151,8 +151,8 @@ Plans:
   1. A concurrency proof test fires N simultaneous operations across the three risk surfaces — concurrent payroll runs, duplicate webhook deliveries for one `message_id`, and simultaneous approvals on a single run — under real parallelism (threads/processes against the DB, not serialized mocks).
   2. The test asserts every invariant holds: no double-approval (the `claim_status` CAS wins exactly once), no lost update, no duplicate run per inbound `message_id`, and no half-written run state — and fails loudly if any invariant is violated, so it stands as a genuine regression guard rather than a smoke test.
 
-**Plans**: 1 plan
-Plans:
+**Plans**: 1 planPlans:
+
 - [ ] 10-01-PLAN.md — Build the OPS2-03 concurrency proof capstone (tests/test_concurrency_proof.py: 3 surfaces, 4 invariants, N=8 real threads) + the CI job (concurrency-proof.yml) that runs it against an ephemeral postgres:16 on every push.
 
 ### Phase 11: Clarification Round Machine & Alias Learning
@@ -163,6 +163,7 @@ Plans:
 **Plans:** 9/9 plans complete
 
 Plans:
+
 - [x] 11-01-PLAN.md — Data-layer substrate: round/consumed-round columns, needs_operator status, widened uniqueness, all new repo primitives + InMemoryRepo mirrors (zero behavior change)
 - [x] 11-02-PLAN.md — Round-aware _clarify: (purpose, round) guard (WR-05), round cap + needs_operator escalation, dashboard badge + scope exclusions
 - [x] 11-03-PLAN.md — resume_pipeline consumed marker (D-11-02) + accumulated context with code-owned asked anchor (CX-01/D-11-12) + no-guess extraction; flipped known-edge fixture
@@ -170,6 +171,7 @@ Plans:
 - [x] 11-05-PLAN.md — main.py wiring: WR-04 redelivery re-schedule + D-11-05 stranded auto-resume + WR-06 retrigger-clears-all-context (CLAR2-06/07)
 
 Gap closure (2026-07-06, cross-AI review findings — 11-REVIEW.md):
+
 - [x] 11-06-PLAN.md — GAP-2/GAP-3 (CR-2/CR-3): payroll_runs.reply_epoch + email_messages.epoch so retrigger's clear_reply_context scopes the round machine to a fresh conversation without deleting the append-only audit log
 - [x] 11-07-PLAN.md — GAP-1 (CR-1): remove /resolve's pre-claim double-CAS race that stranded operator-resolved runs in EXTRACTING forever
 - [x] 11-09-PLAN.md — GAP-4 (CR-4, dual-source) + WR-1: bind-on-confirmation tied to the SAME reconciliation record (not two independent whole-run facts); set_alias_candidates becomes a JSONB merge, not an overwrite

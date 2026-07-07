@@ -63,7 +63,7 @@ The single load-bearing template is `tests/test_webhook_dedup_race.py` — it al
 
 - `.github/workflows/eval.yml:20-31` — the house CI shape: `actions/checkout@v4` → `astral-sh/setup-uv@v5` with `python-version: "3.12"` → `uv sync` → `uv run <cmd>` with `env: DATABASE_URL: ...`. **Copy this structure verbatim.**
 - `app/db/bootstrap.py:96` — `psycopg.connect(db_url, prepare_threshold=None)` opens a **single direct connection** (NOT the app pool) and applies `schema.sql`. Entrypoint at `bootstrap.py:138-140`: `python -m app.db.bootstrap` (non-destructive) or `--reset` (destructive). **This runs fine against vanilla Postgres** — it's a plain `psycopg.connect`, no Supavisor/pooler dependency.
-- `app/db/schema.sql` — verified vanilla-Postgres-compatible: standard `CREATE TABLE IF NOT EXISTS`, `UNIQUE` indexes, JSONB columns, `DO $$ ... $$` migration blocks, `now() - interval` arithmetic. No Supabase-specific extensions (`auth.*`, `storage.*`) or roles are referenced. `pgcrypto`/`uuid-ossp` are NOT required — UUIDs are generated Python-side (`uuid.uuid4()` in `repo.create_run`, `bootstrap` never calls `gen_random_uuid()`).
+- `app/db/schema.sql` — verified vanilla-Postgres-compatible: standard `CREATE TABLE IF NOT EXISTS`, `UNIQUE` indexes, JSONB columns, `DO $$ ... $$` migration blocks, `now() - interval` arithmetic. No Supabase-specific extensions (`auth.*`, `storage.*`) or roles are referenced. It DOES require `pgcrypto` — `schema.sql:13` runs `CREATE EXTENSION IF NOT EXISTS pgcrypto` and every table PK is `DEFAULT gen_random_uuid()` — but this applies cleanly on the official `postgres:16` image, which bundles the `pgcrypto` contrib extension (and `gen_random_uuid()` is core in PG13+). No Supabase-only dependency; vanilla-Postgres-clean stands.
 - `app/db/supabase.py:52-63` — the **pool** (`min_size=1, max_size=5`, `prepare_threshold=None`) is the ONLY pooler-specific surface. It reads `settings.database_url` and connects to whatever `DATABASE_URL` points at. Against a local `postgres:16` service on `localhost:5432` this Just Works — `prepare_threshold=None` is harmless on a non-pooled server (it only disables an optimization). **No pooler-specific assumption blocks CI.**
 
 ### Pooler flag (per the additional-context request)
@@ -402,7 +402,7 @@ Each test carries `@pytest.mark.integration` + the two-factor guard (`if not os.
 - `app/db/repo.py:171,280,324,433,450,487` — `insert_inbound_email` (ON CONFLICT), `find_run_by_message_id`, `create_run`, `set_status`, `claim_status`, `sweep_stranded_runs`.
 - `app/db/supabase.py:52-63` — pool `min=1/max=5`, `prepare_threshold=None`, `timeout=5`; per-transaction connection lifecycle.
 - `app/db/bootstrap.py:96,138` — schema apply via plain `psycopg.connect`; `python -m app.db.bootstrap [--reset]`.
-- `app/db/schema.sql` — verified vanilla-Postgres-clean (no Supabase extensions/roles/`gen_random_uuid`).
+- `app/db/schema.sql` — verified vanilla-Postgres-clean (no Supabase extensions/roles; `pgcrypto` + `gen_random_uuid()` are core/contrib on `postgres:16`, applied via `CREATE EXTENSION IF NOT EXISTS` at `schema.sql:13`).
 - `.github/workflows/eval.yml:20-31` — house CI shape (uv + 3.12 + `uv sync` + `uv run` + env).
 - Phase 11 status-writer audit — grep confirmed only `set_status`/`claim_status` write `payroll_runs.status` outside `repo.py`.
 
