@@ -2,36 +2,32 @@
 gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
-status: ready_to_plan
-last_updated: 2026-07-07T21:09:56.244Z
-last_activity: 2026-07-07
+status: Awaiting next milestone
+last_updated: "2026-07-07T22:40:47.050Z"
+last_activity: 2026-07-07 — Milestone v2 completed and archived
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 29
-  completed_plans: 60
-  percent: 83
-stopped_at: Phase 10 complete (2/2) — ready to discuss Phase 11
+  completed_phases: 6
+  total_plans: 26
+  completed_plans: 26
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-26)
+See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
-**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v2 deepens this: correct under real, messy, concurrent load, not just the demo path.**
-**Current focus:** Phase 11 — clarification round machine alias learning
+**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v2 deepened this: correct under real, messy, concurrent load, not just the demo path.**
+**Current focus:** Planning the next milestone (`/gsd-new-milestone`). v2 — Production Hardening shipped 2026-07-07.
 
 ## Current Position
 
-Milestone: v2 — Production Hardening (planning → ready to execute)
-Phase: 11
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-07
-
-Progress: [██████████] 100%
+Phase: Milestone v2 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-07 — Milestone v2 completed and archived
 
 ## Performance Metrics
 
@@ -131,19 +127,17 @@ Recent decisions affecting current work:
 
 [From .planning/todos/pending/ — ideas captured during sessions]
 
-8 pending (see `.planning/todos/pending/`). Highest-priority for the next design phase:
-
-- **260705-02 — clarify round machine redesign** (high): WR-05 round-blind guard silently parks runs at awaiting_reply (no email sent, unrecoverable by sweep/retrigger); ambiguous bare replies ("40") have no attribution anchor; folds in WR-04/WR-06 + 260623-08's round cap.
-- **260705-01 — alias-learning bind unreachable** (medium): the nickname-learning WRITE side can never fire (misname guard's evidence requirement is circular); fix = bind on explicit client confirmation of the clarification suggestion; design together with 260705-02.
+5 pending (see `.planning/todos/pending/`) — all low/medium post-demo polish, carried as Deferred Items (below). The two high-priority design todos that drove Phase 11 (260705-01 alias-learning bind + 260705-02 clarify round machine) are **DONE** — they became Phase 11 (CLAR2-01…07, shipped 2026-07-07). Remaining pending todos: Phase 05 code-review warnings (medium), frontend progressive enhancement, paystub YTD columns, eval-chart restyle, Fixture-10 category-label note (all low).
 
 ### Blockers/Concerns
 
 [Issues that affect future work]
 
-- [Phase 3]: Confirm 2026 Pub 15-T bracket tables + Step-1 standard amounts against the live IRS PDF before coding — any number from memory is stale (research flag; LOW confidence on the numbers until transcribed).
-- [Phase 2]: Confirm exact non-reasoning model IDs against the consoles (DeepSeek/Kimi) and pin versioned IDs for reproducibility (research flag).
-- [Phase 6]: Real gateway payload shape, signing-secret verification, and reply-only field are unknown until the provider is picked (research flag).
-- [Phase 02.1 P03 — Task 3 CHECKPOINT]: Apply the live-DB name_matches DROP on local + Supabase (uv run python -m app.db.bootstrap) and remove DECISION_MODEL/DECISION_BASE_URL/DECISION_API_KEY from the local .env. Bootstrap CODE is committed; the live execution + .env edit are the blocking human-verify gate.
+_None open._ All v1/v2 research flags and checkpoints were resolved as their phases shipped:
+- 2026 Pub 15-T brackets — transcribed + unit-tested against the IRS PDF (Phase 3, v1.0).
+- DeepSeek/Kimi model IDs — confirmed + pinned (Phase 2, v1.0).
+- Real gateway payload/signing/reply-field — resolved with Resend at deploy (Phase 6, v1.0).
+- Phase 02.1 name_matches DROP + `.env` decision-tier removal — applied + human-verified at the blocking checkpoint (v1.0).
 
 ### Quick Tasks Completed
 
@@ -161,22 +155,32 @@ Recent decisions affecting current work:
 
 ## Deferred Items
 
-Items acknowledged and deferred at the v1.0 milestone close (2026-06-25). All benign —
-intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; none block v1.0.
+Items acknowledged and deferred at milestone close. All benign — intentional
+post-demo polish deferrals + already-passed UATs + one stale pointer; none block a milestone.
+The v2 milestone audit (`milestones/v2-MILESTONE-AUDIT.md`) independently dispositioned each
+as non-blocking tech debt.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| quick_task | 260621-11x-fix-order-dependent-test-test-no-db-conn | done (stale pointer) | 2026-06-25 |
-| todo | Phase 05 code-review: deferred Warnings + Info | deferred | 2026-06-25 |
-| todo | Frontend progressive enhancement (no build step) — post-demo polish | deferred-v2 | 2026-06-25 |
-| todo | Paystub YTD columns | deferred-v2 | 2026-06-25 |
-| todo | Eval chart restyle (away from matplotlib look) | deferred-v2 | 2026-06-25 |
-| todo | Fixture 10 category-label vs expected-clarification note | deferred | 2026-06-25 |
-| uat | Phase 03 HUMAN-UAT | passed (no open scenarios) | 2026-06-25 |
-| uat | Phase 05 HUMAN-UAT | passed (no open scenarios) | 2026-06-25 |
+| quick_task | 260621-11x-fix-order-dependent-test-test-no-db-conn | done (stale pointer) | v1.0 / v2 |
+| todo | Phase 05 code-review: deferred Warnings + Info | deferred | v1.0 / v2 |
+| todo | Frontend progressive enhancement (no build step) — post-demo polish | deferred | v1.0 / v2 |
+| todo | Paystub YTD columns | deferred | v1.0 / v2 |
+| todo | Eval chart restyle (away from matplotlib look) | deferred | v1.0 / v2 |
+| todo | Fixture 10 category-label vs expected-clarification note | deferred | v1.0 / v2 |
+| uat | Phase 03 HUMAN-UAT | passed (no open scenarios) | v1.0 |
+| uat | Phase 05 HUMAN-UAT | passed (no open scenarios) | v1.0 |
+
+*These 6 open artifacts (1 quick task + 5 todos) were re-acknowledged and carried forward at the
+v2 close (2026-07-07). The 2 UAT "gaps" are scanner false positives — both passed with zero
+pending scenarios.*
 
 ## Session Continuity
 
 Last session: 2026-07-07T20:53:49.257Z
 Stopped at: Completed 10-02-PLAN.md
 Resume file: None
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
