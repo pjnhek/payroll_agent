@@ -41,7 +41,12 @@ jobs:
       - name: Install deps (all groups)
         run: uv sync
       - name: Apply schema to ephemeral Postgres
-        run: uv run python -m app.db.bootstrap --reset
+        # Non-destructive pre-flight (WR-04): no --reset. The seeded_db
+        # fixture (tests/conftest.py) already owns reset behind its
+        # ALLOW_DB_RESET two-factor guard; bootstrap() without --reset uses
+        # CREATE TABLE IF NOT EXISTS, so on this empty ephemeral container it
+        # is a clean idempotent create, not a redundant/unguarded drop.
+        run: uv run python -m app.db.bootstrap
       - name: Run the concurrency proof
         # -m integration selects the capstone (default suite skips it). The
         # proof module seeds its own rows via repo.* / the seeded_db fixture.
