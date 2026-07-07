@@ -23,7 +23,7 @@
 
 - [x] **OPS2-01**: A failed run records a PII-safe error detail (sanitized exception message + context), not just the exception type — so production failures are diagnosable from the dashboard/DB without log access. (Audit HIGH-05, `record_run_error` + schema.)
 - [x] **OPS2-02**: Hot query paths have supporting indexes (`businesses.contact_email`, `email_messages(run_id, direction, send_state)`, `payroll_runs(created_at DESC)`, `payroll_runs(status)`) and `load_all_runs` uses an explicit column list (no `SELECT *`), restoring the project's stated schema-hygiene discipline. (Audit HIGH-01/HIGH-02 data-layer.)
-- [ ] **OPS2-03**: A concurrency proof test fires N simultaneous operations (concurrent runs, duplicate webhooks, simultaneous approvals on one run) and asserts the invariants hold — no double-approval, no lost update, no duplicate run, no half-written state. This is the evidence behind the production-grade claim.
+- [x] **OPS2-03**: A concurrency proof test fires N simultaneous operations (concurrent runs, duplicate webhooks, simultaneous approvals on one run) and asserts the invariants hold — no double-approval, no lost update, no duplicate run, no half-written state. This is the evidence behind the production-grade claim.
 
 ### Ring 4 — Clarification round machine & alias learning (Phase 11; MONEY-class follow-ups)
 
@@ -64,7 +64,7 @@ Which phases cover which requirements. v2 phases continue the global sequence fr
 | DATA-01 | Phase 9 — Atomic Data Integrity | Complete |
 | DATA-02 | Phase 9 — Atomic Data Integrity | Complete |
 | DATA-03 | Phase 9 — Atomic Data Integrity | Complete |
-| OPS2-03 | Phase 10 — Concurrency Proof | Pending |
+| OPS2-03 | Phase 10 — Concurrency Proof | Complete |
 | CLAR2-01 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
 | CLAR2-02 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |
 | CLAR2-03 | Phase 11 — Clarification Round Machine & Alias Learning | Complete |

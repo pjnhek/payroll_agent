@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v2
 milestone_name: Production Hardening
-status: executing
-last_updated: "2026-07-07T20:28:33.194Z"
-last_activity: 2026-07-07 -- Phase 10 execution started
+status: verifying
+last_updated: "2026-07-07T20:53:49.262Z"
+last_activity: 2026-07-07
 progress:
   total_phases: 6
-  completed_phases: 4
-  total_plans: 28
-  completed_plans: 24
-  percent: 67
+  completed_phases: 5
+  total_plans: 29
+  completed_plans: 26
+  percent: 83
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-06-26)
 Milestone: v2 — Production Hardening (planning → ready to execute)
 Phase: 10 (concurrency-proof) — EXECUTING
 Plan: 1 of 1
-Status: Executing Phase 10
-Last activity: 2026-07-07 -- Phase 10 execution started
+Status: Phase complete — ready for verification
+Last activity: 2026-07-07
 
-Progress: [██████████] 96%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -76,6 +76,7 @@ Progress: [██████████] 96%
 | Phase 11 P05 | 50min | 4 tasks | 4 files |
 | Phase 11 P07 | 35min | 1 tasks | 2 files |
 | Phase 11 P10 | 25min | 1 tasks | 2 files |
+| Phase 10 P02 | 25min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -120,6 +121,9 @@ Recent decisions affecting current work:
 - [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).
 - [Phase 11]: Route validates+applies overrides then unconditionally schedules background resume; resume_pipeline is the sole CAS claimer (no route-level pre-claim), matching the webhook reply-resume path
 - [Phase 11]: Shared _reply_sender_ok(row, run) predicate re-asserts FIX-5 sender revalidation at both the WR-04 redelivery re-schedule and the D-11-05 stranded-sweep seam (GAP-5/CR-5) — A FIX-5-failed linked reply left unconsumed could otherwise be resumed later via redelivery or dashboard load, bypassing sender auth entirely
+- [Phase ?]: Surfaces A and C bypass the async /webhook/inbound route entirely and race repo.insert_inbound_email/repo.create_run directly from barrier-released OS threads (CR-01 fix).
+- [Phase ?]: N_INGEST=5 matches the app pool max_size=5 because Surfaces A/C threads are simultaneous connection HOLDERS for the full ingest transaction, unlike Surface B's brief CAS (kept at N_APPROVE=8).
+- [Phase ?]: CI schema step drops bootstrap --reset; the seeded_db fixture is the sole reset owner behind its ALLOW_DB_RESET two-factor guard (WR-04).
 
 ### Pending Todos
 
@@ -171,6 +175,6 @@ intentional v2/post-demo deferrals + already-passed UATs + one stale pointer; no
 
 ## Session Continuity
 
-Last session: 2026-07-07T19:44:48.744Z
-Stopped at: Phase 10 context gathered
-Resume file: .planning/phases/10-concurrency-proof/10-CONTEXT.md
+Last session: 2026-07-07T20:53:49.257Z
+Stopped at: Completed 10-02-PLAN.md
+Resume file: None

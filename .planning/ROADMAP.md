@@ -195,5 +195,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 7. Money-Correctness Deepening | 2/2 | Complete    | 2026-06-28 |
 | 8. Data-Layer Hygiene & Diagnostics | 3/3 | Complete    | 2026-07-02 |
 | 9. Atomic Data Integrity | 6/6 | Complete    | 2026-07-04 |
-| 10. Concurrency Proof | 1/1 | Complete   | 2026-07-07 |
+| 10. Concurrency Proof | 2/2 | Complete   | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | 9/9 | Complete   | 2026-07-06 |
