@@ -30,6 +30,11 @@ from app.config import get_settings
 # Path to the DDL source of truth relative to this file's location
 _SCHEMA_SQL = pathlib.Path(__file__).parent / "schema.sql"
 
+# CI-safety (Codex #8): bound how long a DDL may wait on / hold a lock against the
+# live app so lock contention fails RED instead of hanging the deploy-migrate job.
+LOCK_TIMEOUT_MS = 10000        # 10s: abort if a DDL can't get its lock
+STATEMENT_TIMEOUT_MS = 60000   # 60s: abort a single runaway statement
+
 # Reverse-dependency drop order (name_matches + paystub_line_items first,
 # businesses last). CASCADE handles any lingering FK dependencies, but explicit
 # reverse order documents the dependency direction and avoids races without CASCADE.
@@ -94,6 +99,17 @@ def bootstrap(reset: bool = False) -> None:
     # D-04: prepare_threshold=None prevents psycopg3's auto-prepare from
     # firing under Supavisor transaction-mode pooling.
     with psycopg.connect(db_url, prepare_threshold=None) as conn:
+        # Bound lock/statement time on this admin connection (Codex #8) so a DDL
+        # blocked by the live app aborts red rather than hanging CI. Session-level
+        # SET; applies to every statement below on this connection.
+        # (Note: these are integer literals from trusted module constants formatted
+        # into a SET — not user input; the "never f-string SQL" rule targets
+        # untrusted values. `SET ... = %s` is not supported by Postgres for these
+        # GUCs, so a literal is required.)
+        conn.execute(f"SET lock_timeout = '{LOCK_TIMEOUT_MS}ms'")
+        conn.execute(f"SET statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
+        conn.commit()
+
         if reset:
             print(
                 "RESET: dropping all tables in reverse dependency order"
