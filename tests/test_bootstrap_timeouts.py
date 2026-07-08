@@ -14,7 +14,9 @@ def test_bootstrap_sets_timeouts_before_ddl(monkeypatch):
     class _FakeConn:
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def execute(self, sql, *args, **kw): executed.append(str(sql)); return self
+        def execute(self, sql, *args, **kw):
+            executed.append(str(sql))
+            return self
         def commit(self): pass
 
     monkeypatch.setattr(bootstrap.psycopg, "connect", lambda *a, **k: _FakeConn())

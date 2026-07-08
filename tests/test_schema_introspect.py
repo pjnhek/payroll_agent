@@ -1,4 +1,9 @@
-from app.db.schema_introspect import expected_schema
+from app.db.schema_introspect import (
+    _parse_any_array_values,
+    diff_against_live,
+    expected_schema,
+)
+from tests.conftest import FakeConnection  # existing test double
 
 
 def test_expected_schema_columns_include_create_and_alter():
@@ -29,10 +34,6 @@ def test_expected_schema_check_and_unique_values():
     assert "received" in exp.status_values
     assert "clarification_field_regression" in exp.purpose_values
     assert "uq_email_run_purpose_round_epoch" in exp.unique_constraints
-
-
-from app.db.schema_introspect import diff_against_live, _parse_any_array_values
-from tests.conftest import FakeConnection  # existing test double
 
 
 LIVE_STATUS_DEF = (
