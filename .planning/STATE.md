@@ -6,7 +6,7 @@ status: planning
 last_updated: "2026-07-08T21:39:08.892Z"
 last_activity: 2026-07-08
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -19,15 +19,15 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
-**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v2 deepened this: correct under real, messy, concurrent load, not just the demo path.**
-**Current focus:** Planning the next milestone (`/gsd-new-milestone`). v2 — Production Hardening shipped 2026-07-07.
+**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v3 makes the codebase read as production-quality: enforced CI, right-sized modules, full type-checking, constraint-documenting comments.**
+**Current focus:** Phase 12 (CI Quality Gates) — roadmap created, ready to plan. v2 — Production Hardening shipped 2026-07-07.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-07-08 — Milestone v3 started
+Phase: 12 of 15 (CI Quality Gates) — first of 4 v3 phases (12-15)
+Plan: — (not yet planned)
+Status: Roadmap created, ready to plan
+Last activity: 2026-07-08 — Milestone v3 roadmap created (Phases 12-15, 16/16 requirements mapped)
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Last activity: 2026-07-08 — Milestone v3 started
 
 ### Roadmap Evolution
 
+- v3 roadmap created (2026-07-08): 4 phases (12-15), continuing global phase numbering from v2's Phase 11. Phase 12 CI Quality Gates -> Phase 13 Module Structure & Boundaries -> Phase 14 Full Type-Checking (mypy) -> Phase 15 Comment Hygiene & Deferred-Polish Triage. Hard-ordered per the milestone's ordering constraint: CI first (protects every later refactor), STRUCT (incl. BOUND-01) before COMM (comments rewritten once, in final file locations), TYPE its own phase after STRUCT (smaller split modules are easier to annotate; user explicitly ruled out squeezing full mypy adoption into a shared phase). 16/16 v3 requirements mapped, no orphans.
 - Phase 11 added (2026-07-05): Clarification Round Machine & Alias Learning — clarify-cluster design phase from phase-9 review findings (WR-04/05/06, CX-01) + conversation-traced findings (alias-learning bind unreachable, ambiguous-reply attribution); sources: todos 260705-01, 260705-02, 260623-08
 
 ### Decisions

@@ -63,23 +63,21 @@ Deferred to later milestones:
 
 ## Traceability
 
-_Filled by roadmap creation._
-
 | REQ-ID | Phase |
 |--------|-------|
-| CI-01 | — |
-| CI-02 | — |
-| CI-03 | — |
-| STRUCT-01 | — |
-| STRUCT-02 | — |
-| STRUCT-03 | — |
-| STRUCT-04 | — |
-| TYPE-01 | — |
-| TYPE-02 | — |
-| TYPE-03 | — |
-| COMM-01 | — |
-| COMM-02 | — |
-| COMM-03 | — |
-| BOUND-01 | — |
-| POLISH-01 | — |
-| POLISH-02 | — |
+| CI-01 | Phase 12 |
+| CI-02 | Phase 12 |
+| CI-03 | Phase 12 |
+| STRUCT-01 | Phase 13 |
+| STRUCT-02 | Phase 13 |
+| STRUCT-03 | Phase 13 |
+| STRUCT-04 | Phase 13 |
+| TYPE-01 | Phase 14 |
+| TYPE-02 | Phase 14 |
+| TYPE-03 | Phase 14 |
+| COMM-01 | Phase 15 |
+| COMM-02 | Phase 15 |
+| COMM-03 | Phase 15 |
+| BOUND-01 | Phase 13 |
+| POLISH-01 | Phase 15 |
+| POLISH-02 | Phase 15 |
