@@ -52,6 +52,8 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.db import repo
+from app.db.schema_introspect import diff_against_live
+from app.db.supabase import get_connection
 from app.email import gateway
 from app.email.clean import clean_body
 from app.models.contracts import InboundEmail
@@ -270,6 +272,32 @@ def health_ready() -> JSONResponse:
     except Exception as exc:
         logger.error("readiness probe failed: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="database not ready")
+
+
+@app.get("/health/schema")
+def health_schema() -> JSONResponse:
+    """Live schema-parity probe (columns + status/purpose CHECK values + the
+    Phase-11 unique constraint) vs what schema.sql declares.
+
+    200 {"status":"in_sync"}                       — live DB matches schema.sql
+    503 {"status":"drift","missing":{...}}         — declared-but-missing on live
+    503 {"detail":"schema check unavailable"}      — DB unreachable / parse error
+
+    Body carries only schema identifier NAMES (no row data, no connection string,
+    no stack trace) — same PII rule as /health/ready (T-06-02).
+    """
+    try:
+        with get_connection() as conn:
+            diff = diff_against_live(conn)
+    except Exception as exc:  # noqa: BLE001 — probe must not leak internals
+        logger.error("schema parity probe failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="schema check unavailable")
+    if diff.is_in_sync:
+        return JSONResponse({"status": "in_sync"})
+    return JSONResponse(
+        {"status": "drift", "missing": diff.as_missing_dict()},
+        status_code=503,
+    )
 
 
 @app.post("/webhook/inbound")
