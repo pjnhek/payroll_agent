@@ -106,6 +106,13 @@ def bootstrap(reset: bool = False) -> None:
         # into a SET — not user input; the "never f-string SQL" rule targets
         # untrusted values. `SET ... = %s` is not supported by Postgres for these
         # GUCs, so a literal is required.)
+        # NOTE (final-review Minor #1): statement_timeout also bounds the one-shot
+        # DATA migrations inside schema.sql (the DO-block re-adds + the
+        # payroll_runs.clarification_round backfill UPDATE), not just DDL. Harmless
+        # at demo scale; if a table ever grows large enough that a backfill exceeds
+        # 60s the migrate aborts RED — safe (schema.sql's migrations are atomic +
+        # idempotent, so a re-run converges), but raise STATEMENT_TIMEOUT_MS if that
+        # ever happens rather than removing the bound.
         conn.execute(f"SET lock_timeout = '{LOCK_TIMEOUT_MS}ms'")
         conn.execute(f"SET statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
         conn.commit()
