@@ -11,6 +11,14 @@ on:
     branches: ["master"]
   workflow_dispatch:
 
+# Serialize migration runs so two quick-succession pushes never run two bootstraps
+# against live Supabase in parallel (each is transactional + idempotent so data is
+# safe, but concurrent DDL can lock-timeout each other into spurious RED runs).
+# cancel-in-progress:false — a mid-flight migration must finish, never be killed.
+concurrency:
+  group: deploy-migrate
+  cancel-in-progress: false
+
 jobs:
   migrate:
     name: "Apply additive migration to live Supabase"
