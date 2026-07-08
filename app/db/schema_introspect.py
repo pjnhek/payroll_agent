@@ -145,3 +145,109 @@ def expected_schema() -> ExpectedSchema:
         purpose_values=purpose_values,
         unique_constraints=_REQUIRED_UNIQUE_CONSTRAINTS,
     )
+
+
+@dataclass(frozen=True)
+class SchemaDiff:
+    missing_columns: dict[str, list[str]]
+    missing_status_values: list[str]
+    missing_purpose_values: list[str]
+    missing_unique_constraints: list[str]
+
+    @property
+    def is_in_sync(self) -> bool:
+        return not (
+            any(self.missing_columns.values())
+            or self.missing_status_values
+            or self.missing_purpose_values
+            or self.missing_unique_constraints
+        )
+
+    def as_missing_dict(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for tbl, cols in self.missing_columns.items():
+            if cols:
+                out[tbl] = sorted(cols)
+        if self.missing_status_values:
+            out["status_values"] = sorted(self.missing_status_values)
+        if self.missing_purpose_values:
+            out["purpose_values"] = sorted(self.missing_purpose_values)
+        if self.missing_unique_constraints:
+            out["unique_constraints"] = sorted(self.missing_unique_constraints)
+        return out
+
+
+def _parse_any_array_values(constraintdef: str) -> set[str]:
+    """Parse values from the live form `CHECK ((col = ANY (ARRAY['v'::text, …])))`.
+    Falls back to the `IN ('v', …)` form if present. Strips ::text casts + quotes.
+    """
+    m = re.search(r"ARRAY\s*\[(.*?)\]", constraintdef, re.DOTALL)
+    if m is None:
+        m = re.search(r"\bIN\s*\((.*?)\)", constraintdef, re.DOTALL)
+    if m is None:
+        return set()
+    out = set()
+    for raw in m.group(1).split(","):
+        v = raw.strip()
+        v = re.sub(r"::\w+$", "", v)   # strip ::text cast
+        v = v.strip().strip("'")
+        if v:
+            out.add(v)
+    return out
+
+
+def _live_columns(conn, table: str) -> set[str]:
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def diff_against_live(conn) -> SchemaDiff:
+    exp = expected_schema()
+
+    # Q1/Q2: columns per table.
+    missing_columns: dict[str, list[str]] = {}
+    for table, expected_cols in exp.tables.items():
+        live = _live_columns(conn, table)
+        missing_columns[table] = sorted(set(expected_cols) - live)
+
+    # Q3: status + purpose CHECK defs (selected by conkey — column set — not name).
+    rows = conn.execute(
+        "SELECT CASE WHEN c.conrelid = to_regclass('public.payroll_runs') "
+        "            THEN 'status' ELSE 'purpose' END AS which, "
+        "       pg_get_constraintdef(c.oid) "
+        "FROM pg_constraint c "
+        "WHERE c.contype = 'c' "
+        "  AND c.conrelid IN (to_regclass('public.payroll_runs'), "
+        "                     to_regclass('public.email_messages')) "
+        "  AND (SELECT array_agg(a.attname::text) FROM pg_attribute a "
+        "       WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)) "
+        "      IN (ARRAY['status'], ARRAY['purpose'])",
+    ).fetchall()
+    live_status: set[str] = set()
+    live_purpose: set[str] = set()
+    for which, cdef in rows:
+        if which == "status":
+            live_status |= _parse_any_array_values(cdef)
+        else:
+            live_purpose |= _parse_any_array_values(cdef)
+    missing_status = sorted(set(exp.status_values) - live_status)
+    missing_purpose = sorted(set(exp.purpose_values) - live_purpose)
+
+    # Q4: required unique constraints present on email_messages.
+    rows = conn.execute(
+        "SELECT conname FROM pg_constraint "
+        "WHERE contype = 'u' AND conrelid = to_regclass('public.email_messages')",
+    ).fetchall()
+    live_uq = {r[0] for r in rows}
+    missing_uq = sorted(set(exp.unique_constraints) - live_uq)
+
+    return SchemaDiff(
+        missing_columns=missing_columns,
+        missing_status_values=missing_status,
+        missing_purpose_values=missing_purpose,
+        missing_unique_constraints=missing_uq,
+    )

@@ -29,3 +29,86 @@ def test_expected_schema_check_and_unique_values():
     assert "received" in exp.status_values
     assert "clarification_field_regression" in exp.purpose_values
     assert "uq_email_run_purpose_round_epoch" in exp.unique_constraints
+
+
+from app.db.schema_introspect import diff_against_live, _parse_any_array_values
+from tests.conftest import FakeConnection  # existing test double
+
+
+LIVE_STATUS_DEF = (
+    "CHECK ((status = ANY (ARRAY['received'::text, 'extracting'::text, "
+    "'awaiting_reply'::text, 'computed'::text, 'awaiting_approval'::text, "
+    "'approved'::text, 'sent'::text, 'reconciled'::text, 'rejected'::text, "
+    "'error'::text, 'needs_operator'::text])))"
+)
+LIVE_PURPOSE_DEF = (
+    "CHECK ((purpose = ANY (ARRAY['clarification'::text, 'confirmation'::text, "
+    "'clarification_field_regression'::text])))"
+)
+
+
+def test_parse_any_array_values_handles_live_form():
+    vals = _parse_any_array_values(LIVE_STATUS_DEF)
+    assert "needs_operator" in vals
+    assert "received" in vals
+    assert "::text" not in "".join(vals)  # casts stripped
+
+
+def _script_in_sync(conn, *, drop_status=None, drop_col=None, drop_uq=False):
+    """Script a FakeConnection to answer the 4 diff_against_live queries in order:
+    1) payroll_runs columns  2) email_messages columns
+    3) status+purpose constraint defs  4) unique-constraint names present.
+    """
+    from app.db.schema_introspect import expected_schema
+    exp = expected_schema()
+    pr_cols = set(exp.tables["payroll_runs"])
+    em_cols = set(exp.tables["email_messages"])
+    if drop_col:
+        pr_cols.discard(drop_col)
+    status_def = LIVE_STATUS_DEF
+    if drop_status:
+        status_def = status_def.replace(f", '{drop_status}'::text", "")
+    uq_present = set() if drop_uq else {"uq_email_run_purpose_round_epoch"}
+    conn.script_fetchall([(c,) for c in pr_cols])                 # Q1
+    conn.script_fetchall([(c,) for c in em_cols])                 # Q2
+    conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])  # Q3
+    conn.script_fetchall([(n,) for n in uq_present])              # Q4
+
+
+def test_diff_in_sync():
+    conn = FakeConnection()
+    _script_in_sync(conn)
+    diff = diff_against_live(conn)
+    assert diff.is_in_sync
+    assert diff.as_missing_dict() == {}
+
+
+def test_diff_missing_column():
+    conn = FakeConnection()
+    _script_in_sync(conn, drop_col="clarification_round")
+    diff = diff_against_live(conn)
+    assert not diff.is_in_sync
+    assert "clarification_round" in diff.missing_columns["payroll_runs"]
+
+
+def test_diff_missing_status_value_live_form():
+    conn = FakeConnection()
+    _script_in_sync(conn, drop_status="needs_operator")
+    diff = diff_against_live(conn)
+    assert diff.missing_status_values == ["needs_operator"]
+
+
+def test_diff_missing_unique_constraint():
+    conn = FakeConnection()
+    _script_in_sync(conn, drop_uq=True)
+    diff = diff_against_live(conn)
+    assert "uq_email_run_purpose_round_epoch" in diff.missing_unique_constraints
+
+
+def test_diff_extra_live_column_is_not_drift():
+    conn = FakeConnection()
+    _script_in_sync(conn)
+    # inject an extra column not in schema.sql into Q1's result
+    conn._fetchall_q[0].append(("some_future_column",))
+    diff = diff_against_live(conn)
+    assert diff.is_in_sync  # extras are not drift
