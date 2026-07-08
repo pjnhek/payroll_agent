@@ -44,3 +44,12 @@ jobs:
         run: curl -f --max-time 90 "$RENDER_URL/health/ready"
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
+
+      - name: Check live schema parity (drift → RED)
+        # Layer 3 monitoring: /health/schema returns 503 on drift; -f makes curl
+        # exit non-zero so this scheduled run goes RED and the operator is notified.
+        # Catches drift from ANY source, including a manual Supabase edit that
+        # bypasses the deploy-migrate workflow (which only covers master merges).
+        run: curl -f --max-time 90 "$RENDER_URL/health/schema"
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
