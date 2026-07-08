@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v2
-milestone_name: Production Hardening
-status: Awaiting next milestone
-last_updated: "2026-07-07T22:40:47.050Z"
-last_activity: 2026-07-07 — Milestone v2 completed and archived
+milestone: v3
+milestone_name: Production-Ready Codebase
+status: planning
+last_updated: "2026-07-08T21:39:08.892Z"
+last_activity: 2026-07-08
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 26
-  completed_plans: 26
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 ## Current Position
 
-Phase: Milestone v2 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-07 — Milestone v2 completed and archived
+Status: Defining requirements
+Last activity: 2026-07-08 — Milestone v3 started
 
 ## Performance Metrics
 
@@ -134,6 +134,7 @@ Recent decisions affecting current work:
 [Issues that affect future work]
 
 _None open._ All v1/v2 research flags and checkpoints were resolved as their phases shipped:
+
 - 2026 Pub 15-T brackets — transcribed + unit-tested against the IRS PDF (Phase 3, v1.0).
 - DeepSeek/Kimi model IDs — confirmed + pinned (Phase 2, v1.0).
 - Real gateway payload/signing/reply-field — resolved with Resend at deploy (Phase 6, v1.0).
