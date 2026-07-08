@@ -2,7 +2,7 @@
 id: 260623-05
 created: 2026-06-23
 source: Phase 05 UAT — multi-employee demo investigation
-resolves_phase:
+resolves_phase: 15
 priority: low
 ---
 

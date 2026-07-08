@@ -2,7 +2,7 @@
 id: 260623-01
 created: 2026-06-23
 source: 05-REVIEW.md
-resolves_phase:
+resolves_phase: 15
 priority: medium
 ---
 
