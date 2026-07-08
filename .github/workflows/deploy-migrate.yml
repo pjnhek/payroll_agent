@@ -1,0 +1,52 @@
+# .github/workflows/deploy-migrate.yml
+name: deploy-migrate
+
+# Prevention layer (spec Layer 2): apply schema.sql to live Supabase on merge to
+# master so deployed code can't outrun its migration. Best-effort — runs in
+# parallel with Render's auto-deploy (residual race covered by /health/schema +
+# keepalive). Additive only (no --reset). Requires the DATABASE_URL secret.
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    name: "Apply additive migration to live Supabase"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (all groups)
+        run: uv sync
+
+      - name: Validate DATABASE_URL secret is set
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "ERROR: DATABASE_URL secret is not set."
+            echo "Add it at: Settings -> Secrets and variables -> Actions -> New secret"
+            exit 1
+          fi
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Pre-flight — schema-introspection parser tests (no DB)
+        # A malformed schema.sql (bad CHECK/ALTER edit) fails HERE, before any DDL.
+        run: uv run pytest tests/test_schema_introspect.py -q
+
+      - name: Apply additive migration (no --reset)
+        run: uv run python -m app.db.bootstrap
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Post-flight — verify live schema is in sync
+        run: uv run python -m app.db.check_schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
