@@ -431,7 +431,7 @@ class InMemoryRepo:
 
         swept: list[uuid.UUID] = []
         prefix = "recovery: stranded in-flight (background task died) — swept from "
-        for run_id_str, run in self.runs.items():
+        for _run_id_str, run in self.runs.items():
             if run["status"] in _STRANDED_SCOPE_STATUSES:
                 old_status = run["status"]
                 run["error_reason"] = "StrandedRunSwept"

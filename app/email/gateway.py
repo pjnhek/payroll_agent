@@ -122,10 +122,7 @@ def parse_inbound(raw: dict | str | bytes) -> InboundEmail:
     Shape detection is purely structural — the route layer controls auth gating.
     """
     # --- normalize to dict if needed ---
-    if isinstance(raw, (str, bytes)):
-        data = json.loads(raw)
-    else:
-        data = raw
+    data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
 
     # --- shape detection: Resend envelope vs canonical ---
     if _is_resend_envelope(data):

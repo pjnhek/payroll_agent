@@ -122,8 +122,8 @@ def test_body_cleaned(client, fake_repo, mock_llm):
 # Phase 6 Wave 0 — dedup gate tests (06-01 Task 2)
 # ===========================================================================
 
-import os
-import uuid as _uuid_module
+import os  # noqa: E402 — Phase 6 Wave 0 dedup gate tests appended after existing imports
+import uuid as _uuid_module  # noqa: E402 — Phase 6 Wave 0 dedup gate tests appended after existing imports
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"

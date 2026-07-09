@@ -9,10 +9,14 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.models.contracts import Extracted, ExtractedEmployee
 from app.models.roster import NameMatchResult
 from app.pipeline.validate import validate
+
+if TYPE_CHECKING:
+    from app.models.roster import Employee, Roster
 
 
 def _extracted(employees) -> Extracted:

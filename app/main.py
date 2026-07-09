@@ -271,7 +271,7 @@ def health_ready() -> JSONResponse:
         return JSONResponse({"status": "ready"})
     except Exception as exc:
         logger.error("readiness probe failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="database not ready")
+        raise HTTPException(status_code=503, detail="database not ready") from exc
 
 
 @app.get("/health/schema")
@@ -291,7 +291,7 @@ def health_schema() -> JSONResponse:
             diff = diff_against_live(conn)
     except Exception as exc:  # noqa: BLE001 — probe must not leak internals
         logger.error("schema parity probe failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="schema check unavailable")
+        raise HTTPException(status_code=503, detail="schema check unavailable") from exc
     if diff.is_in_sync:
         return JSONResponse({"status": "in_sync"})
     return JSONResponse(
@@ -869,8 +869,8 @@ async def resolve(run_id: uuid.UUID, request: Request, background_tasks: Backgro
     """
     try:
         run = repo.load_run(run_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1403,8 +1403,8 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
     """
     try:
         run = repo.load_run(run_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     status = run.get("status", "")
@@ -1423,9 +1423,9 @@ def run_detail(request: Request, run_id: uuid.UUID):
     with decision banner and operator controls gated by status."""
     try:
         run = repo.load_run(run_id)
-    except Exception:
+    except Exception as exc:
         logger.debug("load_run unavailable for run %s", run_id)
-        raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     try:
@@ -1651,8 +1651,8 @@ def simulate_reply(
     # Load the run; 404 if missing.
     try:
         run = repo.load_run(run_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 

@@ -21,10 +21,14 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.models.contracts import Extracted, ExtractedEmployee, RawFieldDrop
 from app.models.roster import NameMatchResult, Roster
 from app.pipeline.validate import detect_field_regression, validate
+
+if TYPE_CHECKING:
+    from app.models.roster import Employee
 
 # ---------------------------------------------------------------------------
 # Helpers

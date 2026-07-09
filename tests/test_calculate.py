@@ -8,11 +8,15 @@ given, and the override never mutates the employee.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest
 
 from app.db.seed import seed
 from app.pipeline.calculate import calculate
+
+if TYPE_CHECKING:
+    from app.models.roster import Employee
 
 
 @pytest.fixture()
@@ -78,10 +82,10 @@ from app.pipeline.calculate import (  # noqa: E402
 from app.pipeline.tax_tables_2026 import (  # noqa: E402
     MEDICARE_RATE as _MEDICARE_RATE_REF,
 )
-from app.pipeline.tax_tables_2026 import (
+from app.pipeline.tax_tables_2026 import (  # noqa: E402 — appended after existing imports; uuid is stdlib
     SS_RATE as _SS_RATE_REF,
 )
-from app.pipeline.tax_tables_2026 import (
+from app.pipeline.tax_tables_2026 import (  # noqa: E402 — appended after existing imports; uuid is stdlib
     SS_WAGE_BASE as _SS_WAGE_BASE_REF,
 )
 

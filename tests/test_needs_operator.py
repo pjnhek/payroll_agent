@@ -234,7 +234,8 @@ def test_escalation_transaction_writes_only_status():
     """
     import app.pipeline.orchestrator as orch_mod
 
-    src = open(orch_mod.__file__).read()
+    with open(orch_mod.__file__) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(

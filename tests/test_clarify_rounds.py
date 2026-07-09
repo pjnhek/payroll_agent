@@ -286,7 +286,8 @@ def test_clarify_finalize_paths_advance_round_before_status_ast():
     import app.pipeline.orchestrator as orch_mod
 
     src_path = orch_mod.__file__
-    src = open(src_path).read()
+    with open(src_path) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(
@@ -375,7 +376,8 @@ def test_clarify_cap_check_precedes_any_transaction_block():
     import app.pipeline.orchestrator as orch_mod
 
     src_path = orch_mod.__file__
-    src = open(src_path).read()
+    with open(src_path) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(

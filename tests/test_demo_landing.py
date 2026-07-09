@@ -50,7 +50,7 @@ def test_bind_demo_business_writes_binding_table_not_businesses(fake_conn):
     assert "DEMO_SENDER_BINDINGS" in all_sql, "Must INSERT into demo_sender_bindings"
 
     # Must NOT touch businesses table at all
-    for sql, params in fake_conn.executed:
+    for sql, _params in fake_conn.executed:
         assert "UPDATE BUSINESSES" not in sql.upper(), "Must not UPDATE businesses table"
         assert "CONTACT_EMAIL" not in sql.upper(), (
             "Must not reference contact_email on businesses"

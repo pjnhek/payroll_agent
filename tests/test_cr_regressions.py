@@ -64,7 +64,7 @@ def test_cr01_update_known_alias_sql_uses_text_array_ops(fake_conn):
 
     # FakeConnection returns None for fetchone → no RETURNING row → returns False.
     # We only care about the SQL shape, not the return value.
-    result = update_known_alias(emp_id, new_alias, conn=fake_conn)
+    _result = update_known_alias(emp_id, new_alias, conn=fake_conn)
 
     executed_sql = fake_conn.all_sql().upper()
 

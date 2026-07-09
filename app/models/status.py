@@ -6,7 +6,7 @@ A CI test asserts the SQL CHECK list equals this enum's members so drift fails f
 import enum
 
 
-class RunStatus(str, enum.Enum):
+class RunStatus(enum.StrEnum):
     """Eleven-state lifecycle for a payroll run.
 
     D-02: modeled as TEXT + CHECK in Postgres (not a native ENUM) so adding a value

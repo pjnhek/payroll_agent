@@ -241,7 +241,8 @@ def test_run_stages_process_branch_call_order_and_status_last():
     import app.pipeline.orchestrator as orch_mod
 
     src_path = orch_mod.__file__
-    src = open(src_path).read()
+    with open(src_path) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(
@@ -425,7 +426,8 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
 
     import app.pipeline.orchestrator as orch_mod
 
-    src = open(orch_mod.__file__).read()
+    with open(orch_mod.__file__) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(
@@ -681,7 +683,8 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
 
     import app.pipeline.orchestrator as orch_mod
 
-    src = open(orch_mod.__file__).read()
+    with open(orch_mod.__file__) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(

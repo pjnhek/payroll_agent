@@ -97,11 +97,11 @@ def _load_roster_for_fixture(from_addr: str) -> Roster:
     seeded = seed(dry_run=True)
     try:
         biz = next(b for b in seeded.businesses if b["contact_email"] == from_addr)
-    except StopIteration:
+    except StopIteration as exc:
         raise ValueError(
             f"from_addr {from_addr!r} not found in seeded businesses. "
             "Check that the fixture from_addr matches a seeded business contact_email."
-        )
+        ) from exc
     employees = [e for e in seeded.employees if e.business_id == biz["id"]]
     return Roster(business_id=biz["id"], employees=employees)
 
@@ -784,7 +784,7 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
     ax1.legend(loc="lower right")
 
     # Annotate each field-accuracy bar
-    for bar, val in zip(bars_fa, field_values):
+    for bar, val in zip(bars_fa, field_values, strict=False):
         ax1.text(
             min(val + 0.005, 1.03),
             bar.get_y() + bar.get_height() / 2,
@@ -794,7 +794,7 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
             fontsize=8,
         )
     # Annotate each F1 bar
-    for bar, val in zip(bars_f1, f1_values):
+    for bar, val in zip(bars_f1, f1_values, strict=False):
         ax1.text(
             min(val + 0.005, 1.03),
             bar.get_y() + bar.get_height() / 2,
@@ -822,7 +822,7 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
     ax2.set_xlim(0, 1.05)
 
     # Annotate each bar with "k/n" fraction (D-12)
-    for bar, r in zip(bars_rec, rec_data_sorted):
+    for bar, r in zip(bars_rec, rec_data_sorted, strict=False):
         label = f'{r["correct"]}/{r["total"]}'
         ax2.text(
             min(r["accuracy"] + 0.005, 1.03),
