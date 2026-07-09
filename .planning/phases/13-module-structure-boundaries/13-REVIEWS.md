@@ -1,6 +1,7 @@
 ---
 phase: 13
 reviewers: [codex]
+rounds: 2
 reviewed_at: 2026-07-09T21:26:36Z
 plans_reviewed: [13-01-PLAN.md, 13-02-PLAN.md, 13-03-PLAN.md, 13-04-PLAN.md]
 ---
@@ -154,3 +155,108 @@ Single external reviewer (Codex, codex-cli 0.144.0 with repo read access) — co
 
 ### Divergent Views
 None (single reviewer).
+
+
+---
+
+# Round 2 — Confirming Review of Revised Plans (Codex)
+
+> Reviewed the post-`42a2931` revised plans against the live tree. Round 1 sections above are historical.
+
+## Verdict: NOT READY TO EXECUTE
+
+The revised plans close several Round 1 issues, but four HIGH blockers remain: repo-facade patch semantics, invented repo call edges, Plan 02’s intentionally broken intermediate state, and incomplete test retargets/routes.
+
+### 13-01 — repo package split
+
+| Round 1 finding | Status | Source-verified evidence |
+|---|---|---|
+| Facade omitted live attributes | PARTIALLY FIXED | The plan now re-exports the identified names, including `_conn_ctx`, `_scrub`, and constants. |
+| `_conn_ctx` stopped seeing a facade-patched `get_connection` | FIXED | The proposed call-time lookup through `app.db.repo.get_connection` preserves this seam. |
+| Facade patches do not intercept submodule-internal calls | NOT FIXED | `record_run_error()` resolves bare `set_status` in its defining module ([repo.py](/Users/pnhek/usf%20msds/github/payroll_agent/app/db/repo.py:655)); patching facade `repo.set_status` does not alter `runs.set_status`. Existing [test_gateway.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_gateway.py:229) relies on exactly that interception. The same break applies to facade-patched `_scrub` in [test_persistence.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_persistence.py:342). |
+| Invented `create_run → get_record_only_flag` edge | FIXED | `create_run` writes the supplied flag directly; the revised plan correctly removes that edge. |
+| Incomplete repo source-inspection census | PARTIALLY FIXED | It now covers threading, claim-status, and gateway checks, but misses [test_clarify.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_clarify.py:465), whose `repo.__file__` scan would become a facade-only, vacuous check. |
+
+New concerns:
+
+- **HIGH:** The plan invents two different cross-aggregate edges: `set_pre_clarify_extracted → set_status` and `set_clarification_round → set_status`. Neither exists; both functions only write their own fields ([repo.py](/Users/pnhek/usf%20msds/github/payroll_agent/app/db/repo.py:865), [repo.py](/Users/pnhek/usf%20msds/github/payroll_agent/app/db/repo.py:973)). The prescribed `pipeline_state → runs.set_status` wiring conflicts with the verbatim-move rule.
+- **HIGH:** Re-exporting is not a live proxy. Either retarget the affected tests to owner modules (`runs._scrub`, `runs.set_status`, `emails.update_email_message_state`) or deliberately add facade call-time dispatch—then test it. The current “same-module bare-name calls preserve facade patches” explanation is false.
+
+### 13-02 — orchestrator split
+
+| Round 1 finding | Status | Source-verified evidence |
+|---|---|---|
+| Missing `Extracted` import in clarification module | FIXED | The revised import specification explicitly includes `Extracted`. |
+| Omitted moved-symbol test census | NOT FIXED | Several directly affected references remain absent from the task instructions. |
+| `test_atomic_persist` AST tests need owner/module-aware updates | FIXED | The proposed `Name → Attribute` and owner-module rewrites cover the two Round 1 AST checks. |
+| `MAX_CLARIFICATION_ROUNDS` test import | FIXED | The plan explicitly moves that test import to `clarification.py`. |
+| `_RunStagesResult` runtime cycle/type boundary | FIXED | The `TYPE_CHECKING` plan is appropriate. |
+
+New concerns:
+
+- **HIGH:** Plan 02 deliberately leaves `main.py` importing `orchestrator._deliver` until Plan 03, while deleting that name in Plan 02. [approve()](/Users/pnhek/usf%20msds/github/payroll_agent/app/main.py:772) imports it before its error boundary. This violates STRUCT-04’s requirement that the full suite pass after every split, and contradicts Plan 02’s own acceptance criterion that `test_hitl.py` pass. Move this one `main.py` retarget into Plan 02, or do not remove the old symbol until the same commit.
+- **HIGH:** The claimed “full” census remains incomplete even within files it names:
+  - [test_atomic_persist.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_atomic_persist.py:753) has five `_deliver` imports plus `_write_aliases_if_safe` patches at lines 766 and 940, and a moved `_clarify` patch at line 530. The task only handles two AST tests.
+  - [test_alias_write.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_alias_write.py:1441) directly imports `_normalize_candidate` three times and `_write_aliases_if_safe` at line 1471; neither is assigned a retarget.
+  - [test_cr_regressions.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_cr_regressions.py:315) has a separate `_deliver` import and aliases helper patch omitted from the task.
+  - [test_clarify_rounds.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_clarify_rounds.py:286) AST-parses the owner module and looks for `FunctionDef("_clarify")`; its task text only discusses attribute patches, not this renamed structural target.
+
+### 13-03 — router split
+
+| Round 1 finding | Status | Source-verified evidence |
+|---|---|---|
+| Webhook must call `finish_reply_resume`, not `route_reply` | FIXED | The revised plan preserves the transaction-classify, post-commit `finish_reply_resume` flow. |
+| Missing pipeline-glue helper rewrites | FIXED | The relevant webhook and runs-list helpers are now enumerated. |
+| Demo routes still schedule old `_run_pipeline` | FIXED | Both demo routes are directed to `pipeline_glue.run_pipeline_bg`. |
+| Router import sets/logger bindings incomplete | PARTIALLY FIXED | Most required imports are now identified, but the planned `runs.py` imports unused `FileResponse`, which will fail Ruff. |
+| Demo constants caused private cross-module imports | FIXED | The planned public `DEMO_FIXTURES`, `SEED_CONTACTS`, and `SEED_BUSINESS_IDS` names address this. |
+| `test_hitl` patched `main.repo` | FIXED | The proposed retarget to `routes.runs.repo` is correct. |
+
+New concerns:
+
+- **HIGH:** The plan omits `_DEMO_FIXTURE_DEFAULT_KEY`, which is required when defining `demo_send_test` ([main.py](/Users/pnhek/usf%20msds/github/payroll_agent/app/main.py:149), [main.py](/Users/pnhek/usf%20msds/github/payroll_agent/app/main.py:1754)). After `main.py` is thinned, `demo.py` will raise `NameError` at import time unless it moves that same-module constant too.
+- **HIGH:** Plan 03 still misses three `app.main._run_pipeline` patches in [test_demo_landing.py](/Users/pnhek/usf%20msds/github/payroll_agent/tests/test_demo_landing.py:811), lines 876, and 933. They use `raising=False`, so they will silently patch a dead attribute while the actual route calls `pipeline_glue.run_pipeline_bg`, potentially invoking real pipeline/LLM behavior.
+- **LOW:** Remove `FileResponse` from the specified `runs.py` imports; only `dashboard.py` uses it.
+
+### 13-04 — BOUND-01 AST guard
+
+| Round 1 finding | Status | Source-verified evidence |
+|---|---|---|
+| ImportFrom-only guard missed `module._private` access | FIXED | The revised design adds imported-module attribute analysis and preserves the repo-facade compatibility exception. |
+| Relative imports and `__init__.py` module naming | PARTIALLY FIXED | It normalizes `__init__.py`, but its stated relative-import algorithm is still incomplete. |
+| Text-grep acceptance rules were unsound | FIXED | The scanner becomes the source of truth. |
+| Synthetic positive check should use `tmp_path` | FIXED | The revised plan makes this a permanent test. |
+
+New concerns:
+
+- **MEDIUM:** The stated `ImportFrom` rule only says to flag names when `node.level == 0`; it never says to apply the same check after resolving a relative import. A future `from .sibling import _private` can therefore evade the guard.
+- **MEDIUM:** Normalizing `app/routes/__init__.py` to `app.routes` loses the fact it is a package. For a relative import inside that `__init__.py`, level 1 should resolve from `app.routes`, not from `app`. Preserve an `is_package` flag while resolving.
+- **MEDIUM:** The facade exception is described as exempting any imported package `__init__.py`, although only `app.db.repo` is an approved compatibility facade. Limit the exemption to declared facades, or prove all package facades have equivalent boundary contracts.
+
+### Cross-plan closure
+
+| Round 1 finding | Status |
+|---|---|
+| Wave-1 write conflict on `test_alias_write.py` | FIXED — plans are now serial. |
+| Every split independently green | NOT FIXED — Plan 02 explicitly allows the broken `_deliver` state. |
+| Stale 613-test baseline | FIXED in approach — plans now require a live collected baseline. |
+
+I could not independently collect the current test count because `uv` cache access is denied by this read-only sandbox; that does not affect the source-level findings above.
+
+Execution should wait for the HIGH items to be incorporated, especially preserving repo monkeypatch semantics and restoring Plan 02’s per-split green guarantee.
+
+
+---
+
+## Consensus Summary (updated after Round 2)
+
+**Verdict: NOT READY TO EXECUTE.** Round 2 confirms most Round 1 fixes landed (webhook transaction flow, Extracted import, serial waves, dynamic baseline, AST guard attribute-access), but 4 HIGH blockers remain:
+
+1. **13-01 facade patch semantics (NOT FIXED + worse)** — re-exporting is not a live proxy: patching facade `repo.set_status` cannot intercept `record_run_error()`'s bare-name `set_status` call inside its owner module (`tests/test_gateway.py:229` relies on exactly that), same for `_scrub` (`test_persistence.py:342`). Also two NEW invented cross-aggregate edges (`set_pre_clarify_extracted → set_status`, `set_clarification_round → set_status`) that don't exist in source. And `test_clarify.py:465`'s `repo.__file__` scan becomes vacuous. Fix: retarget affected tests to owner modules (runs.set_status, runs._scrub, emails.update_email_message_state) OR add tested call-time facade dispatch; delete the invented edges.
+2. **13-02 broken intermediate state (NOT FIXED)** — Plan 02 deletes `orchestrator._deliver` but leaves `app/main.py:772 approve()` importing it until Plan 03, violating STRUCT-04's per-split green gate and Plan 02's own test_hitl acceptance criterion. Fix: move that one main.py retarget into Plan 02.
+3. **13-02 census still incomplete within named files** — `test_atomic_persist.py` (5 `_deliver` imports, `_write_aliases_if_safe` patches @766/940, `_clarify` patch @530), `test_alias_write.py` (`_normalize_candidate` ×3 @1441+, `_write_aliases_if_safe` @1471), `test_cr_regressions.py` (@315 `_deliver` import + aliases patch), `test_clarify_rounds.py` (@286 AST FunctionDef("_clarify") structural target).
+4. **13-03 import-time NameError + silent dead patches** — `_DEMO_FIXTURE_DEFAULT_KEY` (main.py:149, used @1754 in demo_send_test default) not in the move list → demo.py NameError at import; `test_demo_landing.py` patches `app.main._run_pipeline` with `raising=False` at 811/876/933 → would silently patch a dead attribute while the route calls `pipeline_glue.run_pipeline_bg`, risking REAL pipeline/LLM calls in tests. LOW: unused `FileResponse` in runs.py imports fails ruff.
+
+MEDIUM (13-04): relative-import resolution must apply the same check after resolving `node.level>0`; preserve `is_package` when resolving relative imports inside `__init__.py`; limit the facade exemption to the declared `app.db.repo` facade only.
+
+**Recommended next step:** `/gsd-plan-phase 13 --reviews` (round 2 replan), then a final confirming review before execution.
