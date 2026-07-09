@@ -1,5 +1,7 @@
 # Payroll Agent
 
+[![CI](https://github.com/pjnhek/payroll_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pjnhek/payroll_agent/actions/workflows/ci.yml)
+
 **▶ [Live App (Live & Deployed)](https://payroll-agent.onrender.com/)**
 
 A messy payroll email goes in; a correct, human-approved payroll comes out.
