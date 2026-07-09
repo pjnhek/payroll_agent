@@ -9,12 +9,15 @@ Produces eval/summary.json with three core metrics:
 Usage:
   uv run python eval/run_eval.py             # score + write summary.json
   uv run python eval/run_eval.py --check     # regression gate vs committed summary.json
-  uv run python eval/run_eval.py --record    # LIVE re-record extraction caches (needs ALLOW_LIVE_LLM=true)
+  uv run python eval/run_eval.py --record    # LIVE re-record extraction caches
+                                              # (needs ALLOW_LIVE_LLM=true)
 
 Design notes:
-  - DB-FREE: no app.config import on the scoring/--check path (model id from env, no DATABASE_URL needed).
+  - DB-FREE: no app.config import on the scoring/--check path (model id from env,
+    no DATABASE_URL needed).
   - DRY seam: imports the SAME production pipeline functions (reconcile_names, validate, decide).
-  - PATH A: labeled expected extraction feeds the deterministic stages (unconfounded by extraction noise, D-07).
+  - PATH A: labeled expected extraction feeds the deterministic stages (unconfounded
+    by extraction noise, D-07).
   - CACHE: real committed extraction JSON feeds the extraction scoring ONLY (D-07 isolation).
   - --record: LIVE extraction via the production extract() -- gated by _require_live_llm() (D-05).
 """
@@ -97,11 +100,11 @@ def _load_roster_for_fixture(from_addr: str) -> Roster:
     seeded = seed(dry_run=True)
     try:
         biz = next(b for b in seeded.businesses if b["contact_email"] == from_addr)
-    except StopIteration:
+    except StopIteration as exc:
         raise ValueError(
             f"from_addr {from_addr!r} not found in seeded businesses. "
             "Check that the fixture from_addr matches a seeded business contact_email."
-        )
+        ) from exc
     employees = [e for e in seeded.employees if e.business_id == biz["id"]]
     return Roster(business_id=biz["id"], employees=employees)
 
@@ -166,7 +169,8 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
 
     # D-07: build BOTH extraction inputs, keep them separate.
     expected_extracted = _expected_to_extracted(raw)     # labeled truth: drives PATH A
-    cached_extracted = _load_extraction_cache(fixture_path)  # real model output: drives extraction scoring
+    # real model output: drives extraction scoring
+    cached_extracted = _load_extraction_cache(fixture_path)
 
     # D-7.5-10 three-phase path: deserialize prior_extracted + prior_matches if present.
     # Fixtures 16 and 17 have no prior_extracted → else branch fires (no regression possible).
@@ -646,8 +650,16 @@ def _assert_regression(fresh: dict, committed: dict) -> None:
     for cat in sorted(all_recon_cats):
         fr = fresh_pcr.get(cat, {})
         cr = comm_pcr.get(cat, {})
-        _check(f"per_category_reconciliation.{cat}.correct", int(fr.get("correct", -1)), int(cr.get("correct", -1)))
-        _check(f"per_category_reconciliation.{cat}.total", int(fr.get("total", -1)), int(cr.get("total", -1)))
+        _check(
+            f"per_category_reconciliation.{cat}.correct",
+            int(fr.get("correct", -1)),
+            int(cr.get("correct", -1)),
+        )
+        _check(
+            f"per_category_reconciliation.{cat}.total",
+            int(fr.get("total", -1)),
+            int(cr.get("total", -1)),
+        )
         _check(
             f"per_category_reconciliation.{cat}.accuracy",
             _round4(fr.get("accuracy", -1)),
@@ -661,8 +673,16 @@ def _assert_regression(fresh: dict, committed: dict) -> None:
     for cat in sorted(all_dec_cats):
         fr = fresh_pcd.get(cat, {})
         cr = comm_pcd.get(cat, {})
-        _check(f"per_category_decision.{cat}.correct", int(fr.get("correct", -1)), int(cr.get("correct", -1)))
-        _check(f"per_category_decision.{cat}.total", int(fr.get("total", -1)), int(cr.get("total", -1)))
+        _check(
+            f"per_category_decision.{cat}.correct",
+            int(fr.get("correct", -1)),
+            int(cr.get("correct", -1)),
+        )
+        _check(
+            f"per_category_decision.{cat}.total",
+            int(fr.get("total", -1)),
+            int(cr.get("total", -1)),
+        )
 
     # --- gate-structure accuracy ---
     _check(
@@ -784,7 +804,7 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
     ax1.legend(loc="lower right")
 
     # Annotate each field-accuracy bar
-    for bar, val in zip(bars_fa, field_values):
+    for bar, val in zip(bars_fa, field_values, strict=False):
         ax1.text(
             min(val + 0.005, 1.03),
             bar.get_y() + bar.get_height() / 2,
@@ -794,7 +814,7 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
             fontsize=8,
         )
     # Annotate each F1 bar
-    for bar, val in zip(bars_f1, f1_values):
+    for bar, val in zip(bars_f1, f1_values, strict=False):
         ax1.text(
             min(val + 0.005, 1.03),
             bar.get_y() + bar.get_height() / 2,
@@ -822,7 +842,7 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
     ax2.set_xlim(0, 1.05)
 
     # Annotate each bar with "k/n" fraction (D-12)
-    for bar, r in zip(bars_rec, rec_data_sorted):
+    for bar, r in zip(bars_rec, rec_data_sorted, strict=False):
         label = f'{r["correct"]}/{r["total"]}'
         ax2.text(
             min(r["accuracy"] + 0.005, 1.03),
@@ -871,8 +891,10 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
         0.5,
         0.01,
         (
-            "Extraction scored against committed extraction caches (replayed, not a live model run); "
-            "deterministic stages (reconcile/validate/decide) scored on labeled expected extraction. "
+            "Extraction scored against committed extraction caches "
+            "(replayed, not a live model run); "
+            "deterministic stages (reconcile/validate/decide) scored on labeled "
+            "expected extraction. "
             f"Model: {model_id}"
         ),
         ha="center",
@@ -953,17 +975,15 @@ def _write_db_results() -> None:
     import psycopg  # noqa: PLC0415
 
     try:
-        with psycopg.connect(db_url) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    cur.executemany(
-                        """
+        with psycopg.connect(db_url) as conn, conn.transaction(), conn.cursor() as cur:
+            cur.executemany(
+                """
                         INSERT INTO eval_results
                             (suite_run_id, fixture_id, metric_name, value, details)
                         VALUES (%s, %s, %s, %s, %s::jsonb)
                         """,
-                        rows,
-                    )
+                rows,
+            )
         print(
             f"DB write complete: {len(rows)} rows inserted "
             f"(suite_run_id={suite_run_id})"

@@ -172,7 +172,10 @@ def test_unconsumed_redelivery_reschedules(client, fake_repo, resume_spy):
         "cleaned) body, never a re-cleaned copy of the redelivered request "
         f"body (Pitfall #11a); got {scheduled_inbound.body_text!r}"
     )
-    assert scheduled_inbound.body_text != "a completely different redelivered body — must be ignored"
+    assert (
+        scheduled_inbound.body_text
+        != "a completely different redelivered body — must be ignored"
+    )
 
 
 # ---------------------------------------------------------------------------

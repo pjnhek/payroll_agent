@@ -52,6 +52,7 @@ import os
 import pathlib
 import uuid
 
+import pydantic
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -193,5 +194,5 @@ def test_live_marker_is_not_a_decision_field() -> None:
     # The honest deterministic Decision constructs fine.
     Decision.model_validate(base)
     # Smuggling a 'source' provenance key into the Decision must FAIL (extra="forbid").
-    with pytest.raises(Exception):
+    with pytest.raises(pydantic.ValidationError):
         Decision.model_validate({**base, "source": "live"})

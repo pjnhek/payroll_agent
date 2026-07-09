@@ -241,7 +241,8 @@ def test_run_stages_process_branch_call_order_and_status_last():
     import app.pipeline.orchestrator as orch_mod
 
     src_path = orch_mod.__file__
-    src = open(src_path).read()
+    with open(src_path) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(
@@ -425,7 +426,8 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
 
     import app.pipeline.orchestrator as orch_mod
 
-    src = open(orch_mod.__file__).read()
+    with open(orch_mod.__file__) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(
@@ -500,7 +502,9 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
     run_id = _seed_live_run(body="Maria Chen 40 regular 2 overtime")
     repo.set_status(run_id, RunStatus.AWAITING_REPLY)
 
-    snapshot = _live_snapshot_extracted("Maria Chen", run_id, hours_regular="40", hours_overtime="2")
+    snapshot = _live_snapshot_extracted(
+        "Maria Chen", run_id, hours_regular="40", hours_overtime="2"
+    )
     repo.set_pre_clarify_extracted(run_id, snapshot)
     prior_match = NameMatchResult(
         submitted_name="Maria Chen",
@@ -681,7 +685,8 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
 
     import app.pipeline.orchestrator as orch_mod
 
-    src = open(orch_mod.__file__).read()
+    with open(orch_mod.__file__) as f:
+        src = f.read()
     tree = ast.parse(src)
 
     func = next(

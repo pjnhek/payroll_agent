@@ -60,7 +60,7 @@ def check_one_to_one(
         # rule (b), not a two-names-to-one collision).
         if m.submitted_name not in by_employee[m.matched_employee_id]:
             by_employee[m.matched_employee_id].append(m.submitted_name)
-    for emp_id, names in by_employee.items():
+    for _emp_id, names in by_employee.items():
         if len(names) > 1:
             # NOTE: gate_reasons are CLIENT-FACING (compose_email/clarify copy them
             # into the clarification email), so this must NOT include the internal

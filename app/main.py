@@ -164,7 +164,8 @@ _SEED_CONTACTS: dict[str, str] = {
     "Summit Tech Solutions": "finance@summittech.example",
 }
 
-# Stable seed UUIDs; /demo/compose uses these directly — no find_business_by_sender call (HIGH-2 fix).
+# Stable seed UUIDs; /demo/compose uses these directly — no find_business_by_sender
+# call (HIGH-2 fix).
 # Source: app/db/seed.py _BUSINESSES list (fixed literals, D-11).
 _SEED_BUSINESS_IDS: dict[str, uuid.UUID] = {
     "Coastal Cleaning Co.": uuid.UUID("b0000001-0000-0000-0000-000000000001"),
@@ -271,7 +272,7 @@ def health_ready() -> JSONResponse:
         return JSONResponse({"status": "ready"})
     except Exception as exc:
         logger.error("readiness probe failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="database not ready")
+        raise HTTPException(status_code=503, detail="database not ready") from exc
 
 
 @app.get("/health/schema")
@@ -291,7 +292,7 @@ def health_schema() -> JSONResponse:
             diff = diff_against_live(conn)
     except Exception as exc:  # noqa: BLE001 — probe must not leak internals
         logger.error("schema parity probe failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="schema check unavailable")
+        raise HTTPException(status_code=503, detail="schema check unavailable") from exc
     if diff.is_in_sync:
         return JSONResponse({"status": "in_sync"})
     return JSONResponse(
@@ -402,89 +403,88 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     business_id: uuid.UUID | None = None
     run_id: uuid.UUID | None = None
 
-    with repo.get_connection() as conn:
-        with conn.transaction():
-            # Step 1: explicit dedup via ON CONFLICT DO NOTHING RETURNING id.
-            email_id, inserted = repo.insert_inbound_email(
-                message_id=email.message_id,
+    with repo.get_connection() as conn, conn.transaction():
+        # Step 1: explicit dedup via ON CONFLICT DO NOTHING RETURNING id.
+        email_id, inserted = repo.insert_inbound_email(
+            message_id=email.message_id,
+            in_reply_to=email.in_reply_to,
+            references_header=email.references_header,
+            subject=email.subject,
+            from_addr=email.from_addr,
+            to_addr=email.to_addr,
+            body_text=cleaned,
+            run_id=None,
+            conn=conn,
+        )
+
+        if not inserted:
+            # Duplicate delivery (ON CONFLICT DO NOTHING → not inserted): the
+            # loser attaches to the EXISTING run — report, never create
+            # (D-9-09). insert_inbound_email returns (None, False) on
+            # conflict, so message_id (already parsed above) is the only
+            # usable key to find the existing run.
+            outcome = "duplicate"
+            existing_run_id = repo.find_run_by_message_id(
+                email.message_id, conn=conn
+            )
+        elif email.in_reply_to or email.references_header:
+            # Reply-classification READS run INSIDE the transaction, BEFORE
+            # any code path that could reach create_run (Codex HIGH-1 fix).
+            reply_run_id = repo.find_awaiting_reply_for_header(
                 in_reply_to=email.in_reply_to,
                 references_header=email.references_header,
-                subject=email.subject,
-                from_addr=email.from_addr,
-                to_addr=email.to_addr,
-                body_text=cleaned,
-                run_id=None,
                 conn=conn,
             )
-
-            if not inserted:
-                # Duplicate delivery (ON CONFLICT DO NOTHING → not inserted): the
-                # loser attaches to the EXISTING run — report, never create
-                # (D-9-09). insert_inbound_email returns (None, False) on
-                # conflict, so message_id (already parsed above) is the only
-                # usable key to find the existing run.
-                outcome = "duplicate"
-                existing_run_id = repo.find_run_by_message_id(
-                    email.message_id, conn=conn
-                )
-            elif email.in_reply_to or email.references_header:
-                # Reply-classification READS run INSIDE the transaction, BEFORE
-                # any code path that could reach create_run (Codex HIGH-1 fix).
-                reply_run_id = repo.find_awaiting_reply_for_header(
+            if reply_run_id is not None:
+                outcome = "reply_candidate"
+                # WR-03 (phase-9 review): back-fill run_id on the reply row
+                # INSIDE this same transaction so real client replies appear
+                # in the run-detail thread view (load_thread_messages) like
+                # the simulate-reply demo path already does. Inbound rows
+                # keep purpose=NULL, so uq_email_run_purpose never conflicts,
+                # and every routing query on email_messages.run_id filters
+                # direction='outbound' — linking cannot affect reply routing.
+                repo.link_email_to_run(email_id, reply_run_id, conn=conn)
+            else:
+                late_run_id = repo.find_any_run_for_header(
                     in_reply_to=email.in_reply_to,
                     references_header=email.references_header,
                     conn=conn,
                 )
-                if reply_run_id is not None:
-                    outcome = "reply_candidate"
-                    # WR-03 (phase-9 review): back-fill run_id on the reply row
-                    # INSIDE this same transaction so real client replies appear
-                    # in the run-detail thread view (load_thread_messages) like
-                    # the simulate-reply demo path already does. Inbound rows
-                    # keep purpose=NULL, so uq_email_run_purpose never conflicts,
-                    # and every routing query on email_messages.run_id filters
-                    # direction='outbound' — linking cannot affect reply routing.
-                    repo.link_email_to_run(email_id, reply_run_id, conn=conn)
+                if late_run_id is not None:
+                    outcome = "late_reply"
+                    # WR-03: link late replies too — they are otherwise
+                    # invisible in any join-based audit of the run's thread.
+                    repo.link_email_to_run(email_id, late_run_id, conn=conn)
                 else:
-                    late_run_id = repo.find_any_run_for_header(
-                        in_reply_to=email.in_reply_to,
-                        references_header=email.references_header,
-                        conn=conn,
+                    # No header match at all — fall through to ordinary
+                    # first ingest exactly like a non-reply inbound.
+                    business_id = repo.find_business_by_sender(
+                        email.from_addr, conn=conn
                     )
-                    if late_run_id is not None:
-                        outcome = "late_reply"
-                        # WR-03: link late replies too — they are otherwise
-                        # invisible in any join-based audit of the run's thread.
-                        repo.link_email_to_run(email_id, late_run_id, conn=conn)
+                    if business_id is None:
+                        outcome = "unknown_sender"
                     else:
-                        # No header match at all — fall through to ordinary
-                        # first ingest exactly like a non-reply inbound.
-                        business_id = repo.find_business_by_sender(
-                            email.from_addr, conn=conn
+                        run_id = repo.create_run(
+                            business_id=business_id,
+                            source_email_id=email_id,
+                            conn=conn,
                         )
-                        if business_id is None:
-                            outcome = "unknown_sender"
-                        else:
-                            run_id = repo.create_run(
-                                business_id=business_id,
-                                source_email_id=email_id,
-                                conn=conn,
-                            )
-                            outcome = "new_run"
+                        outcome = "new_run"
+        else:
+            # Ordinary (non-reply) inbound: sender-route + create_run.
+            business_id = repo.find_business_by_sender(
+                email.from_addr, conn=conn
+            )
+            if business_id is None:
+                outcome = "unknown_sender"
             else:
-                # Ordinary (non-reply) inbound: sender-route + create_run.
-                business_id = repo.find_business_by_sender(
-                    email.from_addr, conn=conn
+                run_id = repo.create_run(
+                    business_id=business_id,
+                    source_email_id=email_id,
+                    conn=conn,
                 )
-                if business_id is None:
-                    outcome = "unknown_sender"
-                else:
-                    run_id = repo.create_run(
-                        business_id=business_id,
-                        source_email_id=email_id,
-                        conn=conn,
-                    )
-                    outcome = "new_run"
+                outcome = "new_run"
     # ── Transaction committed. Everything below is post-commit response shaping
     # + background task scheduling — never inside the `with` block above. ──────
 
@@ -508,7 +508,10 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
             and reply_row.get("run_id") is not None
         ):
             linked_run = repo.load_run(reply_row["run_id"])
-            if linked_run is not None and linked_run.get("status") == RunStatus.AWAITING_REPLY.value:
+            if (
+                linked_run is not None
+                and linked_run.get("status") == RunStatus.AWAITING_REPLY.value
+            ):
                 # GAP-5/CR-5: re-assert FIX-5 before dispatching this redelivery
                 # re-schedule — a reply that already failed sender revalidation
                 # on first delivery (left linked+unconsumed) must never be
@@ -832,7 +835,9 @@ def reject(run_id: uuid.UUID) -> RedirectResponse:
 
 
 @app.post("/runs/{run_id}/resolve")
-async def resolve(run_id: uuid.UUID, request: Request, background_tasks: BackgroundTasks) -> RedirectResponse:
+async def resolve(
+    run_id: uuid.UUID, request: Request, background_tasks: BackgroundTasks
+) -> RedirectResponse:
     """Operator resolve+resume for a needs_operator run (D-11-08, D-11-16, Security V4).
 
     Form shape (per unresolved name/token, dynamic field names keyed by the
@@ -869,8 +874,8 @@ async def resolve(run_id: uuid.UUID, request: Request, background_tasks: Backgro
     """
     try:
         run = repo.load_run(run_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1093,7 +1098,8 @@ def _build_alias_rationale_notes(run: dict, roster_fn) -> list[str]:
         roster_fn: callable(business_id) -> Roster, used to look up employee full names.
 
     Returns:
-        List of strings like "Resolved 'Maria' to Maria Chen (known nickname from a prior confirmed run)."
+        List of strings like "Resolved 'Maria' to Maria Chen (known nickname from a
+        prior confirmed run)."
     """
     try:
         decision = run.get("decision")
@@ -1403,8 +1409,8 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
     """
     try:
         run = repo.load_run(run_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     status = run.get("status", "")
@@ -1423,9 +1429,9 @@ def run_detail(request: Request, run_id: uuid.UUID):
     with decision banner and operator controls gated by status."""
     try:
         run = repo.load_run(run_id)
-    except Exception:
+    except Exception as exc:
         logger.debug("load_run unavailable for run %s", run_id)
-        raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     try:
@@ -1560,7 +1566,8 @@ def eval_view(request: Request):
 def eval_chart():
     """Serve the committed eval/chart.svg as image/svg+xml.
 
-    # D-21: serves committed eval/chart.svg baked into image; relative path requires WORKDIR=/app (Dockerfile).
+    # D-21: serves committed eval/chart.svg baked into image; relative path requires
+    # WORKDIR=/app (Dockerfile).
     """
     chart_path = Path("eval/chart.svg")
     if not chart_path.exists():
@@ -1651,8 +1658,8 @@ def simulate_reply(
     # Load the run; 404 if missing.
     try:
         run = repo.load_run(run_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 

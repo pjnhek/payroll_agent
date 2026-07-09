@@ -31,7 +31,7 @@ def main() -> None:
         return
 
     print(f"Most recent {len(rows)} confirmation email(s):\n")
-    for created_at, run_id, subject, to_addr, purpose, send_state, body in rows:
+    for _created_at, run_id, subject, to_addr, _purpose, send_state, body in rows:
         print(f"  run_id     : {run_id}")
         print(f"  to         : {to_addr}")
         print(f"  send_state : {send_state}")

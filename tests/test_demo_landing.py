@@ -50,7 +50,7 @@ def test_bind_demo_business_writes_binding_table_not_businesses(fake_conn):
     assert "DEMO_SENDER_BINDINGS" in all_sql, "Must INSERT into demo_sender_bindings"
 
     # Must NOT touch businesses table at all
-    for sql, params in fake_conn.executed:
+    for sql, _params in fake_conn.executed:
         assert "UPDATE BUSINESSES" not in sql.upper(), "Must not UPDATE businesses table"
         assert "CONTACT_EMAIL" not in sql.upper(), (
             "Must not reference contact_email on businesses"
@@ -390,10 +390,14 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
             pay_period_end=None,
         )
 
-    orchestrator._clarify(run_id, email, decision, roster, _minimal_extracted(run_id), llm=mock_llm)
+    orchestrator._clarify(
+        run_id, email, decision, roster, _minimal_extracted(run_id), llm=mock_llm
+    )
 
     # Key assertions for HIGH-2
-    assert len(send_outbound_calls) == 0, "gateway.send_outbound must NOT be called for record_only run"
+    assert len(send_outbound_calls) == 0, (
+        "gateway.send_outbound must NOT be called for record_only run"
+    )
     assert len(insert_calls) >= 1, "repo.insert_email_message must be called (record-only write)"
     assert len(alias_capture_calls) >= 1, (
         "repo.set_alias_candidates must be called BEFORE the record_only branch "
@@ -490,7 +494,9 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
 
     orchestrator._deliver(run_id, run)
 
-    assert len(send_outbound_calls) == 0, "gateway.send_outbound must NOT be called for record_only run"
+    assert len(send_outbound_calls) == 0, (
+        "gateway.send_outbound must NOT be called for record_only run"
+    )
     assert len(insert_calls) >= 1, "repo.insert_email_message must be called"
     assert any(
         kw.get("purpose") == "confirmation" and kw.get("send_state") == "sent"
@@ -562,7 +568,9 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         )
 
     mock_llm = MagicMock()
-    orchestrator._clarify(run_id, email, decision, roster, _minimal_extracted_live(run_id), llm=mock_llm)
+    orchestrator._clarify(
+        run_id, email, decision, roster, _minimal_extracted_live(run_id), llm=mock_llm
+    )
 
     assert len(send_outbound_calls) == 1, (
         "gateway.send_outbound MUST be called for a live (record_only=False) run"
@@ -582,13 +590,35 @@ def client(monkeypatch):
     import app.db.repo as repo_mod
 
     # Patch repo helpers that the landing/compose/bind routes call
-    monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [
-        {"id": str(uuid.UUID("b0000001-0000-0000-0000-000000000001")), "name": "Coastal Cleaning Co.", "contact_email": "payroll@coastalcleaning.example"},
-        {"id": str(uuid.UUID("b0000002-0000-0000-0000-000000000002")), "name": "Metro Deli Group", "contact_email": "hr@metrodeli.example"},
-        {"id": str(uuid.UUID("b0000003-0000-0000-0000-000000000003")), "name": "Summit Tech Solutions", "contact_email": "finance@summittech.example"},
-    ], raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "list_businesses",
+        lambda **kw: [
+            {
+                "id": str(uuid.UUID("b0000001-0000-0000-0000-000000000001")),
+                "name": "Coastal Cleaning Co.",
+                "contact_email": "payroll@coastalcleaning.example",
+            },
+            {
+                "id": str(uuid.UUID("b0000002-0000-0000-0000-000000000002")),
+                "name": "Metro Deli Group",
+                "contact_email": "hr@metrodeli.example",
+            },
+            {
+                "id": str(uuid.UUID("b0000003-0000-0000-0000-000000000003")),
+                "name": "Summit Tech Solutions",
+                "contact_email": "finance@summittech.example",
+            },
+        ],
+        raising=False,
+    )
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
 
     from app.main import app as fastapi_app
     return TestClient(fastapi_app, raise_server_exceptions=False)
@@ -621,8 +651,18 @@ def test_compose_rejects_unknown_business(monkeypatch):
     create_run_calls = []
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
-    monkeypatch.setattr(repo_mod, "create_run", lambda **kw: create_run_calls.append(kw) or uuid.uuid4(), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "create_run",
+        lambda **kw: create_run_calls.append(kw) or uuid.uuid4(),
+        raising=False,
+    )
 
     from fastapi.testclient import TestClient
 
@@ -646,8 +686,18 @@ def test_compose_body_length_cap_rejects_over_limit(monkeypatch):
     create_run_calls = []
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
-    monkeypatch.setattr(repo_mod, "create_run", lambda **kw: create_run_calls.append(kw) or uuid.uuid4(), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "create_run",
+        lambda **kw: create_run_calls.append(kw) or uuid.uuid4(),
+        raising=False,
+    )
 
     from fastapi.testclient import TestClient
 
@@ -677,8 +727,18 @@ def test_compose_subject_length_cap_rejects_over_limit(monkeypatch):
     create_run_calls = []
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
-    monkeypatch.setattr(repo_mod, "create_run", lambda **kw: create_run_calls.append(kw) or uuid.uuid4(), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "create_run",
+        lambda **kw: create_run_calls.append(kw) or uuid.uuid4(),
+        raising=False,
+    )
 
     from fastapi.testclient import TestClient
 
@@ -731,7 +791,12 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     )
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
     monkeypatch.setattr(repo_mod, "load_run", lambda *a, **kw: {
         "id": run_id, "business_id": uuid.UUID("b0000002-0000-0000-0000-000000000002"),
         "status": "received", "extracted_data": None, "decision": None, "reconciliation": None,
@@ -781,7 +846,9 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     run_id = uuid.uuid4()
     email_id = uuid.uuid4()
 
-    monkeypatch.setattr(repo_mod, "insert_inbound_email", lambda **kw: (email_id, True), raising=False)
+    monkeypatch.setattr(
+        repo_mod, "insert_inbound_email", lambda **kw: (email_id, True), raising=False
+    )
     monkeypatch.setattr(
         repo_mod,
         "create_run",
@@ -790,7 +857,12 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     )
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
     monkeypatch.setattr(repo_mod, "load_run", lambda *a, **kw: {
         "id": run_id, "business_id": uuid.UUID("b0000002-0000-0000-0000-000000000002"),
         "status": "received", "extracted_data": None, "decision": None, "reconciliation": None,
@@ -842,7 +914,12 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
     monkeypatch.setattr(repo_mod, "create_run", lambda **kw: run_id, raising=False)
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
     monkeypatch.setattr(repo_mod, "load_run", lambda *a, **kw: {
         "id": run_id, "business_id": uuid.UUID("b0000002-0000-0000-0000-000000000002"),
         "status": "received", "extracted_data": None, "decision": None, "reconciliation": None,
@@ -894,7 +971,12 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
     )
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: MagicMock(employees=[]),
+        raising=False,
+    )
 
     from fastapi.testclient import TestClient
 
@@ -1026,7 +1108,9 @@ def test_run_detail_alias_rationale_rendered(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_line_items", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
 
     from fastapi.testclient import TestClient
 
@@ -1099,7 +1183,9 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_line_items", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
-    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
 
     from fastapi.testclient import TestClient
 

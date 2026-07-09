@@ -211,13 +211,16 @@ def validate(
             if (str(current_emp_id), raw_drop.field) in _resolved_drops:
                 continue  # confirmed_dropped per D-15 — suppress re-flag
 
+            resumed_display = (
+                "absent" if raw_drop.resumed_value is None else str(raw_drop.resumed_value)
+            )
             issues.append(
                 ValidationIssue(
                     issue_type="field_regression",
                     field=f"{raw_drop.submitted_name}.{raw_drop.field}",
                     message=(
                         f"field regression: {raw_drop.field} was {raw_drop.original_value}, "
-                        f"now {'absent' if raw_drop.resumed_value is None else str(raw_drop.resumed_value)}"
+                        f"now {resumed_display}"
                     ),
                 )
             )
@@ -252,7 +255,8 @@ def validate(
         if ppy is None:
             continue  # unresolved employee: gate already blocks it, no flag here
         ot = emp.hours_overtime
-        ot_missing = not _is_paid(ot)  # D-05/D-09: absent or zero == "no paid OT" (shared predicate)
+        # D-05/D-09: absent or zero == "no paid OT" (shared predicate)
+        ot_missing = not _is_paid(ot)
         if ppy == 52 and emp.hours_regular is not None and emp.hours_regular > 40 and ot_missing:
             issues.append(
                 ValidationIssue(

@@ -188,10 +188,9 @@ def insert_inbound_email(
     `inserted` is False on a duplicate (ON CONFLICT (message_id) DO NOTHING),
     so the webhook can decide whether to create a second run.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            row = c.execute(
-                """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            """
                 INSERT INTO email_messages (
                     run_id, direction, message_id, in_reply_to,
                     references_header, subject, from_addr, to_addr, body_text
@@ -199,17 +198,17 @@ def insert_inbound_email(
                 ON CONFLICT (message_id) DO NOTHING
                 RETURNING id
                 """,
-                (
-                    str(run_id) if run_id else None,
-                    message_id,
-                    in_reply_to,
-                    references_header,
-                    subject,
-                    from_addr,
-                    to_addr,
-                    body_text,
-                ),
-            ).fetchone()
+            (
+                str(run_id) if run_id else None,
+                message_id,
+                in_reply_to,
+                references_header,
+                subject,
+                from_addr,
+                to_addr,
+                body_text,
+            ),
+        ).fetchone()
     if row is None:
         return None, False
     return uuid.UUID(str(row[0])), True
@@ -241,14 +240,13 @@ def link_email_to_run(email_id: uuid.UUID, run_id: uuid.UUID, conn=None) -> None
     to whichever epoch was current at link time. Never re-read or mutated
     afterward (a row's epoch is a permanent, point-in-time fact).
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE email_messages SET run_id = %s,"
-                " epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)"
-                " WHERE id = %s",
-                (str(run_id), str(run_id), str(email_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE email_messages SET run_id = %s,"
+            " epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)"
+            " WHERE id = %s",
+            (str(run_id), str(run_id), str(email_id)),
+        )
 
 
 def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
@@ -339,24 +337,23 @@ def create_run(
     Existing callers supply no record_only arg and get the False default — no behavior
     change for live runs.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            row = c.execute(
-                """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            """
                 INSERT INTO payroll_runs (
                     business_id, source_email_id, pay_period_start, pay_period_end,
                     record_only
                 ) VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (
-                    str(business_id),
-                    str(source_email_id) if source_email_id else None,
-                    pay_period_start,
-                    pay_period_end,
-                    record_only,
-                ),
-            ).fetchone()
+            (
+                str(business_id),
+                str(source_email_id) if source_email_id else None,
+                pay_period_start,
+                pay_period_end,
+                record_only,
+            ),
+        ).fetchone()
     return uuid.UUID(str(row[0]))
 
 
@@ -366,10 +363,9 @@ def load_run(run_id: uuid.UUID, conn=None) -> dict | None:
     # statement as a local keeps the parameterized-SQL discipline test green
     # (no inline f-string inside execute(...)). Values stay %s-parameterized.
     sql = "SELECT " + RUN_COLS + " FROM payroll_runs WHERE id = %s"
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id),))
-            return cur.fetchone()
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(run_id),))
+        return cur.fetchone()
 
 
 def load_source_email(run_id: uuid.UUID, conn=None) -> str | None:
@@ -418,10 +414,9 @@ def load_inbound_email(run_id: uuid.UUID, conn=None):
         " JOIN payroll_runs pr ON pr.source_email_id = em.id"
         " WHERE pr.id = %s"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id),))
-            row = cur.fetchone()
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(run_id),))
+        row = cur.fetchone()
     return InboundEmail(**row) if row else None
 
 
@@ -439,12 +434,11 @@ def set_status(run_id: uuid.UUID, status: RunStatus, conn=None) -> None:
     documented caller that also writes a data column; every other uncontended
     status transition in the system routes through here.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET status = %s, updated_at = now() WHERE id = %s",
-                (RunStatus(status).value, str(run_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET status = %s, updated_at = now() WHERE id = %s",
+            (RunStatus(status).value, str(run_id)),
+        )
 
 
 def claim_status(
@@ -465,13 +459,12 @@ def claim_status(
     The SQL uses WHERE id = %s AND status = %s RETURNING id so only one concurrent
     caller gets a row back; the other gets None and drops cleanly (T-05-01).
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            row = c.execute(
-                "UPDATE payroll_runs SET status = %s, updated_at = now() "
-                "WHERE id = %s AND status = %s RETURNING id",
-                (RunStatus(new).value, str(run_id), RunStatus(expected).value),
-            ).fetchone()
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            "UPDATE payroll_runs SET status = %s, updated_at = now() "
+            "WHERE id = %s AND status = %s RETURNING id",
+            (RunStatus(new).value, str(run_id), RunStatus(expected).value),
+        ).fetchone()
     return row is not None
 
 
@@ -509,22 +502,21 @@ def sweep_stranded_runs(threshold_seconds: int, conn=None) -> list[uuid.UUID]:
 
     Returns the list of run ids that were swept (possibly empty).
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            rows = c.execute(
-                "UPDATE payroll_runs SET status = %s, error_reason = %s,"
-                " error_detail = %s || status, updated_at = now()"
-                " WHERE status = ANY(%s)"
-                " AND updated_at < now() - (%s || ' seconds')::interval"
-                " RETURNING id",
-                (
-                    RunStatus.ERROR.value,
-                    "StrandedRunSwept",
-                    "recovery: stranded in-flight (background task died) — swept from ",
-                    _STRANDED_SCOPE_STATUSES,
-                    str(threshold_seconds),
-                ),
-            ).fetchall()
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        rows = c.execute(
+            "UPDATE payroll_runs SET status = %s, error_reason = %s,"
+            " error_detail = %s || status, updated_at = now()"
+            " WHERE status = ANY(%s)"
+            " AND updated_at < now() - (%s || ' seconds')::interval"
+            " RETURNING id",
+            (
+                RunStatus.ERROR.value,
+                "StrandedRunSwept",
+                "recovery: stranded in-flight (background task died) — swept from ",
+                _STRANDED_SCOPE_STATUSES,
+                str(threshold_seconds),
+            ),
+        ).fetchall()
     return [uuid.UUID(str(r[0])) for r in rows]
 
 
@@ -711,28 +703,27 @@ def record_run_error(
         if (detail_exc is not None and stage is not None)
         else None
     )
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            # WR-03 CAS: the terminal-status predicate lives INSIDE the UPDATE's
-            # WHERE clause (claim_status idiom) so no concurrent transaction can
-            # commit a terminal status between a read and this write. The terminal
-            # set is parameterized from _TERMINAL_STATUSES (single source of
-            # truth) — `status <> ALL(%s)` is the NOT-IN form for an array param.
-            row = c.execute(
-                "UPDATE payroll_runs SET error_reason = %s, error_detail = %s,"
-                " updated_at = now() WHERE id = %s AND status <> ALL(%s)"
-                " RETURNING id",
-                (reason, detail, str(run_id), sorted(_TERMINAL_STATUSES)),
-            ).fetchone()
-            if row is None:
-                logger.info(
-                    "record_run_error skipped: run %s is terminal or missing — not "
-                    "clobbering to ERROR (WR-04 guard, WR-03 CAS). reason was: %s",
-                    run_id,
-                    reason,
-                )
-                return
-            set_status(run_id, RunStatus.ERROR, conn=c)
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        # WR-03 CAS: the terminal-status predicate lives INSIDE the UPDATE's
+        # WHERE clause (claim_status idiom) so no concurrent transaction can
+        # commit a terminal status between a read and this write. The terminal
+        # set is parameterized from _TERMINAL_STATUSES (single source of
+        # truth) — `status <> ALL(%s)` is the NOT-IN form for an array param.
+        row = c.execute(
+            "UPDATE payroll_runs SET error_reason = %s, error_detail = %s,"
+            " updated_at = now() WHERE id = %s AND status <> ALL(%s)"
+            " RETURNING id",
+            (reason, detail, str(run_id), sorted(_TERMINAL_STATUSES)),
+        ).fetchone()
+        if row is None:
+            logger.info(
+                "record_run_error skipped: run %s is terminal or missing — not "
+                "clobbering to ERROR (WR-04 guard, WR-03 CAS). reason was: %s",
+                run_id,
+                reason,
+            )
+            return
+        set_status(run_id, RunStatus.ERROR, conn=c)
 
 
 def persist_extracted(run_id: uuid.UUID, extracted: Extracted, conn=None) -> None:
@@ -740,19 +731,18 @@ def persist_extracted(run_id: uuid.UUID, extracted: Extracted, conn=None) -> Non
     orchestrator advances state). The pay_period_start/end run columns were left null
     before (review fix): they exist on payroll_runs for the dashboard/queries to read
     off the run row, so populate them from the extraction rather than only the JSONB."""
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET extracted_data = %s, "
-                "pay_period_start = %s, pay_period_end = %s, updated_at = now() "
-                "WHERE id = %s",
-                (
-                    json.dumps(extracted.model_dump(mode="json")),
-                    extracted.pay_period_start,
-                    extracted.pay_period_end,
-                    str(run_id),
-                ),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET extracted_data = %s, "
+            "pay_period_start = %s, pay_period_end = %s, updated_at = now() "
+            "WHERE id = %s",
+            (
+                json.dumps(extracted.model_dump(mode="json")),
+                extracted.pay_period_start,
+                extracted.pay_period_end,
+                str(run_id),
+            ),
+        )
 
 
 def persist_decision(run_id: uuid.UUID, decision: Decision, conn=None) -> None:
@@ -762,12 +752,11 @@ def persist_decision(run_id: uuid.UUID, decision: Decision, conn=None) -> None:
     transitions. The orchestrator calls set_status SEPARATELY to advance state
     after persisting the decision.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET decision = %s, updated_at = now() WHERE id = %s",
-                (json.dumps(decision.model_dump(mode="json")), str(run_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET decision = %s, updated_at = now() WHERE id = %s",
+            (json.dumps(decision.model_dump(mode="json")), str(run_id)),
+        )
 
 
 def persist_reconciliation(
@@ -780,12 +769,11 @@ def persist_reconciliation(
     separate name_matches relational write path (dropped in Phase 2.1, D-21-06).
     """
     payload = [m.model_dump(mode="json") for m in matches]
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET reconciliation = %s, updated_at = now() WHERE id = %s",
-                (json.dumps(payload), str(run_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET reconciliation = %s, updated_at = now() WHERE id = %s",
+            (json.dumps(payload), str(run_id)),
+        )
 
 
 def replace_line_items(
@@ -796,14 +784,13 @@ def replace_line_items(
     The idempotency invariant: a re-trigger / resume re-computes wholesale rather
     than appending duplicates (RESEARCH Pattern 6 invariant 2).
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "DELETE FROM paystub_line_items WHERE run_id = %s", (str(run_id),)
+        )
+        for it in items:
             c.execute(
-                "DELETE FROM paystub_line_items WHERE run_id = %s", (str(run_id),)
-            )
-            for it in items:
-                c.execute(
-                    """
+                """
                     INSERT INTO paystub_line_items (
                         id, run_id, employee_id, submitted_name,
                         hours_regular, hours_overtime, hours_vacation, hours_sick,
@@ -816,25 +803,25 @@ def replace_line_items(
                         %s, %s, %s, %s
                     )
                     """,
-                    (
-                        str(it.id),
-                        str(it.run_id),
-                        str(it.employee_id) if it.employee_id else None,
-                        it.submitted_name,
-                        it.hours_regular,
-                        it.hours_overtime,
-                        it.hours_vacation,
-                        it.hours_sick,
-                        it.hours_holiday,
-                        it.gross_pay,
-                        it.pretax_401k,
-                        it.fica_ss,
-                        it.fica_medicare,
-                        it.federal_withholding,
-                        it.state_withholding,
-                        it.net_pay,
-                    ),
-                )
+                (
+                    str(it.id),
+                    str(it.run_id),
+                    str(it.employee_id) if it.employee_id else None,
+                    it.submitted_name,
+                    it.hours_regular,
+                    it.hours_overtime,
+                    it.hours_vacation,
+                    it.hours_sick,
+                    it.hours_holiday,
+                    it.gross_pay,
+                    it.pretax_401k,
+                    it.fica_ss,
+                    it.fica_medicare,
+                    it.federal_withholding,
+                    it.state_withholding,
+                    it.net_pay,
+                ),
+            )
 
 
 def set_alias_candidates(
@@ -866,14 +853,13 @@ def set_alias_candidates(
     backward-compatible under merge semantics — merging a full dict into
     itself is a no-op for unrelated keys and a correct update for its own.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET alias_candidates = "
-                "COALESCE(alias_candidates, '{}'::jsonb) || %s::jsonb, "
-                "updated_at = now() WHERE id = %s",
-                (json.dumps(candidates), str(run_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET alias_candidates = "
+            "COALESCE(alias_candidates, '{}'::jsonb) || %s::jsonb, "
+            "updated_at = now() WHERE id = %s",
+            (json.dumps(candidates), str(run_id)),
+        )
 
 
 def set_pre_clarify_extracted(
@@ -890,13 +876,12 @@ def set_pre_clarify_extracted(
 
     Returns True if written (first write), False if already set.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            row = c.execute(
-                "UPDATE payroll_runs SET pre_clarify_extracted = %s, updated_at = now()"
-                " WHERE id = %s AND pre_clarify_extracted IS NULL RETURNING id",
-                (json.dumps(extracted.model_dump(mode="json")), str(run_id)),
-            ).fetchone()
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            "UPDATE payroll_runs SET pre_clarify_extracted = %s, updated_at = now()"
+            " WHERE id = %s AND pre_clarify_extracted IS NULL RETURNING id",
+            (json.dumps(extracted.model_dump(mode="json")), str(run_id)),
+        ).fetchone()
     return row is not None
 
 
@@ -941,12 +926,11 @@ def set_clarified_fields(
     """
     # D-7.5-03b: validate through ClarifiedFields before serializing.
     ClarifiedFields(outcomes=clarified)
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET clarified_fields = %s, updated_at = now() WHERE id = %s",
-                (json.dumps(clarified), str(run_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET clarified_fields = %s, updated_at = now() WHERE id = %s",
+            (json.dumps(clarified), str(run_id)),
+        )
 
 
 def load_clarified_fields(
@@ -993,12 +977,11 @@ def set_clarification_round(run_id: uuid.UUID, value: int, conn=None) -> None:
     plan's `_clarify` finalize path can write this in the SAME transaction as
     set_status(AWAITING_REPLY) (D-9-02: status-advance-last).
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET clarification_round = %s, updated_at = now() WHERE id = %s",
-                (value, str(run_id)),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET clarification_round = %s, updated_at = now() WHERE id = %s",
+            (value, str(run_id)),
+        )
 
 
 def clear_reply_context(run_id: uuid.UUID, conn=None) -> None:
@@ -1026,15 +1009,14 @@ def clear_reply_context(run_id: uuid.UUID, conn=None) -> None:
     that the retrigger crosses but no stale row can — the historical rows
     remain fully queryable, just invisible to the CURRENT epoch's reads.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET clarified_fields = NULL, pre_clarify_extracted = NULL,"
-                " clarification_round = 0, alias_candidates = NULL,"
-                " reply_epoch = reply_epoch + 1, updated_at = now()"
-                " WHERE id = %s",
-                (str(run_id),),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET clarified_fields = NULL, pre_clarify_extracted = NULL,"
+            " clarification_round = 0, alias_candidates = NULL,"
+            " reply_epoch = reply_epoch + 1, updated_at = now()"
+            " WHERE id = %s",
+            (str(run_id),),
+        )
 
 
 def update_known_alias(
@@ -1056,10 +1038,9 @@ def update_known_alias(
     operators (unnest / ANY) are used, NOT JSONB ops (to_jsonb / jsonb_agg /
     jsonb_array_elements_text / @>). CR-01 fix.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            row = c.execute(
-                """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            """
                 UPDATE employees
                 SET known_aliases = array(
                     SELECT DISTINCT unnest(known_aliases || ARRAY[%s::text])
@@ -1068,8 +1049,8 @@ def update_known_alias(
                   AND NOT (%s = ANY(known_aliases))
                 RETURNING id
                 """,
-                (new_alias, str(employee_id), new_alias),
-            ).fetchone()
+            (new_alias, str(employee_id), new_alias),
+        ).fetchone()
     return row is not None
 
 
@@ -1133,16 +1114,15 @@ def insert_email_message(
     already a parameter every existing call site (gateway.send_outbound,
     _clarify's record_only branch) passes.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            if purpose is not None:
-                # Outbound path with a purpose: upsert on (run_id, purpose, round, epoch)
-                # so a retry WITHIN a round AND epoch over a reserved/failed row advances
-                # to the new send_state rather than crashing with a unique constraint
-                # violation — while a NEW epoch's same-round send is a genuinely
-                # different conflict target and always inserts a new row (GAP-2 fix).
-                row = c.execute(
-                    """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        if purpose is not None:
+            # Outbound path with a purpose: upsert on (run_id, purpose, round, epoch)
+            # so a retry WITHIN a round AND epoch over a reserved/failed row advances
+            # to the new send_state rather than crashing with a unique constraint
+            # violation — while a NEW epoch's same-round send is a genuinely
+            # different conflict target and always inserts a new row (GAP-2 fix).
+            row = c.execute(
+                """
                     INSERT INTO email_messages (
                         run_id, direction, message_id, in_reply_to,
                         references_header, subject, from_addr, to_addr, body_text,
@@ -1157,27 +1137,27 @@ def insert_email_message(
                             created_at = now()
                     RETURNING id
                     """,
-                    (
-                        str(run_id) if run_id else None,
-                        direction,
-                        message_id,
-                        in_reply_to,
-                        references_header,
-                        subject,
-                        from_addr,
-                        to_addr,
-                        body_text,
-                        purpose,
-                        send_state,
-                        round,
-                        str(run_id) if run_id else None,
-                    ),
-                ).fetchone()
-            else:
-                # Inbound path (purpose=NULL): plain insert with no upsert on purpose
-                # (NULLs are DISTINCT in Postgres UNIQUE constraints).
-                row = c.execute(
-                    """
+                (
+                    str(run_id) if run_id else None,
+                    direction,
+                    message_id,
+                    in_reply_to,
+                    references_header,
+                    subject,
+                    from_addr,
+                    to_addr,
+                    body_text,
+                    purpose,
+                    send_state,
+                    round,
+                    str(run_id) if run_id else None,
+                ),
+            ).fetchone()
+        else:
+            # Inbound path (purpose=NULL): plain insert with no upsert on purpose
+            # (NULLs are DISTINCT in Postgres UNIQUE constraints).
+            row = c.execute(
+                """
                     INSERT INTO email_messages (
                         run_id, direction, message_id, in_reply_to,
                         references_header, subject, from_addr, to_addr, body_text,
@@ -1185,21 +1165,21 @@ def insert_email_message(
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
-                    (
-                        str(run_id) if run_id else None,
-                        direction,
-                        message_id,
-                        in_reply_to,
-                        references_header,
-                        subject,
-                        from_addr,
-                        to_addr,
-                        body_text,
-                        purpose,
-                        send_state,
-                        round,
-                    ),
-                ).fetchone()
+                (
+                    str(run_id) if run_id else None,
+                    direction,
+                    message_id,
+                    in_reply_to,
+                    references_header,
+                    subject,
+                    from_addr,
+                    to_addr,
+                    body_text,
+                    purpose,
+                    send_state,
+                    round,
+                ),
+            ).fetchone()
     # In real Postgres RETURNING always yields a row; the fallback only matters
     # for the offline FakeConnection path where the caller discards the id.
     return uuid.UUID(str(row[0])) if row else uuid.uuid4()
@@ -1218,7 +1198,8 @@ def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str |
     """
     if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
         raise ValueError(
-            f"purpose must be 'clarification', 'confirmation', or 'clarification_field_regression', got {purpose!r}"
+            "purpose must be 'clarification', 'confirmation', or "
+            f"'clarification_field_regression', got {purpose!r}"
         )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -1258,7 +1239,8 @@ def get_outbound_for_round(
     """
     if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
         raise ValueError(
-            f"purpose must be 'clarification', 'confirmation', or 'clarification_field_regression', got {purpose!r}"
+            "purpose must be 'clarification', 'confirmation', or "
+            f"'clarification_field_regression', got {purpose!r}"
         )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -1285,13 +1267,12 @@ def mark_reply_consumed(message_id: str, round: int, conn=None) -> None:
     silent no-op rather than overwriting an already-consumed row. Restricted to
     direction='inbound' so an outbound row can never be marked consumed.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE email_messages SET consumed_round = %s"
-                " WHERE message_id = %s AND direction = 'inbound' AND consumed_round IS NULL",
-                (round, message_id),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE email_messages SET consumed_round = %s"
+            " WHERE message_id = %s AND direction = 'inbound' AND consumed_round IS NULL",
+            (round, message_id),
+        )
 
 
 def load_consumed_replies(run_id: uuid.UUID, conn=None) -> list[dict]:
@@ -1316,10 +1297,9 @@ def load_consumed_replies(run_id: uuid.UUID, conn=None) -> list[dict]:
         " AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)"
         " ORDER BY consumed_round ASC"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id), str(run_id)))
-            return cur.fetchall() or []
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(run_id), str(run_id)))
+        return cur.fetchall() or []
 
 
 def get_inbound_by_message_id(message_id: str, conn=None) -> dict | None:
@@ -1335,15 +1315,14 @@ def get_inbound_by_message_id(message_id: str, conn=None) -> dict | None:
     `_row_to_inbound` helper can build a valid InboundEmail (extra="forbid")
     directly from this row with no second lookup.
     """
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(
-                "SELECT id, run_id, message_id, in_reply_to, references_header,"
-                " subject, body_text, from_addr, to_addr, consumed_round, created_at"
-                " FROM email_messages WHERE message_id = %s AND direction = 'inbound'",
-                (message_id,),
-            )
-            return cur.fetchone()
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            "SELECT id, run_id, message_id, in_reply_to, references_header,"
+            " subject, body_text, from_addr, to_addr, consumed_round, created_at"
+            " FROM email_messages WHERE message_id = %s AND direction = 'inbound'",
+            (message_id,),
+        )
+        return cur.fetchone()
 
 
 # Round-cap escalation scope (D-11-05): EXACTLY this stale, unconsumed,
@@ -1390,10 +1369,9 @@ def find_stranded_unconsumed_replies(threshold_seconds: int, conn=None) -> list[
         "   AND pr.status = %s"
         "   AND em.created_at < now() - (%s || ' seconds')::interval"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (_STRANDED_REPLY_SCOPE_STATUS, str(threshold_seconds)))
-            return cur.fetchall() or []
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (_STRANDED_REPLY_SCOPE_STATUS, str(threshold_seconds)))
+        return cur.fetchall() or []
 
 
 def update_email_message_sent(message_id: str, conn=None) -> None:
@@ -1419,12 +1397,11 @@ def update_email_message_state(message_id: str, state: str, conn=None) -> None:
     is the SYNTHETIC message_id minted by send_outbound (BLOCKER-3). Two %s placeholders:
     the new state and the synthetic message_id.
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE email_messages SET send_state = %s WHERE message_id = %s",
-                (state, message_id),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE email_messages SET send_state = %s WHERE message_id = %s",
+            (state, message_id),
+        )
 
 
 def get_outbound_references_chain(run_id: uuid.UUID, conn=None) -> str | None:
@@ -1465,10 +1442,9 @@ def load_outbound_emails(run_id: uuid.UUID, conn=None) -> list[dict]:
         " WHERE run_id = %s AND direction = 'outbound'"
         " ORDER BY created_at"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id),))
-            return cur.fetchall() or []
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(run_id),))
+        return cur.fetchall() or []
 
 
 # ---------------------------------------------------------------------------
@@ -1482,10 +1458,9 @@ def list_businesses(conn=None) -> list[dict]:
     Explicit column list (no SELECT *) per repo discipline. Returns [] on empty.
     """
     sql = "SELECT id, name, contact_email FROM businesses ORDER BY name"
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql)
-            return cur.fetchall() or []
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql)
+        return cur.fetchall() or []
 
 
 def bind_demo_business(
@@ -1511,18 +1486,17 @@ def bind_demo_business(
     business_id = seed_business_ids.get(business_name)
     if business_id is None:
         return False  # unknown business name — allowlist enforced at route layer too
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            """
                 INSERT INTO demo_sender_bindings (operator_email, business_id, bound_at)
                 VALUES (%s, %s, now())
                 ON CONFLICT (operator_email) DO UPDATE
                     SET business_id = EXCLUDED.business_id,
                         bound_at    = now()
                 """,
-                (operator_email, str(business_id)),
-            )
+            (operator_email, str(business_id)),
+        )
     return True
 
 
@@ -1546,12 +1520,11 @@ def set_record_only(run_id: uuid.UUID, conn=None) -> None:
     Ad-hoc repair helper. In normal operation, create_run(record_only=True) is used
     directly (LOW-6 — no separate UPDATE needed at compose time).
     """
-    with _conn_ctx(conn) as (c, owns):
-        with c.transaction() if owns else _nulltx():
-            c.execute(
-                "UPDATE payroll_runs SET record_only = TRUE WHERE id = %s",
-                (str(run_id),),
-            )
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET record_only = TRUE WHERE id = %s",
+            (str(run_id),),
+        )
 
 
 def get_record_only_flag(run_id: uuid.UUID, conn=None) -> bool:
@@ -1588,10 +1561,9 @@ def load_thread_messages(run_id: uuid.UUID, conn=None) -> list[dict]:
         "    OR id = (SELECT source_email_id FROM payroll_runs WHERE id = %s)"
         " ORDER BY created_at ASC"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id), str(run_id)))
-            return cur.fetchall() or []
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(run_id), str(run_id)))
+        return cur.fetchall() or []
 
 
 def _pad_references(references_header: str | None) -> str:
@@ -1697,10 +1669,9 @@ def load_line_items(run_id: uuid.UUID, conn=None) -> list[PaystubLineItem]:
         " state_withholding, net_pay, created_at"
         " FROM paystub_line_items WHERE run_id = %s ORDER BY employee_id"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(run_id),))
-            rows = cur.fetchall()
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(run_id),))
+        rows = cur.fetchall()
     return [PaystubLineItem(**row) for row in rows]
 
 
@@ -1733,10 +1704,9 @@ def load_all_runs(conn=None) -> list[dict]:
         " JOIN businesses b ON pr.business_id = b.id"
         " ORDER BY pr.created_at DESC"
     )
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql)
-            return cur.fetchall() or []
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql)
+        return cur.fetchall() or []
 
 
 def load_roster_for_business(business_id: uuid.UUID, conn=None) -> Roster:
@@ -1744,10 +1714,9 @@ def load_roster_for_business(business_id: uuid.UUID, conn=None) -> Roster:
     # EMPLOYEE_COLS is a trusted module constant; build the statement as a local
     # (no inline f-string in execute) to keep the parameterized-SQL discipline.
     sql = "SELECT " + EMPLOYEE_COLS + " FROM employees WHERE business_id = %s"
-    with _conn_ctx(conn) as (c, _owns):
-        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(sql, (str(business_id),))
-            rows = cur.fetchall()
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (str(business_id),))
+        rows = cur.fetchall()
     return Roster(
         business_id=business_id,
         employees=[Employee(**row) for row in rows],

@@ -64,7 +64,7 @@ def test_cr01_update_known_alias_sql_uses_text_array_ops(fake_conn):
 
     # FakeConnection returns None for fetchone → no RETURNING row → returns False.
     # We only care about the SQL shape, not the return value.
-    result = update_known_alias(emp_id, new_alias, conn=fake_conn)
+    _result = update_known_alias(emp_id, new_alias, conn=fake_conn)
 
     executed_sql = fake_conn.all_sql().upper()
 
@@ -448,7 +448,9 @@ def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
     }
     run["pre_clarify_extracted"] = {"employees": [], "pay_period_start": "2026-06-15"}
     run["clarification_round"] = 2
-    run["alias_candidates"] = {"Bobby": {"suggested": "e0000001-0000-0000-0000-000000000001", "bound": None}}
+    run["alias_candidates"] = {
+        "Bobby": {"suggested": "e0000001-0000-0000-0000-000000000001", "bound": None}
+    }
     return run_id
 
 

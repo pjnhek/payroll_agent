@@ -28,7 +28,7 @@ templates a fallback body and a draft failure never strands the run.
 from __future__ import annotations
 
 import copy
-from typing import Literal, TypeVar
+from typing import Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
@@ -38,8 +38,6 @@ from app.config import get_settings
 # The two model tiers (D-21-05): extraction + draft. The decision is pure code and
 # calls NO model, so the mid/decision tier was removed in Phase 2.1.
 Tier = Literal["extraction", "draft"]
-
-T = TypeVar("T", bound=BaseModel)
 
 # High enough that a structured JSON object can't be cut off mid-stream
 # (RESEARCH Pattern 2 non-negotiable; DeepSeek truncation guard).
@@ -117,7 +115,7 @@ def _is_deepseek(model: str) -> bool:
     return "deepseek" in model.lower()
 
 
-def call_structured(
+def call_structured[T: BaseModel](
     tier: Tier,
     messages: list[dict],
     response_model: type[T],
@@ -173,7 +171,7 @@ def call_structured(
                 if isinstance(exc, ValidationError):
                     raise
                 if last_error is not None:
-                    raise last_error
+                    raise last_error from exc
                 raise ValidationError.from_exception_data(
                     response_model.__name__, []
                 ) from exc

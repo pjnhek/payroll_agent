@@ -401,7 +401,9 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
         created_at=datetime.now(tz=UTC),
     )
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [item])
-    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: {"id": run_id, "business_id": uuid.uuid4()})
+    monkeypatch.setattr(
+        _repo, "load_run", lambda rid, conn=None: {"id": run_id, "business_id": uuid.uuid4()}
+    )
     # Empty roster → emp is None → route falls back to item.submitted_name (the malicious value)
     monkeypatch.setattr(
         _repo,
@@ -417,7 +419,9 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
     # single well-formed quoted-string (no embedded `"` breaking out). Harmless leftover
     # letters/hyphens inside the quotes are fine — only the dangerous chars are neutralized.
     assert "\r" not in cd and "\n" not in cd, "CRLF must not reach the Content-Disposition header"
-    assert cd.count('"') == 2, f"filename must remain a single well-formed quoted-string; got {cd!r}"
+    assert cd.count('"') == 2, (
+        f"filename must remain a single well-formed quoted-string; got {cd!r}"
+    )
     # REVIEW-3: the whole header must be latin-1 encodable (Starlette encodes it that way);
     # this is the property the re.ASCII flag guarantees. A non-encodable value 500s before
     # we ever get here, but assert it explicitly so the intent is clear.
@@ -483,12 +487,15 @@ def test_run_detail_poll_reloads_on_status_change_not_just_settle(monkeypatch):
     monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
 
     text = client.get(f"/runs/{run_id}").text
-    assert "/status" in text, "awaiting_reply must still render the poll script (it can advance on reply)"
+    assert "/status" in text, (
+        "awaiting_reply must still render the poll script (it can advance on reply)"
+    )
     assert 'INITIAL_STATUS' in text and '"awaiting_reply"' in text, (
         "poll must seed INITIAL_STATUS from the rendered status"
     )
     assert "data.status !== INITIAL_STATUS" in text and "location.reload()" in text, (
-        "poll must reload on ANY status change from the rendered status, not only on leaving in-flight"
+        "poll must reload on ANY status change from the rendered status, "
+        "not only on leaving in-flight"
     )
 
 
@@ -841,10 +848,14 @@ def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
     monkeypatch.setattr(_repo, "create_run", _fake_create_run)
 
     import resend as _resend
-    monkeypatch.setattr(_resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True)
+    monkeypatch.setattr(
+        _resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True
+    )
 
     tc = TestClient(app, raise_server_exceptions=False)
-    response = tc.post("/demo/send-test", data={"fixture_key": "coastal_exact"}, follow_redirects=False)
+    response = tc.post(
+        "/demo/send-test", data={"fixture_key": "coastal_exact"}, follow_redirects=False
+    )
 
     get_settings.cache_clear()
 
@@ -899,7 +910,9 @@ def test_demo_send_test_metro_unknown_shorthand_routes_to_metro(monkeypatch):
     monkeypatch.setattr(_repo, "create_run", _fake_create_run)
 
     import resend as _resend
-    monkeypatch.setattr(_resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True)
+    monkeypatch.setattr(
+        _resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True
+    )
 
     tc = TestClient(app, raise_server_exceptions=False)
     response = tc.post(

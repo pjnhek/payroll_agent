@@ -303,8 +303,10 @@ def _run(run_id: uuid.UUID, *, llm) -> None:
         roster = repo.load_roster_for_business(run["business_id"])
 
         repo.set_status(run_id, RunStatus.EXTRACTING)
-        _ = _run_stages(run_id, email, roster, llm=llm)  # discard return — first run, no field-regression
-    except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (moved here from run_pipeline so roster, loaded above, is visible to the error path — HIGH #1 fix)
+        # discard return — first run, no field-regression
+        _ = _run_stages(run_id, email, roster, llm=llm)
+    except Exception as exc:  # noqa: BLE001 — the D-A1-03 error-wrap boundary (moved here
+        # from run_pipeline so roster, loaded above, is visible to the error path — HIGH #1 fix)
         # PII-safe summary: the exception TYPE only — str(exc) can echo prompt text,
         # submitted names, or model output, and this `reason` is BOTH logged AND
         # persisted to payroll_runs.error_reason (review fix). run_id is the
@@ -768,7 +770,8 @@ def resume_pipeline(
             # - extracted=raw_extracted: combined-body extraction (lossless, retains originals)
             # - suppress_detection=suppress_detection: ALL answered fields → N8 only
             # - resolved_drops=backfill_skip: confirmed_dropped+client_supplied → backfill skip
-            # - prior=snapshot, prior_matches=prior_matches_for_backfill: three-phase ordering (D-7.5-10)
+            # - prior=snapshot, prior_matches=prior_matches_for_backfill: three-phase
+            #   ordering (D-7.5-10)
             #
             # R2-2 SNAPSHOT-NAME FIX: prior_matches (loaded from post-Round-1 reconciliation)
             # reflects the REPLY names ("Maria Chen"), not the SNAPSHOT names ("M. Chen").
@@ -806,9 +809,8 @@ def resume_pipeline(
             # already-established invariant used by _defer_field_regression_clarification
             # (Step 3 there: write commits and closes strictly before the later
             # LLM/provider-touching call).
-            with repo.get_connection() as conn:
-                with conn.transaction():
-                    repo.set_clarified_fields(run_id, clarified, conn=conn)
+            with repo.get_connection() as conn, conn.transaction():
+                repo.set_clarified_fields(run_id, clarified, conn=conn)
 
             stage = _run_stages(
                 run_id,
@@ -818,8 +820,9 @@ def resume_pipeline(
                 prior=snapshot,
                 prior_matches=prior_matches_for_backfill,
                 suppress_detection=suppress_detection,  # ALL answered → N8 only
-                resolved_drops=backfill_skip,           # confirmed_dropped+client_supplied → backfill skip
-                extracted=raw_extracted,                # combined-body extraction for lossless process
+                resolved_drops=backfill_skip,           # confirmed_dropped+client_supplied
+                # → backfill skip
+                extracted=raw_extracted,                # combined-body extraction, lossless
                 overrides=overrides,                    # D-11-08: operator mapping, else None
             )
 
@@ -874,7 +877,9 @@ def resume_pipeline(
         ]
         if _pending_tokens:
             post_run_data = repo.load_run(run_id)
-            _post_reconciliation = (post_run_data.get("reconciliation") or []) if post_run_data else []
+            _post_reconciliation = (
+                (post_run_data.get("reconciliation") or []) if post_run_data else []
+            )
 
             _updated_candidates = dict(_pre_candidates)
             _any_bound = False
@@ -990,9 +995,8 @@ def _defer_field_regression_clarification(
     # strictly BEFORE Step 5's _clarify(...) call below — no transaction ever
     # spans _clarify's LLM/provider calls. Steps 1/2/4 are reads/in-memory
     # mutation only, not folded in (nothing to gain from widening the txn).
-    with repo.get_connection() as conn:
-        with conn.transaction():
-            repo.set_clarified_fields(run_id, clarified, conn=conn)
+    with repo.get_connection() as conn, conn.transaction():
+        repo.set_clarified_fields(run_id, clarified, conn=conn)
 
     # Step 4: Load the persisted decision + extracted for _clarify.
     run_row = repo.load_run(run_id)
@@ -1131,7 +1135,8 @@ def _run_stages(
     # else: use the supplied pre-extracted value directly (no LLM call)
 
     submitted_names = [e.submitted_name for e in extracted.employees]
-    matches = reconcile_names(submitted_names, roster, overrides=overrides)  # pure: no llm (D-21-01)
+    # pure: no llm (D-21-01)
+    matches = reconcile_names(submitted_names, roster, overrides=overrides)
 
     # D-7.5-10: DETECT-on-RAW → BACKFILL → CALC (three-phase ordering invariant)
     # Phase 1 — DETECT on raw extracted (pre-backfill): the OT 2→None drop is visible here.
@@ -1185,16 +1190,15 @@ def _run_stages(
     # status-advance LAST (D-9-02). A crash anywhere inside this block rolls back
     # every write in it, including the persists that "already succeeded" before the
     # crash — never just the later ones (D-9-14 fault-injection target).
-    with repo.get_connection() as conn:
-        with conn.transaction():
-            repo.persist_extracted(run_id, extracted, conn=conn)
-            repo.persist_decision(run_id, decision, conn=conn)  # data-only (FIX B)
-            repo.persist_reconciliation(run_id, matches, conn=conn)  # never NULL on a clean run
+    with repo.get_connection() as conn, conn.transaction():
+        repo.persist_extracted(run_id, extracted, conn=conn)
+        repo.persist_decision(run_id, decision, conn=conn)  # data-only (FIX B)
+        repo.persist_reconciliation(run_id, matches, conn=conn)  # never NULL on a clean run
 
-            if decision.final_action == "process":
-                repo.replace_line_items(run_id, line_items, conn=conn)  # DELETE-by-run then insert
-                repo.set_status(run_id, RunStatus.COMPUTED, conn=conn)
-                repo.set_status(run_id, RunStatus.AWAITING_APPROVAL, conn=conn)  # HITL-01 pause
+        if decision.final_action == "process":
+            repo.replace_line_items(run_id, line_items, conn=conn)  # DELETE-by-run then insert
+            repo.set_status(run_id, RunStatus.COMPUTED, conn=conn)
+            repo.set_status(run_id, RunStatus.AWAITING_APPROVAL, conn=conn)  # HITL-01 pause
     # --- transaction block closed above; `_clarify` (an LLM+provider call) is a
     # SIBLING statement here, never nested inside the `with conn.transaction():`
     # block (D-9-01 — no transaction may span a network/LLM call). ---
@@ -1272,9 +1276,8 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
     # (D-11-09 silent handoff).
     current_round = repo.get_clarification_round(run_id)
     if current_round >= MAX_CLARIFICATION_ROUNDS:
-        with repo.get_connection() as conn:
-            with conn.transaction():
-                repo.set_status(run_id, RunStatus.NEEDS_OPERATOR, conn=conn)
+        with repo.get_connection() as conn, conn.transaction():
+            repo.set_status(run_id, RunStatus.NEEDS_OPERATOR, conn=conn)
         logger.info(
             "run %s escalated to needs_operator after %d rounds (D-11-06/D-11-07/D-11-09)",
             run_id,
@@ -1306,13 +1309,12 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
         # round (never a blind current_round + 1) — a crash between a send and this
         # finalize self-heals on re-entry because the found row's round is the
         # ground truth of what was actually sent.
-        with repo.get_connection() as conn:
-            with conn.transaction():
-                repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-                repo.set_clarification_round(
-                    run_id, existing_clari["round"] + 1, conn=conn
-                )
-                repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
+        with repo.get_connection() as conn, conn.transaction():
+            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+            repo.set_clarification_round(
+                run_id, existing_clari["round"] + 1, conn=conn
+            )
+            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
         return
 
     # D-04 alias_candidates capture (finding #4 single-token-only + finding #5
@@ -1467,11 +1469,10 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
         # JUST written above with round=current_round, so this IS the sent-row's
         # round (not a blind counter increment); a crash before this transaction
         # commits self-heals on re-entry via the (purpose, round) guard above.
-        with repo.get_connection() as conn:
-            with conn.transaction():
-                repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-                repo.set_clarification_round(run_id, current_round + 1, conn=conn)
-                repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
+        with repo.get_connection() as conn, conn.transaction():
+            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+            repo.set_clarification_round(run_id, current_round + 1, conn=conn)
+            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
         return
     # else: live Path-2 run — fall through to the real Resend gateway call (unchanged)
     gateway.send_outbound(
@@ -1493,11 +1494,10 @@ def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarif
     # D-11-01/Pitfall #3: round advances to current_round + 1 — gateway.send_outbound
     # just wrote the outbound row with round=current_round (threaded through above),
     # so this derives from the row that was actually sent, not a blind increment.
-    with repo.get_connection() as conn:
-        with conn.transaction():
-            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-            repo.set_clarification_round(run_id, current_round + 1, conn=conn)
-            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)  # CLAR-01 pause
+    with repo.get_connection() as conn, conn.transaction():
+        repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+        repo.set_clarification_round(run_id, current_round + 1, conn=conn)
+        repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)  # CLAR-01 pause
 
 
 def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster, conn=None) -> None:
@@ -1659,10 +1659,9 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
                 run_id,
                 type(alias_exc).__name__,
             )
-        with repo.get_connection() as conn:
-            with conn.transaction():
-                repo.set_status(run_id, RunStatus.SENT, conn=conn)
-                repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
+        with repo.get_connection() as conn, conn.transaction():
+            repo.set_status(run_id, RunStatus.SENT, conn=conn)
+            repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
         return
 
     # Step 2 — Load line items (explicit columns, LOW finding fix).
@@ -1753,43 +1752,42 @@ def _deliver(run_id: uuid.UUID, run: dict) -> None:
         # which completes the alias write and advances status — this is D-9-08's
         # documented at-least-once semantics, now closing the alias-skip gap
         # Codex HIGH-2 found.
-        with repo.get_connection() as conn:
-            with conn.transaction():
-                # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias
-                # candidates. MUST be called BEFORE set_status(SENT) (PATTERNS.md
-                # line 611 ordering, D-13b). Wrapped in try/except NESTED STRICTLY
-                # INSIDE this transaction block (Pitfall 2) so an alias-learning
-                # failure NEVER rolls back a genuine delivery — it only skips the
-                # alias write itself (D-13b defensive isolation, D-15).
-                #
-                # D-9-06 gap closure (WR-01): the nested `with conn.transaction()`
-                # below is a psycopg3 SAVEPOINT (psycopg3 automatically issues
-                # SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT instead of
-                # BEGIN/COMMIT/ROLLBACK when conn.transaction() is entered while
-                # already inside an outer transaction). This is what makes the
-                # isolation hold for genuine DB-level errors (constraint violations,
-                # undefined columns, lock timeouts), not just pure-Python exceptions
-                # — without it, a DB-level failure here poisons the WHOLE outer
-                # transaction via InFailedSqlTransaction on the very next statement
-                # (09-REVIEW.md WR-01): the alias write's own repo helpers run under
-                # _nulltx() (a bare no-op) whenever a caller-supplied conn is
-                # present, so no savepoint exists at that layer — it must be added
-                # by the caller (here), wrapping the whole alias-write call once.
-                try:
-                    with conn.transaction():
-                        _write_aliases_if_safe(run_id, run, roster, conn=conn)
-                except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
-                    logger.warning(
-                        "alias write skipped for run %s: %s (run continues to SENT)",
-                        run_id,
-                        type(alias_exc).__name__,
-                    )
+        with repo.get_connection() as conn, conn.transaction():
+            # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias
+            # candidates. MUST be called BEFORE set_status(SENT) (PATTERNS.md
+            # line 611 ordering, D-13b). Wrapped in try/except NESTED STRICTLY
+            # INSIDE this transaction block (Pitfall 2) so an alias-learning
+            # failure NEVER rolls back a genuine delivery — it only skips the
+            # alias write itself (D-13b defensive isolation, D-15).
+            #
+            # D-9-06 gap closure (WR-01): the nested `with conn.transaction()`
+            # below is a psycopg3 SAVEPOINT (psycopg3 automatically issues
+            # SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT instead of
+            # BEGIN/COMMIT/ROLLBACK when conn.transaction() is entered while
+            # already inside an outer transaction). This is what makes the
+            # isolation hold for genuine DB-level errors (constraint violations,
+            # undefined columns, lock timeouts), not just pure-Python exceptions
+            # — without it, a DB-level failure here poisons the WHOLE outer
+            # transaction via InFailedSqlTransaction on the very next statement
+            # (09-REVIEW.md WR-01): the alias write's own repo helpers run under
+            # _nulltx() (a bare no-op) whenever a caller-supplied conn is
+            # present, so no savepoint exists at that layer — it must be added
+            # by the caller (here), wrapping the whole alias-write call once.
+            try:
+                with conn.transaction():
+                    _write_aliases_if_safe(run_id, run, roster, conn=conn)
+            except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
+                logger.warning(
+                    "alias write skipped for run %s: %s (run continues to SENT)",
+                    run_id,
+                    type(alias_exc).__name__,
+                )
 
-                # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential
-                # in this synchronous call; RECONCILED is the only terminal-success
-                # status). Status-advance last (D-9-02).
-                repo.set_status(run_id, RunStatus.SENT, conn=conn)
-                repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
+            # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential
+            # in this synchronous call; RECONCILED is the only terminal-success
+            # status). Status-advance last (D-9-02).
+            repo.set_status(run_id, RunStatus.SENT, conn=conn)
+            repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
     except Exception as exc:
         # WR-04: attach the in-memory roster for the caller's scrub boundary, then
         # re-raise the ORIGINAL exception unchanged. Attribute assignment is

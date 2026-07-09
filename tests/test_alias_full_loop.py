@@ -253,7 +253,9 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     # No clarification outbound row was ever created for the second run.
     second_run_outbound = fake_repo.outbound.get(str(second_run_id), [])
     clarification_rows = [
-        r for r in second_run_outbound if r.get("purpose") in ("clarification", "clarification_field_regression")
+        r
+        for r in second_run_outbound
+        if r.get("purpose") in ("clarification", "clarification_field_regression")
     ]
     assert not clarification_rows, (
         "the second submission must send ZERO clarification emails — the "
@@ -321,7 +323,10 @@ def test_misname_reply_binds_nothing_end_to_end(fake_repo, mock_llm):
         _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "20"}]),
     ]
     reply = _inbound_persisted(
-        fake_repo, run_id, "Sorry, I meant Maria Chen, not Robbie.", message_id="<misname@test.example>"
+        fake_repo,
+        run_id,
+        "Sorry, I meant Maria Chen, not Robbie.",
+        message_id="<misname@test.example>",
     )
     resume_pipeline(run_id, reply)
 

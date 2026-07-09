@@ -8,11 +8,15 @@ given, and the override never mutates the employee.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest
 
 from app.db.seed import seed
 from app.pipeline.calculate import calculate
+
+if TYPE_CHECKING:
+    from app.models.roster import Employee
 
 
 @pytest.fixture()
@@ -78,10 +82,10 @@ from app.pipeline.calculate import (  # noqa: E402
 from app.pipeline.tax_tables_2026 import (  # noqa: E402
     MEDICARE_RATE as _MEDICARE_RATE_REF,
 )
-from app.pipeline.tax_tables_2026 import (
+from app.pipeline.tax_tables_2026 import (  # noqa: E402 — appended after existing imports; uuid is stdlib
     SS_RATE as _SS_RATE_REF,
 )
-from app.pipeline.tax_tables_2026 import (
+from app.pipeline.tax_tables_2026 import (  # noqa: E402 — appended after existing imports; uuid is stdlib
     SS_WAGE_BASE as _SS_WAGE_BASE_REF,
 )
 
@@ -90,10 +94,17 @@ from app.pipeline.tax_tables_2026 import (
 def salary_employee():
     """A seeded SALARY employee (James Okafor, weekly, pay_periods_per_year=52)."""
     seeded = seed(dry_run=True)
-    return next(e for e in seeded.employees if e.pay_type == "salary" and e.pay_periods_per_year == 52)
+    return next(
+        e for e in seeded.employees if e.pay_type == "salary" and e.pay_periods_per_year == 52
+    )
 
 
-def _make_salary_employee(*, annual_salary: Decimal, pay_periods_per_year: int, filing_status: str = "single") -> Employee:
+def _make_salary_employee(
+    *,
+    annual_salary: Decimal,
+    pay_periods_per_year: int,
+    filing_status: str = "single",
+) -> Employee:
     """Construct a minimal salaried Employee for frequency-invariance tests.
 
     All W-4 fields default to zero/False. UUIDs are random since identity does
@@ -196,7 +207,7 @@ def test_salaried_leave_pay_added_to_gross(salary_employee):
 
 
 def test_salaried_no_leave_gross_unchanged(salary_employee):
-    """CALC-02 baseline: salaried employee with zero leave → gross == _money(annual / pay_periods)."""
+    """CALC-02 baseline: salaried employee with zero leave → gross == _money(annual/pay_periods)."""
     item = calculate(_zero_hours(), salary_employee)
     annual = salary_employee.annual_salary
     p = Decimal(salary_employee.pay_periods_per_year)
@@ -222,13 +233,22 @@ def test_salaried_leave_pay_frequency_invariant():
     emp_24 = _make_salary_employee(annual_salary=Decimal("52000"), pay_periods_per_year=24)
     emp_12 = _make_salary_employee(annual_salary=Decimal("52000"), pay_periods_per_year=12)
 
-    delta_52 = calculate(_leave_hours(), emp_52).gross_pay - calculate(_zero_hours(), emp_52).gross_pay
-    delta_26 = calculate(_leave_hours(), emp_26).gross_pay - calculate(_zero_hours(), emp_26).gross_pay
-    delta_24 = calculate(_leave_hours(), emp_24).gross_pay - calculate(_zero_hours(), emp_24).gross_pay
-    delta_12 = calculate(_leave_hours(), emp_12).gross_pay - calculate(_zero_hours(), emp_12).gross_pay
+    delta_52 = (
+        calculate(_leave_hours(), emp_52).gross_pay - calculate(_zero_hours(), emp_52).gross_pay
+    )
+    delta_26 = (
+        calculate(_leave_hours(), emp_26).gross_pay - calculate(_zero_hours(), emp_26).gross_pay
+    )
+    delta_24 = (
+        calculate(_leave_hours(), emp_24).gross_pay - calculate(_zero_hours(), emp_24).gross_pay
+    )
+    delta_12 = (
+        calculate(_leave_hours(), emp_12).gross_pay - calculate(_zero_hours(), emp_12).gross_pay
+    )
 
     assert delta_52 == delta_26 == delta_24 == delta_12, (
-        f"Leave pay NOT frequency-independent: p=52:{delta_52} p=26:{delta_26} p=24:{delta_24} p=12:{delta_12}"
+        f"Leave pay NOT frequency-independent: "
+        f"p=52:{delta_52} p=26:{delta_26} p=24:{delta_24} p=12:{delta_12}"
     )
     assert delta_52 == Decimal("200.00"), (
         f"Expected 200.00 (52000/2080*8), got {delta_52}"
@@ -254,7 +274,8 @@ def test_salaried_with_leave_gross_integration(salary_employee):
 def test_net_pay_is_real_net(hourly_employee):
     """CALC-07: net = gross - pretax_401k - fica_ss - fica_medicare - federal_withholding.
 
-    Also asserts that federal_withholding > 0 for a typical earning employee (Phase 3 postcondition).
+    Also asserts that federal_withholding > 0 for a typical earning employee
+    (Phase 3 postcondition).
     """
     item = calculate(_hours(), hourly_employee)
     # Federal withholding must be real in Phase 3
@@ -262,7 +283,11 @@ def test_net_pay_is_real_net(hourly_employee):
         f"federal_withholding should be > 0 for a typical employee, got {item.federal_withholding}"
     )
     expected_net = _money_local(
-        item.gross_pay - item.pretax_401k - item.fica_ss - item.fica_medicare - item.federal_withholding
+        item.gross_pay
+        - item.pretax_401k
+        - item.fica_ss
+        - item.fica_medicare
+        - item.federal_withholding
     )
     assert item.net_pay == expected_net, (
         f"net_pay {item.net_pay} != expected {expected_net}"
@@ -359,7 +384,8 @@ def test_additional_medicare_flag_present():
     """
     from app.models.roster import Employee
 
-    # Flag-fires case: ytd_ss_wages=184500 (at SS cap — max real value) + gross=$20,000 → $204,500 > $200k
+    # Flag-fires case: ytd_ss_wages=184500 (at SS cap — max real value)
+    # + gross=$20,000 → $204,500 > $200k
     emp_at_cap = Employee(
         id=uuid.uuid4(),
         business_id=uuid.uuid4(),
@@ -389,7 +415,8 @@ def test_additional_medicare_flag_present():
     )
     # 184500 + 20000 = 204500 > 200000 — MUST fire
     assert item_cap.additional_medicare_not_modeled is True, (
-        f"Flag must fire when (ytd_ss_wages={emp_at_cap.ytd_ss_wages} + gross={item_cap.gross_pay}) > 200000"
+        f"Flag must fire when (ytd_ss_wages={emp_at_cap.ytd_ss_wages} + "
+        f"gross={item_cap.gross_pay}) > 200000"
     )
 
     # Flag-does-not-fire case: ytd_ss_wages=0, normal gross ($4,000) → $4,000 << $200k
@@ -426,7 +453,7 @@ def test_additional_medicare_flag_present():
     )
 
 
-# ---- Code review round 2: input-guard hardening (WR-01 bool, WR-02 unknown keys, WR-03 status) ----
+# ---- Code review round 2: input-guard hardening (WR-01 bool, WR-02 unknown keys, WR-03) ----
 
 def _valid_hours() -> dict:
     return {

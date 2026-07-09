@@ -431,7 +431,7 @@ class InMemoryRepo:
 
         swept: list[uuid.UUID] = []
         prefix = "recovery: stranded in-flight (background task died) — swept from "
-        for run_id_str, run in self.runs.items():
+        for _run_id_str, run in self.runs.items():
             if run["status"] in _STRANDED_SCOPE_STATUSES:
                 old_status = run["status"]
                 run["error_reason"] = "StrandedRunSwept"
@@ -489,7 +489,9 @@ class InMemoryRepo:
         for run in self.runs.values():
             biz_name = "Test Business"
             decision = run.get("decision")
-            gate_reasons = (decision or {}).get("gate_reasons") if isinstance(decision, dict) else None
+            gate_reasons = (
+                (decision or {}).get("gate_reasons") if isinstance(decision, dict) else None
+            )
             summary_gate_reason = gate_reasons[0] if gate_reasons else None
             extracted_data = run.get("extracted_data")
             employees = (
@@ -576,7 +578,9 @@ class InMemoryRepo:
             return False
         if run.get("pre_clarify_extracted") is not None:
             return False  # already set (IS NULL guard)
-        run["pre_clarify_extracted"] = extracted.model_dump(mode="json") if hasattr(extracted, "model_dump") else extracted
+        run["pre_clarify_extracted"] = (
+            extracted.model_dump(mode="json") if hasattr(extracted, "model_dump") else extracted
+        )
         return True
 
     def load_pre_clarify_extracted(self, run_id, conn=None):
@@ -737,15 +741,19 @@ class InMemoryRepo:
 
         When purpose is provided, filters by purpose to match the real repo's behavior.
         When purpose is None (legacy test calls without purpose arg), returns the last
-        outbound row for the run — this preserves backward compatibility for test_orchestrator_states
-        and test_demo_fixtures which assert the outbound row exists, not which purpose.
+        outbound row for the run — this preserves backward compatibility for
+        test_orchestrator_states and test_demo_fixtures which assert the outbound row
+        exists, not which purpose.
         """
         rows = self.outbound.get(str(run_id))
         if not rows:
             return None
         if purpose is not None:
             # Filter to rows with matching purpose and send_state='sent' (mirrors real repo)
-            matching = [r for r in rows if r.get("purpose") == purpose and r.get("send_state") == "sent"]
+            matching = [
+                r for r in rows
+                if r.get("purpose") == purpose and r.get("send_state") == "sent"
+            ]
             return matching[-1]["message_id"] if matching else None
         return rows[-1]["message_id"]
 
@@ -786,7 +794,11 @@ class InMemoryRepo:
         second call for an already-consumed message_id is a no-op.
         """
         row = self.emails.get(message_id)
-        if row is not None and row.get("direction") == "inbound" and row.get("consumed_round") is None:
+        if (
+            row is not None
+            and row.get("direction") == "inbound"
+            and row.get("consumed_round") is None
+        ):
             row["consumed_round"] = round
 
     def load_consumed_replies(self, run_id, conn=None):

@@ -139,7 +139,7 @@ def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn, monkeypatch)
     )
     # Check the INSERT SQL uses %s placeholders
     insert_sql = None
-    for sql, params in fake_conn.executed:
+    for sql, _params in fake_conn.executed:
         if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
             insert_sql = str(sql)
             break
@@ -457,7 +457,7 @@ def test_record_run_error_persists_reason_and_error_status(seeded_db):
 # xfail — it must stay GREEN throughout (HIGH-2 fixture-path guard).
 # ===========================================================================
 
-import resend  # noqa: F401 — installed via 06-01 Task 1; needed for monkeypatching
+import resend  # noqa: F401, E402 — installed via 06-01 Task 1; needed for monkeypatching, imported late to keep the patch target order documented above
 
 # ===========================================================================
 # MEDIUM-5: SDK smoke-check test (Wave 0 guard — Task 0)
@@ -505,7 +505,7 @@ def test_resend_sdk_call_surfaces_exist():
     # Verify that SendParams TypedDict defines 'headers' and 'attachments' keys.
     # resend.Emails.SendParams is a TypedDict subclass of dict.
     assert hasattr(resend.Emails, "SendParams"), "resend.Emails.SendParams does not exist"
-    send_params_hints = resend.Emails.SendParams.__annotations__
+    _send_params_hints = resend.Emails.SendParams.__annotations__
     # Note: TypedDict __annotations__ may come from parent classes; use get_type_hints for
     # the full set. For simplicity, check that the TypedDict references 'headers' or
     # that **kwargs is accepted (dict passthrough). The TypedDict approach: SendParams
@@ -519,7 +519,8 @@ def test_resend_sdk_call_surfaces_exist():
         "resend.Emails.SendParams must support 'headers' key (either annotated or dict subclass)"
     )
     assert "attachments" in all_hints or issubclass(resend.Emails.SendParams, dict), (
-        "resend.Emails.SendParams must support 'attachments' key (either annotated or dict subclass)"
+        "resend.Emails.SendParams must support 'attachments' key "
+        "(either annotated or dict subclass)"
     )
 
 
@@ -673,7 +674,8 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
 
     assert isinstance(result, InboundEmail)
     assert result.message_id == "<abc@resend.com>", (
-        f"message_id must be the RFC Message-ID from the fetched email object; got {result.message_id!r}"
+        f"message_id must be the RFC Message-ID from the fetched email object; "
+        f"got {result.message_id!r}"
     )
     assert result.in_reply_to == "<prev@x.test>", (
         f"in_reply_to must be extracted from headers dict; got {result.in_reply_to!r}"
@@ -872,7 +874,7 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
 
     # Find the reserved INSERT among all executed SQL rows (relative order).
     reserved_idx = None
-    for i, (sql, params) in enumerate(fake_conn.executed):
+    for i, (_sql, params) in enumerate(fake_conn.executed):
         if params and "reserved" in str(params):
             reserved_idx = i
             break
