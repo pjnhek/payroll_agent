@@ -42,10 +42,13 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 12-02-PLAN.md — Hand-fix remaining ruff violations (TYPE_CHECKING, exception chaining, SIM117, E501) to a fully green `ruff check`
-- [ ] 12-03-PLAN.md — ci.yml workflow (lint + test jobs) and README CI badge
+- [ ] 12-02-PLAN.md — Hand-fix remaining ruff violations (TYPE_CHECKING, exception chaining, SIM117 structural collapse, E501) to a fully green `ruff check`
 
 **Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 12-03-PLAN.md — ci.yml workflow (lint + test jobs) and README CI badge — lands only after the repo lints green
+
+**Wave 4** *(blocked on Wave 3 completion)*
 
 - [ ] 12-04-PLAN.md — Red-proof checkpoint: push throwaway branches, capture red/green run URLs, delete branches
 
