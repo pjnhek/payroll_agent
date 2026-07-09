@@ -17,11 +17,10 @@ import pytest
 from app.db.seed import seed
 from app.models.contracts import Extracted
 from app.models.roster import Roster
-from app.pipeline.reconcile_names import reconcile_names
-from app.pipeline.validate import validate
 from app.pipeline.decide import decide
 from app.pipeline.orchestrator import _compute_line_items
-
+from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.validate import validate
 
 # ---------------------------------------------------------------------------
 # Fixture: load Summit Tech roster + fixture 12 (Thomas Bergmann exact match)

@@ -13,12 +13,8 @@ rsplit last-dot split: 'M. Chen.hours_overtime' -> ('M. Chen', 'hours_overtime')
 """
 from __future__ import annotations
 
-import uuid
-
 from app.models.contracts import Decision
-from app.models.roster import NameMatchResult
 from app.pipeline.compose_email import compose_clarification
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -16,16 +16,12 @@ Proves two properties of the multi-employee path in _deliver:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import MagicMock
-
-import pytest
 
 from app.models.contracts import PaystubLineItem
 from app.models.status import RunStatus
-from app.pipeline.compose_email import compose_confirmation, _confirmation_template_body
-
+from app.pipeline.compose_email import _confirmation_template_body, compose_confirmation
 
 # ---------------------------------------------------------------------------
 # Helpers / minimal fixtures
@@ -39,7 +35,7 @@ def _paystub(
     net_pay: Decimal = Decimal("1200.00"),
 ) -> PaystubLineItem:
     """A minimal PaystubLineItem for testing."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return PaystubLineItem(
         id=uuid.uuid4(),
         run_id=run_id,

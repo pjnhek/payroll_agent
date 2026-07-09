@@ -18,7 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.llm.client import _STRUCTURED_TIMEOUT_S, call_structured, call_text
 
-
 # ---------------------------------------------------------------------------
 # A small response_model used purely to exercise the generic structured path.
 # The real contracts (ExtractionPayload/Decision) live in app/models and are
@@ -75,7 +74,7 @@ class _FakeOpenAI:
 
     # Class-level recorders so the test can inspect across the (possibly single)
     # instance the wrapper constructs.
-    instances: list["_FakeOpenAI"] = []
+    instances: list[_FakeOpenAI] = []
 
     def __init__(self, *, base_url=None, api_key=None, timeout=None, max_retries=None, **_):
         self.base_url = base_url

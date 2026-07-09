@@ -15,6 +15,7 @@ the ON CONFLICT DO UPDATE clause to insert_email_message.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 
 import pytest
 
@@ -26,9 +27,7 @@ from app.db.repo import (
     insert_email_message,
     record_run_error,
 )
-from app.email.gateway import send_outbound
 from app.models.status import RunStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -447,7 +446,7 @@ def test_two_concurrent_stale_retriggers_only_one_wins():
 
 
 def _minimal_roster_and_item(run_id):
-    from datetime import datetime, timezone
+    from datetime import datetime
     from decimal import Decimal
 
     from app.models.contracts import PaystubLineItem
@@ -478,7 +477,7 @@ def _minimal_roster_and_item(run_id):
         gross_pay=Decimal("800.00"), pretax_401k=Decimal("0"), fica_ss=Decimal("49.60"),
         fica_medicare=Decimal("11.60"), federal_withholding=Decimal("30.00"),
         state_withholding=None, net_pay=Decimal("708.80"),
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
     )
     return roster, item
 

@@ -21,8 +21,7 @@ CR-03 — _deliver must enrich the run dict with business_name + pay_period_labe
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -314,7 +313,6 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     import app.db.repo as repo
     import app.email.gateway as gw
     from app.pipeline.orchestrator import _deliver
-    from app.models.contracts import PaystubLineItem
 
     run_id = uuid.uuid4()
     business_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -331,7 +329,7 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
         "pay_period_start": date(2026, 6, 1),
         "pay_period_end": date(2026, 6, 7),
         "source_email_id": None,
-        "updated_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(UTC),
         # Intentionally NO business_name or pay_period_label — these must be
         # computed by _deliver (CR-03 fix).
     }
@@ -493,8 +491,9 @@ def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
     """CLAR2-07: the SAME clear must fire on the stale-in-flight CAS branch
     (not just the ERROR/APPROVED core CAS) — both winning branches converge on
     one clear_reply_context call before _run_pipeline is scheduled."""
+    from datetime import datetime, timedelta
+
     import app.main as app_main
-    from datetime import datetime, timedelta, timezone
 
     dispatched: list = []
     monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: dispatched.append(rid))
@@ -509,7 +508,7 @@ def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
     run["alias_candidates"] = {"Bobby": {"suggested": None, "bound": None}}
     # Stale in-flight requires updated_at older than STALE_THRESHOLD — the fake
     # repo does not track updated_at automatically, so set it directly.
-    run["updated_at"] = datetime.now(timezone.utc) - timedelta(minutes=30)
+    run["updated_at"] = datetime.now(UTC) - timedelta(minutes=30)
 
     r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
     assert r.status_code == 303

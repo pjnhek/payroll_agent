@@ -25,16 +25,17 @@ import pathlib
 import sys
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from app.models.contracts import InboundEmail, Extracted
-from app.models.roster import Roster, NameMatchResult
-from app.pipeline.orchestrator import backfill_extracted
-from app.pipeline.reconcile_names import reconcile_names, _norm as _normalize
-from app.pipeline.validate import validate, detect_field_regression
-from app.pipeline.decide import decide
 from app.db.seed import seed
+from app.models.contracts import Extracted, InboundEmail
+from app.models.roster import NameMatchResult, Roster
+from app.pipeline.decide import decide
+from app.pipeline.orchestrator import backfill_extracted
+from app.pipeline.reconcile_names import _norm as _normalize
+from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.validate import detect_field_regression, validate
 
 # ---------------------------------------------------------------------------
 # Eval-only fixture keys — must be stripped before InboundEmail validation.
@@ -547,7 +548,7 @@ def _write_summary_json(
     summary = {
         "schema_version": "1",
         "suite_run_id": suite_run_id,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "extraction_model_id": _extraction_model_id(),  # env-resolved, NO app.config import
         "false_process_rate": aggregated["confusion_matrix"]["false_process_rate"],
         "confusion_matrix": aggregated["confusion_matrix"],
@@ -700,8 +701,8 @@ def _record_extraction() -> None:
     """
     # Lazy imports: live pieces only on the --record path (T-04-07).
     # uuid is already imported at module level -- no lazy re-import needed (IN-01).
+    from app.llm.client import llm_client  # noqa: PLC0415
     from app.pipeline.extract import extract  # noqa: PLC0415
-    from app.llm.client import llm_client    # noqa: PLC0415
 
     fixture_paths = sorted(FIXTURE_DIR.glob("*.json"))
     fixture_paths = [f for f in fixture_paths if "_extraction" not in f.name]
@@ -750,10 +751,10 @@ def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
     generation, not the regression gate).
     """
     # Local imports only -- never at module level (T-04-11, D-08)
-    import matplotlib                          # noqa: PLC0415
+    import matplotlib  # noqa: PLC0415
     matplotlib.use("Agg")                      # non-interactive backend, safe on CI/server
-    import matplotlib.pyplot as plt            # noqa: PLC0415
-    import numpy as np                         # noqa: PLC0415
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 14))
 

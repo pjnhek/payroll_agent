@@ -96,7 +96,7 @@ def test_validate_never_emits_non_numeric(roster_from_seed):
 # ---------------------------------------------------------------------------
 
 
-def _make_weekly_hourly_employee(name: str = "Test Worker") -> "Employee":
+def _make_weekly_hourly_employee(name: str = "Test Worker") -> Employee:
     """Build a minimal weekly (pay_periods_per_year=52) hourly Employee inline."""
     from app.models.roster import Employee
 
@@ -119,7 +119,7 @@ def _make_weekly_hourly_employee(name: str = "Test Worker") -> "Employee":
     )
 
 
-def _make_biweekly_hourly_employee(name: str = "Biweekly Worker") -> "Employee":
+def _make_biweekly_hourly_employee(name: str = "Biweekly Worker") -> Employee:
     """Build a minimal biweekly (pay_periods_per_year=26) hourly Employee inline."""
     from app.models.roster import Employee
 
@@ -142,7 +142,7 @@ def _make_biweekly_hourly_employee(name: str = "Biweekly Worker") -> "Employee":
     )
 
 
-def _make_semimonthly_salary_employee(name: str = "Semimonthly Worker") -> "Employee":
+def _make_semimonthly_salary_employee(name: str = "Semimonthly Worker") -> Employee:
     """Build a minimal semi-monthly (pay_periods_per_year=24) salaried Employee inline.
 
     Semi-monthly used for the documented-limitation test (no OT flag, ppy=24).
@@ -170,7 +170,7 @@ def _make_semimonthly_salary_employee(name: str = "Semimonthly Worker") -> "Empl
     )
 
 
-def _one_employee_roster(emp: "Employee") -> "Roster":
+def _one_employee_roster(emp: Employee) -> Roster:
     """Build a single-employee Roster for inline test use."""
     from app.models.roster import Roster
 

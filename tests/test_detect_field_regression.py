@@ -22,12 +22,9 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from app.models.contracts import Extracted, ExtractedEmployee, RawFieldDrop
-from app.models.roster import NameMatchResult, Roster, ValidationIssue
+from app.models.roster import NameMatchResult, Roster
 from app.pipeline.validate import detect_field_regression, validate
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,7 +59,7 @@ def _match(
     )
 
 
-def _make_roster(emp_id: uuid.UUID, pay_type: str = "hourly") -> tuple[Roster, "Employee"]:
+def _make_roster(emp_id: uuid.UUID, pay_type: str = "hourly") -> tuple[Roster, Employee]:
     """Build a minimal Roster + Employee for validate() calls."""
     from app.models.roster import Employee
 

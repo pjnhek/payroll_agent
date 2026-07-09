@@ -15,8 +15,8 @@ Public API:
 """
 
 import threading
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 import psycopg
 from psycopg_pool import ConnectionPool

@@ -25,7 +25,6 @@ from decimal import Decimal
 from app.models.roster import Employee, Roster
 from app.pipeline.suggest import NameSuggestionResponse, suggest_employees
 
-
 # ---------------------------------------------------------------------------
 # A scriptable structured-call stand-in (mirrors the call_structured surface)
 # ---------------------------------------------------------------------------

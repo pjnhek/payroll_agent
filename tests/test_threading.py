@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import pathlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,7 +130,7 @@ def _reply_payload(*, in_reply_to: str, from_addr: str, body: str) -> dict:
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     ).model_dump(mode="json")
 
 
@@ -174,7 +174,7 @@ def test_header_chain_match_via_references(client, fake_repo, mock_llm):
         from_addr=_METRO_DELI_CONTACT,
         to_addr="agent@payroll-agent.local",
         body_text="Correct spelling is David Reyes.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     ).model_dump(mode="json")
     r = client.post("/webhook/inbound", json=reply)
     assert r.status_code == 200
@@ -302,8 +302,9 @@ def test_partial_reply_preserves_hours():
     run_id = uuid.uuid4()
     store = _MiniStore(run_id)
 
-    import app.db.repo as repo_mod
     import pytest as _pt
+
+    import app.db.repo as repo_mod
 
     monkey = _pt.MonkeyPatch()
     try:
@@ -334,7 +335,7 @@ def test_partial_reply_preserves_hours():
             from_addr=_METRO_DELI_CONTACT,
             to_addr="agent@payroll-agent.local",
             body_text="It's David Reyes.",  # answer-only: NO hours in the reply
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         orchestrator.resume_pipeline(run_id, reply)
     finally:
@@ -373,8 +374,9 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
         extract_called["n"] += 1
         return _fake_extracted_unused(run_id)
 
-    import app.db.repo as repo_mod
     import pytest as _pt
+
+    import app.db.repo as repo_mod
 
     monkey = _pt.MonkeyPatch()
     try:
@@ -403,7 +405,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
             from_addr=_METRO_DELI_CONTACT,
             to_addr="agent@payroll-agent.local",
             body_text="A late reply after the run was already approved.",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         orchestrator.resume_pipeline(run_id, reply)
     finally:

@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.models.contracts import InboundEmail
@@ -124,7 +124,7 @@ def _inbound_persisted(
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

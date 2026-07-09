@@ -29,7 +29,7 @@ WHAT THIS MODULE PROVES (assert REAL re-schedule facts, never a log string):
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -154,7 +154,7 @@ def test_unconsumed_redelivery_reschedules(client, fake_repo, resume_spy):
         # Deliberately DIFFERENT body text than what was persisted — proves the
         # re-schedule uses the PERSISTED row, never re-cleans this request body.
         body_text="a completely different redelivered body — must be ignored",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     ).model_dump(mode="json")
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
@@ -197,7 +197,7 @@ def test_consumed_redelivery_no_ops(client, fake_repo, resume_spy):
         from_addr=COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="redelivered body",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     ).model_dump(mode="json")
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
@@ -232,7 +232,7 @@ def test_redelivery_to_non_awaiting_reply_run_no_ops(client, fake_repo, resume_s
         from_addr=COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="redelivered body",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     ).model_dump(mode="json")
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
@@ -256,7 +256,7 @@ def test_runs_list_reschedules_stale_unconsumed_reply(client, fake_repo, resume_
     from app.main import STALE_THRESHOLD_SECONDS
 
     message_id = f"<stranded-{uuid.uuid4()}@metrodeli.example>"
-    old_created_at = datetime.now(timezone.utc) - timedelta(
+    old_created_at = datetime.now(UTC) - timedelta(
         seconds=STALE_THRESHOLD_SECONDS + 60
     )
     run_id, row = _seed_awaiting_reply_run_with_reply(
@@ -288,7 +288,7 @@ def test_runs_list_does_not_reschedule_fresh_unconsumed_reply(
         fake_repo,
         message_id=message_id,
         consumed=False,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     r = client.get("/runs")
@@ -312,7 +312,7 @@ def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resum
     from app.main import STALE_THRESHOLD_SECONDS
 
     message_id = f"<needs-operator-{uuid.uuid4()}@metrodeli.example>"
-    old_created_at = datetime.now(timezone.utc) - timedelta(
+    old_created_at = datetime.now(UTC) - timedelta(
         seconds=STALE_THRESHOLD_SECONDS + 60
     )
     _run_id, _row = _seed_awaiting_reply_run_with_reply(
@@ -365,7 +365,7 @@ def test_redelivery_never_resumes_fix5_failed_reply(client, fake_repo, resume_sp
         from_addr=SPOOFED_FROM_ADDR,
         to_addr="agent@payroll-agent.local",
         body_text="redelivered body",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     ).model_dump(mode="json")
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
@@ -390,7 +390,7 @@ def test_stranded_sweep_never_resumes_fix5_failed_reply(client, fake_repo, resum
     from app.main import STALE_THRESHOLD_SECONDS
 
     message_id = f"<stranded-spoofed-{uuid.uuid4()}@metrodeli.example>"
-    old_created_at = datetime.now(timezone.utc) - timedelta(
+    old_created_at = datetime.now(UTC) - timedelta(
         seconds=STALE_THRESHOLD_SECONDS + 60
     )
     run_id, _row = _seed_awaiting_reply_run_with_reply(

@@ -23,7 +23,7 @@ FICA constants (2026) — migrated to tax_tables_2026.py per D-02:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.models.contracts import PaystubLineItem
@@ -31,7 +31,11 @@ from app.models.roster import Employee
 from app.pipeline.federal_withholding import federal_withholding_2026
 from app.pipeline.tax_tables_2026 import (
     MEDICARE_RATE as _MEDICARE_RATE,
+)
+from app.pipeline.tax_tables_2026 import (
     SS_RATE as _SS_RATE,
+)
+from app.pipeline.tax_tables_2026 import (
     SS_WAGE_BASE as _SS_WAGE_BASE,
 )
 
@@ -300,6 +304,6 @@ def calculate(
         federal_withholding=federal_withholding,
         state_withholding=None,
         net_pay=net_pay,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         additional_medicare_not_modeled=additional_medicare_not_modeled,
     )

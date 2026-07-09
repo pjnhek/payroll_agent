@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -128,7 +128,7 @@ def _inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

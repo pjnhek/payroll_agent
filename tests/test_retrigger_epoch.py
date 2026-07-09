@@ -32,13 +32,12 @@ empty while the row still physically exists), never a log string.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.pipeline.orchestrator import _clarify, resume_pipeline
-from app.models.status import RunStatus
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -60,7 +59,7 @@ def _bare_inbound() -> InboundEmail:
         from_addr=COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="David Reyez 38 hours",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -278,7 +277,7 @@ def test_retrigger_forgets_consumed_reply_from_prior_epoch(fake_repo, mock_llm):
         from_addr=COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="Maria actually worked 30, not 40 -- no overtime this week.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     mock_llm.script = [

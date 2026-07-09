@@ -34,8 +34,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import UTC, date, datetime
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
@@ -72,7 +71,7 @@ def _mk_reply(body_text: str, message_id: str | None = None) -> InboundEmail:
         from_addr="payroll@example.com",
         to_addr="agent@payroll-agent.local",
         body_text=body_text,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -251,7 +250,7 @@ def _inbound(body: str, message_id: str | None = None, from_addr: str = COASTAL_
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -282,7 +281,7 @@ def _inbound_persisted(
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

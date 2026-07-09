@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import ast
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
@@ -70,7 +70,7 @@ def _bare_inbound() -> InboundEmail:
         from_addr=COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="David Reyez 38 hours",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import contextlib
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -32,7 +32,6 @@ import resend  # noqa: F401 — imported so the module is available for monkeypa
 
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
-
 
 # ---------------------------------------------------------------------------
 # 0. Live-DB two-factor guard + shared seeded_db fixture (Finding #10)
@@ -82,10 +81,10 @@ def seeded_db():
 class FakeCursor:
     """Minimal psycopg-cursor stand-in usable as a context manager."""
 
-    def __init__(self, conn: "FakeConnection") -> None:
+    def __init__(self, conn: FakeConnection) -> None:
         self._conn = conn
 
-    def __enter__(self) -> "FakeCursor":
+    def __enter__(self) -> FakeCursor:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -105,7 +104,7 @@ class FakeCursor:
 class FakeTransaction:
     """Context manager mirroring psycopg's conn.transaction()."""
 
-    def __enter__(self) -> "FakeTransaction":
+    def __enter__(self) -> FakeTransaction:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -212,7 +211,7 @@ def inbound_email() -> InboundEmail:
         from_addr="payroll@acme.test",
         to_addr="agent@payroll-agent.local",
         body_text="Maria 40 regular, David 38 regular. Thanks!",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -289,7 +288,7 @@ class InMemoryRepo:
             "direction": "inbound",
             "round": 0,
             "consumed_round": None,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
             **kw,
         }
         self.emails[mid] = row
@@ -386,7 +385,7 @@ class InMemoryRepo:
             from_addr=row.get("from_addr") or "",
             to_addr=row.get("to_addr") or "",
             body_text=row["body_text"],
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
     def load_roster_for_business(self, business_id, conn=None):
@@ -712,7 +711,7 @@ class InMemoryRepo:
             "message_id": message_id,
             "round": round,
             "consumed_round": None,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
             **kw,
         }
         if direction == "outbound" and run_id is not None:
@@ -843,7 +842,7 @@ class InMemoryRepo:
         NEW epoch-1 awaiting_reply state.
         """
         threshold = timedelta(seconds=threshold_seconds)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         found: list[dict] = []
         for row in self.emails.values():
             if row.get("direction") != "inbound" or row.get("consumed_round") is not None:

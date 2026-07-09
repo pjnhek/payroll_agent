@@ -29,25 +29,24 @@ and Wave 3 adds the idempotency guard to _clarify. That is the expected Wave 0 o
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from decimal import Decimal
-
-import pytest
-
-# This import WILL FAIL RED — _safe_to_learn_alias does not yet exist.
-# Wave 4 Plan 07 Task 2 adds it to app/pipeline/reconcile_names.py.
-from app.pipeline.reconcile_names import _safe_to_learn_alias  # noqa: F401 (RED: not yet implemented)
 
 # This import provides get_outbound_message_id for idempotency stub tests.
 from app.db.repo import get_outbound_message_id  # noqa: F401 (already exists; used in stubs)
+from app.models.contracts import Decision, Extracted, ExtractedEmployee
+from app.models.roster import Employee, NameMatchResult, Roster
+
+# This import WILL FAIL RED — _safe_to_learn_alias does not yet exist.
+# Wave 4 Plan 07 Task 2 adds it to app/pipeline/reconcile_names.py.
+from app.pipeline.reconcile_names import (
+    _safe_to_learn_alias,  # noqa: F401 (RED: not yet implemented)
+)
 
 # 09-02: patches repo_mod.get_connection to the FakeConnection double so tests
 # calling _clarify (which now opens `with repo.get_connection(): with
 # conn.transaction():` blocks, D-9-04..D-9-06) don't try a real pooled connection.
 from tests.conftest import patch_get_connection  # noqa: F401
-
-from app.models.roster import Employee, Roster
-from app.models.contracts import Decision, Extracted, ExtractedEmployee
-from app.models.roster import NameMatchResult
 
 
 def _minimal_extracted(run_id: uuid.UUID) -> Extracted:
@@ -254,10 +253,11 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     _clarify must NOT call send_outbound a second time — this is the CLAR-04 true-
     duplicate case (same round re-trigger), preserved by the round-aware guard.
     """
+    from datetime import datetime
+
     import app.email.gateway as gateway_mod
-    from app.pipeline.orchestrator import _clarify
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import _clarify
 
     send_calls: list = []
 
@@ -305,7 +305,7 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="David Reyez 38 hours",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     decision = Decision(
         final_action="request_clarification",
@@ -359,11 +359,12 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
 
     This test WILL FAIL RED until Wave 4 Plan 07 Task 2 implements the gate.
     """
-    import app.email.gateway as gateway_mod
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import _clarify
+    import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import _clarify
 
     set_alias_candidates_calls: list = []
 
@@ -403,7 +404,7 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="David Reyez 38 hours. D. Reyes 40 hours.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     # TWO unresolved names → single-token-only gate fires, no capture
     decision = Decision(
@@ -462,12 +463,13 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     "Dave Reyez" does NOT appear in any employee's full_name or known_aliases in
     the D-01b roster, so it has zero candidates — genuinely unresolved.
     """
-    import app.email.gateway as gateway_mod
+    from datetime import datetime
+
     import app.db.repo as repo_mod
+    import app.email.gateway as gateway_mod
     import app.pipeline.orchestrator as orchestrator_mod
-    from app.pipeline.orchestrator import _clarify
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import _clarify
 
     # Deterministic stub for the never-strand degradation path — see docstring.
     # _clarify imports suggest_employees into its own module namespace, so patch
@@ -515,7 +517,7 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="Dave Reyez 38 hours.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     # ONE genuinely unresolved token — "Dave Reyez" has zero candidates in the roster
     decision = Decision(
@@ -568,11 +570,12 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     This test WILL FAIL RED until Wave 4 implements the collision exclusion check
     in the alias capture step of _clarify.
     """
-    import app.email.gateway as gateway_mod
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import _clarify
+    import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import _clarify
 
     set_alias_candidates_calls: list = []
 
@@ -611,7 +614,7 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="D. Reyes 40 hours.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     # ONE name, but "D. Reyes" matches BOTH David Reyes AND Daniel Reyes (2 candidates)
     decision = Decision(
@@ -661,11 +664,12 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     This verifies that the D-04 timing constraint is respected — the alias candidate
     is captured before the clarification is sent.
     """
-    import app.email.gateway as gateway_mod
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import _clarify
+    import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import _clarify
 
     call_log: list[str] = []
 
@@ -705,7 +709,7 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="Dave Reyez 38 hours.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     # ONE genuinely unresolved token ("Dave Reyez" has zero candidates in the roster)
     decision = Decision(
@@ -766,10 +770,11 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     2 resolved employees post-resume (maria + david), so any "count resolved == 1"
     check would silently no-op on a real multi-employee run.
     """
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import resume_pipeline
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import resume_pipeline
 
     _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     _david_id = uuid.UUID("e0000003-0000-0000-0000-000000000003")
@@ -932,7 +937,7 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="I meant David Reyes",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     resume_pipeline(run_id, inbound, llm=None)
@@ -981,10 +986,11 @@ def test_resume_binding_exploit_unrelated_resolution_binds_nothing(monkeypatch):
     MUST FAIL on the pre-fix code (old code binds Dave -> David here) and
     PASS after the GAP-4 fix.
     """
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import resume_pipeline
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import resume_pipeline
 
     _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     _david_id = uuid.UUID("e0000003-0000-0000-0000-000000000003")
@@ -1087,7 +1093,7 @@ def test_resume_binding_exploit_unrelated_resolution_binds_nothing(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="No, Dave didn't work this period; David worked 5 hours separately.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     resume_pipeline(run_id, inbound, llm=None)
@@ -1135,10 +1141,11 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
 
     Expected: repo.set_alias_candidates is NOT called (no binding to do).
     """
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import resume_pipeline
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import resume_pipeline
 
     _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     _maria_id = uuid.UUID("e0000099-0000-0000-0000-000000000099")
@@ -1225,7 +1232,7 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="I meant someone else",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     resume_pipeline(run_id, inbound, llm=None)
@@ -1263,10 +1270,11 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
     candidate" — and would write {"Maria": james.id}. The D-11-15 fix requires the
     NEWLY-RESOLVED id to equal the persisted SUGGESTED id.
     """
+    from datetime import datetime
+
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import resume_pipeline
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.pipeline.orchestrator import resume_pipeline
 
     _biz_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     _james_id = uuid.UUID("e0000010-0000-0000-0000-000000000010")
@@ -1370,7 +1378,7 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="I meant James Okafor, not Maria",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     resume_pipeline(run_id, inbound, llm=None)

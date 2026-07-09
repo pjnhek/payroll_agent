@@ -15,14 +15,11 @@ Coverage:
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
-import pytest
-
-from app.pipeline.pdf import _sum_deductions, generate_paystub_pdf
 from app.models.contracts import PaystubLineItem
-
+from app.pipeline.pdf import _sum_deductions, generate_paystub_pdf
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -35,7 +32,7 @@ def _minimal_item() -> PaystubLineItem:
     All dollar amounts use Decimal("0") except where noted.
     state_withholding=None and pretax_401k=0 to exercise the omit paths.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return PaystubLineItem(
         id=uuid.uuid4(),
         run_id=uuid.uuid4(),
@@ -60,7 +57,7 @@ def _minimal_item() -> PaystubLineItem:
 
 def _hourly_item_multi_bucket() -> PaystubLineItem:
     """PaystubLineItem with multiple non-zero hour buckets and all deductions."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return PaystubLineItem(
         id=uuid.uuid4(),
         run_id=uuid.uuid4(),
@@ -85,7 +82,7 @@ def _hourly_item_multi_bucket() -> PaystubLineItem:
 
 def _salaried_item() -> PaystubLineItem:
     """PaystubLineItem where ALL hour buckets are zero (salaried employee)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return PaystubLineItem(
         id=uuid.uuid4(),
         run_id=uuid.uuid4(),

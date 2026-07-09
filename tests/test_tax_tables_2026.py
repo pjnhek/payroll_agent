@@ -14,13 +14,13 @@ from decimal import Decimal
 def test_module_imports_cleanly() -> None:
     """Module imports with no DB or network access (pure constants)."""
     from app.pipeline.tax_tables_2026 import (  # noqa: F401
-        TAX_YEAR,
+        MEDICARE_RATE,
         SS_RATE,
         SS_WAGE_BASE,
-        MEDICARE_RATE,
         STANDARD_BRACKETS,
-        STEP2_BRACKETS,
         STEP1_STANDARD,
+        STEP2_BRACKETS,
+        TAX_YEAR,
         BracketRow,
     )
 
@@ -31,10 +31,10 @@ def test_tax_year_is_2026() -> None:
 
 
 def test_fica_constants() -> None:
-    from app.pipeline.tax_tables_2026 import SS_RATE, SS_WAGE_BASE, MEDICARE_RATE
-    assert SS_RATE == Decimal("0.062")
-    assert SS_WAGE_BASE == Decimal("184500")
-    assert MEDICARE_RATE == Decimal("0.0145")
+    from app.pipeline.tax_tables_2026 import MEDICARE_RATE, SS_RATE, SS_WAGE_BASE
+    assert Decimal("0.062") == SS_RATE
+    assert Decimal("184500") == SS_WAGE_BASE
+    assert Decimal("0.0145") == MEDICARE_RATE
 
 
 def test_step1_standard_mfj() -> None:
@@ -120,6 +120,7 @@ def test_top_bracket_has_none_upper() -> None:
 def test_module_header_contains_source_urls(tmp_path) -> None:
     """The module docstring must contain both source URLs and retrieval date."""
     import inspect
+
     import app.pipeline.tax_tables_2026 as m
     source = inspect.getfile(m)
     with open(source) as f:

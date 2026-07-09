@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
@@ -141,7 +141,7 @@ def _inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -176,7 +176,7 @@ def _inbound_persisted(
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 

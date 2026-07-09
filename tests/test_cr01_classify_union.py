@@ -29,13 +29,10 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from app.models.contracts import Extracted, ExtractedEmployee
 from app.models.roster import Employee, NameMatchResult, Roster
 from app.pipeline.orchestrator import backfill_extracted
 from app.pipeline.reconcile_names import reconcile_names
-
 
 # ---------------------------------------------------------------------------
 # Helpers

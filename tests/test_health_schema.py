@@ -1,9 +1,10 @@
-from unittest.mock import patch
 import contextlib
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.db.schema_introspect import SchemaDiff
+from app.main import app
 from tests.conftest import FakeConnection
 
 client = TestClient(app)

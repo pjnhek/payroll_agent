@@ -41,7 +41,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -1018,7 +1018,7 @@ def retrigger(
             updated_at = run.get("updated_at")
             stale = (
                 updated_at is not None
-                and datetime.now(tz=timezone.utc) - updated_at > STALE_THRESHOLD
+                and datetime.now(tz=UTC) - updated_at > STALE_THRESHOLD
             )
             # 09-03 (checker WARNING 3, prior review round): this scope is FOUR
             # statuses, including SENT — deliberately DIVERGENT from
@@ -1282,7 +1282,7 @@ def demo_compose(
         "from_addr": from_addr,
         "to_addr": "agent@payroll-agent.local",
         "body_text": body,
-        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "created_at": datetime.now(tz=UTC).isoformat(),
     }
 
     try:
@@ -1694,7 +1694,7 @@ def simulate_reply(
         "from_addr": from_addr,
         "to_addr": to_addr,
         "body_text": reply_body,
-        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "created_at": datetime.now(tz=UTC).isoformat(),
     }
 
     # Route through the SAME entry as the real webhook uses.
@@ -1806,7 +1806,7 @@ def demo_send_test(
         "from_addr": from_addr,
         "to_addr": fixture_data.get("to_addr", "agent@payroll-agent.local"),
         "body_text": fixture_data.get("body_text", ""),
-        "created_at": fixture_data.get("created_at") or datetime.now(tz=timezone.utc).isoformat(),
+        "created_at": fixture_data.get("created_at") or datetime.now(tz=UTC).isoformat(),
     }
     inbound_email = gateway.parse_inbound(inbound_payload)
 

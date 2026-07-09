@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -32,8 +32,6 @@ import resend
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
-
-from tests.conftest import FakeConnection
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
@@ -143,7 +141,7 @@ def _live_inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
         from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -388,7 +386,7 @@ def _bare_inbound():
         from_addr="hr@test.example",
         to_addr="agent@payroll-agent.local",
         body_text="David Reyez 38 hours",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -793,7 +791,6 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     still reaches 'reconciled' — the exact must-have the nested SAVEPOINT
     (conn.transaction() around the alias-write call) is meant to guarantee.
     """
-    import psycopg
 
     from app.db import repo
     from app.pipeline.orchestrator import _deliver

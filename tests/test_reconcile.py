@@ -115,7 +115,7 @@ def test_unknown_name_is_unresolved(roster_from_seed):
 def test_name_matching_two_employees_does_not_resolve(roster_from_seed):
     """If the normalized submitted name matches 2+ roster employees, the resolver
     refuses to pick one — it returns source='none' (D-21-02 uniqueness)."""
-    from app.models.roster import Employee, Roster as _R
+    from app.models.roster import Roster as _R
 
     base = _emp(roster_from_seed, "Maria Chen")
     # A second employee sharing the same full_name (a real-world duplicate).

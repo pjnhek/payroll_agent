@@ -18,6 +18,7 @@ contract that Wave 3 must satisfy.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 
 import pytest
 from fastapi.testclient import TestClient
@@ -381,8 +382,8 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
     name above U+00FF would raise UnicodeEncodeError → 500 without re.ASCII. emp_name falls
     back to item.submitted_name (LLM-extracted) when the employee was removed post-run.
     """
+    from datetime import datetime
     from decimal import Decimal
-    from datetime import datetime, timezone
 
     from app.db import repo as _repo
     from app.models.contracts import PaystubLineItem
@@ -397,7 +398,7 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
         hours_sick=Decimal("0"), hours_holiday=Decimal("0"), gross_pay=Decimal("720.00"),
         pretax_401k=Decimal("0"), fica_ss=Decimal("44.64"), fica_medicare=Decimal("10.44"),
         federal_withholding=Decimal("28.41"), state_withholding=None, net_pay=Decimal("636.51"),
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
     )
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [item])
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: {"id": run_id, "business_id": uuid.uuid4()})
@@ -517,7 +518,6 @@ def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
     redirect without calling _route_reply or any pipeline code.
     """
     from app.db import repo as _repo
-    from app.main import _route_reply as _rr
 
     run_id = uuid.uuid4()
     non_awaiting_run = {
@@ -607,7 +607,7 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
     headers so _route_reply finds the awaiting_reply run AND the FIX-5 spoof guard
     passes (from_addr == business contact email).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.db import repo as _repo
     from app.models.contracts import InboundEmail
@@ -639,7 +639,7 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
         from_addr=client_addr,
         to_addr="agent@payroll-agent.local",
         body_text="Jame Okafor 40 hours.",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: awaiting_run)
@@ -804,7 +804,9 @@ def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
     correct. Each fixture routes to its own business with zero DB coupling.
     """
     import uuid as _uuid
+
     from fastapi.testclient import TestClient
+
     from app.config import get_settings
     from app.main import app
 
@@ -864,7 +866,9 @@ def test_demo_send_test_metro_unknown_shorthand_routes_to_metro(monkeypatch):
     created under metro_uuid — not None (not the unknown_sender path).
     """
     import uuid as _uuid
+
     from fastapi.testclient import TestClient
+
     from app.config import get_settings
     from app.main import app
 
@@ -927,10 +931,9 @@ def test_demo_reset_rearming_writes_demo_sender_bindings_not_contact_email():
     2. No 'UPDATE businesses' SQL is executed anywhere — the 06-08 HIGH-2
        invariant (seed .example contacts are permanently stable) is preserved.
     """
-    import sys
-    import os
     import importlib
-    import types
+    import os
+
     from tests.conftest import FakeConnection
 
     fc = FakeConnection()

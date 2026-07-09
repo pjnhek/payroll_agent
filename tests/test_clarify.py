@@ -13,15 +13,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from app.models.contracts import Decision, InboundEmail
 from app.models.roster import NameMatchResult
 from app.pipeline.compose_email import compose_clarification
 from app.pipeline.orchestrator import run_pipeline
-
 
 # ---------------------------------------------------------------------------
 # compose_clarification — drafts a body, falls back to a template on empty content
@@ -273,7 +270,7 @@ def _seed_metrodeli_run(fake_repo, *, body="David Reyez 38 regular hours.") -> u
         from_addr="hr@metrodeli.example",
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     email_id, _ = fake_repo.insert_inbound_email(
         message_id=email.message_id,

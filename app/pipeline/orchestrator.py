@@ -39,7 +39,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.db import repo
@@ -406,7 +406,7 @@ def resume_pipeline(
                 from_addr="",
                 to_addr="",
                 body_text="",
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
 
         # D-11-02: write the consumed marker the INSTANT processing actually starts
