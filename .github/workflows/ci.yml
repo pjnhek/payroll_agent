@@ -1,5 +1,9 @@
 name: ci
 
+# Least-privilege token: lint/test only need to read the repo contents (WR-01).
+permissions:
+  contents: read
+
 on:
   push:
   workflow_dispatch:
