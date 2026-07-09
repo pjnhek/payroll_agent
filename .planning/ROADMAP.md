@@ -65,7 +65,20 @@ Plans:
   4. The full 613-test suite passes after every split with no assertion changes — only import-path updates — proving each split is behavior-neutral.
   5. No function body anywhere in the codebase imports a `_private` name from another module (e.g. `_safe_to_learn_alias`, `_is_paid`, `_norm`, `_HOURS_FIELDS`); each has been promoted to a deliberate public name at its module's boundary.
 
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+**Wave 1**
+
+- [ ] 13-01-PLAN.md — Split app/db/repo.py into the app/db/repo/ package (5 aggregate modules + facade)
+- [ ] 13-02-PLAN.md — Split app/pipeline/orchestrator.py into alias_learning/clarification/delivery + BOUND-01 promotions in reconcile_names.py/validate.py
+
+**Wave 2** *(blocked on 13-02 completion)*
+
+- [ ] 13-03-PLAN.md — Split app/main.py into app/routes/ (5 routers + pipeline_glue + templating)
+
+**Wave 3** *(blocked on 13-01/13-02/13-03 completion)*
+
+- [ ] 13-04-PLAN.md — AST-walking BOUND-01 regression guard + phase-closing full-suite verification
 
 ### Phase 14: Full Type-Checking (mypy)
 
