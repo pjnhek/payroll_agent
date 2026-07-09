@@ -28,7 +28,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps (all groups)
-        run: uv sync
+        # --locked asserts uv.lock matches pyproject.toml instead of silently
+        # re-resolving -- a stale lockfile fails the job rather than merging green.
+        run: uv sync --locked
 
       - name: Run ruff check
         run: uv run ruff check .
@@ -46,7 +48,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps (all groups)
-        run: uv sync
+        # --locked asserts uv.lock matches pyproject.toml instead of silently
+        # re-resolving -- a stale lockfile fails the job rather than merging green.
+        run: uv sync --locked
 
       # No DATABASE_URL / ALLOW_DB_RESET / ALLOW_LIVE_LLM set -- tests/conftest.py's
       # two-factor guards skip DB/live-LLM tests hermetically without either var.
