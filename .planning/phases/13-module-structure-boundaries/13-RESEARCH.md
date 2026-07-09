@@ -649,9 +649,9 @@ Not applicable — no external ecosystem shifted here; this is an internal-only 
 | A2 | The `test_needs_operator.py` `inspect.getsource(main_mod.retrigger)` test should be retargeted to `app.routes.runs.retrigger` and continues to pass unmodified in assertions (only the import target changes) | Common Pitfalls #4 | Low-Medium — if the AST structure inspected (a `set` literal) is somehow altered by the verbatim move (it shouldn't be, since D-11's move rule is copy-verbatim), the test's assertions themselves would need no change; risk is purely "did the migration checklist include this non-monkeypatch coupling point" |
 | A3 | 663 tests currently collected (verified via `pytest --collect-only`) vs. the 613 figure quoted in the phase description / CONTEXT.md — the suite has grown by 50 tests since CONTEXT.md was gathered, presumably from work between phase 12 and 13 context-gathering sessions | Summary / all references to "the test suite" | Low — STRUCT-04's requirement ("full suite passes, no assertion changes") is unaffected by the exact count; the planner should use the live count (663) as the baseline to verify against at each split commit, not a stale number |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Where do the shared `main.py` module-level constants land** (`STALE_THRESHOLD`,
+1. **RESOLVED (closed by 13-03):** **Where do the shared `main.py` module-level constants land** (`STALE_THRESHOLD`,
    `STALE_THRESHOLD_SECONDS`, `IN_FLIGHT_STATUSES`, `_DEMO_FIXTURES`, `_DEMO_FIXTURE_DEFAULT_KEY`,
    `DEMO_OPERATOR_EMAIL`, `_SEED_CONTACTS`, `_SEED_BUSINESS_IDS`)?
    - What we know: `_BADGE_CLASS`/`_BADGE_LABEL` + their filter functions have an explicit home
@@ -660,6 +660,8 @@ Not applicable — no external ecosystem shifted here; this is an internal-only 
      stranded-sweep logic inside `_resume_pipeline`'s call chain).
    - What's unclear: CONTEXT.md doesn't explicitly assign these; D-08 only covers templates/badges
      and `_build_alias_rationale_notes`.
+   - RESOLVED: 13-03 lands `STALE_THRESHOLD`/`STALE_THRESHOLD_SECONDS`/`IN_FLIGHT_STATUSES` in
+     `routes/runs.py` and the demo constants in `routes/demo.py`, per the recommendation below.
    - Recommendation: land `STALE_THRESHOLD`/`STALE_THRESHOLD_SECONDS`/`IN_FLIGHT_STATUSES` in
      `routes/runs.py` (their primary/heaviest consumer) and have `pipeline_glue.py` import them
      from there; land the demo constants (`_DEMO_FIXTURES`, `DEMO_OPERATOR_EMAIL`,
@@ -669,7 +671,7 @@ Not applicable — no external ecosystem shifted here; this is an internal-only 
      list ("Exact function-to-module assignment... bounded by D-02/D-03 invariants") extended
      analogously to the route split — the planner should make an explicit choice and record it.
 
-2. **Does the `app/db/repo/__init__.py` facade need to re-export `_scrub` specifically, or should
+2. **RESOLVED (closed by 13-01):** **Does the `app/db/repo/__init__.py` facade need to re-export `_scrub` specifically, or should
    `test_persistence.py` be retargeted instead?**
    - What we know: both are valid, individually-justifiable choices under D-01/D-14; this research
      found exactly this one cross-boundary private-name test dependency in `repo.py` (see Pitfall 2).
@@ -677,6 +679,8 @@ Not applicable — no external ecosystem shifted here; this is an internal-only 
      runtime-scope inventory because `tests/test_persistence.py` is test code, not runtime code —
      but the *mechanism* of reaching it, via the package facade, is a structural question D-01
      doesn't explicitly resolve).
+   - RESOLVED: 13-01 re-exports `_scrub` from the `app/db/repo/__init__.py` facade, per the
+     recommendation below.
    - Recommendation: re-export `_scrub` from the facade (simplest, zero test changes, consistent
      with "no assertion changes" spirit of STRUCT-04) — but flag it explicitly as a deliberate,
      individually-justified facade addition, not an accidental leak of internals.
