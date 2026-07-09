@@ -12,6 +12,8 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 ## Current State
 
+**v3 — Production-Ready Codebase — Phase 12 (CI Quality Gates) complete 2026-07-09.** Every push now runs `ruff check` + the full hermetic suite via GitHub Actions (`ci.yml`, two jobs, all branches), backed by a committed ruff config (E/F/I/B/UP/SIM @ 100 chars, py312) and a repo brought to zero lint violations with zero blanket ignores (416 fixed, incl. 46 structural nested-`with` collapses). Gates proven live: lint-red, test-red, and master-green runs captured in 12-VERIFICATION.md. Next: Phase 13 (god-file splits) under CI protection.
+
 **v2 — Production Hardening — SHIPPED 2026-07-07.** Builds on the v1.0 MVP (all 7 v1 phases, live on Render + Supabase + Resend since 2026-06-25). v2's 6 phases (7, 7.5, 8, 9, 10, 11) took the working pipeline and made its money-logic and data layer genuinely production-grade — correct under real, messy, concurrent load, not just the demo path. Every phase closed concrete audit findings by file:line.
 
 - **Live:** https://payroll-agent.onrender.com (FastAPI on Render free + Supabase Postgres + Resend email)
