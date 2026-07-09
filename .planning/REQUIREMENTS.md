@@ -11,7 +11,7 @@
 
 - [x] **CI-01**: Every push runs `ruff check` in CI and fails the build on any lint error
 - [x] **CI-02**: Every push runs the full hermetic test suite (`uv run pytest -q`) in CI and fails the build on any test failure
-- [ ] **CI-03**: A committed ruff configuration in `pyproject.toml` defines the ruleset (rule selection, line length) so local and CI results agree
+- [x] **CI-03**: A committed ruff configuration in `pyproject.toml` defines the ruleset (rule selection, line length) so local and CI results agree
 
 ### Module Structure (STRUCT)
 
