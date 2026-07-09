@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v3
 milestone_name: Production-Ready Codebase
-status: executing
-last_updated: "2026-07-09T16:10:10.822Z"
-last_activity: 2026-07-09 -- Phase 12 execution started
+status: completed
+last_updated: "2026-07-09T18:39:11.628Z"
+last_activity: "2026-07-09 -- Plan 12-04 complete: live CI red-proof captured in 12-VERIFICATION.md"
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 0
-  percent: 0
+  completed_plans: 4
+  percent: 25
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 ## Current Position
 
-Phase: 12 (ci-quality-gates) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 12
-Last activity: 2026-07-09 -- Phase 12 execution started
+Phase: 12 (ci-quality-gates) — EXECUTED (all 4 plans complete, awaiting phase verification)
+Plan: 4 of 4 (12-04 red-proof complete, human-verified)
+Status: Phase 12 execution complete
+Last activity: 2026-07-09 -- Plan 12-04 complete: live CI red-proof captured in 12-VERIFICATION.md
 
 ## Performance Metrics
 
@@ -75,6 +75,7 @@ Last activity: 2026-07-09 -- Phase 12 execution started
 | Phase 11 P07 | 35min | 1 tasks | 2 files |
 | Phase 11 P10 | 25min | 1 tasks | 2 files |
 | Phase 10 P02 | 25min | 2 tasks | 2 files |
+| Phase 12 P04 | 100min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -123,6 +124,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Surfaces A and C bypass the async /webhook/inbound route entirely and race repo.insert_inbound_email/repo.create_run directly from barrier-released OS threads (CR-01 fix).
 - [Phase ?]: N_INGEST=5 matches the app pool max_size=5 because Surfaces A/C threads are simultaneous connection HOLDERS for the full ingest transaction, unlike Surface B's brief CAS (kept at N_APPROVE=8).
 - [Phase ?]: CI schema step drops bootstrap --reset; the seeded_db fixture is the sole reset owner behind its ALLOW_DB_RESET two-factor guard (WR-04).
+- [Phase 12 P04]: Master pushed to origin (fast-forward 2eaa5fc..157633d) before the red-proof branches — the plan's assumed prior master ci.yml run did not exist (Rule 3 deviation, covered by push authorization); this triggered the repo's first-ever ci.yml run, green on both jobs
+- [Phase 12 P04]: Red-proof injections single-cause by design: one F401 (unused import sys, app/main.py) failed ONLY lint; one broken assertion (test_check_schema_cli.py) failed ONLY test — both locally verified pre-push, human-verified live, branches deleted per D-14 (run history persists)
 
 ### Pending Todos
 
@@ -179,9 +182,9 @@ pending scenarios.*
 
 ## Session Continuity
 
-Last session: 2026-07-08T23:21:47.982Z
-Stopped at: Phase 12 context gathered
-Resume file: .planning/phases/12-ci-quality-gates/12-CONTEXT.md
+Last session: 2026-07-09T18:39:11.622Z
+Stopped at: Completed 12-04-PLAN.md (phase 12 execution complete)
+Resume file: None
 
 ## Operator Next Steps
 
