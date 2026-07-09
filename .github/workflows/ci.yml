@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+# lint/test runs are safely cancellable (unlike deploy-migrate's mid-flight DDL,
+# which must finish once started) -- cancel superseded runs on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: "Lint (ruff check)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (all groups)
+        run: uv sync
+
+      - name: Run ruff check
+        run: uv run ruff check .
+
+  test:
+    name: "Test suite (hermetic)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (all groups)
+        run: uv sync
+
+      # No DATABASE_URL / ALLOW_DB_RESET / ALLOW_LIVE_LLM set -- tests/conftest.py's
+      # two-factor guards skip DB/live-LLM tests hermetically without either var.
+      - name: Run test suite
+        run: uv run pytest -q
