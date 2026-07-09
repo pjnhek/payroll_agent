@@ -34,7 +34,13 @@
   3. A committed ruff configuration in `pyproject.toml` defines the ruleset (rule selection, line length) so a local `uv run ruff check` and the CI run agree byte-for-byte on results.
   4. Pushing a branch with a deliberately injected lint error (e.g. an unused import) shows CI going red on the lint step, and a deliberately broken test shows CI going red on the test step — both demonstrated, not just configured.
 
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 12-01-PLAN.md — Committed ruff config (pyproject.toml) + mechanical autofix pass across the repo, suite verified green
+- [ ] 12-02-PLAN.md — Hand-fix remaining ruff violations (TYPE_CHECKING, exception chaining, SIM117, E501) to a fully green `ruff check`
+- [ ] 12-03-PLAN.md — ci.yml workflow (lint + test jobs) and README CI badge
+- [ ] 12-04-PLAN.md — Red-proof checkpoint: push throwaway branches, capture red/green run URLs, delete branches
 
 ### Phase 13: Module Structure & Boundaries
 
