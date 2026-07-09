@@ -88,7 +88,8 @@ def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, mon
     monkeypatch.undo()
     final = fake_repo.load_run(run_id)
     assert final["status"] == "error", (
-        f"a load_run failure after claim must route to ERROR, not stay at APPROVED; got {final['status']}"
+        f"a load_run failure after claim must route to ERROR, not stay at APPROVED; "
+        f"got {final['status']}"
     )
     assert final.get("error_reason"), "ERROR must carry an error_reason (PII-safe exception type)"
 

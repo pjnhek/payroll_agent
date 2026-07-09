@@ -320,8 +320,8 @@ def test_multi_round_context_preserves_round1_correction(fake_repo, mock_llm):
     # (D-11-12) -- a real extraction model reading that accumulated context
     # reads the CLIENT'S STATED CORRECTION (30), not the stale original (40).
     # The mock reflects this: Round-1's reply text is now genuinely present in
-    # the extraction input (proven directly by
-    # tests/test_combined_context.py::test_consumed_marker_from_resume_drives_next_round_accumulation),
+    # the extraction input (proven directly by test_combined_context.py::
+    # test_consumed_marker_from_resume_drives_next_round_accumulation),
     # so scripting the model's response as 30 here matches what accumulation
     # produces at runtime.
     _r2_combined = _extraction_json(

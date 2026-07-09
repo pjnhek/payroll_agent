@@ -54,14 +54,21 @@ def main() -> None:
             _counts(c)
 
         elif mode == "--purge-all":
-            print("DESTRUCTIVE: this deletes ALL runs + email_messages. Type 'PURGE' to confirm: ", end="")
+            print(
+                "DESTRUCTIVE: this deletes ALL runs + email_messages. "
+                "Type 'PURGE' to confirm: ",
+                end="",
+            )
             try:
                 confirm = input().strip()
             except EOFError:
                 # Non-interactive shell (e.g. piped/heredoc). Require --yes to proceed.
                 confirm = "PURGE" if "--yes" in args else ""
             if confirm != "PURGE":
-                print("Aborted (no confirmation). Re-run and type PURGE, or add --yes for non-interactive.")
+                print(
+                    "Aborted (no confirmation). Re-run and type PURGE, "
+                    "or add --yes for non-interactive."
+                )
                 return
             # payroll_runs and email_messages have a CIRCULAR FK
             # (payroll_runs.source_email_id -> email_messages.id, and

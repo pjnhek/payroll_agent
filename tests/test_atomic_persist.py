@@ -502,7 +502,9 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
     run_id = _seed_live_run(body="Maria Chen 40 regular 2 overtime")
     repo.set_status(run_id, RunStatus.AWAITING_REPLY)
 
-    snapshot = _live_snapshot_extracted("Maria Chen", run_id, hours_regular="40", hours_overtime="2")
+    snapshot = _live_snapshot_extracted(
+        "Maria Chen", run_id, hours_regular="40", hours_overtime="2"
+    )
     repo.set_pre_clarify_extracted(run_id, snapshot)
     prior_match = NameMatchResult(
         submitted_name="Maria Chen",

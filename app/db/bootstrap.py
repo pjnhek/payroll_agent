@@ -146,8 +146,13 @@ def bootstrap(reset: bool = False) -> None:
         # CREATE, but an existing table keeps the column until an explicit ALTER. Drop
         # it here on every apply; IF EXISTS makes it a no-op once gone (confidence is
         # fully removed in 2.1 — provenance is employee_id + submitted_name).
-        print("  ALTER TABLE paystub_line_items DROP COLUMN IF EXISTS match_confidence  (D-21-06 dead-column migration)")
-        conn.execute("ALTER TABLE IF EXISTS paystub_line_items DROP COLUMN IF EXISTS match_confidence;")
+        print(
+            "  ALTER TABLE paystub_line_items DROP COLUMN IF EXISTS match_confidence "
+            " (D-21-06 dead-column migration)"
+        )
+        conn.execute(
+            "ALTER TABLE IF EXISTS paystub_line_items DROP COLUMN IF EXISTS match_confidence;"
+        )
         conn.commit()
 
         # Apply the full DDL source of truth atomically.

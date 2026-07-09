@@ -66,7 +66,8 @@ class Employee(BaseModel):
 
     # Pay schedule — mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52))
     # so an eval fixture / LLM-produced value can't drift past the contract (WR-02).
-    pay_periods_per_year: Literal[12, 24, 26, 52]  # 52=weekly, 26=biweekly, 24=semi-monthly, 12=monthly
+    # 52=weekly, 26=biweekly, 24=semi-monthly, 12=monthly
+    pay_periods_per_year: Literal[12, 24, 26, 52]
 
     # ------------------------------------------------------------------
     # D-10 / FOUND-06 compensation invariant

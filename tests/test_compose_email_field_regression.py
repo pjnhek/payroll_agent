@@ -74,7 +74,9 @@ def test_field_regression_line_present_when_other_clarification_coexists():
     body = compose_clarification(decision, llm=llm)
 
     assert "Bob Smith" in body, "unresolved name must appear"
-    assert "hours_overtime" in body, "N5: field-regression line must appear even with unresolved names"
+    assert "hours_overtime" in body, (
+        "N5: field-regression line must appear even with unresolved names"
+    )
 
 
 def test_field_regression_line_dotted_submitted_name():
@@ -109,9 +111,10 @@ def test_field_regression_line_d7509_wording():
 
     body = compose_clarification(decision, llm=llm)
 
-    assert "Reply with the hours_overtime hours for Alice Johnson, or 'none' to confirm zero." in body, (
-        "D-7.5-09 wording lock: exact question must appear in the template path"
-    )
+    assert (
+        "Reply with the hours_overtime hours for Alice Johnson, or 'none' to confirm zero."
+        in body
+    ), "D-7.5-09 wording lock: exact question must appear in the template path"
 
 
 def test_d7509_wording_present_even_when_llm_draft_nonempty():

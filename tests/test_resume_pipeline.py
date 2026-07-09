@@ -260,7 +260,9 @@ def test_n1_single_run_stages_call(fake_repo, mock_llm, monkeypatch):
 
     # Script: extraction (no field regression → process)
     mock_llm.script = [
-        _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "2"}]),
+        _extraction_json(
+            [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "2"}]
+        ),
         _suggestion_json({}),
         "Thank you for your reply.",  # draft body (fallback)
     ]
@@ -302,7 +304,9 @@ def test_n2_asked_written_before_send(fake_repo, mock_llm, monkeypatch):
 
     def _spy_clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarification"):
         ordering.append("_clarify")
-        return original_clarify(run_id, email, decision, roster, extracted, llm=llm, purpose=purpose)
+        return original_clarify(
+            run_id, email, decision, roster, extracted, llm=llm, purpose=purpose
+        )
 
     monkeypatch.setattr(orch_mod, "_clarify", _spy_clarify)
 
@@ -440,7 +444,9 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
     orch_mod._deliver(run_id, run_dict)
 
     # Assert the confirmation saw the same OT=2 paystub
-    assert confirmation_items_received, "compose_confirmation must have been called with paystub items"
+    assert confirmation_items_received, (
+        "compose_confirmation must have been called with paystub items"
+    )
     conf_ot = confirmation_items_received[0].hours_overtime
     assert conf_ot == Decimal("2"), (
         f"D-7.5-04b: confirmation must use paystub with OT=2; got {conf_ot!r}. "
@@ -662,7 +668,9 @@ def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
     )
 
     clarified = fake_repo.load_clarified_fields(run_id)
-    assert CHEN_ID_STR in clarified, "R3-3: clarified_fields must have entry for Maria Chen's employee_id"
+    assert CHEN_ID_STR in clarified, (
+        "R3-3: clarified_fields must have entry for Maria Chen's employee_id"
+    )
     assert clarified[CHEN_ID_STR].get("hours_overtime") == "asked", (
         f"R3-3: hours_overtime must be 'asked'; got {clarified[CHEN_ID_STR]!r}"
     )
@@ -902,14 +910,17 @@ def test_client_supplied_same_value_labeled_correctly(fake_repo, mock_llm):
     Assert: clarified_fields outcome for hours_overtime is 'client_supplied' NOT 'carried_forward'.
     Assert: run at AWAITING_APPROVAL.
 
-    R2-3 fix proof: classify-first reads raw reply before backfill; present-positive → client_supplied.
+    R2-3 fix proof: classify-first reads raw reply before backfill; present-positive
+    → client_supplied.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
     # Round-2 reply: OT=Decimal('2') (same value as snapshot — client re-confirms)
     # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
-    _r2_ot2 = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "2"}])
+    _r2_ot2 = _extraction_json(
+        [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "2"}]
+    )
     mock_llm.script = [_r2_ot2, _r2_ot2]
 
     reply = _inbound("Maria Chen 40 regular 2 overtime (same as last week)")
@@ -926,7 +937,8 @@ def test_client_supplied_same_value_labeled_correctly(fake_repo, mock_llm):
         f"R2-3 fix proof: OT=2 (same as snapshot) in RAW reply must be 'client_supplied', "
         f"NOT 'carried_forward'; got {outcome!r}. "
         "Before fix: post-decide classifier saw backfilled data → mislabeled as carried_forward. "
-        "After fix: classify-first reads raw reply before backfill → present-positive → client_supplied."
+        "After fix: classify-first reads raw reply before backfill → present-positive → "
+        "client_supplied."
     )
 
 
@@ -1037,14 +1049,17 @@ def test_answered_explicit_zero_not_rebackfilled(fake_repo, mock_llm):
     # backfill_extracted: (emp_id_str, 'hours_overtime') in resolved_drops (= backfill_skip;
     # confirmed_dropped IS in backfill_skip) → SKIP backfill.
     # Paystub OT=0 (or absent), not OT=2.
-    # NOTE: confirmed_dropped is in BOTH suppress_detection (for N8) AND backfill_skip (for backfill guard).
-    # carried_forward is in suppress_detection ONLY (NOT backfill_skip) → backfill FILLS → OT=2 in test 13.
+    # NOTE: confirmed_dropped is in BOTH suppress_detection (for N8) AND backfill_skip
+    # (for backfill guard). carried_forward is in suppress_detection ONLY (NOT
+    # backfill_skip) → backfill FILLS → OT=2 in test 13.
     #
-    # The naive "also suppress on asked" patch would NOT protect this: if we had added 'asked'
-    # to _resolved_by_name without classify-first, the suppress set is populated but backfill_extracted
-    # doesn't know whether to skip because the set only blocks re-detection, not re-backfill.
-    # The actual fix is that classify-first determines confirmed_dropped (not just 'suppress for asked')
-    # so backfill_extracted's check (emp_id_str, field) in resolved_drops correctly excludes it.
+    # The naive "also suppress on asked" patch would NOT protect this: if we had added
+    # 'asked' to _resolved_by_name without classify-first, the suppress set is populated
+    # but backfill_extracted doesn't know whether to skip because the set only blocks
+    # re-detection, not re-backfill.
+    # The actual fix is that classify-first determines confirmed_dropped (not just
+    # 'suppress for asked') so backfill_extracted's check (emp_id_str, field) in
+    # resolved_drops correctly excludes it.
     # Test FAILS if paystub OT=2 (re-backfilled — OVERPAY).
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
@@ -1055,7 +1070,9 @@ def test_answered_explicit_zero_not_rebackfilled(fake_repo, mock_llm):
     # Both return OT=0 here. The reply-only classify step sees Decimal('0') →
     # confirmed_dropped → backfill_skip. The combined step also sees OT=0 (no
     # restoration from snapshot). Paystub OT=0.
-    _r2_zero = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "0"}])
+    _r2_zero = _extraction_json(
+        [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "0"}]
+    )
     mock_llm.script = [_r2_zero, _r2_zero]
 
     reply = _inbound("Maria Chen 40 regular hours, 0 overtime this week")
@@ -1077,8 +1094,9 @@ def test_answered_explicit_zero_not_rebackfilled(fake_repo, mock_llm):
             assert ot != Decimal("2"), (
                 f"D-7.5-11 OVERPAY GUARD: explicit-zero OT=0 must NOT be re-backfilled to 2; "
                 f"got {ot!r}. "
-                "_is_paid(Decimal('0')) is False so explicit-zero looks backfillable by value alone; "
-                "the resolved_drops gate (confirmed_dropped in backfill_skip) is the protection."
+                "_is_paid(Decimal('0')) is False so explicit-zero looks backfillable by value "
+                "alone; the resolved_drops gate (confirmed_dropped in backfill_skip) is the "
+                "protection."
             )
 
     # Assertion 3: clarified_fields outcome is 'confirmed_dropped'
@@ -1109,8 +1127,10 @@ def test_answered_positive_uses_client_value(fake_repo, mock_llm):
     # D-7.5-11 client_supplied proof: positive answered field uses the client's value.
     # classify-first: OT=Decimal('5') in raw reply → present-positive → client_supplied.
     # (emp_id_str, 'hours_overtime') added to suppress_detection.
-    # backfill_extracted: field in resolved_drops (= backfill_skip; client_supplied IS in backfill_skip) → SKIP backfill.
-    # NOTE: client_supplied is in BOTH suppress_detection (for N8) AND backfill_skip (for backfill guard).
+    # backfill_extracted: field in resolved_drops (= backfill_skip; client_supplied IS in
+    # backfill_skip) → SKIP backfill.
+    # NOTE: client_supplied is in BOTH suppress_detection (for N8) AND backfill_skip
+    # (for backfill guard).
     # BUT the raw extracted already has OT=5, so _compute_line_items uses OT=5.
     # Paystub OT=5 (client value), labeled 'client_supplied'.
     """
@@ -1121,7 +1141,9 @@ def test_answered_positive_uses_client_value(fake_repo, mock_llm):
     # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
     # Both return OT=5 here. The reply-only classify step sees Decimal('5') > 0 →
     # client_supplied → backfill_skip. Paystub uses raw extracted OT=5.
-    _r2_ot5 = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "5"}])
+    _r2_ot5 = _extraction_json(
+        [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "5"}]
+    )
     mock_llm.script = [_r2_ot5, _r2_ot5]
 
     reply = _inbound("Maria Chen 40 regular 5 overtime hours this week")
@@ -1250,7 +1272,8 @@ def test_cr02_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
     assert len(field_reg_rows) >= 1, (
         f"CR-02 fix: a clarification_field_regression outbound email must be sent; "
         f"found {len(field_reg_rows)} such rows. "
-        "_defer_field_regression_clarification() must call _clarify with purpose='clarification_field_regression'."
+        "_defer_field_regression_clarification() must call _clarify with "
+        "purpose='clarification_field_regression'."
     )
 
     # Assertion 3: 'asked' must be written for the NEW drop (hours_holiday) BEFORE the send
@@ -1259,7 +1282,8 @@ def test_cr02_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
     assert hours_holiday_outcome == "asked", (
         f"CR-02 fix: hours_holiday must be 'asked' in clarified_fields (written before send, N2); "
         f"got {hours_holiday_outcome!r}. "
-        "_defer_field_regression_clarification must write 'asked' for the NEW field_regression drop."
+        "_defer_field_regression_clarification must write 'asked' for the NEW "
+        "field_regression drop."
     )
 
     # Assertion 4: hours_overtime outcome must be 'client_supplied' (answered in Round-2 classify)
@@ -1274,7 +1298,9 @@ def test_cr02_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
 # Test 17 — test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock
 # ---------------------------------------------------------------------------
 
-def test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock(fake_repo, mock_llm, monkeypatch):
+def test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
+    fake_repo, mock_llm, monkeypatch
+):
     """CR-01 fix: classify uses REPLY-ONLY extraction, not combined body.
 
     Test approach: PROMPT-INSPECTING MOCK (not ALLOW_LIVE_LLM).

@@ -413,6 +413,8 @@ def test_in03_field_regression_lines_normal_case_still_works():
     result = _field_regression_lines(reasons)
     assert len(result) == 2, "Normal dotted gate_reasons must still produce lines"
     assert "M. Chen" in result[0], "rsplit last-dot must parse 'M. Chen' as submitted_name"
-    assert "hours_overtime" in result[0], "rsplit last-dot must parse 'hours_overtime' as field_name"
+    assert "hours_overtime" in result[0], (
+        "rsplit last-dot must parse 'hours_overtime' as field_name"
+    )
     assert "Alice" in result[1]
     assert "hours_regular" in result[1]

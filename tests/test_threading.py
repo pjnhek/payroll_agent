@@ -322,7 +322,9 @@ def test_partial_reply_preserves_hours():
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         monkey.setattr(orchestrator, "extract", _spy_extract)
-        monkey.setattr(orchestrator, "reconcile_names", lambda names, roster, **kw: _stub_matches(names))
+        monkey.setattr(
+            orchestrator, "reconcile_names", lambda names, roster, **kw: _stub_matches(names)
+        )
         monkey.setattr(orchestrator, "validate", lambda *a, **kw: [])
         monkey.setattr(orchestrator, "decide", lambda *a, **kw: _stub_decision_process())
 

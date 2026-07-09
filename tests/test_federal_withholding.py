@@ -478,7 +478,8 @@ def test_bracket_boundary_at_B() -> None:
 
 
 def test_bracket_boundary_below_B() -> None:
-    """R2-4(b): annual_wage = B - $0.01 -> _find_bracket returns row whose lower < B (lower bracket)."""
+    """R2-4(b): annual_wage = B - $0.01 -> _find_bracket returns row whose lower < B
+    (lower bracket)."""
     wage_below = _BOUNDARY_B - Decimal("0.01")  # 19899.99
     row = _find_bracket(wage_below, STANDARD_BRACKETS["single"])
     assert row.lower < _BOUNDARY_B, (
@@ -494,7 +495,8 @@ def test_bracket_boundary_below_B() -> None:
 
 
 def test_bracket_boundary_above_B() -> None:
-    """R2-4(c): annual_wage = B + $0.01 -> _find_bracket returns same row as B (stable just above boundary)."""
+    """R2-4(c): annual_wage = B + $0.01 -> _find_bracket returns same row as B
+    (stable just above boundary)."""
     wage_above = _BOUNDARY_B + Decimal("0.01")  # 19900.01
     row = _find_bracket(wage_above, STANDARD_BRACKETS["single"])
     assert row.lower == _BOUNDARY_B, (
@@ -1130,7 +1132,8 @@ def test_federal_withholding_thomas_bergmann_over_ceiling(thomas_bergmann) -> No
     )
     assert item.gross_pay == Decimal("9230.77"), f"gross {item.gross_pay} != 9230.77"
     assert item.pretax_401k == Decimal("738.46"), f"401k {item.pretax_401k} != 738.46"
-    # Over-ceiling federal withholding, verified penny-exact against paycheckcity.com (pre-tax 401k).
+    # Over-ceiling federal withholding, verified penny-exact against paycheckcity.com
+    # (pre-tax 401k).
     assert item.federal_withholding == Decimal("881.39"), (
         f"over-ceiling federal withholding {item.federal_withholding} != 881.39 "
         "(layer-B oracle: paycheckcity.com pre-tax-401k = $881.39, penny-exact)"

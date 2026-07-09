@@ -112,7 +112,8 @@ def test_detect_regression_ot_absent():
 
 
 def test_explicit_drop_zero_resumed_value():
-    """D-26: resumed hours_overtime=Decimal('0') → RawFieldDrop with resumed_value=Decimal('0'), NOT None.
+    """D-26: resumed hours_overtime=Decimal('0') → RawFieldDrop with
+    resumed_value=Decimal('0'), NOT None.
 
     explicit zero preserved — confirmed_dropped signal must survive.
     """
@@ -150,13 +151,19 @@ def test_predicate_consistency_ot_zero_and_absent():
     current_matches = [_match("Alice", alice_id)]
 
     # Case A: OT 2 -> 0 (explicit zero)
-    original_a = _extracted([ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("2"))])
-    resumed_zero = _extracted([ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("0"))])
+    original_a = _extracted(
+        [ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("2"))]
+    )
+    resumed_zero = _extracted(
+        [ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("0"))]
+    )
     drops_zero = detect_field_regression(original_a, resumed_zero, prior_matches, current_matches)
 
     # Case B: OT 2 -> absent (None)
     resumed_absent = _extracted([ExtractedEmployee(submitted_name="Alice", hours_overtime=None)])
-    drops_absent = detect_field_regression(original_a, resumed_absent, prior_matches, current_matches)
+    drops_absent = detect_field_regression(
+        original_a, resumed_absent, prior_matches, current_matches
+    )
 
     assert len(drops_zero) == 1, "D-25: OT 2->0 must produce a RawFieldDrop"
     assert len(drops_absent) == 1, "D-25: OT 2->absent must produce a RawFieldDrop"
@@ -176,7 +183,9 @@ def test_restated_name_same_employee_id_is_detected():
     current_matches = [_match("Maria Chen", chen_id)]
 
     # Original run: 'M. Chen' with OT=2
-    original = _extracted([ExtractedEmployee(submitted_name="M. Chen", hours_overtime=Decimal("2"))])
+    original = _extracted(
+        [ExtractedEmployee(submitted_name="M. Chen", hours_overtime=Decimal("2"))]
+    )
     # Resumed run: 'Maria Chen' with no OT
     resumed = _extracted([ExtractedEmployee(submitted_name="Maria Chen", hours_overtime=None)])
 
@@ -201,7 +210,9 @@ def test_re_resolution_different_employee_id_is_skipped():
     prior_matches = [_match("M. Chen", employee_a)]
     current_matches = [_match("M. Chen", employee_b)]
 
-    original = _extracted([ExtractedEmployee(submitted_name="M. Chen", hours_overtime=Decimal("2"))])
+    original = _extracted(
+        [ExtractedEmployee(submitted_name="M. Chen", hours_overtime=Decimal("2"))]
+    )
     resumed = _extracted([ExtractedEmployee(submitted_name="M. Chen", hours_overtime=None)])
 
     drops = detect_field_regression(original, resumed, prior_matches, current_matches)
@@ -329,7 +340,8 @@ def test_resolved_drops_suppression_is_per_field():
 
 
 def test_any_hours_gate_sees_backfilled_data():
-    """D-7.5-10 gate assignment: validate() receives BACKFILLED extracted (after orchestrator backfill).
+    """D-7.5-10 gate assignment: validate() receives BACKFILLED extracted
+    (after orchestrator backfill).
 
     An employee whose OT was backfilled from snapshot (hours_overtime=2, all others None)
     is NOT flagged as missing by the any_hours gate — the backfilled value is present.

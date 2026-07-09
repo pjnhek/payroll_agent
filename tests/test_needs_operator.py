@@ -267,7 +267,8 @@ def test_escalation_transaction_writes_only_status():
         return [
             _call_name(stmt)
             for stmt in ast.walk(node)
-            if _call_name(stmt) in ("set_status", "set_clarification_round", "set_pre_clarify_extracted")
+            if _call_name(stmt)
+            in ("set_status", "set_clarification_round", "set_pre_clarify_extracted")
         ]
 
     escalation_blocks = [

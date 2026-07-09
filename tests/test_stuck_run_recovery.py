@@ -268,13 +268,12 @@ def _backdate_updated_at(run_id: uuid.UUID, seconds_ago: int) -> None:
     exposes a raw updated_at write, since every writer sets it to now()."""
     from app.db.supabase import get_connection
 
-    with get_connection() as conn:
-        with conn.transaction():
-            conn.execute(
-                "UPDATE payroll_runs SET updated_at = now() - (%s || ' seconds')::interval"
-                " WHERE id = %s",
-                (str(seconds_ago), str(run_id)),
-            )
+    with get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE payroll_runs SET updated_at = now() - (%s || ' seconds')::interval"
+            " WHERE id = %s",
+            (str(seconds_ago), str(run_id)),
+        )
 
 
 @pytest.mark.integration

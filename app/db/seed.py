@@ -304,23 +304,22 @@ def seed(dry_run: bool = False) -> SeedResult:
     # Live path — requires DATABASE_URL to be set in the environment
     from app.db.supabase import get_connection
 
-    with get_connection() as conn:
-        # All writes in a SINGLE explicit transaction (Finding #10 — atomic; no
-        # orphaned rows on partial failure)
-        with conn.transaction():
-            # ----------------------------------------------------------------
-            # 1. Upsert businesses on the PRIMARY KEY id (WR-06).
-            #    The fixed b0000001-… literals are the stable identity that
-            #    employees.business_id references, so conflicting on id keeps
-            #    that FK intact on re-seed.  contact_email is treated as a
-            #    plain updatable column (it has its own UNIQUE constraint in
-            #    schema.sql).  Conflicting on contact_email instead would let a
-            #    pre-existing row with the same email but a different id keep
-            #    its old id, breaking the subsequent employee FK insert.
-            # ----------------------------------------------------------------
-            for biz in _BUSINESSES:
-                conn.execute(
-                    """
+    # All writes in a SINGLE explicit transaction (Finding #10 — atomic; no
+    # orphaned rows on partial failure)
+    with get_connection() as conn, conn.transaction():
+        # ----------------------------------------------------------------
+        # 1. Upsert businesses on the PRIMARY KEY id (WR-06).
+        #    The fixed b0000001-… literals are the stable identity that
+        #    employees.business_id references, so conflicting on id keeps
+        #    that FK intact on re-seed.  contact_email is treated as a
+        #    plain updatable column (it has its own UNIQUE constraint in
+        #    schema.sql).  Conflicting on contact_email instead would let a
+        #    pre-existing row with the same email but a different id keep
+        #    its old id, breaking the subsequent employee FK insert.
+        # ----------------------------------------------------------------
+        for biz in _BUSINESSES:
+            conn.execute(
+                """
                     INSERT INTO businesses (id, name, contact_email, pay_period)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE
@@ -329,26 +328,26 @@ def seed(dry_run: bool = False) -> SeedResult:
                           pay_period    = EXCLUDED.pay_period,
                           updated_at    = now()
                     """,
-                    (
-                        str(biz["id"]),
-                        biz["name"],
-                        biz["contact_email"],
-                        biz["pay_period"],
-                    ),
-                )
+                (
+                    str(biz["id"]),
+                    biz["name"],
+                    biz["contact_email"],
+                    biz["pay_period"],
+                ),
+            )
 
-            # ----------------------------------------------------------------
-            # 2. Upsert employees via (business_id, full_name) natural key (D-11)
-            #    UNIQUE(business_id, full_name) constraint is named
-            #    uq_employee_business_name in schema.sql (Plan 02 Finding #1).
-            #    ON CONFLICT updates every mutable field + updated_at.
-            # ----------------------------------------------------------------
-            for emp in _EMPLOYEES:
-                # psycopg adapts Pydantic-native Decimal/list/bool values directly
-                # (IN-08): no model_dump is called here. Decimal -> numeric,
-                # list[str] -> TEXT[] (including the empty-list case), bool -> boolean.
-                conn.execute(
-                    """
+        # ----------------------------------------------------------------
+        # 2. Upsert employees via (business_id, full_name) natural key (D-11)
+        #    UNIQUE(business_id, full_name) constraint is named
+        #    uq_employee_business_name in schema.sql (Plan 02 Finding #1).
+        #    ON CONFLICT updates every mutable field + updated_at.
+        # ----------------------------------------------------------------
+        for emp in _EMPLOYEES:
+            # psycopg adapts Pydantic-native Decimal/list/bool values directly
+            # (IN-08): no model_dump is called here. Decimal -> numeric,
+            # list[str] -> TEXT[] (including the empty-list case), bool -> boolean.
+            conn.execute(
+                """
                     INSERT INTO employees (
                         id, business_id, full_name, known_aliases,
                         pay_type, hourly_rate, annual_salary,
@@ -379,24 +378,24 @@ def seed(dry_run: bool = False) -> SeedResult:
                           pay_periods_per_year        = EXCLUDED.pay_periods_per_year,
                           updated_at                  = now()
                     """,
-                    (
-                        str(emp.id),
-                        str(emp.business_id),
-                        emp.full_name,
-                        emp.known_aliases,  # psycopg maps list[str] to TEXT[]
-                        emp.pay_type,
-                        emp.hourly_rate,
-                        emp.annual_salary,
-                        emp.retirement_contribution_pct,
-                        emp.filing_status,
-                        emp.step_2_checkbox,
-                        emp.step_3_dependents,
-                        emp.step_4a_other_income,
-                        emp.step_4b_deductions,
-                        emp.ytd_ss_wages,
-                        emp.pay_periods_per_year,
-                    ),
-                )
+                (
+                    str(emp.id),
+                    str(emp.business_id),
+                    emp.full_name,
+                    emp.known_aliases,  # psycopg maps list[str] to TEXT[]
+                    emp.pay_type,
+                    emp.hourly_rate,
+                    emp.annual_salary,
+                    emp.retirement_contribution_pct,
+                    emp.filing_status,
+                    emp.step_2_checkbox,
+                    emp.step_3_dependents,
+                    emp.step_4a_other_income,
+                    emp.step_4b_deductions,
+                    emp.ytd_ss_wages,
+                    emp.pay_periods_per_year,
+                ),
+            )
 
     print(f"Seeded {len(_BUSINESSES)} businesses, {len(_EMPLOYEES)} employees.")
     return result

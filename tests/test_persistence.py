@@ -97,7 +97,9 @@ def test_calc_gross_and_net_hourly():
     assert item.fica_ss == Decimal("45.88")  # 740 * 0.062
     assert item.fica_medicare == Decimal("10.73")  # 740 * 0.0145
     # Phase 3: net_pay = gross - fica_ss - fica_medicare - federal_withholding (real)
-    expected_net = (item.gross_pay - item.fica_ss - item.fica_medicare - item.federal_withholding).quantize(Decimal("0.01"))
+    expected_net = (
+        item.gross_pay - item.fica_ss - item.fica_medicare - item.federal_withholding
+    ).quantize(Decimal("0.01"))
     assert item.net_pay == expected_net  # net is now real (includes federal withholding)
 
 

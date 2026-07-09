@@ -141,7 +141,8 @@ def _resolved_hours(resolved: dict) -> dict[str, Decimal]:
 
 
 class PayrollCalculationError(Exception):
-    """Raised by _raise_if_reconciliation_drift() when net + taxes + deductions does not tie to gross.
+    """Raised by _raise_if_reconciliation_drift() when net + taxes + deductions
+    does not tie to gross.
 
     This is an arithmetic backstop (CALC-08), NOT the correctness oracle for tax math.
     A transcription bug in tax_tables_2026.py can produce internally-consistent but
@@ -158,7 +159,8 @@ def _raise_if_reconciliation_drift(
     federal_withholding: Decimal,
     net_pay: Decimal,
 ) -> None:
-    """Arithmetic backstop (CALC-08): raise PayrollCalculationError if net + taxes + deductions != gross.
+    """Arithmetic backstop (CALC-08): raise PayrollCalculationError if
+    net + taxes + deductions != gross.
 
     This is a pure arithmetic identity check, NOT a tax-correctness oracle.
     A transcription error in tax_tables_2026.py can produce a self-consistent but
@@ -172,7 +174,9 @@ def _raise_if_reconciliation_drift(
     so it is not included in the parameters — the caller reconstructs from these six values.
     """
     _state_wh = Decimal("0")  # state_withholding is always None in Phase 3
-    _reconstructed = _money(net_pay + pretax_401k + fica_ss + fica_medicare + federal_withholding + _state_wh)
+    _reconstructed = _money(
+        net_pay + pretax_401k + fica_ss + fica_medicare + federal_withholding + _state_wh
+    )
     if _reconstructed != gross:
         raise PayrollCalculationError(
             f"Reconciliation failed: reconstructed={_reconstructed} != gross={gross}. "
@@ -269,7 +273,8 @@ def calculate(
     # (wages above $184,500 in prior periods), this proxy UNDER-FLAGS — accepted limitation
     # of the static-seed model (no per-employee YTD Medicare ledger in Phase 3).
     # R2-2 note: ytd_ss_wages is capped at $184,500 (the SS wage base) in any real run —
-    # it CANNOT legitimately exceed that cap. Tests must use realistic values (ytd_ss_wages <= 184500).
+    # it CANNOT legitimately exceed that cap. Tests must use realistic values
+    # (ytd_ss_wages <= 184500).
     # WR-03 (review round 2): the Additional Medicare 0.9% surtax threshold is filing-status
     # specific per the IRS — $200k (single), $250k (MFJ), $125k (MFS). The flag is now
     # status-aware so it matches the documented thresholds (the prior flat $200k over-flagged

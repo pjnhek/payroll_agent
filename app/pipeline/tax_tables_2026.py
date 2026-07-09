@@ -184,6 +184,6 @@ STEP1_STANDARD: dict[str, Decimal] = {
 # ---------------------------------------------------------------------------
 
 SS_RATE: Decimal = Decimal("0.062")          # Social Security employee rate: 6.2%
-SS_WAGE_BASE: Decimal = Decimal("184500")    # 2026 SS wage base ($184,500; up from $176,100 in 2025)
+SS_WAGE_BASE: Decimal = Decimal("184500")    # 2026 SS wage base ($184,500; up from $176,100)
 MEDICARE_RATE: Decimal = Decimal("0.0145")   # Medicare employee rate: 1.45% (no wage cap)
 # Note: Additional Medicare 0.9% surtax over $200,000 is NOT modeled (out of scope for demo wages).

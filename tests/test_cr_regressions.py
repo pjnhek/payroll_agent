@@ -448,7 +448,9 @@ def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
     }
     run["pre_clarify_extracted"] = {"employees": [], "pay_period_start": "2026-06-15"}
     run["clarification_round"] = 2
-    run["alias_candidates"] = {"Bobby": {"suggested": "e0000001-0000-0000-0000-000000000001", "bound": None}}
+    run["alias_candidates"] = {
+        "Bobby": {"suggested": "e0000001-0000-0000-0000-000000000001", "bound": None}
+    }
     return run_id
 
 

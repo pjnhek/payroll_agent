@@ -391,7 +391,9 @@ def test_concurrent_distinct_runs_no_lost_update(seeded_db, monkeypatch):
         )
         rows = cur.fetchall()
 
-    assert len(rows) == N_INGEST, f"expected {N_INGEST} run rows for the distinct ingests, got {len(rows)}"
+    assert len(rows) == N_INGEST, (
+        f"expected {N_INGEST} run rows for the distinct ingests, got {len(rows)}"
+    )
     for run_pk, source_email_id, matched_email_pk in rows:
         assert source_email_id is not None, (
             f"run {run_pk} has a null source_email_id — half-written state "

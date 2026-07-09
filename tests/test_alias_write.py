@@ -281,7 +281,10 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "get_outbound_for_round",
-        lambda run_id, purpose=None, round=0, conn=None: {"message_id": existing_mid, "round": round},
+        lambda run_id, purpose=None, round=0, conn=None: {
+            "message_id": existing_mid,
+            "round": round,
+        },
         raising=False,
     )
     monkeypatch.setattr(
@@ -825,8 +828,10 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     # Track load_run call count to return different data pre/post.
     # Call sequence in resume_pipeline:
     #   call 1: load_run for metadata (business_id) — returns pre-reconciliation
-    #   call 2: pre_run_data = load_run (pre-snapshot before _run_stages) — returns pre-reconciliation
-    #   call 3: post_run_data = load_run (post-snapshot after _run_stages) — returns post-reconciliation
+    #   call 2: pre_run_data = load_run (pre-snapshot before _run_stages) — returns
+    #           pre-reconciliation
+    #   call 3: post_run_data = load_run (post-snapshot after _run_stages) — returns
+    #           post-reconciliation
     _load_run_calls = [0]
     _set_alias_candidates_calls: list = []
 
@@ -906,7 +911,9 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
     # D-7.5-11: load_pre_clarify_extracted + load_clarified_fields needed by Step E1.
-    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False
+    )
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
     # Phase 11 (D-11-02): resume_pipeline writes the consumed marker right after
@@ -1068,7 +1075,9 @@ def test_resume_binding_exploit_unrelated_resolution_binds_nothing(monkeypatch):
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
-    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False
+    )
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0, raising=False)
@@ -1204,7 +1213,9 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
     # D-7.5-11: load_pre_clarify_extracted + load_clarified_fields needed by Step E1.
-    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False
+    )
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
     # Phase 11 (D-11-02): resume_pipeline writes the consumed marker right after
@@ -1350,7 +1361,9 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
     # D-7.5-11: load_pre_clarify_extracted + load_clarified_fields needed by Step E1.
-    monkeypatch.setattr(repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        repo_mod, "load_pre_clarify_extracted", lambda *a, **kw: None, raising=False
+    )
     monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(repo_mod, "record_run_error", lambda *a, **kw: None, raising=False)
     # Phase 11 (D-11-02): resume_pipeline writes the consumed marker right after

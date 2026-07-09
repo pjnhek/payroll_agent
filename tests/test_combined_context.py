@@ -240,7 +240,9 @@ def _seed_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.U
     return fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=eid)
 
 
-def _inbound(body: str, message_id: str | None = None, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
+def _inbound(
+    body: str, message_id: str | None = None, from_addr: str = COASTAL_EMAIL
+) -> InboundEmail:
     return InboundEmail(
         id=uuid.uuid4(),
         message_id=message_id or f"<reply-{uuid.uuid4()}@test.example>",

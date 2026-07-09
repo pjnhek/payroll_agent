@@ -519,7 +519,8 @@ def test_resend_sdk_call_surfaces_exist():
         "resend.Emails.SendParams must support 'headers' key (either annotated or dict subclass)"
     )
     assert "attachments" in all_hints or issubclass(resend.Emails.SendParams, dict), (
-        "resend.Emails.SendParams must support 'attachments' key (either annotated or dict subclass)"
+        "resend.Emails.SendParams must support 'attachments' key "
+        "(either annotated or dict subclass)"
     )
 
 
@@ -673,7 +674,8 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
 
     assert isinstance(result, InboundEmail)
     assert result.message_id == "<abc@resend.com>", (
-        f"message_id must be the RFC Message-ID from the fetched email object; got {result.message_id!r}"
+        f"message_id must be the RFC Message-ID from the fetched email object; "
+        f"got {result.message_id!r}"
     )
     assert result.in_reply_to == "<prev@x.test>", (
         f"in_reply_to must be extracted from headers dict; got {result.in_reply_to!r}"
