@@ -35,11 +35,18 @@
   4. Pushing a branch with a deliberately injected lint error (e.g. an unused import) shows CI going red on the lint step, and a deliberately broken test shows CI going red on the test step — both demonstrated, not just configured.
 
 **Plans**: 4 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 12-01-PLAN.md — Committed ruff config (pyproject.toml) + mechanical autofix pass across the repo, suite verified green
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 12-02-PLAN.md — Hand-fix remaining ruff violations (TYPE_CHECKING, exception chaining, SIM117, E501) to a fully green `ruff check`
 - [ ] 12-03-PLAN.md — ci.yml workflow (lint + test jobs) and README CI badge
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 12-04-PLAN.md — Red-proof checkpoint: push throwaway branches, capture red/green run URLs, delete branches
 
 ### Phase 13: Module Structure & Boundaries
