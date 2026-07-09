@@ -37,7 +37,7 @@ import base64
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parseaddr
 
 import resend
@@ -170,7 +170,7 @@ def _parse_resend_envelope(data: dict) -> InboundEmail:
         from_addr=from_addr_clean,
         to_addr=(inner.get("to") or [""])[0],
         body_text=email_obj.text or "",
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
     )
 
 

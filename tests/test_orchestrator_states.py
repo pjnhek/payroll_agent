@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -35,7 +35,7 @@ def _seed_run(fake_repo, *, business_id, body="Maria Chen 40 regular. James sala
         from_addr="payroll@coastalcleaning.example",
         to_addr="agent@payroll-agent.local",
         body_text=body,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     email_id, _ = fake_repo.insert_inbound_email(
         message_id=email.message_id,

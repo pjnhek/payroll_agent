@@ -309,8 +309,9 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     # Monkeypatch the background-task target to a no-op so this proves the
     # CLAIM + ROUTE behavior against the real DB without triggering a real
     # LLM/pipeline run.
-    import app.main as app_main
     from fastapi.testclient import TestClient
+
+    import app.main as app_main
 
     dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(

@@ -22,7 +22,6 @@ from app.models.status import RunStatus
 # for inline construction with scripted fetchone returns.
 from tests.conftest import FakeConnection
 
-
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -140,6 +139,7 @@ def test_claim_status_invariant_doc_updated():
     (atomic guarded claim at every contended gate)'.
     """
     import pathlib
+
     from app.db import repo as repo_mod
 
     src = pathlib.Path(repo_mod.__file__).read_text()

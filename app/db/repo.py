@@ -1526,7 +1526,7 @@ def bind_demo_business(
     return True
 
 
-def get_demo_binding(operator_email: str, conn=None) -> "uuid.UUID | None":
+def get_demo_binding(operator_email: str, conn=None) -> uuid.UUID | None:
     """Return the business_id bound to operator_email in demo_sender_bindings, or None.
 
     Used by find_business_by_sender's additive check AND by GET / to display the

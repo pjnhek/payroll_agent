@@ -71,10 +71,17 @@ import uuid  # noqa: E402 — appended after existing imports; uuid is stdlib
 
 import pytest  # noqa: E402 — already in requirements, safe to re-import
 
-from app.pipeline.calculate import PayrollCalculationError, _raise_if_reconciliation_drift  # noqa: E402
+from app.pipeline.calculate import (  # noqa: E402
+    PayrollCalculationError,
+    _raise_if_reconciliation_drift,
+)
 from app.pipeline.tax_tables_2026 import (  # noqa: E402
     MEDICARE_RATE as _MEDICARE_RATE_REF,
+)
+from app.pipeline.tax_tables_2026 import (
     SS_RATE as _SS_RATE_REF,
+)
+from app.pipeline.tax_tables_2026 import (
     SS_WAGE_BASE as _SS_WAGE_BASE_REF,
 )
 
@@ -86,7 +93,7 @@ def salary_employee():
     return next(e for e in seeded.employees if e.pay_type == "salary" and e.pay_periods_per_year == 52)
 
 
-def _make_salary_employee(*, annual_salary: Decimal, pay_periods_per_year: int, filing_status: str = "single") -> "Employee":
+def _make_salary_employee(*, annual_salary: Decimal, pay_periods_per_year: int, filing_status: str = "single") -> Employee:
     """Construct a minimal salaried Employee for frequency-invariance tests.
 
     All W-4 fields default to zero/False. UUIDs are random since identity does

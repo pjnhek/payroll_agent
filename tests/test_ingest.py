@@ -125,7 +125,6 @@ def test_body_cleaned(client, fake_repo, mock_llm):
 import os
 import uuid as _uuid_module
 
-
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
 
@@ -145,9 +144,10 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     via monkeypatch so the dedup-unit test stays non-integration and non-xfail. (OPS-02 / D-13)
     """
     from fastapi.testclient import TestClient
-    from app.main import app
-    from app.db import repo as _repo
+
     from app.config import get_settings
+    from app.db import repo as _repo
+    from app.main import app
 
     # WARNING-1 remediation: enable unsigned fixture POSTs in dev mode so canonical
     # dict payloads reach the route logic (prod default would return 400 without svix headers).
@@ -211,8 +211,9 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     # `with repo.get_connection() as conn: with conn.transaction(): ...` block.
     # This test monkeypatches individual _repo functions (not the fake_repo
     # fixture), so get_connection must be patched to a FakeConnection double too.
-    from tests.conftest import FakeConnection
     import contextlib as _contextlib
+
+    from tests.conftest import FakeConnection
 
     @_contextlib.contextmanager
     def _fake_get_connection():
@@ -268,10 +269,10 @@ def test_duplicate_delivery_pipeline_runs_once():
         pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB dedup test")
 
     from fastapi.testclient import TestClient
-    from app.main import app
-    from app.db import repo as _repo
+
     from app.db.bootstrap import bootstrap
     from app.db.seed import seed as _seed_fn
+    from app.main import app
 
     bootstrap(reset=True)
     _seed_fn()

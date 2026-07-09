@@ -1,5 +1,5 @@
-from unittest.mock import patch
 import contextlib
+from unittest.mock import patch
 
 from app.db.check_schema import main
 from app.db.schema_introspect import SchemaDiff

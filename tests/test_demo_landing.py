@@ -9,7 +9,8 @@ Task 2 tests: orchestrator record-only branches, landing/compose/bind routes, te
 from __future__ import annotations
 
 import uuid
-from unittest.mock import MagicMock, patch
+from datetime import UTC
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -302,10 +303,10 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     This is the HIGH-2 ordering test: set_alias_candidates must be called BEFORE
     the record_only branch skips the real transport.
     """
-    from app.pipeline import orchestrator
-    from app.models.status import RunStatus
-    from app.models.roster import Roster
     from app.db.seed import seed
+    from app.models.roster import Roster
+    from app.models.status import RunStatus
+    from app.pipeline import orchestrator
 
     run_id = uuid.uuid4()
 
@@ -318,8 +319,9 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     # Decision: single unresolved name "Dave" (genuinely unresolved — 0 candidates)
     decision = _make_decision_with_unresolved(["Dave"])
 
+    from datetime import datetime
+
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
 
     email = InboundEmail(
         id=uuid.uuid4(),
@@ -330,7 +332,7 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         from_addr="hr@metrodeli.example",
         to_addr="agent@local",
         body_text="Dave 40h",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     alias_capture_calls = []
@@ -378,7 +380,7 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         lambda decision, **kw: "Clarification body",
     )
 
-    from app.models.contracts import Extracted, ExtractedEmployee
+    from app.models.contracts import Extracted
 
     def _minimal_extracted(run_id):
         return Extracted(
@@ -410,8 +412,8 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
 
 def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
     """_deliver with record_only=True: skips gateway.send_outbound; writes outbound row."""
-    from app.pipeline import orchestrator
     from app.models.status import RunStatus
+    from app.pipeline import orchestrator
 
     run_id = uuid.uuid4()
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -500,12 +502,12 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
 
 def test_orchestrator_live_run_still_calls_resend(monkeypatch):
     """_clarify with record_only=False keeps calling gateway.send_outbound (no regression)."""
-    from app.pipeline import orchestrator
-    from app.models.status import RunStatus
-    from app.models.roster import Roster
+    from datetime import datetime
+
     from app.db.seed import seed
     from app.models.contracts import InboundEmail
-    from datetime import datetime, timezone
+    from app.models.roster import Roster
+    from app.pipeline import orchestrator
 
     run_id = uuid.uuid4()
 
@@ -525,7 +527,7 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         from_addr="hr@metrodeli.example",
         to_addr="agent@local",
         body_text="Dave 40h",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
     send_outbound_calls = []
@@ -576,6 +578,7 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
 def client(monkeypatch):
     """TestClient with all DB/gateway calls patched out."""
     from fastapi.testclient import TestClient
+
     import app.db.repo as repo_mod
 
     # Patch repo helpers that the landing/compose/bind routes call
@@ -622,6 +625,7 @@ def test_compose_rejects_unknown_business(monkeypatch):
     monkeypatch.setattr(repo_mod, "create_run", lambda **kw: create_run_calls.append(kw) or uuid.uuid4(), raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -646,6 +650,7 @@ def test_compose_body_length_cap_rejects_over_limit(monkeypatch):
     monkeypatch.setattr(repo_mod, "create_run", lambda **kw: create_run_calls.append(kw) or uuid.uuid4(), raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -676,6 +681,7 @@ def test_compose_subject_length_cap_rejects_over_limit(monkeypatch):
     monkeypatch.setattr(repo_mod, "create_run", lambda **kw: create_run_calls.append(kw) or uuid.uuid4(), raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -741,6 +747,7 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     monkeypatch.setattr(main_mod, "_run_pipeline", lambda run_id: None, raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -798,6 +805,7 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     monkeypatch.setattr(main_mod, "_run_pipeline", lambda run_id: None, raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -849,6 +857,7 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
     monkeypatch.setattr(main_mod, "_run_pipeline", lambda run_id: None, raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -888,6 +897,7 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: MagicMock(employees=[]), raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -924,7 +934,7 @@ def test_run_detail_thread_includes_source_inbound(monkeypatch):
         "pay_period_start": None, "pay_period_end": None, "updated_at": None,
     }
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     thread = [
         {
@@ -935,7 +945,7 @@ def test_run_detail_thread_includes_source_inbound(monkeypatch):
             "message_id": "<src@test>",
             "from_addr": "payroll@coastalcleaning.example",
             "to_addr": "agent@local",
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
         }
     ]
 
@@ -946,6 +956,7 @@ def test_run_detail_thread_includes_source_inbound(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: thread, raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -987,8 +998,9 @@ def test_run_detail_alias_rationale_rendered(monkeypatch):
         "pay_period_start": None, "pay_period_end": None, "updated_at": None,
     }
 
-    from app.models.roster import Employee, Roster
     from decimal import Decimal
+
+    from app.models.roster import Employee, Roster
 
     emp = Employee(
         id=emp_id,
@@ -1017,6 +1029,7 @@ def test_run_detail_alias_rationale_rendered(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
@@ -1058,8 +1071,9 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
         "pay_period_start": None, "pay_period_end": None, "updated_at": None,
     }
 
-    from app.models.roster import Employee, Roster
     from decimal import Decimal
+
+    from app.models.roster import Employee, Roster
 
     emp = Employee(
         id=emp_id,
@@ -1088,6 +1102,7 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False)
 
     from fastapi.testclient import TestClient
+
     from app.main import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as tc:

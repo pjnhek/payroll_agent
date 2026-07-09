@@ -85,9 +85,9 @@ from decimal import ROUND_HALF_UP, Decimal
 import pytest
 
 from app.db.seed import seed
+from app.models.roster import Employee
 from app.pipeline.calculate import calculate
 from app.pipeline.federal_withholding import _find_bracket, federal_withholding_2026
-from app.models.roster import Employee
 from app.pipeline.tax_tables_2026 import STANDARD_BRACKETS
 
 # ---------------------------------------------------------------------------
@@ -1212,8 +1212,9 @@ def test_step4b_does_not_reduce_fica_base() -> None:
     Federal: 1f=$3,000, 1h=$11,600, 1i=$30,000 -> withholding=$47.15 (reduced)
     FICA SS: uses gross=$800 regardless of step_4b -> fica_ss=$49.60
     """
-    from app.pipeline.tax_tables_2026 import SS_RATE as _SS_RATE
     from decimal import ROUND_HALF_UP as _RHU
+
+    from app.pipeline.tax_tables_2026 import SS_RATE as _SS_RATE
 
     # Employee with step_4b=$3,000 and hourly=$20, 40h/period = $800 gross
     emp_with_step4b = _make_employee(

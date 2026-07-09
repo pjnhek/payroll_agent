@@ -17,7 +17,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 # ---------------------------------------------------------------------------
 # Employee — roster input shape (not a DB row mirror, per D-07/D-14)
 # ---------------------------------------------------------------------------
@@ -73,7 +72,7 @@ class Employee(BaseModel):
     # D-10 / FOUND-06 compensation invariant
     # ------------------------------------------------------------------
     @model_validator(mode="after")
-    def _require_compensation_field(self) -> "Employee":
+    def _require_compensation_field(self) -> Employee:
         """Enforce pay_type ↔ compensation field requirement at construction.
 
         An hourly employee without hourly_rate, or a salaried employee without
@@ -125,7 +124,7 @@ class Roster(BaseModel):
     employees: list[Employee]
 
     @model_validator(mode="after")
-    def _check_unique_employee_ids(self) -> "Roster":
+    def _check_unique_employee_ids(self) -> Roster:
         """Enforce unique employee ids (review fix).
 
         reconcile_names resolves uniqueness over the SET of candidate employee ids, so
@@ -181,7 +180,7 @@ class NameMatchResult(BaseModel):
     reason: str
 
     @model_validator(mode="after")
-    def _check_resolution_invariant(self) -> "NameMatchResult":
+    def _check_resolution_invariant(self) -> NameMatchResult:
         """Reject impossible states so decide() can trust ``resolved`` (review fix).
 
         ``source`` and ``resolved`` are not independent: a resolved name MUST name a

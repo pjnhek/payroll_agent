@@ -41,3 +41,18 @@ markers = [
     "integration: marks tests as requiring a live database (deselect with -m 'not integration')",
     "live_llm: marks tests as hitting real DeepSeek/Kimi APIs (deselect with -m 'not live_llm')",
 ]
+
+[tool.ruff]
+# D-02: 100 is the measured tradeoff — 160 lines exceed 100 vs 1,297 that exceed the 88 default.
+line-length = 100
+# Explicit pin matching .python-version / the python:3.12-slim Docker target (CLAUDE.md),
+# even though ruff can infer this from requires-python — keeps the target version legible
+# directly in the ruff config block.
+target-version = "py312"
+
+[tool.ruff.lint]
+# D-01: curated production ruleset — pycodestyle errors, pyflakes, isort import-sorting,
+# flake8-bugbear, pyupgrade, flake8-simplify. Not the bare defaults.
+# D-03: no ignore list and no per-file-ignores table — every violation gets fixed or an
+# individually-justified inline `# noqa: <CODE> — <reason>`.
+select = ["E", "F", "I", "B", "UP", "SIM"]

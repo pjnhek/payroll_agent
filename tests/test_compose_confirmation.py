@@ -13,16 +13,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
-
-# This import FAILS RED until Wave 2 adds compose_confirmation to compose_email.py.
-from app.pipeline.compose_email import compose_confirmation
 
 from app.models.contracts import PaystubLineItem
 
+# This import FAILS RED until Wave 2 adds compose_confirmation to compose_email.py.
+from app.pipeline.compose_email import compose_confirmation
 
 # ---------------------------------------------------------------------------
 # Fake LLM stubs — MUST accept **kwargs so timeout_s does not raise TypeError
@@ -68,7 +65,7 @@ class _RaisingDraftLLM:
 
 def _minimal_paystub(net_pay: Decimal = Decimal("1234.56")) -> PaystubLineItem:
     """A minimal PaystubLineItem for compose_confirmation tests."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return PaystubLineItem(
         id=uuid.uuid4(),
         run_id=uuid.uuid4(),

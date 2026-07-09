@@ -37,7 +37,7 @@ from __future__ import annotations
 import ast
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -70,7 +70,7 @@ def _bare_inbound() -> InboundEmail:
         from_addr=COASTAL_EMAIL,
         to_addr="agent@payroll-agent.local",
         body_text="David Reyez 38 hours",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -147,8 +147,8 @@ def test_at_cap_send_escalates_with_no_gateway_or_llm_call(monkeypatch, fake_rep
     compose_clarification) — the cap check returns before either seam is
     reached. Status becomes needs_operator."""
     import app.email.gateway as gateway_mod
-    import app.pipeline.suggest as suggest_mod
     import app.pipeline.compose_email as compose_mod
+    import app.pipeline.suggest as suggest_mod
 
     run_id = uuid.uuid4()
     email = _bare_inbound()
@@ -382,8 +382,8 @@ def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
         "id": run_id,
         "business_id": uuid.uuid4(),
         "status": "needs_operator",
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
         "pay_period_start": None,
         "pay_period_end": None,
     }

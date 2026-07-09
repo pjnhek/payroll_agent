@@ -459,7 +459,6 @@ def test_record_run_error_persists_reason_and_error_status(seeded_db):
 
 import resend  # noqa: F401 — installed via 06-01 Task 1; needed for monkeypatching
 
-
 # ===========================================================================
 # MEDIUM-5: SDK smoke-check test (Wave 0 guard — Task 0)
 # Asserts resend==2.32.2 call surfaces exist so a Python SDK naming mismatch
@@ -512,7 +511,6 @@ def test_resend_sdk_call_surfaces_exist():
     # that **kwargs is accepted (dict passthrough). The TypedDict approach: SendParams
     # extends dict, so arbitrary keys can be passed — 'headers' and 'attachments' work.
     # We assert the known keys are documented in the TypedDict or its bases.
-    import typing
     all_hints = {}
     for cls in reversed(resend.Emails.SendParams.__mro__):
         if hasattr(cls, "__annotations__"):
@@ -1014,8 +1012,9 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     ALLOW_UNSIGNED_FIXTURES support, enabling canonical dict POSTs in dev mode.
     """
     from fastapi.testclient import TestClient
-    from app.main import app
+
     from app.db import repo as _repo
+    from app.main import app
 
     run_id = uuid.uuid4()
     # Use a fixed business_id so the FIX-5 spoof guard passes:
@@ -1082,8 +1081,9 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     # This test monkeypatches individual _repo functions (not the fake_repo fixture),
     # so get_connection must be patched to a FakeConnection double too, or the route
     # attempts a real pool connection with the bogus DATABASE_URL below.
-    from tests.conftest import FakeConnection
     import contextlib as _contextlib
+
+    from tests.conftest import FakeConnection
 
     @_contextlib.contextmanager
     def _fake_get_connection():
@@ -1100,7 +1100,6 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
 
     client = TestClient(app, raise_server_exceptions=False)
     # Post a canonical InboundEmail dict with in_reply_to matching the clarification.
-    import json
     raw_reply = {
         "id": str(uuid.uuid4()),
         "message_id": "<reply-001@client.test>",
@@ -1141,9 +1140,9 @@ def test_inbound_reply_routes_to_correct_run_integration():
     if not (_HAS_DB and _HAS_RESET):
         pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — live-DB required")
 
+    from app.db import repo as _repo
     from app.db.bootstrap import bootstrap
     from app.db.seed import seed as _seed
-    from app.db import repo as _repo
 
     bootstrap(reset=True)
     _seed()
@@ -1262,6 +1261,7 @@ def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
     the expected filename and base64-encoded PDF content. (OPS-02 / HIGH-3)
     """
     import base64 as _b64
+
     from app.config import get_settings
 
     get_settings.cache_clear()
@@ -1415,8 +1415,9 @@ def test_allow_unsigned_fixtures_prod_default_returns_400(monkeypatch):
     (T-06-04-01 / T-06-04-11)
     """
     from fastapi.testclient import TestClient
-    from app.main import app
+
     from app.config import get_settings
+    from app.main import app
 
     get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
@@ -1461,8 +1462,9 @@ def test_allow_unsigned_fixtures_canonical_shape_prod_default_returns_400(monkey
     (T-06-04-11)
     """
     from fastapi.testclient import TestClient
-    from app.main import app
+
     from app.config import get_settings
+    from app.main import app
 
     get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
@@ -1500,9 +1502,10 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
     (T-06-04-07 — flag is never in render.yaml; only in tests and local .env)
     """
     from fastapi.testclient import TestClient
-    from app.main import app
-    from app.db import repo as _repo
+
     from app.config import get_settings
+    from app.db import repo as _repo
+    from app.main import app
 
     get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
@@ -1541,8 +1544,9 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
     # `with repo.get_connection() as conn: with conn.transaction(): ...` block.
     # This test monkeypatches individual _repo functions (not the fake_repo
     # fixture), so get_connection must be patched to a FakeConnection double too.
-    from tests.conftest import FakeConnection
     import contextlib as _contextlib
+
+    from tests.conftest import FakeConnection
 
     @_contextlib.contextmanager
     def _fake_get_connection():
