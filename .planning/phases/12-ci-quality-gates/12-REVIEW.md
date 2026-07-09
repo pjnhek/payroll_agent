@@ -70,10 +70,11 @@ files_reviewed_list:
   - tests/test_validate.py
 findings:
   critical: 0
-  warning: 2
+  warning: 3
   info: 5
-  total: 7
+  total: 8
 status: issues_found
+cross_ai: codex gpt-5.6-terra (2026-07-09) — confirmed all internal findings, added WR-03
 ---
 
 # Phase 12: Code Review Report
@@ -230,3 +231,22 @@ check, and no `timeout-minutes` is set on either job (a hung test holds a runner
 _Reviewed: 2026-07-09T18:50:12Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+
+
+---
+
+## Cross-AI Review (Codex, gpt-5.6-terra — 2026-07-09)
+
+Independent adversarial pass over the same diff (base `e01aa606..HEAD`), with repo access; ran ruff + 69 targeted tests itself. **No additional payroll, transaction-scope, calculation, decisioning, prompt, file-lifecycle, or runtime-type drift found** — the behavior-neutral claim holds apart from the already-known IN-01 log-rendering delta.
+
+### WR-03 (WARNING, new): CI does not enforce the committed lockfile
+
+`.github/workflows/ci.yml` lines 27 and 45 run plain `uv sync`, which may update `uv.lock` rather than assert it. A `pyproject.toml` change without a regenerated lockfile would resolve and test uncommitted dependency versions in CI, letting a stale-lockfile state merge green. Fix: `uv sync --locked` in both jobs.
+
+### Verification of internal findings
+
+WR-01 confirmed (no `permissions:` block) · WR-02 confirmed (tag-pinned actions) · IN-01 confirmed (`orchestrator.py:387` StrEnum log delta) · IN-02 confirmed · IN-03 confirmed · IN-04 confirmed (all three eval-chart zips `strict=False`) · IN-05 confirmed.
+
+### Verdict
+
+Behavior-neutral claim materially true; overall risk **MEDIUM**, driven entirely by CI hardening/reproducibility gaps (WR-01/WR-02/WR-03), not payroll runtime logic.
