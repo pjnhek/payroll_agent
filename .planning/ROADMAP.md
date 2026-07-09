@@ -46,7 +46,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 12-03-PLAN.md — ci.yml workflow (lint + test jobs) and README CI badge — lands only after the repo lints green
+- [x] 12-03-PLAN.md — ci.yml workflow (lint + test jobs) and README CI badge — lands only after the repo lints green
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -122,7 +122,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 9. Atomic Data Integrity | v2 | 6/6 | Complete | 2026-07-04 |
 | 10. Concurrency Proof | v2 | 2/2 | Complete | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
-| 12. CI Quality Gates | v3 | 2/4 | In Progress|  |
+| 12. CI Quality Gates | v3 | 3/4 | In Progress|  |
 | 13. Module Structure & Boundaries | v3 | 0/TBD | Not started | - |
 | 14. Full Type-Checking (mypy) | v3 | 0/TBD | Not started | - |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
