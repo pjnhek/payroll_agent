@@ -38,7 +38,7 @@
 Plans:
 **Wave 1**
 
-- [ ] 12-01-PLAN.md — Committed ruff config (pyproject.toml) + mechanical autofix pass across the repo, suite verified green
+- [x] 12-01-PLAN.md — Committed ruff config (pyproject.toml) + mechanical autofix pass across the repo, suite verified green
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -122,7 +122,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 9. Atomic Data Integrity | v2 | 6/6 | Complete | 2026-07-04 |
 | 10. Concurrency Proof | v2 | 2/2 | Complete | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
-| 12. CI Quality Gates | v3 | 0/TBD | Not started | - |
+| 12. CI Quality Gates | v3 | 1/4 | In Progress|  |
 | 13. Module Structure & Boundaries | v3 | 0/TBD | Not started | - |
 | 14. Full Type-Checking (mypy) | v3 | 0/TBD | Not started | - |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
