@@ -7,6 +7,7 @@ Delete or ignore after the fixture corpus is built.
 """
 # Imports are lazy (inside __main__) so this module can be imported without
 # DATABASE_URL set, consistent with the other eval scripts (IN-03).
+from openai.types.chat import ChatCompletionMessageParam
 
 
 def _require_live_llm() -> None:
@@ -23,20 +24,21 @@ if __name__ == "__main__":
     from app.llm.client import call_text  # noqa: PLC0415
 
     _require_live_llm()
+    messages: list[ChatCompletionMessageParam] = [
+        {
+            "role": "user",
+            "content": (
+                "Draft a realistic but intentionally messy payroll email for a "
+                "small business. Include at least one name abbreviation or nickname "
+                "that might not match the employee's full name. Be casual and "
+                "informal, like a real small-business payroll submission. Include a "
+                "random mix of regular/OT hours. Sign off with a name."
+            ),
+        }
+    ]
     draft = call_text(
         tier="draft",
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Draft a realistic but intentionally messy payroll email for a "
-                    "small business. Include at least one name abbreviation or nickname "
-                    "that might not match the employee's full name. Be casual and "
-                    "informal, like a real small-business payroll submission. Include a "
-                    "random mix of regular/OT hours. Sign off with a name."
-                ),
-            }
-        ],
+        messages=messages,
         temperature=0.9,
     )
     print(draft or "No content returned — retry or hand-write the fixture.")

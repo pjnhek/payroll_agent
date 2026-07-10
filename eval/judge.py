@@ -22,6 +22,9 @@ Committed by the developer after running --record on clarify-category fixtures.
 
 import pathlib
 import sys
+from typing import TypedDict
+
+from openai.types.chat import ChatCompletionMessageParam
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -42,6 +45,14 @@ RUBRIC = (
     "Respond with a single integer 1-5 followed by a brief (one-sentence) explanation."
 )
 
+
+class JudgeResult(TypedDict):
+    fixture_id: str
+    raw_score: int
+    final_score: int
+    floor_applied: bool
+    notes: str
+
 # ---------------------------------------------------------------------------
 # Core judge function
 # ---------------------------------------------------------------------------
@@ -51,7 +62,7 @@ def judge_draft(
     draft_text: str,
     fixture_id: str,
     expected_employee_full_name: str | None,
-) -> dict:
+) -> JudgeResult:
     """Score a single clarification draft using the LLM-as-judge rubric.
 
     Args:
@@ -85,24 +96,23 @@ def judge_draft(
     # Import call_text inside this function -- keeps it off any non-judge import path.
     from app.llm.client import call_text  # noqa: PLC0415
 
-    system_msg = {
-        "role": "system",
-        "content": (
-            "You are a payroll email quality evaluator. "
-            + RUBRIC
-        ),
-    }
-    user_msg = {
-        "role": "user",
-        "content": (
-            f"Fixture: {fixture_id}\n"
-            f"Intended employee: {expected_employee_full_name or 'not specified'}\n\n"
-            f"Draft clarification email:\n---\n{draft_text}\n---\n\n"
-            "Score (1-5) and one-sentence explanation:"
-        ),
-    }
+    messages: list[ChatCompletionMessageParam] = [
+        {
+            "role": "system",
+            "content": "You are a payroll email quality evaluator. " + RUBRIC,
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Fixture: {fixture_id}\n"
+                f"Intended employee: {expected_employee_full_name or 'not specified'}\n\n"
+                f"Draft clarification email:\n---\n{draft_text}\n---\n\n"
+                "Score (1-5) and one-sentence explanation:"
+            ),
+        },
+    ]
 
-    response = call_text(tier="draft", messages=[system_msg, user_msg], temperature=0.3)
+    response = call_text(tier="draft", messages=messages, temperature=0.3)
 
     # Parse integer score from response (first integer found, 1-5).
     raw_score = 0

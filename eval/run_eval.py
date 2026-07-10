@@ -28,8 +28,10 @@ import pathlib
 import sys
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any, TypedDict, cast
 
 from app.db.seed import seed
 from app.models.contracts import Extracted, InboundEmail
@@ -39,6 +41,81 @@ from app.pipeline.orchestrator import backfill_extracted
 from app.pipeline.reconcile_names import normalize_name as _normalize
 from app.pipeline.reconcile_names import reconcile_names
 from app.pipeline.validate import detect_field_regression, validate
+
+
+class ExtractionScores(TypedDict):
+    precision: float
+    recall: float
+    f1: float
+    field_accuracy: float
+    field_correct: int
+    field_total: int
+    true_positives: int
+    false_positives: int
+    false_negatives: int
+
+
+class ReconciliationResult(TypedDict):
+    submitted_name: str
+    name_category: str
+    correct: bool
+    actual_source: str | None
+    actual_resolved: bool | None
+    actual_matched_employee_id: str | None
+    expected_matched_employee_id: str | None
+
+
+class DecisionScores(TypedDict):
+    action_correct: bool
+    gate_struct_ok: bool
+    final_action: str
+    expected_final_action: str
+
+
+class FixtureResult(TypedDict):
+    fixture_id: str
+    fixture_path: str
+    fixture_category: str
+    extraction: ExtractionScores
+    reconciliation: list[ReconciliationResult]
+    decision: DecisionScores
+
+
+class CategoryExtraction(TypedDict):
+    f1: float
+    field_accuracy: float
+
+
+class CategoryReconciliation(TypedDict):
+    category: str
+    correct: int
+    total: int
+    accuracy: float
+
+
+class CategoryDecision(TypedDict):
+    correct: int
+    total: int
+    fraction: str
+
+
+class ConfusionMatrix(TypedDict):
+    true_process: int
+    false_process: int
+    false_clarify: int
+    true_clarify: int
+    false_process_rate: float
+    false_process_precision_rate: float
+
+
+class AggregateResult(TypedDict):
+    extraction_overall_f1: float
+    extraction_overall_field_accuracy: float
+    per_category_extraction: dict[str, CategoryExtraction]
+    per_category_reconciliation: list[CategoryReconciliation]
+    confusion_matrix: ConfusionMatrix
+    per_category_decision: dict[str, CategoryDecision]
+    rigor_gate_struct_accuracy: float
 
 # ---------------------------------------------------------------------------
 # Eval-only fixture keys — must be stripped before InboundEmail validation.
@@ -109,14 +186,14 @@ def _load_roster_for_fixture(from_addr: str) -> Roster:
     return Roster(business_id=biz["id"], employees=employees)
 
 
-def _load_fixture(path: pathlib.Path) -> dict:
+def _load_fixture(path: pathlib.Path) -> dict[str, Any]:
     """Load an eval fixture, validate the InboundEmail input portion.
 
     Strips eval-only keys (expected, fixture_category, prior_extracted, prior_matches)
     before InboundEmail validation. The raw dict (including prior_extracted and
     prior_matches) is returned for use by _score_fixture (D-7.5-10 three-phase path).
     """
-    raw = json.loads(path.read_text())
+    raw = cast(dict[str, Any], json.loads(path.read_text()))
     # WR-04 FIX: use the module-level _EVAL_ONLY_KEYS constant (shared with
     # _record_extraction) so the two strip sets cannot diverge.
     input_fields = {k: v for k, v in raw.items() if k not in _EVAL_ONLY_KEYS}
@@ -135,7 +212,7 @@ def _load_extraction_cache(fixture_path: pathlib.Path) -> Extracted:
     return Extracted.model_validate(json.loads(cache_path.read_text()))
 
 
-def _expected_to_extracted(raw: dict) -> Extracted:
+def _expected_to_extracted(raw: dict[str, Any]) -> Extracted:
     """Build an Extracted from the LABELED expected block (PATH A, D-07).
 
     Used for isolated deterministic scoring -- NOT the cache. Feeds labeled
@@ -158,7 +235,7 @@ def _expected_to_extracted(raw: dict) -> Extracted:
 # ---------------------------------------------------------------------------
 
 
-def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
+def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureResult:
     """Score one fixture. Returns a per-fixture result dict.
 
     D-07 split:
@@ -291,7 +368,7 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
                 except Exception:
                     pass  # unparseable value counts as wrong
 
-    extraction_scores = {
+    extraction_scores: ExtractionScores = {
         "precision": precision,
         "recall": recall,
         "f1": f1,
@@ -308,7 +385,7 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
     # A wrong-but-real match FAILS: source + resolved + matched_employee_id must all match.
     # -----------------------------------------------------------------------
     match_by_name = {_normalize(m.submitted_name): m for m in matches}
-    reconciliation_results = []
+    reconciliation_results: list[ReconciliationResult] = []
 
     for entry in raw["expected"]["reconciliation"]:
         submitted = entry["submitted_name"]
@@ -384,7 +461,7 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
     )
     gate_struct_ok = gate_reasons_match and unresolved_match and missing_match
 
-    decision_scores = {
+    decision_scores: DecisionScores = {
         "action_correct": action_correct,
         "gate_struct_ok": gate_struct_ok,
         "final_action": decision.final_action,
@@ -406,20 +483,20 @@ def _score_fixture(raw: dict, fixture_path: pathlib.Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _aggregate(fixture_results: list[dict]) -> dict:
+def _aggregate(fixture_results: list[FixtureResult]) -> AggregateResult:
     """Compute per-category metrics and confusion matrix from per-fixture results."""
 
     # -----------------------------------------------------------------------
     # EXTRACTION per-category + overall
     # -----------------------------------------------------------------------
-    per_cat_extraction: dict[str, list] = {}
+    per_cat_extraction: dict[str, list[ExtractionScores]] = {}
     for r in fixture_results:
         cat = r["fixture_category"]
         per_cat_extraction.setdefault(cat, []).append(r["extraction"])
 
-    per_category_extraction = {}
-    all_f1s = []
-    all_field_accuracies = []
+    per_category_extraction: dict[str, CategoryExtraction] = {}
+    all_f1s: list[float] = []
+    all_field_accuracies: list[float] = []
     for cat, scores_list in per_cat_extraction.items():
         cat_f1 = sum(s["f1"] for s in scores_list) / len(scores_list)
         cat_fa = sum(s["field_accuracy"] for s in scores_list) / len(scores_list)
@@ -437,7 +514,7 @@ def _aggregate(fixture_results: list[dict]) -> dict:
     # -----------------------------------------------------------------------
     # RECONCILIATION per-NAME-category (D-12: fractions, not %)
     # -----------------------------------------------------------------------
-    cat_recon: dict[str, dict] = {}
+    cat_recon: dict[str, dict[str, int]] = {}
     for r in fixture_results:
         for entry in r["reconciliation"]:
             name_cat = entry["name_category"]
@@ -447,7 +524,7 @@ def _aggregate(fixture_results: list[dict]) -> dict:
             if entry["correct"]:
                 cat_recon[name_cat]["correct"] += 1
 
-    per_category_reconciliation = []
+    per_category_reconciliation: list[CategoryReconciliation] = []
     for cat, counts in cat_recon.items():
         k, n = counts["correct"], counts["total"]
         per_category_reconciliation.append({
@@ -489,7 +566,7 @@ def _aggregate(fixture_results: list[dict]) -> dict:
         false_process / actual_process_total if actual_process_total > 0 else 0.0
     )
 
-    confusion_matrix = {
+    confusion_matrix: ConfusionMatrix = {
         "true_process": true_process,
         "false_process": false_process,
         "false_clarify": false_clarify,
@@ -501,7 +578,7 @@ def _aggregate(fixture_results: list[dict]) -> dict:
     # -----------------------------------------------------------------------
     # Per-fixture-category decision (D-12: k/n fractions)
     # -----------------------------------------------------------------------
-    per_cat_dec: dict[str, dict] = {}
+    per_cat_dec: dict[str, dict[str, int]] = {}
     for r in fixture_results:
         cat = r["fixture_category"]
         if cat not in per_cat_dec:
@@ -510,7 +587,7 @@ def _aggregate(fixture_results: list[dict]) -> dict:
         if r["decision"]["action_correct"]:
             per_cat_dec[cat]["correct"] += 1
 
-    per_category_decision = {}
+    per_category_decision: dict[str, CategoryDecision] = {}
     for cat, counts in per_cat_dec.items():
         k, n = counts["correct"], counts["total"]
         per_category_decision[cat] = {
@@ -546,7 +623,7 @@ def _aggregate(fixture_results: list[dict]) -> dict:
 
 
 def _write_summary_json(
-    fixture_results: list[dict], aggregated: dict, suite_run_id: str
+    fixture_results: list[FixtureResult], aggregated: AggregateResult, suite_run_id: str
 ) -> None:
     """Write eval/summary.json. suite_run_id threaded from main() so 04-04 can reuse it."""
     summary = {
@@ -572,20 +649,22 @@ def _write_summary_json(
 # ---------------------------------------------------------------------------
 
 
-def _round4(v) -> float:
+def _round4(v: float | int) -> float:
     """Round a float/int to 4 decimal places for stable comparison."""
     return round(float(v), 4)
 
 
-def _assert_regression(fresh: dict, committed: dict) -> None:
+def _assert_regression(
+    fresh: Mapping[str, Any], committed: Mapping[str, Any]
+) -> None:
     """Compare fresh scoring against committed summary.json (parsed+rounded, not bytes).
 
     Covers ALL scored metrics so no regression can slip through CI (D-17).
     Prints a descriptive diff and raises SystemExit(1) on any mismatch.
     """
-    mismatches = []
+    mismatches: list[str] = []
 
-    def _check(field: str, fresh_val, committed_val) -> None:
+    def _check(field: str, fresh_val: object, committed_val: object) -> None:
         if fresh_val != committed_val:
             mismatches.append(
                 f"  {field}: {committed_val!r} -> {fresh_val!r}"
@@ -758,7 +837,9 @@ def _record_extraction() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_svg_chart(fixture_results: list[dict], aggregated: dict) -> None:
+def _write_svg_chart(
+    fixture_results: list[FixtureResult], aggregated: AggregateResult
+) -> None:
     """Generate eval/chart.svg from in-memory scoring results.
 
     3-subplot layout:
@@ -943,12 +1024,12 @@ def _write_db_results() -> None:
         return
 
     # summary.json is authoritative: read from disk, not in-memory state.
-    summary = json.loads(SUMMARY_PATH.read_text())
+    summary = cast(dict[str, Any], json.loads(SUMMARY_PATH.read_text()))
 
     suite_run_id = summary["suite_run_id"]
 
     # Build per-fixture, per-metric rows.
-    rows: list[tuple] = []
+    rows: list[tuple[str, str, str, float, str]] = []
     for entry in summary.get("per_fixture", []):
         fixture_id = entry["fixture_id"]
         details_json = json.dumps(entry)
@@ -1045,7 +1126,7 @@ def main() -> None:
     fixture_paths = sorted(FIXTURE_DIR.glob("*.json"))
     fixture_paths = [f for f in fixture_paths if "_extraction" not in f.name]
 
-    fixture_results = []
+    fixture_results: list[FixtureResult] = []
     for fp in fixture_paths:
         raw = _load_fixture(fp)
         result = _score_fixture(raw, fp)
