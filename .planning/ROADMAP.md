@@ -74,7 +74,7 @@ Plans:
 
 **Wave 2** *(blocked on 13-02 completion)*
 
-- [ ] 13-03-PLAN.md — Split app/main.py into app/routes/ (5 routers + pipeline_glue + templating)
+- [x] 13-03-PLAN.md — Split app/main.py into app/routes/ (5 routers + pipeline_glue + templating)
 
 **Wave 3** *(blocked on 13-01/13-02/13-03 completion)*
 
@@ -136,6 +136,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 10. Concurrency Proof | v2 | 2/2 | Complete | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
-| 13. Module Structure & Boundaries | v3 | 2/4 | In Progress|  |
+| 13. Module Structure & Boundaries | v3 | 3/4 | In Progress|  |
 | 14. Full Type-Checking (mypy) | v3 | 0/TBD | Not started | - |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
