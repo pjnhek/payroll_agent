@@ -69,7 +69,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 13-01-PLAN.md — Split app/db/repo.py into the app/db/repo/ package (5 aggregate modules + facade)
+- [x] 13-01-PLAN.md — Split app/db/repo.py into the app/db/repo/ package (5 aggregate modules + facade)
 - [ ] 13-02-PLAN.md — Split app/pipeline/orchestrator.py into alias_learning/clarification/delivery + BOUND-01 promotions in reconcile_names.py/validate.py
 
 **Wave 2** *(blocked on 13-02 completion)*
@@ -136,6 +136,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 10. Concurrency Proof | v2 | 2/2 | Complete | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
-| 13. Module Structure & Boundaries | v3 | 0/TBD | Not started | - |
+| 13. Module Structure & Boundaries | v3 | 1/4 | In Progress|  |
 | 14. Full Type-Checking (mypy) | v3 | 0/TBD | Not started | - |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
