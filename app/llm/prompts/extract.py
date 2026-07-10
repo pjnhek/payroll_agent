@@ -21,6 +21,8 @@ backstop (Task 4), never this instruction's effect on the LLM.
 """
 from __future__ import annotations
 
+from openai.types.chat import ChatCompletionMessageParam
+
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
 
@@ -55,7 +57,9 @@ _SYSTEM = (
 )
 
 
-def build_messages(email: InboundEmail, roster: Roster) -> list[dict]:
+def build_messages(
+    email: InboundEmail, roster: Roster
+) -> list[ChatCompletionMessageParam]:
     """Build the extraction chat messages for one inbound email.
 
     The roster's full names are provided ONLY as grounding context (a

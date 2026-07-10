@@ -31,6 +31,7 @@ import copy
 from typing import Literal
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
@@ -73,7 +74,9 @@ _STRUCTURED_TIMEOUT_S = 45.0
 # ⚠️ CONFIRM exact param + placement from the DeepSeek console (STATE.md blocker).
 # DeepSeek V4 selects non-thinking via a per-request body toggle; sent through the
 # openai client's `extra_body` passthrough.
-_NON_THINKING_EXTRA_BODY = {"thinking": {"type": "disabled"}}
+_NON_THINKING_EXTRA_BODY: dict[str, dict[str, str]] = {
+    "thinking": {"type": "disabled"}
+}
 
 
 class _TierConfig:
@@ -117,7 +120,7 @@ def _is_deepseek(model: str) -> bool:
 
 def call_structured[T: BaseModel](
     tier: Tier,
-    messages: list[dict],
+    messages: list[ChatCompletionMessageParam],
     response_model: type[T],
 ) -> T:
     """Make a JSON-mode structured call for `tier`, validated against `response_model`.
@@ -141,23 +144,28 @@ def call_structured[T: BaseModel](
         max_retries=0,
     )
 
-    extra: dict = {}
-    if _is_deepseek(cfg.model):
-        extra["extra_body"] = _NON_THINKING_EXTRA_BODY
-
     # Copy so feeding the validation error back never mutates the caller's list.
     convo = list(messages)
 
     last_error: ValidationError | None = None
     for attempt in (1, 2):  # ONE reflective retry (CLAUDE.md locks ONE)
-        resp = client.chat.completions.create(
-            model=cfg.model,
-            messages=convo,
-            temperature=0,
-            response_format={"type": "json_object"},
-            max_tokens=_MAX_TOKENS,
-            **extra,
-        )
+        if _is_deepseek(cfg.model):
+            resp = client.chat.completions.create(
+                model=cfg.model,
+                messages=convo,
+                temperature=0,
+                response_format={"type": "json_object"},
+                max_tokens=_MAX_TOKENS,
+                extra_body=_NON_THINKING_EXTRA_BODY,
+            )
+        else:
+            resp = client.chat.completions.create(
+                model=cfg.model,
+                messages=convo,
+                temperature=0,
+                response_format={"type": "json_object"},
+                max_tokens=_MAX_TOKENS,
+            )
         content = resp.choices[0].message.content
         try:
             if not content:  # DeepSeek can return empty content — treat as failure
@@ -192,10 +200,10 @@ def call_structured[T: BaseModel](
 
 def call_text(
     tier: Tier,
-    messages: list[dict],
+    messages: list[ChatCompletionMessageParam],
     temperature: float = 0.7,
     timeout_s: float | None = None,
-    **kwargs,
+    **kwargs: object,
 ) -> str | None:
     """Free-text (drafting) call — raw string content, NO JSON mode.
 
@@ -227,24 +235,32 @@ def call_text(
     """
     cfg = _resolve_tier(tier)
     # Pass timeout to the OpenAI client if provided (D-10b hard timeout).
-    client_kwargs: dict = {}
-    if timeout_s is not None:
-        client_kwargs["timeout"] = timeout_s
     # Unconditional (not gated on timeout_s is not None): suppress the library's
     # own retry layer for every call_text caller (09-04, Codex round-2).
-    client_kwargs["max_retries"] = 0
-    client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, **client_kwargs)
+    if timeout_s is None:
+        client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, max_retries=0)
+    else:
+        client = OpenAI(
+            base_url=cfg.base_url,
+            api_key=cfg.api_key,
+            timeout=timeout_s,
+            max_retries=0,
+        )
 
-    extra: dict = {}
     if _is_deepseek(cfg.model):
-        extra["extra_body"] = copy.deepcopy(_NON_THINKING_EXTRA_BODY)
-
-    resp = client.chat.completions.create(
-        model=cfg.model,
-        messages=list(messages),
-        temperature=temperature,
-        max_tokens=_MAX_TOKENS,
-        **extra,
-    )
+        resp = client.chat.completions.create(
+            model=cfg.model,
+            messages=list(messages),
+            temperature=temperature,
+            max_tokens=_MAX_TOKENS,
+            extra_body=copy.deepcopy(_NON_THINKING_EXTRA_BODY),
+        )
+    else:
+        resp = client.chat.completions.create(
+            model=cfg.model,
+            messages=list(messages),
+            temperature=temperature,
+            max_tokens=_MAX_TOKENS,
+        )
     content = resp.choices[0].message.content
     return content if content else None

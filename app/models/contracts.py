@@ -189,11 +189,13 @@ class ClarifiedFields(BaseModel):
     outcomes: dict[str, dict[str, ClarifiedFieldOutcome]]
 
     @classmethod
-    def from_dict(cls, d: dict) -> ClarifiedFields:
+    def from_dict(
+        cls, d: dict[str, dict[str, ClarifiedFieldOutcome]]
+    ) -> ClarifiedFields:
         """Validate from a plain dict (outcomes=d)."""
         return cls(outcomes=d)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, dict[str, ClarifiedFieldOutcome]]:
         """Return the raw outcomes dict."""
         return self.outcomes
 

@@ -13,6 +13,8 @@ suggestion is advisory COPY only; it never feeds decide / final_action.
 """
 from __future__ import annotations
 
+from openai.types.chat import ChatCompletionMessageParam
+
 from app.models.contracts import Decision
 
 _SYSTEM = (
@@ -29,7 +31,7 @@ _SYSTEM = (
 def build_messages(
     decision: Decision,
     suggestions: dict[str, str] | None = None,
-) -> list[dict]:
+) -> list[ChatCompletionMessageParam]:
     """Build the clarification-drafting chat messages from the gated Decision.
 
     `suggestions` (submitted_name → suggested roster full_name) is advisory COPY

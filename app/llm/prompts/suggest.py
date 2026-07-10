@@ -19,6 +19,8 @@ calls, RESEARCH §Pattern 2).
 """
 from __future__ import annotations
 
+from openai.types.chat import ChatCompletionMessageParam
+
 from app.models.roster import Roster
 
 _SYSTEM = (
@@ -39,7 +41,9 @@ _SYSTEM = (
 )
 
 
-def build_messages(unresolved_names: list[str], roster: Roster) -> list[dict]:
+def build_messages(
+    unresolved_names: list[str], roster: Roster
+) -> list[ChatCompletionMessageParam]:
     """Build the suggestion chat messages from the unresolved names + roster.
 
     The roster full_names are listed so the model can only choose among real
