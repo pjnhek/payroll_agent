@@ -16,7 +16,7 @@
 **Phase Numbering:** v3 continues the global phase sequence from v2 (last phase: 11). Integer phases (12, 13, 14, 15) are planned milestone work; decimal phases (e.g. 12.1) are reserved for urgent insertions.
 
 - [x] **Phase 12: CI Quality Gates** - `ci.yml` runs `ruff check` and the full hermetic test suite on every push, backed by a committed ruff config, so every subsequent refactor phase in this milestone is protected by CI from the start (CI-01, CI-02, CI-03) (completed 2026-07-09)
-- [ ] **Phase 13: Module Structure & Boundaries** - The three god-files (`main.py`, `repo.py`, `orchestrator.py`) split into right-sized, per-concern modules with a stable import surface and zero behavior change, and cross-module `_private` imports are promoted to deliberate public names (STRUCT-01, STRUCT-02, STRUCT-03, STRUCT-04, BOUND-01)
+- [x] **Phase 13: Module Structure & Boundaries** - The three god-files (`main.py`, `repo.py`, `orchestrator.py`) split into right-sized, per-concern modules with a stable import surface and zero behavior change, and cross-module `_private` imports are promoted to deliberate public names (STRUCT-01, STRUCT-02, STRUCT-03, STRUCT-04, BOUND-01) (completed 2026-07-10)
 - [ ] **Phase 14: Full Type-Checking (mypy)** - mypy with the pydantic plugin runs clean over the entire codebase (`app/`, `eval/`, `scripts/`, `tests/`) and is wired in as a blocking CI check (TYPE-01, TYPE-02, TYPE-03)
 - [ ] **Phase 15: Comment Hygiene & Deferred-Polish Triage** - Ticket-ID/provenance comments are stripped in favor of plain maintainer-facing constraint comments, the hand-maintained `repo.py` function-index docstring is replaced across the split DB modules, and the two remaining v2 deferred-polish todos are closed (COMM-01, COMM-02, COMM-03, POLISH-01, POLISH-02)
 
@@ -78,7 +78,7 @@ Plans:
 
 **Wave 3** *(blocked on 13-01/13-02/13-03 completion)*
 
-- [ ] 13-04-PLAN.md — AST-walking BOUND-01 regression guard + phase-closing full-suite verification
+- [x] 13-04-PLAN.md — AST-walking BOUND-01 regression guard + phase-closing full-suite verification
 
 ### Phase 14: Full Type-Checking (mypy)
 
@@ -136,6 +136,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 10. Concurrency Proof | v2 | 2/2 | Complete | 2026-07-07 |
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
-| 13. Module Structure & Boundaries | v3 | 3/4 | In Progress|  |
+| 13. Module Structure & Boundaries | v3 | 4/4 | Complete   | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 0/TBD | Not started | - |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
