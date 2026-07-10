@@ -269,28 +269,32 @@ def send_outbound(
     )
 
     # Step 2 (HIGH-3 + REPLY-TO TOPOLOGY): build the send dict and call the provider.
-    send_params = cast(
-        resend.Emails.SendParams,
-        {
-            "from": from_addr or get_settings().resend_from_addr,
-            "to": [to_addr],
-            "subject": subject,
-            "text": body,
-            "headers": {
-                k: v
-                for k, v in [
-                    ("Message-ID", message_id),
-                    ("In-Reply-To", in_reply_to),
-                    ("References", accumulated_references),
-                ]
-                if v
-            },
-            "attachments": [
-                {"filename": name, "content": base64.b64encode(pdf_bytes).decode()}
-                for name, pdf_bytes in (attachments or [])
-            ],
-        },
-    )
+    # The typed locals + direct SendParams annotation (no cast) keep mypy's TypedDict
+    # structural checking on every key/value of this money-adjacent literal.
+    headers: dict[str, str] = {
+        k: v
+        for k, v in [
+            ("Message-ID", message_id),
+            ("In-Reply-To", in_reply_to),
+            ("References", accumulated_references),
+        ]
+        if v
+    }
+    attachments_payload: list[resend.Attachment | resend.RemoteAttachment] = []
+    for name, pdf_bytes in attachments or []:
+        attachment: resend.Attachment = {
+            "filename": name,
+            "content": base64.b64encode(pdf_bytes).decode(),
+        }
+        attachments_payload.append(attachment)
+    send_params: resend.Emails.SendParams = {
+        "from": from_addr or get_settings().resend_from_addr,
+        "to": [to_addr],
+        "subject": subject,
+        "text": body,
+        "headers": headers,
+        "attachments": attachments_payload,
+    }
 
     # REPLY-TO TOPOLOGY (P6): resend_reply_to is the inbound .resend.app address
     # (owned by 06-02); when set, directs client replies to the address the webhook
