@@ -12,6 +12,7 @@ Finding #6: these tests run in CI on every push.  They are the living proof that
 """
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -37,7 +38,7 @@ _NOW = "2026-06-20T12:00:00Z"
 _TODAY = "2026-06-16"
 
 
-def _employee_kwargs(**overrides) -> dict:
+def _employee_kwargs(**overrides: Any) -> dict[str, Any]:
     """Return a minimal valid Employee field dict."""
     base = dict(
         id=uuid.uuid4(),
@@ -60,7 +61,7 @@ def _employee_kwargs(**overrides) -> dict:
     return base
 
 
-def _paystub_kwargs(**overrides) -> dict:
+def _paystub_kwargs(**overrides: Any) -> dict[str, Any]:
     """Return a minimal valid PaystubLineItem field dict."""
     import datetime
 
@@ -417,26 +418,20 @@ def test_name_match_result_rejects_bad_source() -> None:
 def test_name_match_result_rejects_confidence_kwarg() -> None:
     """A leftover confidence= kwarg raises ValidationError (extra='forbid', D-21-01)."""
     with pytest.raises(ValidationError):
-        NameMatchResult(
-            submitted_name="Maria Chen",
-            matched_employee_id=uuid.uuid4(),
-            source="exact",
-            resolved=True,
-            reason="r",
-            confidence=Decimal("0.99"),
+        NameMatchResult.model_validate(
+            {"submitted_name": "Maria Chen", "matched_employee_id": uuid.uuid4(),
+             "source": "exact", "resolved": True, "reason": "r",
+             "confidence": Decimal("0.99")}
         )
 
 
 def test_name_match_result_rejects_match_type_kwarg() -> None:
     """A leftover match_type= kwarg raises ValidationError (extra='forbid', D-21-01)."""
     with pytest.raises(ValidationError):
-        NameMatchResult(
-            submitted_name="Maria Chen",
-            matched_employee_id=uuid.uuid4(),
-            source="exact",
-            resolved=True,
-            reason="r",
-            match_type="exact",
+        NameMatchResult.model_validate(
+            {"submitted_name": "Maria Chen", "matched_employee_id": uuid.uuid4(),
+             "source": "exact", "resolved": True, "reason": "r",
+             "match_type": "exact"}
         )
 
 

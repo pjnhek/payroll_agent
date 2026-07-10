@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from app.models.contracts import Decision, InboundEmail
 from app.models.roster import NameMatchResult
@@ -31,11 +32,11 @@ class _DraftLLM:
     09-04: **kwargs absorbs compose_clarification's new timeout_s= without
     raising TypeError (mirrors test_compose_confirmation.py's fakes)."""
 
-    def __init__(self, body):
+    def __init__(self, body: str | None):
         self._body = body
-        self.calls: list[tuple] = []
+        self.calls: list[tuple[Any, Any, float]] = []
 
-    def call_text(self, tier, messages, temperature=0.7, **kwargs):
+    def call_text(self, tier: Any, messages: Any, temperature: float = 0.7, **kwargs: Any) -> str | None:
         self.calls.append((tier, messages, temperature))
         self.last_kwargs = kwargs
         return self._body
@@ -170,11 +171,11 @@ class _RaisingDraftLLM:
     09-04: **kwargs absorbs compose_clarification's new timeout_s= without
     raising TypeError (mirrors test_compose_confirmation.py's fakes)."""
 
-    def __init__(self, exc=None):
+    def __init__(self, exc: Exception | None = None):
         self._exc = exc or RuntimeError("simulated draft API error (401/429/bad model)")
         self.calls = 0
 
-    def call_text(self, tier, messages, temperature=0.7, **kwargs):
+    def call_text(self, tier: Any, messages: Any, temperature: float = 0.7, **kwargs: Any) -> str:
         self.calls += 1
         raise self._exc
 
@@ -256,7 +257,7 @@ def test_compose_source_not_json_mode():
 
 
 def _metrodeli_business_id(fake_repo) -> str:
-    return fake_repo.contact_to_business["hr@metrodeli.example"]
+    return str(fake_repo.contact_to_business["hr@metrodeli.example"])
 
 
 def _seed_metrodeli_run(fake_repo, *, body="David Reyez 38 regular hours.") -> uuid.UUID:
@@ -281,16 +282,16 @@ def _seed_metrodeli_run(fake_repo, *, body="David Reyez 38 regular hours.") -> u
         to_addr=email.to_addr,
         body_text=email.body_text,
     )
-    return fake_repo.create_run(
+    return uuid.UUID(str(fake_repo.create_run(
         business_id=_metrodeli_business_id(fake_repo), source_email_id=email_id
-    )
+    )))
 
 
 def _david_reyes_id(fake_repo) -> uuid.UUID:
     biz = _metrodeli_business_id(fake_repo)
     for emp in fake_repo.business_employees[str(biz)]:
         if emp.full_name == "David Reyes":
-            return emp.id
+            return uuid.UUID(str(emp.id))
     raise AssertionError("seeded David Reyes not found")
 
 
@@ -333,7 +334,7 @@ def test_clarify_sends_and_pauses(fake_repo, mock_llm, monkeypatch):
     pauses at awaiting_reply via repo.set_status (CLAR-01, FIX 3, FIX B)."""
     # Capture the outbound send: the stub gateway records the Message-ID on an
     # outbound email_messages row. The in-memory store mirrors get_outbound_message_id.
-    sent: dict = {}
+    sent: dict[str, dict[str, str]] = {}
 
     def _fake_send_outbound(*, run_id, to_addr, subject, body, **kw):
         mid = f"<{uuid.uuid4()}@payroll-agent.local>"

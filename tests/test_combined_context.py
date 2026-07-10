@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, date, datetime
+from typing import Any
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
@@ -205,7 +206,7 @@ def test_render_asked_summary_handles_none_decision():
 
 
 def _mk_extracted(
-    employees_data: list[dict],
+    employees_data: list[dict[str, Any]],
     pay_period_start: str = "2026-06-15",
     run_id: uuid.UUID | None = None,
 ) -> Extracted:
@@ -239,7 +240,7 @@ def _seed_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.U
         to_addr="agent@payroll-agent.local",
         body_text=body,
     )
-    return fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=eid)
+    return uuid.UUID(str(fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=eid)))
 
 
 def _inbound(
@@ -289,7 +290,7 @@ def _inbound_persisted(
     )
 
 
-def _extraction_json(employees: list[dict], pay_period_start: str = "2026-06-15") -> str:
+def _extraction_json(employees: list[dict[str, Any]], pay_period_start: str = "2026-06-15") -> str:
     return json.dumps(
         {"employees": employees, "pay_period_start": pay_period_start, "pay_period_end": None}
     )
@@ -446,7 +447,7 @@ def test_consumed_marker_from_resume_drives_next_round_accumulation(fake_repo, m
     import app.pipeline.orchestrator as orch_mod
 
     captured_bodies: list[str] = []
-    real_extract = orch_mod.extract
+    from app.pipeline.extract import extract as real_extract
 
     def _spy_extract(email, roster, *, run_id, llm=None):
         captured_bodies.append(email.body_text)
@@ -462,12 +463,11 @@ def test_consumed_marker_from_resume_drives_next_round_accumulation(fake_repo, m
         _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}]),
         _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}]),
     ]
-    _orig = orch_mod.extract
-    orch_mod.extract = _spy_extract
+    setattr(orch_mod, "extract", _spy_extract)
     try:
         resume_pipeline(run_id, reply_2)
     finally:
-        orch_mod.extract = _orig
+        setattr(orch_mod, "extract", real_extract)
 
     assert captured_bodies, "the second resume must call extract() at least once"
     assert any(reply_1_body in b for b in captured_bodies), (

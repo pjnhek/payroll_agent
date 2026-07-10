@@ -1,6 +1,7 @@
 import pathlib
 
 import app.db.bootstrap as bootstrap
+import psycopg
 
 
 def test_bootstrap_timeout_constants_defined():
@@ -19,7 +20,7 @@ def test_bootstrap_sets_timeouts_before_ddl(monkeypatch):
             return self
         def commit(self): pass
 
-    monkeypatch.setattr(bootstrap.psycopg, "connect", lambda *a, **k: _FakeConn())
+    monkeypatch.setattr(psycopg, "connect", lambda *a, **k: _FakeConn())
     monkeypatch.setattr(bootstrap, "get_settings", lambda: type("S", (), {"database_url": "postgresql://x/y"})())
     # pathlib.Path instances don't support instance-attribute assignment
     # (PosixPath has no __dict__ override for methods), so the stub must be

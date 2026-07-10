@@ -11,6 +11,7 @@ That is the expected Wave 0 outcome — these are the spec, not the impl.
 from __future__ import annotations
 
 import uuid
+from typing import Any, cast
 
 import pytest
 
@@ -47,7 +48,7 @@ def test_claim_status_returns_true_when_row_returned():
         _run_id(),
         RunStatus.AWAITING_APPROVAL,
         RunStatus.APPROVED,
-        conn=conn,
+        conn=cast(Any, conn),
     )
 
     assert result is True, (
@@ -67,7 +68,7 @@ def test_claim_status_returns_false_when_no_row():
         _run_id(),
         RunStatus.AWAITING_APPROVAL,
         RunStatus.APPROVED,
-        conn=conn,
+        conn=cast(Any, conn),
     )
 
     assert result is False, (
@@ -90,7 +91,7 @@ def test_claim_status_sql_contains_where_status_and_returning():
         _run_id(),
         RunStatus.AWAITING_APPROVAL,
         RunStatus.APPROVED,
-        conn=conn,
+        conn=cast(Any, conn),
     )
 
     assert conn.executed, "claim_status must execute at least one SQL statement"
@@ -113,7 +114,7 @@ def test_claim_status_passes_expected_and_new_status_as_params():
 
     expected_status = RunStatus.AWAITING_APPROVAL
     new_status = RunStatus.APPROVED
-    repo.claim_status(_run_id(), expected_status, new_status, conn=conn)
+    repo.claim_status(_run_id(), expected_status, new_status, conn=cast(Any, conn))
 
     # At least one executed statement must carry the enum values as params.
     found = False

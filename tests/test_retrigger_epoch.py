@@ -34,6 +34,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
@@ -44,7 +45,7 @@ COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
 
 
-def _bare_roster(business_id=COASTAL_BIZ_ID):
+def _bare_roster(business_id: uuid.UUID = COASTAL_BIZ_ID):
     from app.models.roster import Roster
 
     return Roster(business_id=business_id, employees=[])
@@ -146,7 +147,7 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
         "GAP-3 fix's core mechanism)"
     )
 
-    send_calls: list = []
+    send_calls: list[dict[str, Any]] = []
     real_send_outbound = gateway_mod.send_outbound
 
     def _spy_send_outbound(**kw):

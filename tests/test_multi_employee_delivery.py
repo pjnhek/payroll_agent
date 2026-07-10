@@ -16,6 +16,7 @@ Proves two properties of the multi-employee path in _deliver:
 from __future__ import annotations
 
 import uuid
+from typing import Any
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -170,7 +171,7 @@ def test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs(
 
     # Spy on gateway.send_outbound — _deliver calls gateway.send_outbound which
     # is imported at module level in orchestrator; patch the orchestrator's binding.
-    send_calls: list[dict] = []
+    send_calls: list[dict[str, Any]] = []
 
     def _spy_send_outbound(**kwargs):
         send_calls.append(kwargs)

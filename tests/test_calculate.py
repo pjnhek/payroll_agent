@@ -30,7 +30,7 @@ def hourly_employee():
     return emp
 
 
-def _hours(regular="40"):
+def _hours(regular: str = "40") -> dict[str, object]:
     return {
         "hours_regular": Decimal(regular),
         "hours_overtime": Decimal("0"),
@@ -131,7 +131,7 @@ def _make_salary_employee(
     )
 
 
-def _zero_hours() -> dict:
+def _zero_hours() -> dict[str, object]:
     """Return a zero-hours dict for use in salaried employee tests."""
     return {
         "hours_regular": Decimal("0"),
@@ -142,7 +142,7 @@ def _zero_hours() -> dict:
     }
 
 
-def _leave_hours() -> dict:
+def _leave_hours() -> dict[str, object]:
     """Return a dict with 8 hours_vacation and all other hours zero."""
     return {
         "hours_regular": Decimal("0"),
@@ -455,7 +455,7 @@ def test_additional_medicare_flag_present():
 
 # ---- Code review round 2: input-guard hardening (WR-01 bool, WR-02 unknown keys, WR-03) ----
 
-def _valid_hours() -> dict:
+def _valid_hours() -> dict[str, object]:
     return {
         "hours_regular": Decimal("40"),
         "hours_overtime": Decimal("0"),
@@ -530,7 +530,7 @@ def test_additional_medicare_threshold_is_status_aware():
     """
     from app.models.roster import Employee
 
-    def mk(status):
+    def mk(status: str) -> Employee:
         return Employee(
             id=uuid.uuid4(), business_id=uuid.uuid4(), full_name="T", known_aliases=[],
             pay_type="hourly", hourly_rate=Decimal("500.00"), annual_salary=None,
