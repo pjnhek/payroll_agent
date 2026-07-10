@@ -24,7 +24,7 @@ from __future__ import annotations
 from decimal import Decimal
 from uuid import UUID
 
-from app.models.contracts import Extracted, RawFieldDrop
+from app.models.contracts import Extracted, ExtractedEmployee, RawFieldDrop
 from app.models.roster import NameMatchResult, Roster, ValidationIssue
 
 HOURS_FIELDS = (
@@ -82,8 +82,8 @@ def _employee_pay_periods_per_year(
 def detect_field_regression(
     original: Extracted,
     resumed: Extracted,
-    prior_matches: list | None,
-    current_matches: list,
+    prior_matches: list[NameMatchResult] | None,
+    current_matches: list[NameMatchResult],
 ) -> list[RawFieldDrop]:
     """Detect field regressions between the original and resumed extraction (D-7.5-10).
 
@@ -114,7 +114,7 @@ def detect_field_regression(
         for m in prior_matches
         if m.resolved and m.matched_employee_id is not None
     }
-    id_to_orig: dict[UUID, object] = {}
+    id_to_orig: dict[UUID, ExtractedEmployee] = {}
     for emp in original.employees:
         emp_id = name_to_id_prior.get(emp.submitted_name)
         if emp_id is not None:
@@ -126,7 +126,7 @@ def detect_field_regression(
         for m in current_matches
         if m.resolved and m.matched_employee_id is not None
     }
-    id_to_resumed: dict[UUID, object] = {}
+    id_to_resumed: dict[UUID, ExtractedEmployee] = {}
     for emp in resumed.employees:
         emp_id = name_to_id_current.get(emp.submitted_name)
         if emp_id is not None:
@@ -162,10 +162,10 @@ def validate(
     roster: Roster,
     matches: list[NameMatchResult],
     *,
-    prior=None,
-    prior_matches=None,
-    resolved_drops=None,
-    raw_field_drops=None,
+    prior: Extracted | None = None,
+    prior_matches: list[NameMatchResult] | None = None,
+    resolved_drops: set[tuple[str, str]] | None = None,
+    raw_field_drops: list[RawFieldDrop] | None = None,
 ) -> list[ValidationIssue]:
     """Emit field-validation issues for one run (LLM-06).
 
@@ -190,7 +190,7 @@ def validate(
     # BEFORE backfill). This function is a consumer, NOT the detector.
     if raw_field_drops is not None and len(raw_field_drops) > 0:
         # TYPE CONTRACT: set[tuple[str, str]] keyed by (employee_id_str, field).
-        _resolved_drops: set = resolved_drops or set()
+        _resolved_drops: set[tuple[str, str]] = resolved_drops or set()
 
         # Build name→id map for N8 suppression check.
         name_to_id_current: dict[str, UUID] = {

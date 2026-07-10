@@ -25,6 +25,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import cast
 
 from app.models.contracts import PaystubLineItem
 from app.models.roster import Employee
@@ -97,7 +98,7 @@ def _to_decimal(value: object) -> Decimal:
     # IN-01 (review round 3): surface a domain error for garbage input rather than a bare
     # decimal.InvalidOperation, matching the typed errors used above.
     try:
-        result = Decimal(value)
+        result = Decimal(cast(Decimal | int | str, value))
     except InvalidOperation as exc:
         raise ValueError(f"hours value is not a valid number: got {value!r}") from exc
     # WR-01 (review round 3): the raw-dict seam is the last-line defense against a
@@ -122,7 +123,7 @@ _HOURS_FIELDS = (
 )
 
 
-def _resolved_hours(resolved: dict) -> dict[str, Decimal]:
+def _resolved_hours(resolved: dict[str, object]) -> dict[str, Decimal]:
     """Coalesce the five hours fields to Decimal('0') for any unspecified field.
 
     WR-02 (review round 2): calculate() takes a raw dict (not a Pydantic model with
@@ -186,7 +187,7 @@ def _raise_if_reconciliation_drift(
 
 
 def calculate(
-    resolved_hours: dict,
+    resolved_hours: dict[str, object],
     employee: Employee,
     contribution_401k_override: Decimal | None = None,
 ) -> PaystubLineItem:

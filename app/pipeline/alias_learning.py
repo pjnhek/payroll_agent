@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any, cast
+
+import psycopg
 
 from app.db import repo
+from app.models.roster import Employee, Roster
 from app.pipeline.reconcile_names import deterministic_match, normalize_name
 
 logger = logging.getLogger("payroll_agent.orchestrator")
 
 
-def normalize_candidate(value) -> dict:
+def normalize_candidate(value: object) -> dict[str, Any]:
     """Normalize an alias_candidates VALUE to the D-11-14 nested shape.
 
     {token: VALUE} historically stored VALUE as either None (never resolved) or
@@ -41,7 +45,7 @@ def normalize_candidate(value) -> dict:
     if value is None:
         return {"suggested": None, "bound": None}
     if isinstance(value, dict):
-        return value
+        return cast(dict[str, Any], value)
     # Legacy flat-bound shape: a bare employee_id string.
     return {"suggested": None, "bound": value}
 
@@ -50,7 +54,7 @@ def bind_evidence_for_token(
     token: str,
     suggested_id: str,
     suggested_full_name: str | None,
-    post_reconciliation: list,
+    post_reconciliation: list[object],
 ) -> bool:
     """GAP-4/CR-4 fix: tie the bind decision to a SINGLE reconciliation record.
 
@@ -97,8 +101,8 @@ def bind_evidence_for_token(
 
 def safe_to_learn_alias(
     token: str,
-    target_employee,
-    roster,
+    target_employee: Employee,
+    roster: Roster,
 ) -> bool:
     """Return True only if token uniquely resolves to target_employee on the full roster
     AFTER the alias is appended (D-01b write-side collision guard).
@@ -119,7 +123,7 @@ def safe_to_learn_alias(
     CRITICAL: Do NOT mutate the actual roster objects. The synthetic roster is a
     temporary computation object only (uses Pydantic v2 model_copy, never in-place).
     """
-    synthetic_employees = []
+    synthetic_employees: list[Employee] = []
     for emp in roster.employees:
         if emp.id == target_employee.id:
             new_aliases = list(emp.known_aliases) + [token]
@@ -133,7 +137,12 @@ def safe_to_learn_alias(
     return result is not None and result.matched_employee_id == target_employee.id
 
 
-def write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster, conn=None) -> None:
+def write_aliases_if_safe(
+    run_id: uuid.UUID,
+    run: dict[str, Any],
+    roster: Roster,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Write any unambiguous, non-colliding alias candidates to employees.known_aliases.
 
     Called in delivery.deliver BEFORE set_status(SENT) (D-13b ordering — PATTERNS.md

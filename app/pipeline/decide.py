@@ -25,6 +25,8 @@ Gate rules (pure code) — force final_action="request_clarification" if ANY:
 """
 from __future__ import annotations
 
+from uuid import UUID
+
 from app.models.contracts import Decision, Extracted
 from app.models.roster import NameMatchResult, ValidationIssue
 
@@ -51,7 +53,7 @@ def check_one_to_one(
     reasons: list[str] = []
 
     # (a) two distinct submitted names -> the same employee id.
-    by_employee: dict = {}
+    by_employee: dict[UUID, list[str]] = {}
     for m in matches:
         if m.matched_employee_id is None:
             continue
@@ -72,8 +74,8 @@ def check_one_to_one(
             )
 
     # (b) a duplicated submitted name (same name extracted more than once).
-    seen: set = set()
-    flagged: set = set()
+    seen: set[str] = set()
+    flagged: set[str] = set()
     for m in matches:
         if m.submitted_name in seen and m.submitted_name not in flagged:
             reasons.append(f"duplicate submitted name: {m.submitted_name}")
