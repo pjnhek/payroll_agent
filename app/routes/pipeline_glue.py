@@ -157,6 +157,13 @@ def route_reply(
          (FIX 10; CLAR-03 invariant 4).
       3. No header match at all → return None so the caller treats it as an ordinary
          inbound (first ingest).
+
+    Return contract (WR-04, Phase 13 review — a caller misread this as
+    "response means not resumed"): a JSONResponse is returned on EVERY header
+    match, with body {"status": ...} distinguishing the outcome —
+    "resumed" (background resume scheduled), "sender_mismatch" (FIX 5 spoof
+    guard), or "late_reply" (FIX 10). None means ONLY "no header match; fall
+    through to ordinary first ingest" — it is NOT the success signal.
     """
     run_id = repo.find_awaiting_reply_for_header(
         in_reply_to=email.in_reply_to,

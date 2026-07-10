@@ -6,6 +6,7 @@ stranded-sweep block.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -780,18 +781,23 @@ def simulate_reply(
 
     # Hand off to the real reply-routing path — all guards (FIX-5 spoof check,
     # late-reply detection) execute exactly as they would for a real inbound.
-    # WR-01 (REVIEW-2): route_reply returns a JSONResponse when it did NOT resume
-    # (spoof-mismatch or late-reply) and None when it scheduled the resume. Surface the
-    # non-resume outcome instead of unconditionally logging success.
+    # WR-04 (Phase 13 review): route_reply returns a JSONResponse on EVERY
+    # header match — {"status": "resumed"} when it scheduled the background
+    # resume, {"status": "sender_mismatch"} / {"status": "late_reply"} when a
+    # guard stopped it — and None ONLY when the header matched nothing (the
+    # synthetic reply went nowhere). The previous None-check logged "NOT
+    # resumed" on every successful resume; branch on the actual outcome.
     handled = pipeline_glue.route_reply(email, cleaned, background_tasks)
-    if handled is not None:
-        logger.warning(
-            "simulate-reply: reply NOT resumed for run %s (route returned a response — "
-            "spoof-mismatch or late-reply); run stays at awaiting_reply",
-            run_id,
+    outcome = json.loads(handled.body)["status"] if handled is not None else "no_header_match"
+    if outcome == "resumed":
+        logger.info(
+            "simulate-reply: resume scheduled for run %s (demo-only)", run_id
         )
     else:
-        logger.info(
-            "simulate-reply: synthetic reply submitted for run %s (demo-only)", run_id
+        logger.warning(
+            "simulate-reply: reply NOT resumed for run %s (outcome=%s); "
+            "run stays at awaiting_reply",
+            run_id,
+            outcome,
         )
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
