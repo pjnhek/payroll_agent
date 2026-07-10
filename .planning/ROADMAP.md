@@ -91,7 +91,7 @@ Plans:
   2. mypy runs with zero errors over the rest of the repo (`eval/`, `scripts/`, `tests/`) — there is no type-checking blind spot anywhere in the codebase.
   3. The CI workflow from Phase 12 is extended with a blocking mypy step, so a push that introduces a type error fails CI the same way a lint or test failure does.
 
-**Plans**: 1/10 plans executed
+**Plans**: 2/10 plans executed
 Plans:
 **Wave 1**
 
@@ -99,7 +99,7 @@ Plans:
 
 **Wave 2** *(blocked on 14-01)*
 
-- [ ] 14-02-PLAN.md — Annotate the typed substrate: app/config.py, app/models/, app/llm/, then app/db/ (incl. repo/ package) to mypy-clean
+- [x] 14-02-PLAN.md — Annotate the typed substrate: app/config.py, app/models/, app/llm/, then app/db/ (incl. repo/ package) to mypy-clean
 
 **Wave 3** *(blocked on 14-02 — pipeline/email import the substrate)*
 
@@ -168,5 +168,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
-| 14. Full Type-Checking (mypy) | v3 | 1/10 | In Progress|  |
+| 14. Full Type-Checking (mypy) | v3 | 2/10 | In Progress|  |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |

@@ -6,14 +6,14 @@ current_phase: 14
 current_phase_name: full-type-checking-mypy
 status: executing
 stopped_at: Completed 14-01-PLAN.md
-last_updated: "2026-07-10T18:16:18.012Z"
+last_updated: "2026-07-10T18:28:22.365Z"
 last_activity: 2026-07-10
 last_activity_desc: Phase 14 execution started
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 18
-  completed_plans: 9
+  completed_plans: 10
   percent: 50
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 ## Current Position
 
 Phase: 14 (full-type-checking-mypy) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-07-10 — Phase 14 execution started
 
@@ -83,6 +83,7 @@ Last activity: 2026-07-10 — Phase 14 execution started
 | Phase 10 P02 | 25min | 2 tasks | 2 files |
 | Phase 12 P04 | 100min | 3 tasks | 1 files |
 | Phase 14 P01 | 4 | 3 tasks | 6 files |
+| Phase 14 P02 | 10 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -136,6 +137,8 @@ Recent decisions affecting current work:
 - [Phase 14]: Phase 14 Plan 01: Keep mypy scope and strictness in committed pyproject.toml config so bare local and CI commands have identical coverage.
 - [Phase 14]: Phase 14 Plan 01: Use a narrow _ReceivedEmailLike Protocol plus cast for Resend's ResponseDict runtime attributes; preserve existing attribute access and avoid Any.
 - [Phase 14]: Phase 14 Plan 01: Keep the eval import regression fix separate from its RED test, and keep the BracketRow annotation separate from the gateway change.
+- [Phase 14]: Repository facade export style remains unchanged after direct mypy measurement found no re-export errors.
+- [Phase 14]: Dynamic psycopg row and JSONB boundaries use dict[str, Any], while OpenAI chat messages use ChatCompletionMessageParam.
 
 ### Pending Todos
 
@@ -193,7 +196,7 @@ pending scenarios.*
 
 ## Session Continuity
 
-Last session: 2026-07-10T18:16:18.004Z
+Last session: 2026-07-10T18:27:58.449Z
 Stopped at: Completed 14-01-PLAN.md
 Resume file: None
 
