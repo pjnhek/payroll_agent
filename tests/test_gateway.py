@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from typing import Any
 
 import pytest
 
@@ -221,7 +222,7 @@ def test_persist_decision_signature_has_no_final_status():
 def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn, monkeypatch):
     import app.db.repo.runs as repo_runs
 
-    calls = {"set_status": []}
+    calls: dict[str, list[RunStatus]] = {"set_status": []}
     real_set_status = repo.set_status
 
     def _spy(run_id, status, conn=None):
@@ -463,6 +464,7 @@ def test_record_run_error_persists_reason_and_error_status(seeded_db):
     )
     repo.record_run_error(run_id, "extraction failed twice")
     run = repo.load_run(run_id)
+    assert run is not None
     assert run["status"] == RunStatus.ERROR.value
     assert run["error_reason"] == "extraction failed twice"
 
@@ -562,12 +564,12 @@ class _FakeReceivedEmail:
         message_id: str = "<abc@resend.com>",
         text: str | None = "Maria 40 hours",
         html: str | None = None,
-        headers: dict | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.message_id = message_id
         self.text = text
         self.html = html
-        self.headers: dict = headers if headers is not None else {}
+        self.headers: dict[str, str] = headers if headers is not None else {}
 
 
 # ---------------------------------------------------------------------------
@@ -880,7 +882,7 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
     monkeypatch.setenv("RESEND_API_KEY", "test-key")
 
-    send_calls: list = []
+    send_calls: list[dict[str, Any]] = []
 
     def _fake_send(params):
         send_calls.append(params)
@@ -1083,13 +1085,13 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     # We cannot easily spy on BackgroundTasks.add_task in TestClient mode,
     # so we monkeypatch the internal pipeline functions and assert which was called.
     import app.routes.pipeline_glue as _main
-    resume_called: list = []
+    resume_called: list[uuid.UUID] = []
     monkeypatch.setattr(
         _main,
         "resume_pipeline_bg",
         lambda run_id, reply_email_id, conn=None: resume_called.append(run_id),
     )
-    run_pipeline_called: list = []
+    run_pipeline_called: list[uuid.UUID] = []
     monkeypatch.setattr(
         _main,
         "run_pipeline_bg",
@@ -1210,7 +1212,7 @@ def test_inbound_reply_routes_to_correct_run_integration():
         from_addr="agent@payroll-agent.local",
         body_text="Could you confirm?",
     )
-    _repo.set_status(run_id, "awaiting_reply")
+    _repo.set_status(run_id, RunStatus.AWAITING_REPLY)
 
     # The real SQL predicate must find run_id via the outbound_mid.
     matched = _repo.find_awaiting_reply_for_header(
@@ -1248,7 +1250,7 @@ def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
     fake_conn.script_fetchone(None)   # get_outbound_references_chain → None
     fake_conn.script_fetchone((str(uuid.uuid4()),))  # insert_email_message → id
 
-    key_at_send_time: list = []
+    key_at_send_time: list[str | None] = []
 
     def _capture_send(params):
         key_at_send_time.append(resend.api_key)
@@ -1298,7 +1300,7 @@ def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
     fake_conn.script_fetchone(None)
     fake_conn.script_fetchone((str(uuid.uuid4()),))
 
-    captured_params: list = []
+    captured_params: list[dict[str, Any]] = []
 
     def _capture_send(params):
         captured_params.append(params)
@@ -1351,7 +1353,7 @@ def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch)
     fake_conn.script_fetchone(None)
     fake_conn.script_fetchone((str(uuid.uuid4()),))
 
-    captured_params: list = []
+    captured_params: list[dict[str, Any]] = []
 
     def _capture_send(params):
         captured_params.append(params)
@@ -1400,7 +1402,7 @@ def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch
     fake_conn.script_fetchone(None)
     fake_conn.script_fetchone((str(uuid.uuid4()),))
 
-    captured_params: list = []
+    captured_params: list[dict[str, Any]] = []
 
     def _capture_send(params):
         captured_params.append(params)

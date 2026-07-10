@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -351,6 +352,7 @@ def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
     fake_conn.script_fetchone(scripted_row)
 
     run = _repo.load_run(run_id, conn=fake_conn)
+    assert run is not None
 
     # Part 1: RUN_COLS (and therefore the actual SQL text) includes error_detail.
     assert "error_detail" in fake_conn.all_sql()
@@ -543,13 +545,16 @@ def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: non_awaiting_run)
 
     # _route_reply must NOT be called; track any call via a spy.
-    route_reply_calls = []
+    route_reply_calls: list[int] = []
     import app.routes.pipeline_glue as _main
+
+    def _route_reply_spy(email, cleaned, background_tasks) -> None:
+        route_reply_calls.append(1)
 
     monkeypatch.setattr(
         _main,
         "route_reply",
-        lambda email, cleaned, bt: route_reply_calls.append(1) or None,
+        _route_reply_spy,
     )
 
     response = client.post(
@@ -590,11 +595,15 @@ def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch):
     )
 
     import app.routes.pipeline_glue as _main
-    route_reply_calls = []
+    route_reply_calls: list[int] = []
+
+    def _route_reply_spy(email, cleaned, background_tasks) -> None:
+        route_reply_calls.append(1)
+
     monkeypatch.setattr(
         _main,
         "route_reply",
-        lambda email, cleaned, bt: route_reply_calls.append(1) or None,
+        _route_reply_spy,
     )
 
     response = client.post(
@@ -825,7 +834,7 @@ def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
     metro_uuid = _uuid.UUID("b0000002-0000-0000-0000-000000000002")
 
     import app.db.repo as _repo
-    create_run_calls: list = []
+    create_run_calls: list[dict[str, Any]] = []
 
     def _fake_find_business_by_sender(from_addr, conn=None):
         # coastal .example contact resolves to coastal_uuid
@@ -890,7 +899,7 @@ def test_demo_send_test_metro_unknown_shorthand_routes_to_metro(monkeypatch):
     metro_uuid = _uuid.UUID("b0000002-0000-0000-0000-000000000002")
 
     import app.db.repo as _repo
-    create_run_calls: list = []
+    create_run_calls: list[dict[str, Any]] = []
 
     def _fake_find_business_by_sender(from_addr, conn=None):
         if from_addr == "hr@metrodeli.example":

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -64,7 +65,7 @@ def resume_spy(monkeypatch):
     job)."""
     import app.routes.pipeline_glue as pipeline_glue_mod
 
-    calls: list[tuple] = []
+    calls: list[tuple[uuid.UUID, InboundEmail]] = []
 
     def _spy(run_id, inbound):
         calls.append((run_id, inbound))
@@ -81,7 +82,7 @@ def _seed_awaiting_reply_run_with_reply(
     run_status: str = "awaiting_reply",
     created_at: datetime | None = None,
     reply_from_addr: str | None = None,
-) -> tuple[uuid.UUID, dict]:
+) -> tuple[uuid.UUID, dict[str, Any]]:
     """Seed a run + a persisted, LINKED inbound reply row against it.
 
     Mirrors the real webhook's insert_inbound_email + link_email_to_run

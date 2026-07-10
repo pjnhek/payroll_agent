@@ -181,7 +181,7 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     # Spy on run_pipeline_bg by patching it at app.routes.pipeline_glue (the
     # promoted-public bg task function).
     import app.routes.pipeline_glue as _main
-    pipeline_runs: list = []
+    pipeline_runs: list[_uuid_module.UUID] = []
     monkeypatch.setattr(
         _main,
         "run_pipeline_bg",

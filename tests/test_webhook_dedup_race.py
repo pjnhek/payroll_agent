@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import threading
 import uuid
+from typing import Any
 
 import pytest
 
@@ -54,7 +55,7 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
     # dedup/race property against real Postgres. This test's message_id is fresh
     # and carries no reply headers, so the race can only ever hit the new-run
     # path — resume_pipeline_bg is not monkeypatched because it cannot be reached.
-    pipeline_calls: list = []
+    pipeline_calls: list[uuid.UUID] = []
     monkeypatch.setattr(
         pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
     )
@@ -74,7 +75,7 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
         "created_at": "2026-06-15T10:00:00Z",
     }
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     lock = threading.Lock()
 
     def _post() -> None:
