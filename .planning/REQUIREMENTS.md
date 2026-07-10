@@ -22,8 +22,8 @@
 
 ### Type Checking (TYPE)
 
-- [ ] **TYPE-01**: mypy (with the pydantic plugin) is configured in `pyproject.toml` and runs clean over `app/`
-- [ ] **TYPE-02**: mypy runs clean over the rest of the codebase (`eval/`, `scripts/`, `tests/`) — the entire repo is type-clean, code written before and going forward
+- [x] **TYPE-01**: mypy (with the pydantic plugin) is configured in `pyproject.toml` and runs clean over `app/`
+- [x] **TYPE-02**: mypy runs clean over the rest of the codebase (`eval/`, `scripts/`, `tests/`) — the entire repo is type-clean, code written before and going forward
 - [ ] **TYPE-03**: mypy is a blocking check in the CI workflow
 
 ### Comment Hygiene (COMM)

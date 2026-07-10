@@ -91,11 +91,11 @@ Plans:
   2. mypy runs with zero errors over the rest of the repo (`eval/`, `scripts/`, `tests/`) — there is no type-checking blind spot anywhere in the codebase.
   3. The CI workflow from Phase 12 is extended with a blocking mypy step, so a push that introduces a type error fails CI the same way a lint or test failure does.
 
-**Plans**: 10 plans *(replanned 2026-07-10 after Codex cross-AI review — waves follow mypy's import traversal, not file ownership alone)*
+**Plans**: 1/10 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 14-01-PLAN.md — mypy config (strict + pydantic plugin + tests/reportlab overrides), D-08 bug fix (eval/run_eval.py llm_client import, test-first), gateway.py ResponseDict Protocol+cast, federal_withholding.py BracketRow fix
+- [x] 14-01-PLAN.md — mypy config (strict + pydantic plugin + tests/reportlab overrides), D-08 bug fix (eval/run_eval.py llm_client import, test-first), gateway.py ResponseDict Protocol+cast, federal_withholding.py BracketRow fix
 
 **Wave 2** *(blocked on 14-01)*
 
@@ -168,5 +168,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
-| 14. Full Type-Checking (mypy) | v3 | 0/9 | Not started | - |
+| 14. Full Type-Checking (mypy) | v3 | 1/10 | In Progress|  |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |

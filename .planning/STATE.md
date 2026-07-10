@@ -1,16 +1,20 @@
 ---
 gsd_state_version: 1.0
 milestone: v3
-milestone_name: Production-Ready Codebase
+milestone_name: — Production-Ready Codebase
+current_phase: 14
+current_phase_name: full-type-checking-mypy
 status: executing
-last_updated: "2026-07-10T17:12:55.280Z"
-last_activity: 2026-07-10 -- Phase 14 planning complete
+stopped_at: Completed 14-01-PLAN.md
+last_updated: "2026-07-10T18:16:18.012Z"
+last_activity: 2026-07-10
+last_activity_desc: Phase 14 execution started
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 17
-  completed_plans: 8
-  percent: 47
+  total_plans: 18
+  completed_plans: 9
+  percent: 50
 ---
 
 # Project State
@@ -20,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v3 makes the codebase read as production-quality: enforced CI, right-sized modules, full type-checking, constraint-documenting comments.**
-**Current focus:** Phase 14 — full type checking (mypy)
+**Current focus:** Phase 14 — full-type-checking-mypy
 
 ## Current Position
 
-Phase: 14
-Plan: Not started
+Phase: 14 (full-type-checking-mypy) — EXECUTING
+Plan: 2 of 10
 Status: Ready to execute
-Last activity: 2026-07-10 -- Phase 14 planning complete
+Last activity: 2026-07-10 — Phase 14 execution started
 
 ## Performance Metrics
 
@@ -78,6 +82,7 @@ Last activity: 2026-07-10 -- Phase 14 planning complete
 | Phase 11 P10 | 25min | 1 tasks | 2 files |
 | Phase 10 P02 | 25min | 2 tasks | 2 files |
 | Phase 12 P04 | 100min | 3 tasks | 1 files |
+| Phase 14 P01 | 4 | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -128,6 +133,9 @@ Recent decisions affecting current work:
 - [Phase ?]: CI schema step drops bootstrap --reset; the seeded_db fixture is the sole reset owner behind its ALLOW_DB_RESET two-factor guard (WR-04).
 - [Phase 12 P04]: Master pushed to origin (fast-forward 2eaa5fc..157633d) before the red-proof branches — the plan's assumed prior master ci.yml run did not exist (Rule 3 deviation, covered by push authorization); this triggered the repo's first-ever ci.yml run, green on both jobs
 - [Phase 12 P04]: Red-proof injections single-cause by design: one F401 (unused import sys, app/main.py) failed ONLY lint; one broken assertion (test_check_schema_cli.py) failed ONLY test — both locally verified pre-push, human-verified live, branches deleted per D-14 (run history persists)
+- [Phase 14]: Phase 14 Plan 01: Keep mypy scope and strictness in committed pyproject.toml config so bare local and CI commands have identical coverage.
+- [Phase 14]: Phase 14 Plan 01: Use a narrow _ReceivedEmailLike Protocol plus cast for Resend's ResponseDict runtime attributes; preserve existing attribute access and avoid Any.
+- [Phase 14]: Phase 14 Plan 01: Keep the eval import regression fix separate from its RED test, and keep the BracketRow annotation separate from the gateway change.
 
 ### Pending Todos
 
@@ -185,9 +193,9 @@ pending scenarios.*
 
 ## Session Continuity
 
-Last session: 2026-07-10T16:33:56.287Z
-Stopped at: Phase 14 context gathered
-Resume file: .planning/phases/14-full-type-checking-mypy/14-CONTEXT.md
+Last session: 2026-07-10T18:16:18.004Z
+Stopped at: Completed 14-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
