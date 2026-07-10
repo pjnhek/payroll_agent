@@ -5,15 +5,15 @@ milestone_name: — Production-Ready Codebase
 current_phase: 14
 current_phase_name: full-type-checking-mypy
 status: executing
-stopped_at: Completed 14-02-PLAN.md
-last_updated: "2026-07-10T18:29:35.565Z"
+stopped_at: Completed 14-03-PLAN.md
+last_updated: "2026-07-10T18:45:01.588Z"
 last_activity: 2026-07-10
 last_activity_desc: Phase 14 execution started
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 18
-  completed_plans: 10
+  completed_plans: 11
   percent: 50
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 ## Current Position
 
 Phase: 14 (full-type-checking-mypy) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-07-10 — Phase 14 execution started
 
@@ -84,6 +84,7 @@ Last activity: 2026-07-10 — Phase 14 execution started
 | Phase 12 P04 | 100min | 3 tasks | 1 files |
 | Phase 14 P01 | 4 | 3 tasks | 6 files |
 | Phase 14 P02 | 10 min | 3 tasks | 12 files |
+| Phase 14 P03 | 13 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -139,6 +140,9 @@ Recent decisions affecting current work:
 - [Phase 14]: Phase 14 Plan 01: Keep the eval import regression fix separate from its RED test, and keep the BracketRow annotation separate from the gateway change.
 - [Phase 14]: Repository facade export style remains unchanged after direct mypy measurement found no re-export errors.
 - [Phase 14]: Dynamic psycopg row and JSONB boundaries use dict[str, Any], while OpenAI chat messages use ChatCompletionMessageParam.
+- [Phase 14]: Confirmed Resend's installed EmailsReceiving.get runtime returns an attribute-style ReceivedEmail, so the existing _ReceivedEmailLike Protocol/cast remains the correct boundary.
+- [Phase 14]: Used concrete types for money-path values and typed collections, retaining Any only for dynamic payloads and injected provider objects.
+- [Phase 14]: Preserved delivery exception handling exactly and scoped the only new ignore to exc.payroll_roster with the WR-04 rationale.
 
 ### Pending Todos
 
@@ -196,8 +200,8 @@ pending scenarios.*
 
 ## Session Continuity
 
-Last session: 2026-07-10T18:29:15.172Z
-Stopped at: Completed 14-02-PLAN.md
+Last session: 2026-07-10T18:45:01.579Z
+Stopped at: Completed 14-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
