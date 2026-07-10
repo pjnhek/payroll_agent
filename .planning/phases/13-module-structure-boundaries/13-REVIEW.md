@@ -56,10 +56,11 @@ files_reviewed_list:
   - tests/test_webhook.py
 findings:
   critical: 0
-  warning: 4
+  warning: 6
   info: 4
-  total: 8
+  total: 10
 status: issues_found
+amended: "2026-07-10 — WR-05/WR-06 added from Codex post-execution cross-AI review (13-REVIEWS.md); WR-01..WR-04 already FIXED (13-REVIEW-FIX.md, commits 3363ca3/96680cd/48a5b64/32ec59d) — do NOT re-apply"
 ---
 
 # Phase 13: Code Review Report
@@ -137,6 +138,18 @@ else:
     logger.warning("simulate-reply: reply NOT resumed for run %s (outcome=%s)", run_id, outcome)
 ```
 (or have `route_reply` return a structured `(outcome, response)` tuple).
+
+### WR-05: BOUND-01 attribute scan is blind to unaliased dotted imports — third bypass of the same gate (source: Codex cross-AI review, verified; NOT yet fixed)
+
+**File:** `tests/test_bound01_private_imports.py` (import-binding collection ~line 236, attribute-receiver check ~line 255)
+**Issue:** `import app.pipeline.orchestrator` (no alias) records the binding under its root local name `app`, and the attribute scan only handles receivers that are a bare `ast.Name`. A subsequent `app.pipeline.orchestrator._compute_line_items(...)` is a nested `ast.Attribute` chain, so the scanner never resolves it. Codex invoked the scanner on this exact shape and got zero violations — a new cross-module private access written in this completely standard import form passes CI silently. Same vacuous-guard class as WR-01/WR-02.
+**Fix:** When the attribute receiver is a dotted `ast.Attribute` chain, walk it to the root `ast.Name`, reconstruct the full dotted module path, and resolve it against `import a.b.c` bindings the same way aliased/ImportFrom bindings are resolved. Extend the synthetic tmp_path fixture with this third import shape (a violating non-facade access that must FAIL and a facade access that must stay exempt), and re-run live probes for all three import shapes.
+
+### WR-06: Repo facade omits `_nulltx` from the pre-split attribute surface (source: Codex cross-AI review, verified; NOT yet fixed)
+
+**File:** `app/db/repo/__init__.py` (re-export list ~line 11 / ~line 76); definition at `app/db/repo/_shared.py:38`
+**Issue:** Pre-split `from app.db import repo; repo._nulltx()` worked; it now raises `AttributeError`. No current caller in `app/`, `eval/`, or `scripts/` uses it (which is why the original sweep classified it droppable), but the 13-01 plan must-have requires the facade re-export the FULL live attribute surface, and the BOUND-01 guard's own docstring (IN-01) already claims this re-export exists. Severity promoted from Codex's LOW to Warning on the plan-contract basis.
+**Fix:** Re-export `_nulltx` from `app/db/repo/__init__.py` alongside `_conn_ctx` — one line, and it simultaneously makes the IN-01 docstring claim true for this name.
 
 ## Info
 
