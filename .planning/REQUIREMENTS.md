@@ -15,10 +15,10 @@
 
 ### Module Structure (STRUCT)
 
-- [ ] **STRUCT-01**: `app/main.py` (~1,822 lines) is split into APIRouter modules by concern (webhook / runs+HITL / dashboard / demo / health), leaving `main.py` as thin app assembly (app creation, router registration, filters/startup)
-- [ ] **STRUCT-02**: `app/db/repo.py` (~1,765 lines, 55 functions) is split into per-aggregate modules (runs / emails / roster) with a stable import surface so callers and tests migrate mechanically
-- [ ] **STRUCT-03**: Alias-learning helpers are carved out of `app/pipeline/orchestrator.py` (~1,845 lines) into their own module
-- [ ] **STRUCT-04**: Every split is behavior-neutral — the full test suite passes with no assertion changes (import-path updates only)
+- [x] **STRUCT-01**: `app/main.py` (~1,822 lines) is split into APIRouter modules by concern (webhook / runs+HITL / dashboard / demo / health), leaving `main.py` as thin app assembly (app creation, router registration, filters/startup)
+- [x] **STRUCT-02**: `app/db/repo.py` (~1,765 lines, 55 functions) is split into per-aggregate modules (runs / emails / roster) with a stable import surface so callers and tests migrate mechanically
+- [x] **STRUCT-03**: Alias-learning helpers are carved out of `app/pipeline/orchestrator.py` (~1,845 lines) into their own module
+- [x] **STRUCT-04**: Every split is behavior-neutral — the full test suite passes with no assertion changes (import-path updates only)
 
 ### Type Checking (TYPE)
 
@@ -34,7 +34,7 @@
 
 ### Module Boundaries (BOUND)
 
-- [ ] **BOUND-01**: Cross-module `_private` imports (`_safe_to_learn_alias`, `_is_paid`, `_norm`, `_HOURS_FIELDS`) are promoted to deliberate public names; no function-body private imports remain
+- [x] **BOUND-01**: Cross-module `_private` imports (`_safe_to_learn_alias`, `_is_paid`, `_norm`, `_HOURS_FIELDS`) are promoted to deliberate public names; no function-body private imports remain
 
 ### Deferred-Polish Triage (POLISH)
 
