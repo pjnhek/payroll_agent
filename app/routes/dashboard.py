@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.db import repo
 from app.routes.demo import DEMO_FIXTURES, DEMO_OPERATOR_EMAIL, SEED_BUSINESS_IDS, SEED_CONTACTS
@@ -30,7 +30,7 @@ def landing(
     request: Request,
     business: str = Query(default=""),
     bound: str = Query(default=""),
-):
+) -> Response:
     """Recruiter landing page with business picker + in-app composer.
 
     GET /: shows all three businesses; defaults to the first in list.
@@ -101,7 +101,7 @@ def landing(
 
 
 @router.get("/eval")
-def eval_view(request: Request):
+def eval_view(request: Request) -> Response:
     """DASH-04: Render the eval view. Hermetic disk read of committed eval artifacts.
 
     R2-MEDIUM fix: enriches each per_fixture record with raw_body loaded from the
@@ -138,7 +138,7 @@ def eval_view(request: Request):
 
 
 @router.get("/eval/chart.svg")
-def eval_chart():
+def eval_chart() -> FileResponse:
     """Serve the committed eval/chart.svg as image/svg+xml.
 
     # D-21: serves committed eval/chart.svg baked into image; relative path requires

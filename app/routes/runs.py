@@ -12,13 +12,15 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from typing import Any, Callable
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.db import repo
 from app.email import gateway
 from app.email.clean import clean_body
+from app.models.roster import Employee, Roster
 from app.models.status import RunStatus
 from app.pipeline import delivery
 from app.routes import pipeline_glue
@@ -109,6 +111,8 @@ def approve(
             # raw 500 (INGEST-05 "nothing silently hangs"). APPROVED is non-terminal, so
             # record_run_error can advance it to ERROR and the operator can retrigger.
             run = repo.load_run(run_id)
+            if run is None:
+                raise TypeError("run not found")
             delivery.deliver(run_id, run)
         except Exception as exc:  # noqa: BLE001 — D-13b error boundary
             # PII-safe: type only — str(exc) may echo model output, submitted names,
@@ -385,7 +389,9 @@ def retrigger(
 # ---------------------------------------------------------------------------
 
 
-def _build_alias_rationale_notes(run: dict, roster_fn) -> list[str]:
+def _build_alias_rationale_notes(
+    run: dict[str, Any], roster_fn: Callable[[uuid.UUID], Roster]
+) -> list[str]:
     """Build a list of human-readable alias-rationale notes for source='alias' resolutions.
 
     Called by run_detail to populate the 'Name resolutions' section. Exception-safe:
@@ -409,12 +415,12 @@ def _build_alias_rationale_notes(run: dict, roster_fn) -> list[str]:
 
         business_id = run.get("business_id")
         roster = roster_fn(business_id) if business_id else None
-        emp_by_id = {}
+        emp_by_id: dict[str, Employee] = {}
         if roster is not None:
             for emp in roster.employees:
                 emp_by_id[str(emp.id)] = emp
 
-        notes = []
+        notes: list[str] = []
         for res in resolutions:
             if res.get("source") != "alias":
                 continue
@@ -439,7 +445,7 @@ def _build_alias_rationale_notes(run: dict, roster_fn) -> list[str]:
 
 
 @router.get("/runs")
-def runs_list(request: Request, background_tasks: BackgroundTasks):
+def runs_list(request: Request, background_tasks: BackgroundTasks) -> Response:
     """DASH-01: Render the reverse-chronological runs list with status badges.
 
     D-9-10/11 (09-03): sweeps stranded in-flight runs to ERROR BEFORE loading the
@@ -534,7 +540,7 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
 
 
 @router.get("/runs/{run_id}")
-def run_detail(request: Request, run_id: uuid.UUID):
+def run_detail(request: Request, run_id: uuid.UUID) -> Response:
     """DASH-02/03: Render the 3-column run detail (raw email | extracted | paystubs)
     with decision banner and operator controls gated by status."""
     try:
@@ -595,7 +601,7 @@ def run_detail(request: Request, run_id: uuid.UUID):
     # pre-select the LLM's advisory guess. Both are best-effort — a load
     # failure degrades to an empty dropdown/no pre-selection rather than a
     # 500, matching every other try/except-debug block on this route.
-    roster_employees: list = []
+    roster_employees: list[Employee] = []
     unresolved_suggestions: dict[str, str] = {}
     if run.get("status") == RunStatus.NEEDS_OPERATOR.value:
         try:
@@ -636,7 +642,7 @@ def run_detail(request: Request, run_id: uuid.UUID):
 
 
 @router.get("/runs/{run_id}/pdf/{employee_id}")
-def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID):
+def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID) -> StreamingResponse:
     """HITL-03: Stream a per-employee paystub PDF. Generated in-memory; no disk write."""
     from app.pipeline.pdf import generate_paystub_pdf
 
@@ -788,7 +794,11 @@ def simulate_reply(
     # synthetic reply went nowhere). The previous None-check logged "NOT
     # resumed" on every successful resume; branch on the actual outcome.
     handled = pipeline_glue.route_reply(email, cleaned, background_tasks)
-    outcome = json.loads(handled.body)["status"] if handled is not None else "no_header_match"
+    outcome = (
+        json.loads(bytes(handled.body))["status"]
+        if handled is not None
+        else "no_header_match"
+    )
     if outcome == "resumed":
         logger.info(
             "simulate-reply: resume scheduled for run %s (demo-only)", run_id

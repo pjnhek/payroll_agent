@@ -30,7 +30,7 @@ router = APIRouter()
 # listed here — unknown senders are rejected by the webhook (INGEST-03 / T-05-22).
 # Server validates the posted fixture_key against this dict; unknown keys fall
 # back to Coastal to prevent SSRF via an arbitrary client-supplied path.
-DEMO_FIXTURES: dict[str, dict] = {
+DEMO_FIXTURES: dict[str, dict[str, str]] = {
     "coastal_exact": {
         "label": "Coastal Cleaning Co. — exact match",
         "path": "eval/fixtures/01_exact_match_coastal.json",
