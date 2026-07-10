@@ -36,7 +36,7 @@ from app.models.contracts import Extracted, InboundEmail
 from app.models.roster import NameMatchResult, Roster
 from app.pipeline.decide import decide
 from app.pipeline.orchestrator import backfill_extracted
-from app.pipeline.reconcile_names import _norm as _normalize
+from app.pipeline.reconcile_names import normalize_name as _normalize
 from app.pipeline.reconcile_names import reconcile_names
 from app.pipeline.validate import detect_field_regression, validate
 

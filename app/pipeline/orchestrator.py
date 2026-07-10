@@ -31,129 +31,36 @@ run (DELETE-by-run then insert). Because the re-extraction sees the ORIGINAL bod
 employees/hours not mentioned in the reply are RETAINED, not lost (FIX 4). The four
 judgment stages are factored into a shared _run_stages() so run_pipeline and
 resume_pipeline share the exact same gate path — the eval-reusable spine is DRY.
+
+Module structure (Phase 13 Plan 02, STRUCT-03): the alias-learning rule set lives in
+alias_learning.py, the clarify cluster (clarify/defer_field_regression_clarification/
+render_asked_summary/combined_context_email/MAX_CLARIFICATION_ROUNDS) lives in
+clarification.py, and confirmation delivery (deliver) lives in delivery.py. This
+module keeps the core state machine only, calling alias_learning/clarification via
+module-object imports so existing monkeypatch seams retarget mechanically to their
+new owning module; delivery.deliver has no caller left in this module (it is called
+directly from app/main.py's approve() route).
 """
 from __future__ import annotations
 
-import contextlib
 import logging
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.db import repo
-from app.email import gateway
 from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
+from app.pipeline import alias_learning, clarification
 from app.pipeline.calculate import calculate
-from app.pipeline.compose_email import (
-    clarification_subject,
-    compose_clarification,
-    compose_confirmation,
-    confirmation_subject,
-)
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
-from app.pipeline.pdf import generate_paystub_pdf
-from app.pipeline.reconcile_names import _safe_to_learn_alias, reconcile_names
-from app.pipeline.suggest import suggest_employees
-from app.pipeline.validate import _HOURS_FIELDS, _is_paid, detect_field_regression, validate
+from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.validate import HOURS_FIELDS, detect_field_regression, is_paid, validate
 
 logger = logging.getLogger("payroll_agent.orchestrator")
-
-# MAX_CLARIFICATION_ROUNDS (D-11-06/D-11-07): the round cap that routes a run to
-# needs_operator instead of sending a 4th clarification. Documented derivation
-# (STALE_THRESHOLD style, main.py:100-101): the counter increments ONCE per
-# clarification SEND (any purpose — 'clarification' and
-# 'clarification_field_regression' share one counter, D-11-07 "counts ALL
-# clarification sends per run regardless of purpose"), inside _clarify's
-# post-send finalize transaction. Boundary semantics: counter == 3 means THREE
-# sends have already happened; the would-be 4th send is what escalates. RESEARCH
-# Open Question #4 resolves to "3 total rounds" = 3 sends allowed, cap check
-# below tests `>= MAX_CLARIFICATION_ROUNDS` so the 4th attempt (counter already
-# at 3) is the one that diverts to needs_operator instead of sending.
-MAX_CLARIFICATION_ROUNDS = 3
-
-
-def _normalize_candidate(value) -> dict:
-    """Normalize an alias_candidates VALUE to the D-11-14 nested shape.
-
-    {token: VALUE} historically stored VALUE as either None (never resolved) or
-    a bare employee_id string (the OLD NEW-2 pre-vs-post-diff bind wrote this
-    flat shape directly). D-11-14 replaces that with a richer per-token record
-    {"suggested": id|None, "bound": id|None} so one column owns the full
-    capture -> suggest -> bind lifecycle. Every site that READS an
-    alias_candidates value (the bind check in resume_pipeline AND
-    _write_aliases_if_safe) must go through this helper so a legacy flat row
-    from before this plan never raises AttributeError (Pitfall #6) — dict.get
-    on a bare string/None would blow up without this normalization.
-
-    - None            -> {"suggested": None, "bound": None}   (never resolved)
-    - a str            -> {"suggested": None, "bound": value}  (OLD flat-bound
-                          shape — the pre-vs-post diff bind wrote the resolved
-                          id directly as the value; treat it as already-bound
-                          so a live legacy row keeps behaving as "learned")
-    - a dict            -> returned AS-IS (already the nested shape; idempotent)
-    """
-    if value is None:
-        return {"suggested": None, "bound": None}
-    if isinstance(value, dict):
-        return value
-    # Legacy flat-bound shape: a bare employee_id string.
-    return {"suggested": None, "bound": value}
-
-
-def _bind_evidence_for_token(
-    token: str,
-    suggested_id: str,
-    suggested_full_name: str | None,
-    post_reconciliation: list,
-) -> bool:
-    """GAP-4/CR-4 fix: tie the bind decision to a SINGLE reconciliation record.
-
-    The old bind-on-confirmation (D-11-15/NEW-2) computed two facts INDEPENDENTLY
-    over the WHOLE run's post-resume reconciliation: (a) the suggested employee id
-    newly appears as resolved SOMEWHERE, and (b) the token is gone from unresolved
-    SOMEWHERE. Both facts can be satisfied by two completely UNRELATED
-    reconciliation entries — e.g. "No, Dave didn't work this period; David worked
-    5 hours separately" makes "David" (a new, separate submitted_name) resolve to
-    the suggested id, while "Dave" simply vanishes (dropped, not resolved) — and
-    the old logic bound Dave -> David with no actual confirmation.
-
-    The fix: a bind requires ONE reconciliation entry whose submitted_name,
-    normalized, equals EITHER the token's own normalized text OR the suggested
-    employee's own normalized canonical full_name (a legitimate confirming reply
-    restates that name), AND that SAME entry is resolved=True with
-    matched_employee_id == suggested_id. This is the SAME-RECORD tie: the
-    evidence must all come from one record, never two independently-satisfied
-    whole-run facts.
-
-    suggested_full_name may be None (the suggested employee could not be
-    resolved from the roster at capture time, or is not found now) — the match
-    set then only contains the token's own text, which is fail-closed (never
-    fail-open): a missing full_name can only narrow what matches, never widen it.
-    """
-    from app.pipeline.reconcile_names import _norm
-
-    match_names = {_norm(token)}
-    if suggested_full_name is not None:
-        match_names.add(_norm(suggested_full_name))
-
-    if not isinstance(post_reconciliation, list):
-        return False
-    for entry in post_reconciliation:
-        if not isinstance(entry, dict):
-            continue
-        submitted = _norm(entry.get("submitted_name") or "")
-        if (
-            submitted in match_names
-            and entry.get("resolved") is True
-            and str(entry.get("matched_employee_id")) == suggested_id
-        ):
-            return True
-    return False
 
 
 @dataclass
@@ -164,7 +71,7 @@ class _RunStagesResult:
     matches, and issues. Does NOT carry extracted (already persisted by _run_stages).
     D-7.5-11: raw_extracted is captured in resume_pipeline BEFORE the _run_stages call
     (extracted= kwarg), so it never needs to be returned here.
-    clarify_deferred=True: ANY field_regression issue exists; _clarify deferred so
+    clarify_deferred=True: ANY field_regression issue exists; clarify deferred so
     resume_pipeline can write 'asked' BEFORE the send (N2 ordering).
     """
 
@@ -186,7 +93,7 @@ def backfill_extracted(extracted, snapshot, prior_matches, matches, resolved_dro
     resolved_drops: set[tuple[employee_id_str, field]] — fields to SKIP backfilling.
     This is backfill_skip (from D-7.5-11 TWO-SET MODEL): ONLY confirmed_dropped +
     client_supplied from newly_classified (NOT carried_forward). confirmed_dropped is in
-    resolved_drops so the explicit-zero overpay guard fires: _is_paid(Decimal('0')) is
+    resolved_drops so the explicit-zero overpay guard fires: is_paid(Decimal('0')) is
     False so explicit-zero looks backfillable by value alone; the resolved_drops gate
     is the protection. carried_forward is intentionally ABSENT from resolved_drops so
     backfill FILLS it from the snapshot → paystub OT=2.
@@ -238,12 +145,12 @@ def backfill_extracted(extracted, snapshot, prior_matches, matches, resolved_dro
 
         # Build a dict of field values for the new ExtractedEmployee.
         emp_dict = emp.model_dump()
-        for field in _HOURS_FIELDS:
+        for field in HOURS_FIELDS:
             current_val = getattr(emp, field)
-            if not _is_paid(current_val):
+            if not is_paid(current_val):
                 # Silence or explicit zero — check whether to backfill.
                 snap_val = getattr(snap_emp, field)
-                if _is_paid(snap_val):
+                if is_paid(snap_val):
                     # Snapshot had a value — eligible for carry-forward.
                     if emp_id_str is not None and (emp_id_str, field) in _resolved_drops:
                         # Field is in resolved_drops (confirmed_dropped or client_supplied):
@@ -352,7 +259,7 @@ def resume_pipeline(
     RunStatus.NEEDS_OPERATOR` and `inbound=None`. When `inbound` is None there
     is no NEW reply to consume — the "current reply" section of the combined
     extraction context is simply absent (a synthetic empty-body InboundEmail
-    is substituted so the shared `_combined_context_email`/accumulation code
+    is substituted so the shared `combined_context_email`/accumulation code
     stays byte-identical for both callers; the ORIGINAL body + ALL already-
     consumed replies still populate the context in full, per D-11-13).
     `overrides` (submitted_name -> employee_id_str) is threaded straight to
@@ -391,7 +298,7 @@ def resume_pipeline(
         # D-11-08: operator-resume has no NEW reply to consume — substitute a
         # synthetic empty-body InboundEmail so every downstream line that reads
         # `inbound.message_id`/`inbound.body_text` (mark_reply_consumed, the
-        # prior_replies exclusion filter, _combined_context_email) stays exactly
+        # prior_replies exclusion filter, combined_context_email) stays exactly
         # the same code path for both callers. mark_reply_consumed is a no-op for
         # a synthetic message_id that was never persisted as an inbound row (the
         # real repo's UPDATE simply matches zero rows; InMemoryRepo's mirror looks
@@ -414,7 +321,7 @@ def resume_pipeline(
         # D-11-02: write the consumed marker the INSTANT processing actually starts
         # (immediately after the winning CAS claim, before anything else runs). This
         # is the READ side of the round machine and belongs HERE in resume_pipeline —
-        # NOT in _clarify (Plan 11-02), which owns the send-side round counter only.
+        # NOT in clarify (Plan 11-02), which owns the send-side round counter only.
         # mark_reply_consumed is write-once (`consumed_round IS NULL` guard, 11-01),
         # so a duplicate/redelivered claim that somehow still reaches this line
         # cannot overwrite an already-recorded round. This single UPDATE stands
@@ -439,8 +346,9 @@ def resume_pipeline(
         # GAP-4/CR-4 fix (11-09): the bind decision itself no longer diffs a
         # pre-resolved-id SET against a post-resolved-id SET — that whole-run
         # diff is exactly what let an UNRELATED reconciliation entry satisfy
-        # the bind (see _bind_evidence_for_token). Only _pre_candidates and
-        # _pre_reconciliation (the latter for Step E0) are still needed here.
+        # the bind (see alias_learning.bind_evidence_for_token). Only
+        # _pre_candidates and _pre_reconciliation (the latter for Step E0) are
+        # still needed here.
         pre_run_data = repo.load_run(run_id)
         _pre_candidates = (pre_run_data.get("alias_candidates") or {}) if pre_run_data else {}
         _pre_reconciliation = (pre_run_data.get("reconciliation") or []) if pre_run_data else []
@@ -475,7 +383,7 @@ def resume_pipeline(
             if pre_run_data and pre_run_data.get("decision")
             else None
         )
-        asked_summary_lines = _render_asked_summary(_pre_decision, clarified)
+        asked_summary_lines = clarification.render_asked_summary(_pre_decision, clarified)
         # D-11-13: prior_replies = every OTHER consumed reply for this run, round
         # order. The reply THIS call is processing was just marked consumed above
         # (Task 1) — exclude it by message_id so it is never duplicated as both a
@@ -486,7 +394,7 @@ def resume_pipeline(
             for row in _consumed_rows
             if row.get("message_id") != inbound.message_id
         ]
-        combined_email = _combined_context_email(
+        combined_email = clarification.combined_context_email(
             inbound,
             original_body,
             asked_summary_lines=asked_summary_lines,
@@ -505,7 +413,7 @@ def resume_pipeline(
         #                            ONLY, so a prior-round carried_forward field cannot
         #                            be re-detected as the same paid->absent drop in a
         #                            later round (which would flip the terminal back to
-        #                            'asked' in _defer_field_regression_clarification).
+        #                            'asked' in defer_field_regression_clarification).
         #                            It must NEVER reach backfill_skip: carried_forward
         #                            fields stay backfillable from the snapshot — adding
         #                            them to SET B would make the paystub pay 0 for a
@@ -540,7 +448,7 @@ def resume_pipeline(
                 # IN-01: shared helper writes 'asked', persists, and sends the
                 # clarification_field_regression email (N2 ordering preserved).
                 # Factored out so Round-1 and Round-2 cannot drift (CR-02 fix).
-                _defer_field_regression_clarification(
+                clarification.defer_field_regression_clarification(
                     run_id, clarified, stage, combined_email, roster, llm=llm
                 )
                 return  # run is at AWAITING_REPLY — do not fall through to alias-diff
@@ -706,7 +614,7 @@ def resume_pipeline(
             # (CX-03: _prior_carried_forward goes to SET A only — adding it here would
             # zero out a field the client said to carry forward: underpay.)
             # confirmed_dropped IS present: backfill skips → paystub OT=0 (no overpay).
-            # _is_paid(Decimal('0')) is False (explicit zero looks backfillable by value alone);
+            # is_paid(Decimal('0')) is False (explicit zero looks backfillable by value alone);
             # the backfill_skip resolved_drops gate is the protection.
             # WR-01: _unresolvable_asked fields are added to backfill_skip so an unclassifiable
             # asked field is NEVER re-backfilled from the snapshot. Fail conservatively.
@@ -754,7 +662,7 @@ def resume_pipeline(
                     emp_id_combined = name_to_id_combined.get(emp.submitted_name)
                     emp_dict = emp.model_dump()
                     if emp_id_combined is not None:
-                        for field in _HOURS_FIELDS:
+                        for field in HOURS_FIELDS:
                             key = (emp_id_combined, field)
                             if key in reply_value_overrides:
                                 emp_dict[field] = reply_value_overrides[key]
@@ -802,11 +710,11 @@ def resume_pipeline(
             # The terminal outcomes finalized in STEP 1 above (client_supplied /
             # confirmed_dropped / carried_forward) are already fully resolved in-memory
             # and do NOT depend on _run_stages' return value — stage.clarify_deferred
-            # only gates whether _defer_field_regression_clarification ADDS new 'asked'
+            # only gates whether defer_field_regression_clarification ADDS new 'asked'
             # entries for a NEW regression found THIS round; it never touches the
             # classify-first terminal outcomes already in `clarified`. So persisting
             # `clarified` here, before _run_stages runs at all, is safe and mirrors the
-            # already-established invariant used by _defer_field_regression_clarification
+            # already-established invariant used by defer_field_regression_clarification
             # (Step 3 there: write commits and closes strictly before the later
             # LLM/provider-touching call).
             with repo.get_connection() as conn, conn.transaction():
@@ -829,13 +737,13 @@ def resume_pipeline(
             # D-7.5-11 STEP 4: CR-02 FIX — check clarify_deferred AFTER persisting terminals.
             # If _run_stages deferred (a NEW field_regression appeared this round), the run
             # must send a clarification and return — NOT fall through to the alias-diff.
-            # This mirrors Round-1's deferred handling (step ~316-325) and uses the same
-            # shared helper (IN-01, _defer_field_regression_clarification). The classify-first
+            # This mirrors Round-1's deferred handling and uses the same shared helper
+            # (IN-01, clarification.defer_field_regression_clarification). The classify-first
             # terminal outcomes were ALREADY persisted above (D-9-06); this helper only adds
             # the NEW 'asked' entries for the regression detected THIS round, in its own
             # separate closed transaction, before sending the clarification.
             if stage.clarify_deferred:
-                _defer_field_regression_clarification(
+                clarification.defer_field_regression_clarification(
                     run_id, clarified, stage, combined_email, roster, llm=llm
                 )
                 return  # run is at AWAITING_REPLY — do not run the alias diff
@@ -853,7 +761,7 @@ def resume_pipeline(
         # Dave didn't work this period; David worked 5 hours separately" bound
         # Dave -> David with no actual confirmation).
         #
-        # New evidence model (_bind_evidence_for_token, GAP-4 fix): bind
+        # New evidence model (alias_learning.bind_evidence_for_token, GAP-4 fix): bind
         # {token: {"suggested": S, "bound": S}} iff ONE post-resume
         # reconciliation entry ties BOTH facts together — its submitted_name
         # (normalized) equals either the token's own text or S's own canonical
@@ -869,7 +777,7 @@ def resume_pipeline(
         # occurs. J is a non-suggested resolution; nobody proposed J for this
         # token, so the never-learn-from-inference guarantee holds verbatim.
         _candidates_normalized = {
-            tok: _normalize_candidate(val) for tok, val in _pre_candidates.items()
+            tok: alias_learning.normalize_candidate(val) for tok, val in _pre_candidates.items()
         }
         _pending_tokens = [
             tok for tok, cand in _candidates_normalized.items()
@@ -900,7 +808,7 @@ def resume_pipeline(
                     ),
                     None,
                 )
-                if _bind_evidence_for_token(
+                if alias_learning.bind_evidence_for_token(
                     _token, _suggested_id, _suggested_full_name, _post_reconciliation
                 ):
                     _updated_candidates[_token] = {
@@ -932,159 +840,6 @@ def resume_pipeline(
         reason = type(exc).__name__
         logger.warning("resume of run %s failed: %s", run_id, reason)
         repo.record_run_error(run_id, reason, detail_exc=exc, stage="resume", roster=roster)
-
-
-def _defer_field_regression_clarification(
-    run_id,
-    clarified: dict,
-    stage: _RunStagesResult,
-    combined_email: InboundEmail,
-    roster,
-    *,
-    llm,
-) -> None:
-    """Shared helper for deferred field-regression clarification (IN-01, CR-02 fix).
-
-    Called from BOTH the Round-1 branch (lines ~316-352) and the new Round-2
-    branch when _run_stages returns clarify_deferred=True.  Factoring into one
-    helper prevents the two copies from drifting — the Round-2 copy being
-    entirely absent was the CR-02 bug.
-
-    Contract (N2 ordering invariant):
-      1. Write 'asked' for every NEW field_regression issue into `clarified`
-         dict (mutated in-place).
-      2. Persist clarified via set_clarified_fields BEFORE the send.
-      3. Call _clarify(purpose='clarification_field_regression') to draft +
-         send the email and advance to AWAITING_REPLY.
-
-    The caller must `return` immediately after this call — the run is now at
-    AWAITING_REPLY and must NOT fall through to the alias-diff.
-    """
-    # Step 1: Load fresh reconciliation so we can look up emp_id by submitted_name.
-    post_run = repo.load_run(run_id)
-    name_to_id_post = {
-        m["submitted_name"]: m["matched_employee_id"]
-        for m in (post_run.get("reconciliation") or [])
-        if isinstance(m, dict) and m.get("matched_employee_id")
-    }
-    # Step 2: Write 'asked' for each NEW field_regression issue (N2 ordering).
-    for issue in (stage.issues or []):
-        if issue.issue_type == "field_regression":
-            # issue.field format: "{submitted_name}.{field_name}" (IN-03 guard)
-            parts = issue.field.rsplit(".", 1)
-            if len(parts) == 2:
-                submitted_name_p, field_name_p = parts
-                current_emp_id_p = name_to_id_post.get(submitted_name_p)
-                if current_emp_id_p:
-                    emp_key = str(current_emp_id_p)
-                    # CX-03 defense-in-depth: never flip a TERMINAL outcome back to
-                    # 'asked'. setdefault protects only the OUTER dict; the field
-                    # assignment below would otherwise clobber a terminal for a
-                    # re-detected drop. With the SET A fix in resume_pipeline this
-                    # branch is unreachable for terminals (their re-detection is
-                    # suppressed upstream); the guard protects future leak paths.
-                    if clarified.get(emp_key, {}).get(field_name_p) in (
-                        "confirmed_dropped",
-                        "client_supplied",
-                        "carried_forward",
-                    ):
-                        continue
-                    clarified.setdefault(emp_key, {})[field_name_p] = "asked"
-    # Step 3: Persist 'asked' BEFORE send (N2 invariant — asked-before-send).
-    # D-9-06/D-9-01: a single-statement transaction that commits and closes
-    # strictly BEFORE Step 5's _clarify(...) call below — no transaction ever
-    # spans _clarify's LLM/provider calls. Steps 1/2/4 are reads/in-memory
-    # mutation only, not folded in (nothing to gain from widening the txn).
-    with repo.get_connection() as conn, conn.transaction():
-        repo.set_clarified_fields(run_id, clarified, conn=conn)
-
-    # Step 4: Load the persisted decision + extracted for _clarify.
-    run_row = repo.load_run(run_id)
-    from app.models.contracts import Decision as _Decision
-    persisted_decision = (
-        _Decision.model_validate(run_row["decision"])
-        if run_row and run_row.get("decision")
-        else None
-    )
-    persisted_extracted = (
-        Extracted.model_validate(run_row["extracted_data"])
-        if run_row and run_row.get("extracted_data")
-        else None
-    )
-    # Step 5: Send the clarification email (advances run to AWAITING_REPLY).
-    if persisted_decision is not None and persisted_extracted is not None:
-        _clarify(
-            run_id,
-            combined_email,
-            persisted_decision,
-            roster,
-            persisted_extracted,
-            llm=llm,
-            purpose="clarification_field_regression",
-        )
-
-
-def _render_asked_summary(decision, clarified_fields: dict) -> list[str]:
-    """Render the code-owned "what we asked" lines from PERSISTED decision facts only
-    (D-11-10). NEVER the LLM-drafted outbound clarification body — that anchor must
-    stay deterministic and string-testable, not dependent on model phrasing.
-
-    Two sources, both persisted facts:
-      - decision.unresolved_names: names the run could not resolve against the roster.
-      - clarified_fields: per-employee-id, per-field outcome dict; only entries whose
-        outcome is CURRENTLY 'asked' describe a still-open question (a terminal outcome
-        — client_supplied / confirmed_dropped / carried_forward — is already answered
-        and must not clutter the anchor as if still outstanding).
-
-    decision may be None (first-ever resume, no persisted Decision yet) — treated as
-    "no unresolved names" rather than raising.
-    """
-    lines: list[str] = []
-    unresolved_names = list(getattr(decision, "unresolved_names", None) or [])
-    for name in unresolved_names:
-        lines.append(f"{name}: name could not be matched to a roster employee")
-    for emp_id_str, field_outcomes in (clarified_fields or {}).items():
-        if not isinstance(field_outcomes, dict):
-            continue
-        for field, outcome in field_outcomes.items():
-            if outcome == "asked":
-                lines.append(f"{emp_id_str}: {field} is missing")
-    return lines
-
-
-def _combined_context_email(
-    reply: InboundEmail,
-    original_body: str,
-    *,
-    asked_summary_lines: list[str],
-    prior_replies: list[str],
-) -> InboundEmail:
-    """Build the extraction-input InboundEmail: ORIGINAL body + a code-owned
-    "QUESTIONS WE ASKED" anchor (D-11-10) + ALL consumed prior replies in round
-    order (D-11-12/13) + the CURRENT reply.
-
-    Pure function — no DB I/O, returns reply.model_copy(update=...); the passed-in
-    reply object is never mutated. The re-extraction must see the original hours (so
-    a partial reply doesn't drop them), what was asked (so a bare "40" attributes to
-    the right employee/field, D-11-11), every prior round's correction (so a Round-1
-    "30, not 40" survives into Round 2's context — CX-01 closure), and the current
-    reply. Bounded implicitly by MAX_CLARIFICATION_ROUNDS (11-02's cap keeps
-    prior_replies small; no separate limit needed here).
-    """
-    sections = ["ORIGINAL PAYROLL EMAIL:", original_body, ""]
-    if asked_summary_lines:
-        sections.append("QUESTIONS WE ASKED:")
-        sections.extend(asked_summary_lines)
-        sections.append("")
-    n_prior = len(prior_replies)
-    for i, prior_body in enumerate(prior_replies, start=1):
-        sections.append(f"CLARIFICATION REPLY {i} FROM CLIENT:")
-        sections.append(prior_body)
-        sections.append("")
-    sections.append(f"CLARIFICATION REPLY {n_prior + 1} FROM CLIENT (CURRENT):")
-    sections.append(reply.body_text)
-    combined_body = "\n".join(sections)
-    return reply.model_copy(update={"body_text": combined_body})
 
 
 def _run_stages(
@@ -1199,7 +954,7 @@ def _run_stages(
             repo.replace_line_items(run_id, line_items, conn=conn)  # DELETE-by-run then insert
             repo.set_status(run_id, RunStatus.COMPUTED, conn=conn)
             repo.set_status(run_id, RunStatus.AWAITING_APPROVAL, conn=conn)  # HITL-01 pause
-    # --- transaction block closed above; `_clarify` (an LLM+provider call) is a
+    # --- transaction block closed above; `clarification.clarify` (an LLM+provider call) is a
     # SIBLING statement here, never nested inside the `with conn.transaction():`
     # block (D-9-01 — no transaction may span a network/LLM call). ---
 
@@ -1214,588 +969,19 @@ def _run_stages(
         # the correct purpose and the prior 'clarification' row doesn't suppress the send.
         has_field_regression = any(i.issue_type == "field_regression" for i in issues)
         if has_field_regression:
-            # Defer: resume_pipeline will write 'asked' BEFORE calling _clarify (N2).
+            # Defer: resume_pipeline will write 'asked' BEFORE calling clarification.clarify (N2).
             clarify_deferred = True
         else:
-            # Non-field-regression clarification: call _clarify immediately (normal path).
+            # Non-field-regression clarification: call clarification.clarify immediately
+            # (normal path).
             # D-9-05: this is a sibling statement AFTER the persist transaction closes,
-            # never nested inside it — _clarify performs two LLM calls + a provider send.
-            _clarify(run_id, email, decision, roster, extracted, llm=llm, purpose="clarification")
+            # never nested inside it — clarify performs two LLM calls + a provider send.
+            clarification.clarify(
+                run_id, email, decision, roster, extracted, llm=llm, purpose="clarification"
+            )
             clarify_deferred = False
 
     return _RunStagesResult(clarify_deferred=clarify_deferred, matches=matches, issues=issues)
-
-
-def _clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarification") -> None:
-    """Draft a clarification, stub-send it, and pause the run at AWAITING_REPLY.
-
-    The cheap DRAFT_* tier drafts the body (templated fallback on empty content so
-    a draft failure never strands the run, CLAR-01). gateway.send_outbound mints a
-    synthetic Message-ID and records it on the linked
-    email_messages(direction='outbound', run_id) row — the SINGLE canonical anchor
-    Plan 04 reads back via the header chain (FIX 3); there is NO payroll_runs
-    Message-ID column. Status advances via repo.set_status (the sole writer, FIX B).
-    The clarification threads off the client's inbound message_id (In-Reply-To +
-    References) so the reply chain resolves in Plan 04.
-
-    extracted: the pre-clarify extraction snapshot (N7 fix — passed to
-    set_pre_clarify_extracted before each AWAITING_REPLY path so the snapshot is
-    durably persisted at the first clarification send, not overwritten on re-trigger).
-    The IS NULL guard in set_pre_clarify_extracted makes all three calls idempotent.
-
-    purpose: 'clarification' (default) or 'clarification_field_regression' (R3-2 fix —
-    get_outbound_for_round idempotency check uses the purpose kwarg so a prior plain
-    'clarification' row does NOT suppress the field-regression send).
-
-    D-21-05 — the suggestion-only call: BEFORE composing, ask the cheap (draft) tier
-    which roster employee each unresolved name most likely meant, and pass that as
-    `suggestions=` so the clarification can be SPECIFIC ("did you mean David
-    Reyes?"). CRITICAL: this runs ONLY here, on the request_clarification branch,
-    STRICTLY AFTER `decide` has already returned (decision is a parameter, computed
-    upstream in _run_stages). The suggestion is advisory COPY — it is NEVER passed
-    to decide and NEVER influences final_action. A suggestion failure degrades to
-    {} inside suggest_employees, so it can never strand the run.
-
-    D-11-01/D-11-06/D-11-07/D-11-09: the idempotency guard is now keyed on
-    (purpose, round) — repo.get_outbound_for_round — instead of purpose alone, so a
-    genuinely NEW round's question always sends (WR-05 fix: the old purpose-only
-    guard silently parked round 2+ at AWAITING_REPLY with no email out). A cap
-    check runs FIRST, before any LLM/gateway call: at MAX_CLARIFICATION_ROUNDS
-    reached, the run silently escalates to NEEDS_OPERATOR (no email, no LLM call,
-    D-11-09) instead of sending. Placing both checks at the top of _clarify covers
-    BOTH call sites (_run_stages's direct call and
-    _defer_field_regression_clarification's Step 5 call) with one guard each.
-    """
-    # D-11-06/D-11-07/D-11-09: round cap — checked BEFORE the (purpose, round)
-    # guard and BEFORE any LLM/gateway call (D-9-01 trivially satisfied: no
-    # provider call happens before this check can return). counter >=
-    # MAX_CLARIFICATION_ROUNDS means MAX_CLARIFICATION_ROUNDS sends have already
-    # happened; this the would-be NEXT send, so it diverts to needs_operator.
-    # Escalation is the sole write in its transaction (status-advance-last,
-    # D-9-02) — no new outbound row, no new purpose, no client-facing signal
-    # (D-11-09 silent handoff).
-    current_round = repo.get_clarification_round(run_id)
-    if current_round >= MAX_CLARIFICATION_ROUNDS:
-        with repo.get_connection() as conn, conn.transaction():
-            repo.set_status(run_id, RunStatus.NEEDS_OPERATOR, conn=conn)
-        logger.info(
-            "run %s escalated to needs_operator after %d rounds (D-11-06/D-11-07/D-11-09)",
-            run_id,
-            current_round,
-        )
-        return
-
-    # Finding #2 idempotency guard (CLAR-04), re-keyed to (purpose, round)
-    # (D-11-01): check for an existing SENT row at the CURRENT round BEFORE
-    # drafting or sending. A found row = a true duplicate (crash-retrigger of the
-    # SAME round) → suppress the send and finalize; None = a genuinely new
-    # question → proceed. The purpose kwarg still distinguishes this from a
-    # confirmation row and from a field-regression clarification (R3-2 fix).
-    existing_clari = repo.get_outbound_for_round(
-        run_id, purpose=purpose, round=current_round
-    )
-    if existing_clari is not None:
-        logger.info(
-            "clarification already sent for run %s (purpose=%r, round=%d) — "
-            "skipping duplicate send (finding #2, CLAR-04, D-11-01)",
-            run_id,
-            purpose,
-            current_round,
-        )
-        # N7 fix: snapshot BEFORE AWAITING_REPLY (PATH 1: idempotency early-return).
-        # IS NULL guard in set_pre_clarify_extracted makes this a no-op if already set.
-        # D-9-06: both writes commit as one transaction, status-advance last (D-9-02).
-        # D-11-01/Pitfall #3: the round advance is DERIVED from the found row's own
-        # round (never a blind current_round + 1) — a crash between a send and this
-        # finalize self-heals on re-entry because the found row's round is the
-        # ground truth of what was actually sent.
-        with repo.get_connection() as conn, conn.transaction():
-            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-            repo.set_clarification_round(
-                run_id, existing_clari["round"] + 1, conn=conn
-            )
-            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
-        return
-
-    # D-04 alias_candidates capture (finding #4 single-token-only + finding #5
-    # capture-time exclusion). This runs AFTER the idempotency guard and BEFORE
-    # send_outbound so that the original token is always captured in the same
-    # transaction boundary as the clarification intent.
-    #
-    # Gate sequence (R2-MEDIUM test-conflict fix):
-    #   1. len(unresolved_names) != 1 → no capture (finding #4 single-token-only)
-    #   2. candidate_ids count > 1 for the token → no capture (finding #5 + R2-HIGH)
-    #   3. candidate_ids count == 1 → already resolves; not a learning target
-    #   4. candidate_ids count == 0 → genuinely unresolved → capture the token
-    #      (the nested {"suggested": id|None, "bound": None} value is filled in
-    #      AFTER suggest_employees runs below, D-11-14 — capture and persist are
-    #      two steps now because the suggestion doesn't exist yet at this point).
-    #
-    # R2-HIGH COLLISION DETECTION: Do NOT use deterministic_match return value to
-    # infer collision. deterministic_match returns None for BOTH zero candidates (no
-    # match) AND 2+ candidates (collision). A colliding token like "D. Reyes" returns
-    # None yet has 2 candidate_ids. The pre-check MUST count candidate_ids directly.
-    _captured_token: str | None = None
-    if len(decision.unresolved_names) == 1:
-        candidate_token = decision.unresolved_names[0]
-        from app.pipeline.reconcile_names import _norm
-        norm_token = _norm(candidate_token)
-        exact_ids = [
-            emp.id for emp in roster.employees if _norm(emp.full_name) == norm_token
-        ]
-        alias_ids = [
-            emp.id
-            for emp in roster.employees
-            if any(_norm(a) == norm_token for a in emp.known_aliases)
-        ]
-        candidate_ids = set(exact_ids) | set(alias_ids)
-
-        if len(candidate_ids) > 1:
-            # COLLISION: token matches 2+ employees — ambiguous at capture time.
-            # Excluded per finding #5 + D-04 (colliders excluded AT emit time, not
-            # just at write time). R2-HIGH: candidate_ids count is the only reliable
-            # collision signal — deterministic_match None is insufficient.
-            logger.info(
-                "alias candidate %r excluded at capture: %d candidates "
-                "(collision, finding #5, D-04, R2-HIGH)",
-                candidate_token,
-                len(candidate_ids),
-            )
-        elif len(candidate_ids) == 1:
-            # Token already resolves uniquely to one employee — NOT an unresolved
-            # alias the system needs to learn (it already works without the alias).
-            logger.info(
-                "alias candidate %r skipped at capture: already resolves uniquely "
-                "(not an unresolved alias, not a learning target)",
-                candidate_token,
-            )
-        else:
-            # Zero candidates: token is GENUINELY UNRESOLVED — eligible for alias learning.
-            # Defer the actual set_alias_candidates write until the nested
-            # {"suggested": id|None, "bound": None} value can be built below
-            # (D-11-14) — suggest_employees hasn't run yet at this point.
-            _captured_token = candidate_token
-            logger.info(
-                "alias candidate captured for run %s: %r "
-                "(single-token, genuinely unresolved, D-04 timing)",
-                run_id,
-                candidate_token,
-            )
-    else:
-        logger.info(
-            "alias capture skipped for run %s: %d unresolved names "
-            "(single-token-only rule, finding #4)",
-            run_id,
-            len(decision.unresolved_names),
-        )
-
-    # Like compose below: only pass `llm` when injected (a test mock). When llm is
-    # None (production), suggest_employees binds its own default client — passing
-    # llm=None would force the cheap call onto a None client and silently degrade
-    # every suggestion to the generic ask.
-    suggest_kwargs = {}
-    if llm is not None:
-        suggest_kwargs["llm"] = llm
-    suggestions = suggest_employees(
-        decision.unresolved_names, roster, **suggest_kwargs
-    )
-
-    # D-11-14: persist the nested {token: {"suggested": id|None, "bound": None}}
-    # candidate shape now that the suggestion is available. suggest_employees
-    # returns {submitted_name: suggested_FULL_NAME} — a NAME, not an id
-    # (Pitfall #5) — so map the suggested full_name to its employee id via the
-    # already-loaded roster (full_name is unique per business). A suggested
-    # name that (for any reason) doesn't match a roster full_name maps to
-    # suggested=None — the bind check simply never fires for that token
-    # (nothing to confirm against). This MUST run AFTER suggest_employees and
-    # BEFORE send_outbound — same timing guarantee the old single-step capture
-    # gave (D-04), just split across two now-adjacent statements.
-    if _captured_token is not None:
-        _suggested_full_name = suggestions.get(_captured_token)
-        _suggested_id: str | None = None
-        if _suggested_full_name is not None:
-            for _emp in roster.employees:
-                if _emp.full_name == _suggested_full_name:
-                    _suggested_id = str(_emp.id)
-                    break
-        candidates = {_captured_token: {"suggested": _suggested_id, "bound": None}}
-        repo.set_alias_candidates(run_id, candidates)
-        logger.info(
-            "alias candidate suggestion persisted for run %s: %d suggestion(s) "
-            "mapped to an employee id (D-11-14 nested shape)",
-            run_id,
-            1 if _suggested_id is not None else 0,
-        )
-
-    compose_kwargs = {"suggestions": suggestions}
-    if llm is not None:
-        compose_kwargs["llm"] = llm
-    body = compose_clarification(decision, **compose_kwargs)
-
-    # HIGH-1 record-only branch (06-08) — placed HERE, after alias-candidate capture
-    # (set_alias_candidates above) and body composition, BEFORE gateway.send_outbound.
-    # CRITICAL HIGH-2 ordering: the record_only check MUST come after both the D-04
-    # alias-candidate capture block and the body composition block so they ALWAYS run
-    # unconditionally — this is what makes Beat 3 work on in-app (record_only) runs:
-    # the alias is captured in the clarification step, so the follow-up compose resolves
-    # without a second clarification ("it learned"). A record_only check BEFORE alias
-    # capture would silently break Beat 3 for all in-app runs (HIGH-2 ordering fix).
-    record_only = repo.get_record_only_flag(run_id)
-    if record_only:
-        # Path-1 (in-app compose) record-only delivery: write the outbound row
-        # WITHOUT calling the real Resend provider. uuid is already imported at
-        # module level — do NOT re-import inside the function body.
-        synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
-        repo.insert_email_message(
-            run_id=run_id,
-            direction="outbound",
-            message_id=synthetic_mid,
-            in_reply_to=email.message_id,
-            references_header=email.message_id,
-            subject=clarification_subject(email.subject),
-            from_addr=None,
-            to_addr=email.from_addr,
-            body_text=body,
-            purpose=purpose,
-            send_state="sent",
-            round=current_round,
-        )
-        # N7 fix: snapshot BEFORE AWAITING_REPLY (PATH 2: record_only).
-        # IS NULL guard in set_pre_clarify_extracted makes this idempotent.
-        # D-9-06: insert_email_message (the intent-recording write, no real Resend
-        # call) stays OUTSIDE this transaction (D-9-01) — this block covers only
-        # what comes strictly after it, status-advance last (D-9-02).
-        # D-11-01/Pitfall #3: round advances to current_round + 1 — the row was
-        # JUST written above with round=current_round, so this IS the sent-row's
-        # round (not a blind counter increment); a crash before this transaction
-        # commits self-heals on re-entry via the (purpose, round) guard above.
-        with repo.get_connection() as conn, conn.transaction():
-            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-            repo.set_clarification_round(run_id, current_round + 1, conn=conn)
-            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
-        return
-    # else: live Path-2 run — fall through to the real Resend gateway call (unchanged)
-    gateway.send_outbound(
-        run_id=run_id,
-        to_addr=email.from_addr,
-        subject=clarification_subject(email.subject),
-        body=body,
-        in_reply_to=email.message_id,
-        references_header=email.message_id,
-        purpose=purpose,
-        send_state="sent",
-        round=current_round,
-    )
-    # N7 fix: snapshot BEFORE AWAITING_REPLY (PATH 3: live gateway).
-    # IS NULL guard in set_pre_clarify_extracted makes this idempotent.
-    # D-9-06/D-9-01: gateway.send_outbound (the provider call) has ALREADY returned
-    # above — this transaction opens strictly AFTER it, covering only the writes
-    # that come after the send, status-advance last (D-9-02).
-    # D-11-01/Pitfall #3: round advances to current_round + 1 — gateway.send_outbound
-    # just wrote the outbound row with round=current_round (threaded through above),
-    # so this derives from the row that was actually sent, not a blind increment.
-    with repo.get_connection() as conn, conn.transaction():
-        repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-        repo.set_clarification_round(run_id, current_round + 1, conn=conn)
-        repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)  # CLAR-01 pause
-
-
-def _write_aliases_if_safe(run_id: uuid.UUID, run: dict, roster, conn=None) -> None:
-    """Write any unambiguous, non-colliding alias candidates to employees.known_aliases.
-
-    Called in _deliver BEFORE set_status(SENT) (D-13b ordering — PATTERNS.md line 611).
-    Must be wrapped in try/except at the call site: any internal exception is logged and
-    swallowed so an alias-learning failure NEVER strands or fails a successfully-sent run
-    (D-13b defensive isolation).
-
-    For each token → candidate in alias_candidates (D-11-14 nested shape,
-    normalized via _normalize_candidate for legacy-flat-row tolerance,
-    Pitfall #6):
-    - Skip if cand["bound"] is None (never confirmed — no reply resolved the
-      SUGGESTED employee; D-11-15 bind-on-confirmation never fired for this
-      token).
-    - Call _safe_to_learn_alias (D-01b collision guard) — skip if False.
-    - Call update_known_alias (D-01 idempotent JSONB append).
-    - BATCH-SAFE: refresh current_roster after each accepted alias write so the NEXT
-      iteration validates against the updated roster (MEDIUM finding — prevents multiple
-      candidates in one approval batch from interacting unsafely).
-
-    conn: optional caller-supplied connection (D-9-04 series) so this call's writes
-    join the caller's enclosing transaction (e.g. _deliver's finalize block) rather
-    than auto-committing independently. When None (default), each internal repo call
-    opens/commits its own pooled connection, exactly as before this plan.
-    """
-    import uuid as _uuid
-    run_data = repo.load_run(run_id, conn=conn)
-    if run_data is None:
-        return
-    alias_candidates = run_data.get("alias_candidates") or {}
-    if not alias_candidates:
-        return
-
-    current_roster = roster  # start with the roster already loaded by _deliver
-    for token, value in alias_candidates.items():
-        cand = _normalize_candidate(value)
-        employee_id_str = cand.get("bound")
-        if employee_id_str is None:
-            # Never confirmed (no reply resolved the SUGGESTED employee — D-11-15
-            # bind-on-confirmation never fired for this token).
-            logger.info(
-                "alias write skipped for %r: no bound employee_id (never confirmed)",
-                token,
-            )
-            continue
-
-        try:
-            employee_id = _uuid.UUID(str(employee_id_str))
-        except (ValueError, AttributeError):
-            logger.warning(
-                "alias write skipped for %r: invalid employee_id_str %r",
-                token,
-                employee_id_str,
-            )
-            continue
-
-        target_employee = next(
-            (e for e in current_roster.employees if e.id == employee_id), None
-        )
-        if target_employee is None:
-            logger.info(
-                "alias write skipped for %r → %s: employee not found in roster",
-                token,
-                employee_id,
-            )
-            continue
-
-        if not _safe_to_learn_alias(token, target_employee, current_roster):
-            logger.info(
-                "alias write skipped for %r → %s: collision guard fired (D-01b)",
-                token,
-                employee_id,
-            )
-            continue
-
-        written = repo.update_known_alias(employee_id, token, conn=conn)
-        if written:
-            logger.info("alias learned: %r → %s", token, employee_id)
-            # BATCH-SAFE: refresh the roster after each accepted write so the next
-            # iteration validates against the updated roster state (MEDIUM finding).
-            current_roster = repo.load_roster_for_business(run["business_id"], conn=conn)
-        else:
-            logger.info(
-                "alias write no-op for %r → %s: already present (idempotent)",
-                token,
-                employee_id,
-            )
-
-
-def _deliver(run_id: uuid.UUID, run: dict) -> None:
-    """Compose + send the confirmation email + per-employee PDFs.
-
-    Called synchronously by the approve route. Raises freely — the caller (approve
-    handler) wraps this in the D-13b error boundary (try/except → record_run_error).
-    NEVER catches exceptions internally: a delivery failure must surface to ERROR,
-    not silently strand the run in APPROVED.
-
-    CLAR-04 purpose-aware idempotency guard (finding #1): checks for an existing
-    confirmation row via get_outbound_message_id(run_id, purpose='confirmation').
-    A purpose-blind lookup would incorrectly skip the confirmation if a clarification
-    had been sent earlier — purpose='confirmation' scopes the check correctly.
-
-    D-01/D-02 alias write: _write_aliases_if_safe is called BEFORE set_status(SENT)
-    (PATTERNS.md line 611 ordering), wrapped in try/except (D-13b defensive isolation —
-    alias write failure logs a warning and never strands or fails a sent run).
-
-    CR-03 fix: run is enriched with business_name (loaded from businesses via
-    load_business_name) and pay_period_label (formatted from pay_period_start /
-    pay_period_end) so confirmation_subject() and compose_confirmation() produce the
-    correct subject line. load_run() stays lean (no JOIN for every caller).
-    """
-    # Step 0 — Enrich run dict with fields needed by confirmation helpers (CR-03).
-    # load_run() returns business_id but NOT business_name (no JOIN) and NOT
-    # pay_period_label (non-existent column). Enrich here, scoped to _deliver.
-    run = dict(run)  # shallow copy — do not mutate the caller's dict
-    biz_name = repo.load_business_name(run["business_id"])
-    run["business_name"] = biz_name if biz_name else "Payroll Run"
-    start = run.get("pay_period_start")
-    end = run.get("pay_period_end")
-    if start and end:
-        run["pay_period_label"] = f"{start} to {end}"
-    elif start:
-        run["pay_period_label"] = str(start)
-    else:
-        run["pay_period_label"] = ""
-
-    # Step 1 — Purpose-aware already-sent guard (finding #1, CLAR-04):
-    # Only a row with purpose='confirmation' AND send_state='sent' counts as proof-of-
-    # delivery. A reserved/failed row or a clarification row does NOT count.
-    #
-    # gateway.send_outbound already durably flips send_state to 'sent' before returning
-    # (D-13c) — this guard's job on a retry-over-sent is to ensure alias learning,
-    # which the happy path performs BEFORE advancing status, is not silently skipped
-    # just because the send itself was already durable (Codex HIGH-2 fix); the alias
-    # write is idempotent-safe to attempt again (write-only-if-unambiguous-and-new,
-    # per D-01/D-02) — it will no-op on a second attempt if the alias was already
-    # learned.
-    existing = repo.get_outbound_message_id(run_id, purpose="confirmation")
-    if existing is not None:
-        logger.info(
-            "confirmation already sent for run %s (%s) — advancing to SENT+RECONCILED "
-            "without duplicate send (finding #1, CLAR-04)",
-            run_id,
-            existing,
-        )
-        # D-9-08/Codex HIGH-2: the retry-over-sent path needs a roster (this
-        # early-return path returns before Step 4's roster load below) to attempt
-        # the same idempotent alias write the happy path performs — isolated in its
-        # own try/except (mirroring D-13b) since this branch is NOT nested inside
-        # the WR-04 try (it returns before that try opens).
-        existing_roster = repo.load_roster_for_business(run["business_id"])
-        try:
-            _write_aliases_if_safe(run_id, run, existing_roster)
-        except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
-            logger.warning(
-                "alias write skipped for run %s: %s (run continues to SENT)",
-                run_id,
-                type(alias_exc).__name__,
-            )
-        with repo.get_connection() as conn, conn.transaction():
-            repo.set_status(run_id, RunStatus.SENT, conn=conn)
-            repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
-        return
-
-    # Step 2 — Load line items (explicit columns, LOW finding fix).
-    paystubs = repo.load_line_items(run_id)
-
-    # Step 3 — Compose the confirmation email body (D-10b hard timeout passed).
-    body = compose_confirmation(paystubs, run, timeout_s=3.0)
-
-    # Step 4 — Load roster for employee full names (needed for PDF header).
-    roster = repo.load_roster_for_business(run["business_id"])
-    emp_by_id = {str(e.id): e for e in roster.employees}
-
-    # WR-04 (phase-8 review): steps 5-10 interpolate roster names (PDF headers,
-    # compose/gateway payloads), so an exception raised past this point can carry
-    # employee full names in str(exc). Stash the ALREADY-LOADED in-memory roster
-    # on the exception and re-raise unchanged — the approve() error boundary reads
-    # it via getattr and passes it to record_run_error so _scrub can redact the
-    # names. D-8-01b is preserved: the error path never LOADS a roster (forbidden);
-    # it only forwards the object this happy path already had in scope. _deliver's
-    # contract is also preserved: it still raises freely and never swallows.
-    try:
-        # Step 5 — Generate per-employee PDFs (pure, in-memory — HITL-03).
-        pdf_attachments: list[tuple[str, bytes]] = []
-        for item in paystubs:
-            emp = emp_by_id.get(str(item.employee_id)) if item.employee_id else None
-            emp_name = emp.full_name if emp else (item.submitted_name or "Employee")
-            pdf_bytes = generate_paystub_pdf(
-                item,
-                emp_name,
-                run.get("pay_period_start"),
-                run.get("pay_period_end"),
-                business_name=run.get("business_name"),
-                filing_status=emp.filing_status if emp else None,
-                hourly_rate=emp.hourly_rate if emp else None,
-            )
-            # The attachment filename MUST end in .pdf — Resend forwards the filename
-            # verbatim, and a name without an extension (e.g. "Maria Chen") arrives as an
-            # unrecognized binary blob the recipient's mail client won't open as a PDF.
-            # Sanitize like the /runs/{id}/pdf download route so both produce the same name.
-            safe_name = re.sub(r"[^\w.\-]", "_", emp_name, flags=re.ASCII) or "employee"
-            pdf_attachments.append((f"paystub_{safe_name}.pdf", pdf_bytes))
-
-        # Step 6 — Load the inbound email for the reply-to address.
-        inbound = repo.load_inbound_email(run_id)
-        to_addr = inbound.from_addr if inbound else ""
-
-        # Step 7 — Send. HIGH-1 record-only branch (06-08): check record_only flag.
-        # record_only=True (compose-created runs): write outbound row WITHOUT calling Resend.
-        # record_only=False (live Path-2 runs): keep calling gateway.send_outbound unchanged.
-        # Steps 8-10 (alias write + SENT + RECONCILED) run unconditionally for BOTH branches.
-        record_only = repo.get_record_only_flag(run_id)
-        if record_only:
-            # Path-1 record-only delivery: write the confirmation outbound row WITHOUT Resend.
-            synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
-            repo.insert_email_message(
-                run_id=run_id,
-                direction="outbound",
-                message_id=synthetic_mid,
-                in_reply_to=inbound.message_id if inbound else None,
-                references_header=inbound.message_id if inbound else None,
-                subject=confirmation_subject(run, inbound.subject if inbound else None),
-                from_addr=None,
-                to_addr=to_addr,
-                body_text=body,
-                purpose="confirmation",
-                send_state="sent",
-            )
-            # DO NOT return here — fall through to alias write + status steps below.
-        else:
-            # Phase 6 live-provider swap writes send_state='reserved' BEFORE the provider call
-            # and flips to 'sent'/'failed' after — no code change needed here; the column exists.
-            gateway.send_outbound(
-                run_id=run_id,
-                to_addr=to_addr,
-                subject=confirmation_subject(run, inbound.subject if inbound else None),
-                body=body,
-                attachments=pdf_attachments,
-                purpose="confirmation",
-                send_state="sent",
-            )
-
-        # Steps 8-10 — D-9-07/D-9-08: the email row's send_state flip to 'sent'
-        # already committed inside gateway.send_outbound (D-13c) before this
-        # transaction opens — this block covers ONLY what remains atomic on this
-        # side: alias learning + status advance. A crash between send_outbound's
-        # return and this transaction's commit leaves send_state='sent' +
-        # status='approved'; a retry hits the hardened already-sent guard above,
-        # which completes the alias write and advances status — this is D-9-08's
-        # documented at-least-once semantics, now closing the alias-skip gap
-        # Codex HIGH-2 found.
-        with repo.get_connection() as conn, conn.transaction():
-            # Step 8 — Alias write (D-01, D-02): learn any unambiguous alias
-            # candidates. MUST be called BEFORE set_status(SENT) (PATTERNS.md
-            # line 611 ordering, D-13b). Wrapped in try/except NESTED STRICTLY
-            # INSIDE this transaction block (Pitfall 2) so an alias-learning
-            # failure NEVER rolls back a genuine delivery — it only skips the
-            # alias write itself (D-13b defensive isolation, D-15).
-            #
-            # D-9-06 gap closure (WR-01): the nested `with conn.transaction()`
-            # below is a psycopg3 SAVEPOINT (psycopg3 automatically issues
-            # SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO SAVEPOINT instead of
-            # BEGIN/COMMIT/ROLLBACK when conn.transaction() is entered while
-            # already inside an outer transaction). This is what makes the
-            # isolation hold for genuine DB-level errors (constraint violations,
-            # undefined columns, lock timeouts), not just pure-Python exceptions
-            # — without it, a DB-level failure here poisons the WHOLE outer
-            # transaction via InFailedSqlTransaction on the very next statement
-            # (09-REVIEW.md WR-01): the alias write's own repo helpers run under
-            # _nulltx() (a bare no-op) whenever a caller-supplied conn is
-            # present, so no savepoint exists at that layer — it must be added
-            # by the caller (here), wrapping the whole alias-write call once.
-            try:
-                with conn.transaction():
-                    _write_aliases_if_safe(run_id, run, roster, conn=conn)
-            except Exception as alias_exc:  # noqa: BLE001 — D-13b defensive isolation
-                logger.warning(
-                    "alias write skipped for run %s: %s (run continues to SENT)",
-                    run_id,
-                    type(alias_exc).__name__,
-                )
-
-            # Steps 9-10 — Advance the run: SENT → RECONCILED (both sequential
-            # in this synchronous call; RECONCILED is the only terminal-success
-            # status). Status-advance last (D-9-02).
-            repo.set_status(run_id, RunStatus.SENT, conn=conn)
-            repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
-    except Exception as exc:
-        # WR-04: attach the in-memory roster for the caller's scrub boundary, then
-        # re-raise the ORIGINAL exception unchanged. Attribute assignment is
-        # best-effort (suppress) — an exception type rejecting attributes must
-        # never mask the real delivery failure.
-        with contextlib.suppress(Exception):
-            exc.payroll_roster = roster
-        raise
 
 
 def _compute_line_items(run_id, extracted, matches, roster):

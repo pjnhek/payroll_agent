@@ -33,10 +33,10 @@ from __future__ import annotations
 import unicodedata
 import uuid
 
-from app.models.roster import Employee, NameMatchResult, Roster
+from app.models.roster import NameMatchResult, Roster
 
 
-def _norm(name: str) -> str:
+def normalize_name(name: str) -> str:
     """Whitespace-normalize + NFC(casefold(s)) for deterministic Unicode-safe comparison (D-05).
 
     NFC is applied AFTER casefold: casefold can emit a non-NFC sequence for some
@@ -61,13 +61,13 @@ def deterministic_match(name: str, roster: Roster) -> NameMatchResult | None:
     When the single resolved employee was reached by full_name the source is "exact";
     otherwise (alias-only) it is "alias".
     """
-    norm = _norm(name)
+    norm = normalize_name(name)
 
-    exact_ids = [emp.id for emp in roster.employees if _norm(emp.full_name) == norm]
+    exact_ids = [emp.id for emp in roster.employees if normalize_name(emp.full_name) == norm]
     alias_ids = [
         emp.id
         for emp in roster.employees
-        if any(_norm(alias) == norm for alias in emp.known_aliases)
+        if any(normalize_name(alias) == norm for alias in emp.known_aliases)
     ]
 
     # Distinct candidate employees across BOTH tiers — uniqueness is global.
@@ -162,41 +162,3 @@ def reconcile_names(
             # rather than trusting an id that isn't actually on this roster.
         results.append(deterministic_match(name, roster) or _unresolved(name))
     return results
-
-
-def _safe_to_learn_alias(
-    token: str,
-    target_employee: Employee,
-    roster: Roster,
-) -> bool:
-    """Return True only if token uniquely resolves to target_employee on the full roster
-    AFTER the alias is appended (D-01b write-side collision guard).
-
-    Uses deterministic_match on a synthetic roster to simulate the post-write state.
-    If deterministic_match returns None (ambiguous or no match) or resolves to a
-    DIFFERENT employee, return False — do NOT learn (log and skip).
-
-    The synthetic roster appends the token to the target employee's known_aliases only.
-    This correctly detects:
-    - Tokens already carried by 2+ employees (e.g. "D. Reyes" shared by David and
-      Daniel Reyes): the synthetic roster still has 2 candidates → None → False.
-    - Tokens that would introduce a NEW collision (token matches another employee's
-      exact name or alias): synthetic roster has 2 candidates → None → False.
-    - Unambiguous tokens: only target_employee carries the alias post-append → True.
-    - Idempotent re-adds that are still unambiguous: True (safe to call twice).
-
-    CRITICAL: Do NOT mutate the actual roster objects. The synthetic roster is a
-    temporary computation object only (uses Pydantic v2 model_copy, never in-place).
-    """
-    synthetic_employees = []
-    for emp in roster.employees:
-        if emp.id == target_employee.id:
-            new_aliases = list(emp.known_aliases) + [token]
-            synthetic_employees.append(
-                emp.model_copy(update={"known_aliases": new_aliases})
-            )
-        else:
-            synthetic_employees.append(emp)
-    synthetic_roster = roster.model_copy(update={"employees": synthetic_employees})
-    result = deterministic_match(token, synthetic_roster)
-    return result is not None and result.matched_employee_id == target_employee.id

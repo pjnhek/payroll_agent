@@ -27,7 +27,7 @@ from uuid import UUID
 from app.models.contracts import Extracted, RawFieldDrop
 from app.models.roster import NameMatchResult, Roster, ValidationIssue
 
-_HOURS_FIELDS = (
+HOURS_FIELDS = (
     "hours_regular",
     "hours_overtime",
     "hours_vacation",
@@ -36,7 +36,7 @@ _HOURS_FIELDS = (
 )
 
 
-def _is_paid(v: Decimal | None) -> bool:
+def is_paid(v: Decimal | None) -> bool:
     """True iff value is present AND strictly positive (D-09 shared predicate).
 
     Decimal('0') is treated the same as None — both count as absent for the
@@ -140,11 +140,11 @@ def detect_field_regression(
         resumed_emp = id_to_resumed[emp_id]
         current_name = resumed_emp.submitted_name  # name the client used in the reply
 
-        for field in _HOURS_FIELDS:  # reuse module-level constant (DRY, D-09)
+        for field in HOURS_FIELDS:  # reuse module-level constant (DRY, D-09)
             original_val = getattr(orig_emp, field)
             resumed_val = getattr(resumed_emp, field)
-            # _is_paid: present AND strictly positive (D-09 shared predicate, D-25)
-            if _is_paid(original_val) and not _is_paid(resumed_val):
+            # is_paid: present AND strictly positive (D-09 shared predicate, D-25)
+            if is_paid(original_val) and not is_paid(resumed_val):
                 drops.append(
                     RawFieldDrop(
                         submitted_name=current_name,
@@ -227,7 +227,7 @@ def validate(
 
     for emp in extracted.employees:
         any_hours = any(
-            _is_paid(getattr(emp, f)) for f in _HOURS_FIELDS
+            is_paid(getattr(emp, f)) for f in HOURS_FIELDS
         )
         if any_hours:
             continue
@@ -256,7 +256,7 @@ def validate(
             continue  # unresolved employee: gate already blocks it, no flag here
         ot = emp.hours_overtime
         # D-05/D-09: absent or zero == "no paid OT" (shared predicate)
-        ot_missing = not _is_paid(ot)
+        ot_missing = not is_paid(ot)
         if ppy == 52 and emp.hours_regular is not None and emp.hours_regular > 40 and ot_missing:
             issues.append(
                 ValidationIssue(

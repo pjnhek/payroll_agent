@@ -58,6 +58,7 @@ from app.email import gateway
 from app.email.clean import clean_body
 from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
+from app.pipeline import delivery
 
 # Staleness threshold for stale in-flight state recovery (finding #6, D-13b extension;
 # D-9-13/D-9-10/11/12, 09-03/09-04). SHARED by BOTH retrigger()'s stale-in-flight claim
@@ -781,8 +782,6 @@ def approve(
 
     PII-safe error logging (D-A1-03): error_reason = type(exc).__name__ ONLY.
     """
-    from app.pipeline.orchestrator import _deliver
-
     claimed = repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED)
     if claimed:
         try:
@@ -792,7 +791,7 @@ def approve(
             # raw 500 (INGEST-05 "nothing silently hangs"). APPROVED is non-terminal, so
             # record_run_error can advance it to ERROR and the operator can retrigger.
             run = repo.load_run(run_id)
-            _deliver(run_id, run)
+            delivery.deliver(run_id, run)
         except Exception as exc:  # noqa: BLE001 — D-13b error boundary
             # PII-safe: type only — str(exc) may echo model output, submitted names,
             # or raw email content (D-A1-03). run_id is the correlation key for debug.
