@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from typing import Any, cast
+
+import psycopg
 
 from app.db.repo._shared import _conn_ctx, _nulltx
 from app.models.contracts import ClarifiedFields, Decision, Extracted, PaystubLineItem
@@ -13,7 +16,11 @@ from app.models.roster import NameMatchResult
 logger = logging.getLogger("payroll_agent.repo")
 
 
-def persist_extracted(run_id: uuid.UUID, extracted: Extracted, conn=None) -> None:
+def persist_extracted(
+    run_id: uuid.UUID,
+    extracted: Extracted,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Write the Extracted JSONB + the run's pay-period columns (no status — the
     orchestrator advances state). The pay_period_start/end run columns were left null
     before (review fix): they exist on payroll_runs for the dashboard/queries to read
@@ -32,7 +39,11 @@ def persist_extracted(run_id: uuid.UUID, extracted: Extracted, conn=None) -> Non
         )
 
 
-def persist_decision(run_id: uuid.UUID, decision: Decision, conn=None) -> None:
+def persist_decision(
+    run_id: uuid.UUID,
+    decision: Decision,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Write the Decision JSONB ONLY.
 
     Takes NO final_status argument (FIX B): persistence helpers never own status
@@ -47,7 +58,9 @@ def persist_decision(run_id: uuid.UUID, decision: Decision, conn=None) -> None:
 
 
 def persist_reconciliation(
-    run_id: uuid.UUID, matches: list[NameMatchResult], conn=None
+    run_id: uuid.UUID,
+    matches: list[NameMatchResult],
+    conn: psycopg.Connection | None = None,
 ) -> None:
     """Write the per-run list[NameMatchResult] JSONB ONLY (D-A3-05; no status).
 
@@ -64,7 +77,9 @@ def persist_reconciliation(
 
 
 def replace_line_items(
-    run_id: uuid.UUID, items: list[PaystubLineItem], conn=None
+    run_id: uuid.UUID,
+    items: list[PaystubLineItem],
+    conn: psycopg.Connection | None = None,
 ) -> None:
     """Replace all paystub_line_items for a run (DELETE-by-run then insert).
 
@@ -113,8 +128,8 @@ def replace_line_items(
 
 def set_alias_candidates(
     run_id: uuid.UUID,
-    candidates: dict,
-    conn=None,
+    candidates: dict[str, Any],
+    conn: psycopg.Connection | None = None,
 ) -> None:
     """MERGE candidates into payroll_runs.alias_candidates JSONB column (D-04, WR-1 fix).
 
@@ -152,7 +167,7 @@ def set_alias_candidates(
 def set_pre_clarify_extracted(
     run_id: uuid.UUID,
     extracted: Extracted,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> bool:
     """Snapshot the pre-clarify extracted data (IS NULL write-once guard, D-19 MONEY-03).
 
@@ -174,7 +189,7 @@ def set_pre_clarify_extracted(
 
 def load_pre_clarify_extracted(
     run_id: uuid.UUID,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> Extracted | None:
     """Load the pre-clarify extraction snapshot (D-19 MONEY-03).
 
@@ -194,8 +209,8 @@ def load_pre_clarify_extracted(
 
 def set_clarified_fields(
     run_id: uuid.UUID,
-    clarified: dict,
-    conn=None,
+    clarified: dict[str, Any],
+    conn: psycopg.Connection | None = None,
 ) -> None:
     """Write the clarified_fields JSONB column (D-13 MONEY-03, D-7.5-03b typed-on-write).
 
@@ -222,8 +237,8 @@ def set_clarified_fields(
 
 def load_clarified_fields(
     run_id: uuid.UUID,
-    conn=None,
-) -> dict:
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any]:
     """Load the clarified_fields JSONB column (D-13 MONEY-03).
 
     Returns {} on NULL (no field-regression outcomes yet — first resume or
@@ -236,10 +251,16 @@ def load_clarified_fields(
         ).fetchone()
     if row is None or row[0] is None:
         return {}
-    return json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    return (
+        cast(dict[str, Any], json.loads(row[0]))
+        if isinstance(row[0], str)
+        else cast(dict[str, Any], row[0])
+    )
 
 
-def get_clarification_round(run_id: uuid.UUID, conn=None) -> int:
+def get_clarification_round(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> int:
     """Read payroll_runs.clarification_round (D-11-01). Returns 0 if row missing.
 
     Zero behavior change in Plan 11-01: nothing calls this yet — the round-guard
@@ -257,7 +278,11 @@ def get_clarification_round(run_id: uuid.UUID, conn=None) -> int:
     return int(row[0])
 
 
-def set_clarification_round(run_id: uuid.UUID, value: int, conn=None) -> None:
+def set_clarification_round(
+    run_id: uuid.UUID,
+    value: int,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Write payroll_runs.clarification_round (D-11-01).
 
     Caller-joinable transaction (copy of link_email_to_run's shape) so a later
@@ -271,7 +296,9 @@ def set_clarification_round(run_id: uuid.UUID, value: int, conn=None) -> None:
         )
 
 
-def clear_reply_context(run_id: uuid.UUID, conn=None) -> None:
+def clear_reply_context(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> None:
     """Null ALL reply-round context on a run in one statement (D-11-04).
 
     "Context lost means ALL of it": the pre-clarify snapshot, the field-
@@ -309,7 +336,7 @@ def clear_reply_context(run_id: uuid.UUID, conn=None) -> None:
 def update_known_alias(
     employee_id: uuid.UUID,
     new_alias: str,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> bool:
     """Idempotently append new_alias to employees.known_aliases (D-01).
 

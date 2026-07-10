@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
+import psycopg
 import psycopg.rows
 
 from app.db.repo._shared import _conn_ctx, _nulltx
@@ -13,7 +15,9 @@ from app.models.contracts import PaystubLineItem
 logger = logging.getLogger("payroll_agent.repo")
 
 
-def list_businesses(conn=None) -> list[dict]:
+def list_businesses(
+    conn: psycopg.Connection | None = None,
+) -> list[dict[str, Any]]:
     """Return all businesses ordered by name for the landing page picker.
 
     Explicit column list (no SELECT *) per repo discipline. Returns [] on empty.
@@ -27,8 +31,8 @@ def list_businesses(conn=None) -> list[dict]:
 def bind_demo_business(
     business_name: str,
     operator_email: str,
-    seed_business_ids: dict,
-    conn=None,
+    seed_business_ids: dict[str, uuid.UUID],
+    conn: psycopg.Connection | None = None,
 ) -> bool:
     """UPSERT operator email → business into demo_sender_bindings (HIGH-2 fix).
 
@@ -61,7 +65,9 @@ def bind_demo_business(
     return True
 
 
-def get_demo_binding(operator_email: str, conn=None) -> uuid.UUID | None:
+def get_demo_binding(
+    operator_email: str, conn: psycopg.Connection | None = None
+) -> uuid.UUID | None:
     """Return the business_id bound to operator_email in demo_sender_bindings, or None.
 
     Used by find_business_by_sender's additive check AND by GET / to display the
@@ -75,7 +81,9 @@ def get_demo_binding(operator_email: str, conn=None) -> uuid.UUID | None:
     return uuid.UUID(str(row[0])) if row else None
 
 
-def set_record_only(run_id: uuid.UUID, conn=None) -> None:
+def set_record_only(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> None:
     """Set record_only = TRUE on a run.
 
     Ad-hoc repair helper. In normal operation, create_run(record_only=True) is used
@@ -88,7 +96,9 @@ def set_record_only(run_id: uuid.UUID, conn=None) -> None:
         )
 
 
-def get_record_only_flag(run_id: uuid.UUID, conn=None) -> bool:
+def get_record_only_flag(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> bool:
     """Return the record_only flag for a run.
 
     Returns False if the run is not found (safe default: live Resend path).
@@ -104,7 +114,9 @@ def get_record_only_flag(run_id: uuid.UUID, conn=None) -> bool:
     return bool(row[0])
 
 
-def load_line_items(run_id: uuid.UUID, conn=None) -> list[PaystubLineItem]:
+def load_line_items(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> list[PaystubLineItem]:
     """Return the paystub line items for a run (explicit column list — no SELECT *).
 
     LOW finding fix: explicit SELECT list matches PaystubLineItem fields.
@@ -125,7 +137,7 @@ def load_line_items(run_id: uuid.UUID, conn=None) -> list[PaystubLineItem]:
     return [PaystubLineItem(**row) for row in rows]
 
 
-def load_all_runs(conn=None) -> list[dict]:
+def load_all_runs(conn: psycopg.Connection | None = None) -> list[dict[str, Any]]:
     """Return all payroll runs in reverse-chronological order, with business_name.
 
     Used by the runs-list route (DASH-01). Joins businesses to surface business_name

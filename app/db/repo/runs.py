@@ -7,9 +7,11 @@ import unicodedata
 import uuid
 from typing import Any
 
+import psycopg
 import psycopg.rows
 
 from app.db.repo._shared import _conn_ctx, _nulltx
+from app.models.contracts import InboundEmail
 from app.models.roster import Roster
 from app.models.status import RunStatus
 
@@ -64,7 +66,7 @@ def insert_inbound_email(
     to_addr: str | None,
     body_text: str,
     run_id: uuid.UUID | None = None,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> tuple[uuid.UUID | None, bool]:
     """Insert an inbound email_messages row, idempotent on message_id.
 
@@ -100,7 +102,11 @@ def insert_inbound_email(
     return uuid.UUID(str(row[0])), True
 
 
-def link_email_to_run(email_id: uuid.UUID, run_id: uuid.UUID, conn=None) -> None:
+def link_email_to_run(
+    email_id: uuid.UUID,
+    run_id: uuid.UUID,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Back-fill run_id on an inbound email row after ingest classification (WR-03).
 
     The ingest transaction inserts every inbound row with run_id=NULL (for a
@@ -135,7 +141,9 @@ def link_email_to_run(email_id: uuid.UUID, run_id: uuid.UUID, conn=None) -> None
         )
 
 
-def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
+def find_business_by_sender(
+    from_addr: str, conn: psycopg.Connection | None = None
+) -> uuid.UUID | None:
     """Return the business_id whose contact_email matches from_addr, else None.
 
     An unknown sender returns None so the webhook stops without guessing
@@ -161,7 +169,9 @@ def find_business_by_sender(from_addr: str, conn=None) -> uuid.UUID | None:
         return uuid.UUID(str(binding_row[0])) if binding_row else None
 
 
-def find_run_by_message_id(message_id: str, conn=None) -> uuid.UUID | None:
+def find_run_by_message_id(
+    message_id: str, conn: psycopg.Connection | None = None
+) -> uuid.UUID | None:
     """Resolve the existing run for an RFC message_id (webhook dedup-loser lookup).
 
     Keyed on `message_id: str`, deliberately NOT `email_id: uuid.UUID` — checker
@@ -190,7 +200,9 @@ def find_run_by_message_id(message_id: str, conn=None) -> uuid.UUID | None:
     return uuid.UUID(str(row[0])) if row else None
 
 
-def load_business_name(business_id: uuid.UUID, conn=None) -> str | None:
+def load_business_name(
+    business_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> str | None:
     """Return the display name for a business, or None if not found.
 
     Used by _deliver (CR-03 fix) to enrich the run dict with business_name
@@ -212,7 +224,7 @@ def create_run(
     pay_period_start: Any | None = None,
     pay_period_end: Any | None = None,
     record_only: bool = False,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> uuid.UUID:
     """Open a payroll_runs row (status defaults to 'received'); return its id.
 
@@ -240,10 +252,14 @@ def create_run(
                 record_only,
             ),
         ).fetchone()
+    if row is None:
+        raise RuntimeError("create_run did not return a new run id")
     return uuid.UUID(str(row[0]))
 
 
-def load_run(run_id: uuid.UUID, conn=None) -> dict | None:
+def load_run(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> dict[str, Any] | None:
     """Read one run as a dict (explicit columns + dict_row, never SELECT *)."""
     # RUN_COLS is a trusted module constant (no external input); building the
     # statement as a local keeps the parameterized-SQL discipline test green
@@ -254,7 +270,9 @@ def load_run(run_id: uuid.UUID, conn=None) -> dict | None:
         return cur.fetchone()
 
 
-def load_source_email(run_id: uuid.UUID, conn=None) -> str | None:
+def load_source_email(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> str | None:
     """Return the run's ORIGINAL CLEANED inbound body, unchanged.
 
     The body was cleaned at ingest (insert_inbound_email persists the cleaned
@@ -287,7 +305,9 @@ _INBOUND_COLS = (
 )
 
 
-def load_inbound_email(run_id: uuid.UUID, conn=None):
+def load_inbound_email(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> InboundEmail | None:
     """Rebuild the run's source InboundEmail (cleaned body) for the extract stage.
 
     Returns an InboundEmail or None if the run has no linked source email. The
@@ -308,7 +328,11 @@ def load_inbound_email(run_id: uuid.UUID, conn=None):
 
 # two writers: set_status (unguarded forward transitions inside an owned path)
 # and claim_status (atomic guarded claim at every contended gate). (D-12)
-def set_status(run_id: uuid.UUID, status: RunStatus, conn=None) -> None:
+def set_status(
+    run_id: uuid.UUID,
+    status: RunStatus,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Unguarded status writer — one of two writers on payroll_runs.status (D-12).
 
     two writers: set_status (unguarded forward transitions inside an owned path)
@@ -328,7 +352,7 @@ def claim_status(
     run_id: uuid.UUID,
     expected: RunStatus,
     new: RunStatus,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> bool:
     """Atomic compare-and-swap on payroll_runs.status (D-12, FOUND-04).
 
@@ -360,7 +384,10 @@ def claim_status(
 _STRANDED_SCOPE_STATUSES: list[str] = ["received", "extracting", "computed"]
 
 
-def sweep_stranded_runs(threshold_seconds: int, conn=None) -> list[uuid.UUID]:
+def sweep_stranded_runs(
+    threshold_seconds: int,
+    conn: psycopg.Connection | None = None,
+) -> list[uuid.UUID]:
     """Recover runs stranded mid-flight by a dead background task (D-9-10/11/12).
 
     SANCTIONED THIRD status writer (alongside set_status/claim_status) — same
@@ -538,7 +565,7 @@ def _build_error_detail(
 def record_run_error(
     run_id: uuid.UUID,
     reason: str,
-    conn=None,
+    conn: psycopg.Connection | None = None,
     *,
     detail_exc: Exception | None = None,
     stage: str | None = None,

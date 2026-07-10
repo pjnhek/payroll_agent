@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 
+import psycopg
 import psycopg.rows
 
 from app.db.repo._shared import _conn_ctx
@@ -17,7 +18,9 @@ EMPLOYEE_COLS = (
 )
 
 
-def load_roster_for_business(business_id: uuid.UUID, conn=None) -> Roster:
+def load_roster_for_business(
+    business_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> Roster:
     """Rebuild a typed Roster (explicit EMPLOYEE_COLS + dict_row, no SELECT *)."""
     # EMPLOYEE_COLS is a trusted module constant; build the statement as a local
     # (no inline f-string in execute) to keep the parameterized-SQL discipline.

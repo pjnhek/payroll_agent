@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
+import psycopg
 import psycopg.rows
 
 from app.db.repo._shared import _conn_ctx, _nulltx
@@ -25,7 +27,7 @@ def insert_email_message(
     purpose: str | None = None,
     send_state: str | None = None,
     round: int = 0,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> uuid.UUID:
     """Append an email_messages row (the append-only audit log). Returns its id.
 
@@ -137,7 +139,11 @@ def insert_email_message(
     return uuid.UUID(str(row[0])) if row else uuid.uuid4()
 
 
-def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str | None:
+def get_outbound_message_id(
+    run_id: uuid.UUID,
+    purpose: str,
+    conn: psycopg.Connection | None = None,
+) -> str | None:
     """Purpose-aware and send_state-filtered outbound Message-ID lookup (finding #1 + R2-HIGH).
 
     Only a row with purpose=X AND send_state='sent' counts as proof-of-delivery.
@@ -168,8 +174,11 @@ def get_outbound_message_id(run_id: uuid.UUID, purpose: str, conn=None) -> str |
 
 
 def get_outbound_for_round(
-    run_id: uuid.UUID, purpose: str, round: int, conn=None
-) -> dict | None:
+    run_id: uuid.UUID,
+    purpose: str,
+    round: int,
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any] | None:
     """Round-aware and send_state-filtered outbound row lookup (D-11-01/D-11-13).
 
     Same shape as get_outbound_message_id — the invalid-purpose guard (T-05-09b)
@@ -211,7 +220,11 @@ def get_outbound_for_round(
     return {"message_id": row[0], "round": row[1]}
 
 
-def mark_reply_consumed(message_id: str, round: int, conn=None) -> None:
+def mark_reply_consumed(
+    message_id: str,
+    round: int,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Write-once marker: this inbound reply has been consumed at `round` (D-11-02).
 
     `consumed_round IS NULL` in the WHERE clause makes this write-once — a
@@ -227,7 +240,9 @@ def mark_reply_consumed(message_id: str, round: int, conn=None) -> None:
         )
 
 
-def load_consumed_replies(run_id: uuid.UUID, conn=None) -> list[dict]:
+def load_consumed_replies(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> list[dict[str, Any]]:
     """Return all consumed inbound replies for a run, round-ordered (D-11-10/12/13).
 
     Copies load_thread_messages' dict_row multi-row shape. Filters to
@@ -254,7 +269,9 @@ def load_consumed_replies(run_id: uuid.UUID, conn=None) -> list[dict]:
         return cur.fetchall() or []
 
 
-def get_inbound_by_message_id(message_id: str, conn=None) -> dict | None:
+def get_inbound_by_message_id(
+    message_id: str, conn: psycopg.Connection | None = None
+) -> dict[str, Any] | None:
     """Load the PERSISTED inbound row by its RFC message_id (D-11-13, Pitfall #11a).
 
     WR-04 redelivery must resume from the row already written at first ingest
@@ -288,7 +305,10 @@ def get_inbound_by_message_id(message_id: str, conn=None) -> dict | None:
 _STRANDED_REPLY_SCOPE_STATUS = "awaiting_reply"
 
 
-def find_stranded_unconsumed_replies(threshold_seconds: int, conn=None) -> list[dict]:
+def find_stranded_unconsumed_replies(
+    threshold_seconds: int,
+    conn: psycopg.Connection | None = None,
+) -> list[dict[str, Any]]:
     """Find stale unconsumed inbound replies against awaiting_reply runs (D-11-05).
 
     Joins email_messages (direction='inbound', consumed_round IS NULL,
@@ -326,7 +346,9 @@ def find_stranded_unconsumed_replies(threshold_seconds: int, conn=None) -> list[
         return cur.fetchall() or []
 
 
-def update_email_message_sent(message_id: str, conn=None) -> None:
+def update_email_message_sent(
+    message_id: str, conn: psycopg.Connection | None = None
+) -> None:
     """Flip send_state to 'sent' for the outbound row keyed on SYNTHETIC message_id.
 
     06-04 D-13c success path. HIGH-1 schema-verified SQL: email_messages has
@@ -341,7 +363,11 @@ def update_email_message_sent(message_id: str, conn=None) -> None:
     update_email_message_state(message_id, "sent", conn=conn)
 
 
-def update_email_message_state(message_id: str, state: str, conn=None) -> None:
+def update_email_message_state(
+    message_id: str,
+    state: str,
+    conn: psycopg.Connection | None = None,
+) -> None:
     """Parameterized flip of send_state for the outbound row keyed on SYNTHETIC message_id.
 
     06-04 HIGH-3 failed-state flip. HIGH-1 schema-verified SQL: email_messages has
@@ -356,7 +382,9 @@ def update_email_message_state(message_id: str, state: str, conn=None) -> None:
         )
 
 
-def get_outbound_references_chain(run_id: uuid.UUID, conn=None) -> str | None:
+def get_outbound_references_chain(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> str | None:
     """Return the references_header of the most-recent sent outbound row for this run.
 
     06-04 D-14 durable threading DB-load helper. gateway.send_outbound calls this
@@ -379,7 +407,9 @@ def get_outbound_references_chain(run_id: uuid.UUID, conn=None) -> str | None:
     return row[0] if row else None
 
 
-def load_outbound_emails(run_id: uuid.UUID, conn=None) -> list[dict]:
+def load_outbound_emails(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> list[dict[str, Any]]:
     """Read all outbound email rows for a run (UAT #1 — run detail sent-emails section).
 
     Returns rows with the fields needed for display: direction, purpose, subject,
@@ -399,7 +429,9 @@ def load_outbound_emails(run_id: uuid.UUID, conn=None) -> list[dict]:
         return cur.fetchall() or []
 
 
-def load_thread_messages(run_id: uuid.UUID, conn=None) -> list[dict]:
+def load_thread_messages(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> list[dict[str, Any]]:
     """Return ALL email_messages rows for a run including the source inbound.
 
     The source inbound row was inserted with run_id=NULL at ingest — this OR clause
@@ -453,7 +485,10 @@ _HEADER_MATCH_PREDICATE = (
 
 
 def find_awaiting_reply_for_header(
-    *, in_reply_to: str | None, references_header: str | None, conn=None
+    *,
+    in_reply_to: str | None,
+    references_header: str | None,
+    conn: psycopg.Connection | None = None,
 ) -> uuid.UUID | None:
     """Match a reply to its run via the RFC header chain, restricted to awaiting_reply.
 
@@ -480,7 +515,10 @@ def find_awaiting_reply_for_header(
 
 
 def find_any_run_for_header(
-    *, in_reply_to: str | None, references_header: str | None, conn=None
+    *,
+    in_reply_to: str | None,
+    references_header: str | None,
+    conn: psycopg.Connection | None = None,
 ) -> uuid.UUID | None:
     """The SAME header match across ANY status (late-reply observability, FIX 10).
 

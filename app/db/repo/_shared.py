@@ -8,10 +8,15 @@ header-chain `references` LIKE (app/db/repo/emails.py) is a named placeholder.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Iterator
+
+import psycopg
 
 
 @contextlib.contextmanager
-def _conn_ctx(conn):
+def _conn_ctx(
+    conn: psycopg.Connection | None,
+) -> Iterator[tuple[psycopg.Connection, bool]]:
     """Yield (conn, owns): use the caller's conn, or open a pooled one we own.
 
     `get_connection` is resolved through the PACKAGE (app.db.repo), at call
@@ -35,6 +40,6 @@ def _conn_ctx(conn):
 
 
 @contextlib.contextmanager
-def _nulltx():
+def _nulltx() -> Iterator[None]:
     """No-op CM: when a caller passes their own conn, they own the transaction."""
     yield
