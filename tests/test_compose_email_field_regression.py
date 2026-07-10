@@ -13,6 +13,8 @@ rsplit last-dot split: 'M. Chen.hours_overtime' -> ('M. Chen', 'hours_overtime')
 """
 from __future__ import annotations
 
+from typing import Any
+
 from app.models.contracts import Decision
 from app.pipeline.compose_email import compose_clarification
 
@@ -42,11 +44,13 @@ def _decision(
 class _DraftLLM:
     """Scriptable call_text stand-in."""
 
-    def __init__(self, body):
+    def __init__(self, body: str | None) -> None:
         self._body = body
-        self.calls = []
+        self.calls: list[tuple[Any, ...]] = []
 
-    def call_text(self, tier, messages, temperature=0.3, **kwargs):
+    def call_text(
+        self, tier: Any, messages: Any, temperature: float = 0.3, **kwargs: Any
+    ) -> str | None:
         self.calls.append((tier, messages, temperature))
         return self._body
 

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from app.models.contracts import Decision, Extracted
 from tests.conftest import FakeConnection, patch_get_connection
 
 # ---------------------------------------------------------------------------
@@ -24,6 +26,15 @@ from tests.conftest import FakeConnection, patch_get_connection
 def _fake_conn():
     """Convenience factory — avoids pytest fixture dependency in helpers."""
     return FakeConnection()
+
+
+def _record_call(calls: list[Any], value: Any) -> None:
+    calls.append(value)
+
+
+def _record_and_return(calls: list[Any], value: Any, result: Any) -> Any:
+    calls.append(value)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -284,10 +295,8 @@ def test_load_thread_messages_order_by_created_at(fake_conn):
 # ---------------------------------------------------------------------------
 
 
-def _make_decision_with_unresolved(names):
+def _make_decision_with_unresolved(names: list[str]) -> Decision:
     """Build a minimal Decision-like object for orchestrator tests."""
-    from app.models.contracts import Decision
-
     return Decision(
         final_action="request_clarification",
         gate_reasons=["Unresolved name"],
@@ -335,10 +344,10 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         created_at=datetime.now(UTC),
     )
 
-    alias_capture_calls = []
-    insert_calls = []
-    set_status_calls = []
-    send_outbound_calls = []
+    alias_capture_calls: list[Any] = []
+    insert_calls: list[Any] = []
+    set_status_calls: list[Any] = []
+    send_outbound_calls: list[Any] = []
 
     monkeypatch.setattr(
         "app.db.repo.get_outbound_message_id",
@@ -350,19 +359,21 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     )
     monkeypatch.setattr(
         "app.db.repo.set_alias_candidates",
-        lambda run_id, candidates, **kw: alias_capture_calls.append((run_id, candidates)),
+        lambda run_id, candidates, **kw: _record_call(
+            alias_capture_calls, (run_id, candidates)
+        ),
     )
     monkeypatch.setattr(
         "app.db.repo.insert_email_message",
-        lambda **kw: insert_calls.append(kw) or uuid.uuid4(),
+        lambda **kw: _record_and_return(insert_calls, kw, uuid.uuid4()),
     )
     monkeypatch.setattr(
         "app.db.repo.set_status",
-        lambda run_id, status, **kw: set_status_calls.append(status),
+        lambda run_id, status, **kw: _record_call(set_status_calls, status),
     )
     monkeypatch.setattr(
         "app.email.gateway.send_outbound",
-        lambda **kw: send_outbound_calls.append(kw),
+        lambda **kw: _record_call(send_outbound_calls, kw),
     )
     monkeypatch.setattr("app.db.repo.set_pre_clarify_extracted", lambda *a, **kw: True)
     # 09-02: the record_only AWAITING_REPLY exit path now opens its own transaction.
@@ -382,7 +393,7 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
 
     from app.models.contracts import Extracted
 
-    def _minimal_extracted(run_id):
+    def _minimal_extracted(run_id: uuid.UUID) -> Extracted:
         return Extracted(
             run_id=run_id,
             employees=[],
@@ -422,9 +433,9 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
     run_id = uuid.uuid4()
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 
-    insert_calls = []
-    set_status_calls = []
-    send_outbound_calls = []
+    insert_calls: list[Any] = []
+    set_status_calls: list[Any] = []
+    send_outbound_calls: list[Any] = []
 
     # Minimal run dict
     run = {
@@ -466,15 +477,15 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
     )
     monkeypatch.setattr(
         "app.db.repo.insert_email_message",
-        lambda **kw: insert_calls.append(kw) or uuid.uuid4(),
+        lambda **kw: _record_and_return(insert_calls, kw, uuid.uuid4()),
     )
     monkeypatch.setattr(
         "app.db.repo.set_status",
-        lambda run_id, status, **kw: set_status_calls.append(status),
+        lambda run_id, status, **kw: _record_call(set_status_calls, status),
     )
     monkeypatch.setattr(
         "app.email.gateway.send_outbound",
-        lambda **kw: send_outbound_calls.append(kw),
+        lambda **kw: _record_call(send_outbound_calls, kw),
     )
     monkeypatch.setattr(
         "app.pipeline.delivery.compose_confirmation",
@@ -536,7 +547,7 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         created_at=datetime.now(UTC),
     )
 
-    send_outbound_calls = []
+    send_outbound_calls: list[Any] = []
 
     monkeypatch.setattr("app.db.repo.get_outbound_message_id", lambda *a, **kw: None)
     monkeypatch.setattr("app.db.repo.get_record_only_flag", lambda *a, **kw: False)
@@ -557,9 +568,7 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
     import app.db.repo as repo_mod
     patch_get_connection(monkeypatch, repo_mod)
 
-    from app.models.contracts import Extracted
-
-    def _minimal_extracted_live(run_id):
+    def _minimal_extracted_live(run_id: uuid.UUID) -> Extracted:
         return Extracted(
             run_id=run_id,
             employees=[],
@@ -648,7 +657,7 @@ def test_compose_rejects_unknown_business(monkeypatch):
     """POST /demo/compose with unknown business_name is rejected; create_run not called."""
     import app.db.repo as repo_mod
 
-    create_run_calls = []
+    create_run_calls: list[Any] = []
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
@@ -660,7 +669,7 @@ def test_compose_rejects_unknown_business(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "create_run",
-        lambda **kw: create_run_calls.append(kw) or uuid.uuid4(),
+        lambda **kw: _record_and_return(create_run_calls, kw, uuid.uuid4()),
         raising=False,
     )
 
@@ -683,7 +692,7 @@ def test_compose_body_length_cap_rejects_over_limit(monkeypatch):
     """POST /demo/compose with body > 4000 chars is rejected; create_run not called."""
     import app.db.repo as repo_mod
 
-    create_run_calls = []
+    create_run_calls: list[Any] = []
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
@@ -695,7 +704,7 @@ def test_compose_body_length_cap_rejects_over_limit(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "create_run",
-        lambda **kw: create_run_calls.append(kw) or uuid.uuid4(),
+        lambda **kw: _record_and_return(create_run_calls, kw, uuid.uuid4()),
         raising=False,
     )
 
@@ -724,7 +733,7 @@ def test_compose_subject_length_cap_rejects_over_limit(monkeypatch):
     """POST /demo/compose with subject > 200 chars is rejected; create_run not called."""
     import app.db.repo as repo_mod
 
-    create_run_calls = []
+    create_run_calls: list[Any] = []
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
@@ -736,7 +745,7 @@ def test_compose_subject_length_cap_rejects_over_limit(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "create_run",
-        lambda **kw: create_run_calls.append(kw) or uuid.uuid4(),
+        lambda **kw: _record_and_return(create_run_calls, kw, uuid.uuid4()),
         raising=False,
     )
 
@@ -766,15 +775,15 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     """
     import app.db.repo as repo_mod
 
-    find_sender_calls = []
-    create_run_calls = []
+    find_sender_calls: list[Any] = []
+    create_run_calls: list[Any] = []
     run_id = uuid.uuid4()
     email_id = uuid.uuid4()
 
     monkeypatch.setattr(
         repo_mod,
         "find_business_by_sender",
-        lambda *a, **kw: find_sender_calls.append(a) or uuid.uuid4(),
+        lambda *a, **kw: _record_and_return(find_sender_calls, a, uuid.uuid4()),
         raising=False,
     )
     monkeypatch.setattr(
@@ -786,7 +795,7 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "create_run",
-        lambda **kw: create_run_calls.append(kw) or run_id,
+        lambda **kw: _record_and_return(create_run_calls, kw, run_id),
         raising=False,
     )
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
@@ -846,7 +855,7 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     """POST /demo/compose passes record_only=True directly to create_run (LOW-6)."""
     import app.db.repo as repo_mod
 
-    create_run_calls = []
+    create_run_calls: list[Any] = []
     run_id = uuid.uuid4()
     email_id = uuid.uuid4()
 
@@ -856,7 +865,7 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     monkeypatch.setattr(
         repo_mod,
         "create_run",
-        lambda **kw: create_run_calls.append(kw) or run_id,
+        lambda **kw: _record_and_return(create_run_calls, kw, run_id),
         raising=False,
     )
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)
@@ -908,14 +917,14 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
     """from_addr for compose runs must be the seed .example contact, not DEMO_OPERATOR_EMAIL."""
     import app.db.repo as repo_mod
 
-    insert_calls = []
+    insert_calls: list[Any] = []
     run_id = uuid.uuid4()
     email_id = uuid.uuid4()
 
     monkeypatch.setattr(
         repo_mod,
         "insert_inbound_email",
-        lambda **kw: insert_calls.append(kw) or (email_id, True),
+        lambda **kw: _record_and_return(insert_calls, kw, (email_id, True)),
         raising=False,
     )
     monkeypatch.setattr(repo_mod, "create_run", lambda **kw: run_id, raising=False)
@@ -972,11 +981,13 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
     """POST /demo/bind calls repo.bind_demo_business; NEVER calls functions with 'contact_email'."""
     import app.db.repo as repo_mod
 
-    bind_calls = []
+    bind_calls: list[Any] = []
     monkeypatch.setattr(
         repo_mod,
         "bind_demo_business",
-        lambda name, email, seed_ids, **kw: bind_calls.append((name, email, seed_ids)) or True,
+        lambda name, email, seed_ids, **kw: _record_and_return(
+            bind_calls, (name, email, seed_ids), True
+        ),
         raising=False,
     )
     monkeypatch.setattr(repo_mod, "list_businesses", lambda **kw: [], raising=False)

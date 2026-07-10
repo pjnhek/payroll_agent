@@ -21,6 +21,7 @@ import json
 import pathlib
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from app.models.roster import Employee, Roster
 from app.pipeline.suggest import NameSuggestionResponse, suggest_employees
@@ -34,15 +35,16 @@ class _StructuredLLM:
     """A `call_structured` stand-in: returns a scripted JSON string parsed into
     `response_model`, or raises a scripted exception, recording every call."""
 
-    def __init__(self, *, content=None, exc=None):
+    def __init__(self, *, content: str | None = None, exc: BaseException | None = None) -> None:
         self._content = content
         self._exc = exc
-        self.calls: list[tuple] = []
+        self.calls: list[tuple[Any, ...]] = []
 
-    def call_structured(self, tier, messages, response_model):
+    def call_structured(self, tier: Any, messages: Any, response_model: Any) -> Any:
         self.calls.append((tier, messages, response_model))
         if self._exc is not None:
             raise self._exc
+        assert self._content is not None
         return response_model.model_validate_json(self._content)
 
 

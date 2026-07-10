@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import pathlib
 import uuid
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,8 +19,8 @@ from fastapi.testclient import TestClient
 _FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "clean_happy_path.json"
 
 
-def _fixture() -> dict:
-    return json.loads(_FIXTURE.read_text())
+def _fixture() -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(_FIXTURE.read_text()))
 
 
 @pytest.fixture

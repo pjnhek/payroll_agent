@@ -205,6 +205,7 @@ def test_seed_high_earner_ss_cap_straddle() -> None:
         f"Thomas Bergmann pay_periods_per_year={high_earner.pay_periods_per_year},"
         " expected 26"
     )
+    assert high_earner.annual_salary is not None
     per_period_gross = high_earner.annual_salary / high_earner.pay_periods_per_year
     remaining_cap = Decimal("184500.00") - high_earner.ytd_ss_wages
     assert remaining_cap > 0, (
@@ -319,6 +320,7 @@ def test_business_count(seeded_db) -> None:
 
     with get_connection() as conn:
         row = conn.execute("SELECT COUNT(*) FROM businesses").fetchone()
+    assert row is not None
     assert row[0] == 3, f"Expected 3 businesses, got {row[0]}"
 
 
@@ -330,6 +332,7 @@ def test_employee_count(seeded_db) -> None:
 
     with get_connection() as conn:
         row = conn.execute("SELECT COUNT(*) FROM employees").fetchone()
+    assert row is not None
     assert row[0] == 7, f"Expected 7 employees, got {row[0]}"
 
 
@@ -408,8 +411,12 @@ def test_idempotent_reseed(seeded_db) -> None:
     _seed()  # Re-seed
 
     with get_connection() as conn:
-        biz_count = conn.execute("SELECT COUNT(*) FROM businesses").fetchone()[0]
-        emp_count = conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
+        biz_row = conn.execute("SELECT COUNT(*) FROM businesses").fetchone()
+        emp_row = conn.execute("SELECT COUNT(*) FROM employees").fetchone()
+    assert biz_row is not None
+    assert emp_row is not None
+    biz_count = biz_row[0]
+    emp_count = emp_row[0]
 
     assert biz_count == 3, f"After re-seed: expected 3 businesses, got {biz_count}"
     assert emp_count == 7, f"After re-seed: expected 7 employees, got {emp_count}"
@@ -422,8 +429,12 @@ def test_seed_containment(seeded_db) -> None:
     from app.db.supabase import get_connection
 
     with get_connection() as conn:
-        runs = conn.execute("SELECT COUNT(*) FROM payroll_runs").fetchone()[0]
-        msgs = conn.execute("SELECT COUNT(*) FROM email_messages").fetchone()[0]
+        runs_row = conn.execute("SELECT COUNT(*) FROM payroll_runs").fetchone()
+        msgs_row = conn.execute("SELECT COUNT(*) FROM email_messages").fetchone()
+    assert runs_row is not None
+    assert msgs_row is not None
+    runs = runs_row[0]
+    msgs = msgs_row[0]
 
     assert runs == 0, f"Expected 0 payroll_runs after seed, got {runs}"
     assert msgs == 0, f"Expected 0 email_messages after seed, got {msgs}"

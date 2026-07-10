@@ -278,6 +278,7 @@ def test_sum_deductions_reconciles_with_visible_rows():
     Multi-deduction item with state_withholding and pretax_401k both non-zero.
     """
     item = _hourly_item_multi_bucket()
+    assert item.state_withholding is not None
     computed = _sum_deductions(item)
     expected = (
         item.federal_withholding
