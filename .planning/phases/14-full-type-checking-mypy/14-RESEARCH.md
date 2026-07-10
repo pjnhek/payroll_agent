@@ -285,14 +285,16 @@ for pkg in ["psycopg", "psycopg_pool", "openai", "httpx", "jinja2", "fastapi",
 
 **None of the Standard Stack, Package Legitimacy, or CI wiring claims are flagged `[ASSUMED]`** — all were verified directly by running the real tools in this session.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Exact final error count once the full committed config (with both overrides + `files=[...]`) is in place**
+Both questions below were closed during planning: Q1 is resolved by Plan 14-08 Task 2, which runs the full combined `uv run mypy .` as an explicit integration checkpoint (the census numbers are treated as an upper-bound estimate, exactly as recommended); Q2 is resolved by Plan 14-01 Task 3, which inspected the `resend` SDK source directly — `EmailsReceiving.get()` returns a `ResponseDict` with `__getattr__` forwarding, so runtime attribute access already works and the prescribed fix is a typing-only `cast()` with no behavior change.
+
+1. **(RESOLVED — Plan 14-08 Task 2) Exact final error count once the full committed config (with both overrides + `files=[...]`) is in place**
    - What we know: Directory-by-directory strict censuses (170 app-only, 163 eval+scripts, 521 tests-relaxed) were run with slightly different config shapes (isolated per-directory rather than the single combined `files=[...]` run the plan will actually ship).
    - What's unclear: A single combined run may surface a handful of additional cross-module errors not visible when directories are checked in isolation (e.g., a type mismatch only detectable when `eval/run_eval.py` and `app/pipeline/extract.py` are checked together in the same pass).
    - Recommendation: The plan's first task should be running the actual committed config as a discovery/inventory step before wave-sizing the fix work, rather than trusting this research's directory-by-directory numbers as exact. Treat 170+163+521 (net of overlap) as a strong upper-bound estimate, not a guarantee.
 
-2. **Whether `gateway.py`'s TypedDict-vs-attribute mismatch is a live bug or dead code on an unused path**
+2. **(RESOLVED — Plan 14-01 Task 3) Whether `gateway.py`'s TypedDict-vs-attribute mismatch is a live bug or dead code on an unused path**
    - What we know: The mismatch is real at the type level and the fixture-only tests never exercise it.
    - What's unclear: Whether `resend`'s actual runtime object (as opposed to its declared type) supports both dict and attribute access (some SDKs wrap TypedDicts in attrs-like proxy objects for ergonomics) — this can only be confirmed by reading `resend`'s runtime implementation (not just its `.pyi`/type declarations) or by a live call.
    - Recommendation: Spend five minutes reading `resend/emails/_receiving.py`'s actual `get()` implementation (not just the type file) before writing the D-08 test — if it returns a plain `dict`, the fix is straightforward bracket access; if it returns some proxy object, the type-level fix may be a `cast()` at the boundary instead of a runtime behavior change.
