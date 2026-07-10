@@ -12,6 +12,8 @@ import pathlib
 import re
 from dataclasses import dataclass
 
+import psycopg
+
 _SCHEMA_SQL = pathlib.Path(__file__).parent / "schema.sql"
 
 # Table-constraint leading keywords that must never be read as a column name.
@@ -63,7 +65,9 @@ def _create_body(sql: str, table: str) -> str:
 
 def _split_top_level_commas(body: str) -> list[str]:
     """Split a CREATE-body on commas that are NOT inside parentheses."""
-    items, depth, cur = [], 0, []
+    items: list[str] = []
+    depth = 0
+    cur: list[str] = []
     for ch in body:
         if ch == "(":
             depth += 1
@@ -196,7 +200,7 @@ def _parse_any_array_values(constraintdef: str) -> set[str]:
     return out
 
 
-def _live_columns(conn, table: str) -> set[str]:
+def _live_columns(conn: psycopg.Connection, table: str) -> set[str]:
     rows = conn.execute(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_schema = 'public' AND table_name = %s",
@@ -205,7 +209,7 @@ def _live_columns(conn, table: str) -> set[str]:
     return {r[0] for r in rows}
 
 
-def diff_against_live(conn) -> SchemaDiff:
+def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
     exp = expected_schema()
 
     # Q1/Q2: columns per table.
