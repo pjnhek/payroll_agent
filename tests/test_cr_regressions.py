@@ -21,7 +21,6 @@ CR-03 — _deliver must enrich the run dict with business_name + pay_period_labe
 from __future__ import annotations
 
 # These fixtures cross dynamic JSONB and UUID repository boundaries.
-# mypy: disable-error-code="no-any-return,type-arg,union-attr"
 import uuid
 from datetime import UTC, date, datetime
 
@@ -231,6 +230,7 @@ def test_cr01_alias_candidates_roundtrips_through_real_load_run(fake_conn):
     fake_conn.script_fetchone(scripted_row)
 
     run = repo_mod.load_run(run_id, conn=fake_conn)
+    assert run is not None, "scripted fetchone row must produce a run dict"
 
     # The actual SELECT column list (not just the Python constant) carries it.
     assert "alias_candidates" in fake_conn.all_sql(), (
@@ -444,7 +444,7 @@ def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
     clarified_fields, a pre_clarify_extracted snapshot, clarification_round > 0,
     and alias_candidates set — the exact state WR-06 must wipe on retrigger."""
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
-    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    run_id: uuid.UUID = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.ERROR)
     run = fake_repo.runs[str(run_id)]
     run["clarified_fields"] = {
@@ -464,7 +464,7 @@ def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypat
     still dispatches the re-run (D-11-04, WR-06)."""
     import app.routes.pipeline_glue as app_main
 
-    dispatched: list = []
+    dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: dispatched.append(rid))
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
@@ -501,7 +501,7 @@ def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
 
     import app.routes.pipeline_glue as app_main
 
-    dispatched: list = []
+    dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: dispatched.append(rid))
 
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]

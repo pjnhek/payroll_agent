@@ -12,8 +12,8 @@ Run with the default CI selection (no markers): these always run, free, offline.
 from __future__ import annotations
 
 # Test doubles intentionally model only the small runtime surface under test.
-# mypy: disable-error-code="no-untyped-call,type-arg"
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -41,25 +41,25 @@ class _Payload(BaseModel):
 
 
 class _FakeMessage:
-    def __init__(self, content):
+    def __init__(self, content: str | None) -> None:
         self.content = content
 
 
 class _FakeChoice:
-    def __init__(self, content):
+    def __init__(self, content: str | None) -> None:
         self.message = _FakeMessage(content)
 
 
 class _FakeResponse:
-    def __init__(self, content):
+    def __init__(self, content: str | None) -> None:
         self.choices = [_FakeChoice(content)]
 
 
 class _FakeCompletions:
-    def __init__(self, parent):
+    def __init__(self, parent: _FakeOpenAI) -> None:
         self._parent = parent
 
-    def create(self, **kwargs):
+    def create(self, **kwargs: Any) -> _FakeResponse:
         self._parent.create_calls.append(kwargs)
         # Pop the next scripted content (str or None) for this client instance.
         content = self._parent.script.pop(0)
@@ -67,7 +67,7 @@ class _FakeCompletions:
 
 
 class _FakeChat:
-    def __init__(self, parent):
+    def __init__(self, parent: _FakeOpenAI) -> None:
         self.completions = _FakeCompletions(parent)
 
 
@@ -78,7 +78,15 @@ class _FakeOpenAI:
     # instance the wrapper constructs.
     instances: list[_FakeOpenAI] = []
 
-    def __init__(self, *, base_url=None, api_key=None, timeout=None, max_retries=None, **_):
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        **_: Any,
+    ) -> None:
         self.base_url = base_url
         self.api_key = api_key
         # 09-04: capture the client-construction kwargs under test (timeout/
@@ -86,14 +94,14 @@ class _FakeOpenAI:
         # suppress the library's own retry layer and bound their timeout.
         self.timeout = timeout
         self.max_retries = max_retries
-        self.create_calls: list[dict] = []
+        self.create_calls: list[dict[str, Any]] = []
         # Each instance pulls its scripted responses from the class-level queue.
-        self.script: list = list(_FakeOpenAI.next_script)
+        self.script: list[str | None] = list(_FakeOpenAI.next_script)
         self.chat = _FakeChat(self)
         _FakeOpenAI.instances.append(self)
 
     # Per-test scripted responses (list of message.content values, consumed FIFO).
-    next_script: list = []
+    next_script: list[str | None] = []
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +123,14 @@ def _clear_settings_cache():
     get_settings.cache_clear()
 
 
-def _set_tier_env(monkeypatch, *, prefix, model, base_url="https://example.test", key="sk-test"):
+def _set_tier_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    prefix: str,
+    model: str,
+    base_url: str = "https://example.test",
+    key: str = "sk-test",
+) -> None:
     # DATABASE_URL has no default in Settings (fails fast on missing). Stub it here so
     # get_settings() succeeds in test environments that lack a .env file (worktrees, CI).
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")

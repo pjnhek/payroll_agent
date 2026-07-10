@@ -51,11 +51,11 @@ explicitly rejected in favor of (a) (11-CONTEXT.md D-11-12).
 from __future__ import annotations
 
 # JSON-shaped fixtures and UUIDs cross dynamic repository seams in these tests.
-# mypy: disable-error-code="type-arg,no-any-return"
 import json
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
@@ -82,7 +82,7 @@ CHEN_ID_STR = str(CHEN_ID)
 
 
 def _mk_extracted(
-    employees_data: list[dict],
+    employees_data: list[dict[str, Any]],
     pay_period_start: str = "2026-06-15",
     pay_period_end: str | None = None,
     run_id: uuid.UUID | None = None,
@@ -125,10 +125,11 @@ def _seed_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.U
         to_addr="agent@payroll-agent.local",
         body_text=body,
     )
-    return fake_repo.create_run(
+    run_id: uuid.UUID = fake_repo.create_run(
         business_id=COASTAL_BIZ_ID,
         source_email_id=eid,
     )
+    return run_id
 
 
 def _inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
@@ -183,7 +184,7 @@ def _inbound_persisted(
 
 
 def _extraction_json(
-    employees: list[dict],
+    employees: list[dict[str, Any]],
     pay_period_start: str = "2026-06-15",
 ) -> str:
     """Serialize extraction as the mock LLM response JSON string."""

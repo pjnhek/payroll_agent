@@ -12,11 +12,11 @@ make test_compose_confirmation_uses_draft_when_present a false-positive failure.
 from __future__ import annotations
 
 # Test doubles intentionally expose only the draft-provider surface.
-# mypy: disable-error-code="type-arg,no-untyped-call"
 import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.models.contracts import PaystubLineItem
 
@@ -35,11 +35,11 @@ class _DraftLLM:
     compose_confirmation without raising TypeError (MEDIUM finding fix).
     """
 
-    def __init__(self, body):
+    def __init__(self, body: str | None) -> None:
         self._body = body
-        self.calls: list[tuple] = []
+        self.calls: list[tuple[Any, ...]] = []
 
-    def call_text(self, tier, messages, **kwargs):
+    def call_text(self, tier: str, messages: Any, **kwargs: Any) -> str | None:
         self.calls.append((tier, messages, kwargs))
         return self._body
 
@@ -51,11 +51,11 @@ class _RaisingDraftLLM:
     compose_confirmation without raising TypeError (MEDIUM finding fix).
     """
 
-    def __init__(self, exc=None):
+    def __init__(self, exc: Exception | None = None) -> None:
         self._exc = exc or RuntimeError("simulated draft API error (401/429/bad model)")
         self.calls = 0
 
-    def call_text(self, tier, messages, **kwargs):
+    def call_text(self, tier: str, messages: Any, **kwargs: Any) -> str | None:
         self.calls += 1
         raise self._exc
 
@@ -90,7 +90,7 @@ def _minimal_paystub(net_pay: Decimal = Decimal("1234.56")) -> PaystubLineItem:
     )
 
 
-def _minimal_run() -> dict:
+def _minimal_run() -> dict[str, str]:
     """A minimal run dict for compose_confirmation (template floor uses these keys)."""
     return {
         "business_name": "Acme Corp",

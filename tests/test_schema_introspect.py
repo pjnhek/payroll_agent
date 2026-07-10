@@ -1,7 +1,11 @@
 # The schema checker accepts a runtime DB connection protocol; FakeConnection is
 # the hermetic test double for that boundary.
-# mypy: disable-error-code="no-untyped-call,arg-type"
+from typing import Any, cast
+
+import psycopg
+
 from app.db.schema_introspect import (
+    SchemaDiff,
     _parse_any_array_values,
     diff_against_live,
     expected_schema,
@@ -58,7 +62,13 @@ def test_parse_any_array_values_handles_live_form():
     assert "::text" not in "".join(vals)  # casts stripped
 
 
-def _script_in_sync(conn, *, drop_status=None, drop_col=None, drop_uq=False):
+def _script_in_sync(
+    conn: FakeConnection,
+    *,
+    drop_status: str | None = None,
+    drop_col: str | None = None,
+    drop_uq: bool = False,
+) -> None:
     """Script a FakeConnection to answer the 4 diff_against_live queries in order:
     1) payroll_runs columns  2) email_messages columns
     3) status+purpose constraint defs  4) unique-constraint names present.
@@ -79,10 +89,19 @@ def _script_in_sync(conn, *, drop_status=None, drop_col=None, drop_uq=False):
     conn.script_fetchall([(n,) for n in uq_present])              # Q4
 
 
+def _diff(conn: FakeConnection) -> SchemaDiff:
+    """diff_against_live over the hermetic FakeConnection test double.
+
+    FakeConnection duck-types the cursor surface diff_against_live uses; the
+    cast bridges it to the psycopg.Connection annotation at this one seam.
+    """
+    return diff_against_live(cast("psycopg.Connection[tuple[Any, ...]]", conn))
+
+
 def test_diff_in_sync():
     conn = FakeConnection()
     _script_in_sync(conn)
-    diff = diff_against_live(conn)
+    diff = _diff(conn)
     assert diff.is_in_sync
     assert diff.as_missing_dict() == {}
 
@@ -90,7 +109,7 @@ def test_diff_in_sync():
 def test_diff_missing_column():
     conn = FakeConnection()
     _script_in_sync(conn, drop_col="clarification_round")
-    diff = diff_against_live(conn)
+    diff = _diff(conn)
     assert not diff.is_in_sync
     assert "clarification_round" in diff.missing_columns["payroll_runs"]
 
@@ -98,14 +117,14 @@ def test_diff_missing_column():
 def test_diff_missing_status_value_live_form():
     conn = FakeConnection()
     _script_in_sync(conn, drop_status="needs_operator")
-    diff = diff_against_live(conn)
+    diff = _diff(conn)
     assert diff.missing_status_values == ["needs_operator"]
 
 
 def test_diff_missing_unique_constraint():
     conn = FakeConnection()
     _script_in_sync(conn, drop_uq=True)
-    diff = diff_against_live(conn)
+    diff = _diff(conn)
     assert "uq_email_run_purpose_round_epoch" in diff.missing_unique_constraints
 
 
@@ -114,5 +133,5 @@ def test_diff_extra_live_column_is_not_drift():
     _script_in_sync(conn)
     # inject an extra column not in schema.sql into Q1's result
     conn._fetchall_q[0].append(("some_future_column",))
-    diff = diff_against_live(conn)
+    diff = _diff(conn)
     assert diff.is_in_sync  # extras are not drift

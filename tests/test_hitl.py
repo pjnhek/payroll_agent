@@ -14,7 +14,6 @@ transitions; claim_status for gates — D-12, FOUND-04).
 from __future__ import annotations
 
 # Route/repository monkeypatches intentionally use dynamic test seams.
-# mypy: disable-error-code="no-any-return,attr-defined"
 import uuid
 
 import pytest
@@ -32,7 +31,7 @@ def client(fake_repo):
 
 def _run_at_awaiting_approval(fake_repo) -> uuid.UUID:
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
-    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    run_id: uuid.UUID = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.AWAITING_APPROVAL)
     return run_id
 
@@ -80,7 +79,7 @@ def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, mon
     def _boom(rid, conn=None):
         raise RuntimeError("simulated transient DB failure during load_run")
 
-    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)
+    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)  # type: ignore[attr-defined]  # patch the route module's own private `repo` import binding -- the exact seam approve() calls
 
     r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
     assert r.status_code == 303, (
@@ -178,7 +177,7 @@ def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, 
 
     def _deliver_boom(rid, run):
         exc = RuntimeError("gateway exploded sending Maria Chen's paystub")
-        exc.payroll_roster = sentinel_roster
+        exc.payroll_roster = sentinel_roster  # type: ignore[attr-defined]  # mirrors delivery.py's WR-04 best-effort debug attribute on an arbitrary exception
         raise exc
 
     monkeypatch.setattr(orch, "deliver", _deliver_boom)

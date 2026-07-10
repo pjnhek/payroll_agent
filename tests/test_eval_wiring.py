@@ -9,9 +9,9 @@ the join between the eval (which otherwise stops at decide) and the 'computes
 payroll' headline, reusing the golden already trusted (no second net_pay oracle).
 """
 # The eval harness exposes private helpers used by these wiring tests.
-# mypy: disable-error-code="arg-type,attr-defined"
 import json
 import pathlib
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -91,7 +91,7 @@ def test_decide_to_calculate_wiring_thomas_bergmann(summit_roster_and_fixture):
     # to calculate(). Do NOT call calculate() directly -- that would retest the
     # Phase-3 golden but prove NONE of the reconcile->_compute_line_items join.
     items = _compute_line_items(
-        "00000000-0000-0000-0000-000000000000", extracted, matches, roster
+        uuid.UUID("00000000-0000-0000-0000-000000000000"), extracted, matches, roster
     )
 
     assert len(items) == 1
@@ -143,7 +143,11 @@ def test_eval_normalize_nfd_matches_nfc():
     """
     import unicodedata
 
-    from eval.run_eval import _normalize  # noqa: PLC0415 -- intentional late import
+    # Deliberately import run_eval's private re-export binding (not the defining
+    # module) to prove the eval itself uses the NFC-fixed normalizer.
+    from eval.run_eval import (  # type: ignore[attr-defined]  # private re-export binding, see comment above
+        _normalize,  # noqa: PLC0415 -- intentional late import of a private re-export
+    )
 
     nfc_form = unicodedata.normalize("NFC", "Jos\xe9 Mart\xednez")
     nfd_form = unicodedata.normalize("NFD", nfc_form)

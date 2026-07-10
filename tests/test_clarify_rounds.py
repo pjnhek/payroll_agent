@@ -39,14 +39,14 @@ never log strings.
 from __future__ import annotations
 
 # AST and provider test doubles are intentionally lightweight in this module.
-# mypy: disable-error-code="no-untyped-call,type-arg"
 import ast
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
-from app.models.roster import NameMatchResult
+from app.models.roster import NameMatchResult, Roster
 from app.pipeline.clarification import clarify as _clarify
 
 # ---------------------------------------------------------------------------
@@ -56,9 +56,7 @@ COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
 
 
-def _bare_roster(business_id=COASTAL_BIZ_ID):
-    from app.models.roster import Roster
-
+def _bare_roster(business_id: uuid.UUID = COASTAL_BIZ_ID) -> Roster:
     return Roster(business_id=business_id, employees=[])
 
 
@@ -140,7 +138,7 @@ def test_new_round_question_actually_sends(monkeypatch, fake_repo, mock_llm):
         }
     ]
 
-    send_calls: list = []
+    send_calls: list[dict[str, Any]] = []
     real_send_outbound = gateway_mod.send_outbound
 
     def _spy_send_outbound(**kw):
@@ -298,7 +296,7 @@ def test_clarify_finalize_paths_advance_round_before_status_ast():
         if isinstance(node, ast.FunctionDef) and node.name == "clarify"
     )
 
-    def _call_name(node):
+    def _call_name(node: ast.AST) -> str | None:
         if isinstance(node, ast.Call):
             f = node.func
             if isinstance(f, ast.Name):
@@ -329,7 +327,7 @@ def test_clarify_finalize_paths_advance_round_before_status_ast():
         f"found {len(all_tx_blocks)}"
     )
 
-    def _calls_in_block(node):
+    def _calls_in_block(node: ast.AST) -> list[str | None]:
         return [
             _call_name(stmt)
             for stmt in ast.walk(node)
@@ -401,7 +399,7 @@ def test_clarify_cap_check_precedes_any_transaction_block():
     ]
     first_tx = min(tx_blocks, key=lambda n: n.lineno)
 
-    def _call_name(node):
+    def _call_name(node: ast.AST) -> str | None:
         if isinstance(node, ast.Call):
             f = node.func
             if isinstance(f, ast.Attribute):

@@ -15,10 +15,10 @@ clarify run), NOT the dead layer-2 reconcile / advisory-decide responses.
 from __future__ import annotations
 
 # This module uses deliberately small dynamic test doubles and monkeypatch seams.
-# mypy: disable-error-code="no-any-return,no-untyped-call,type-arg,attr-defined"
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -26,7 +26,9 @@ from app.models.contracts import InboundEmail
 from app.pipeline.orchestrator import run_pipeline
 
 
-def _seed_run(fake_repo, *, business_id, body="Maria Chen 40 regular. James salaried."):
+def _seed_run(
+    fake_repo: Any, *, business_id: str, body: str = "Maria Chen 40 regular. James salaried."
+) -> uuid.UUID:
     """Insert a cleaned inbound email + a received run into the in-memory store."""
     email = InboundEmail(
         id=uuid.uuid4(),
@@ -48,15 +50,16 @@ def _seed_run(fake_repo, *, business_id, body="Maria Chen 40 regular. James sala
         to_addr=email.to_addr,
         body_text=email.body_text,
     )
-    run_id = fake_repo.create_run(business_id=business_id, source_email_id=email_id)
+    run_id: uuid.UUID = fake_repo.create_run(business_id=business_id, source_email_id=email_id)
     return run_id
 
 
-def _coastal_business_id(fake_repo) -> str:
-    return fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+def _coastal_business_id(fake_repo: Any) -> str:
+    business_id: str = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    return business_id
 
 
-def _clean_script(mock_llm):
+def _clean_script(mock_llm: Any) -> None:
     """Script ONLY the extract call. Maria Chen + James Okafor are exact seed-roster
     names (Business 1), so reconcile resolves both deterministically and decide
     (pure code) returns final_action='process' — no LLM reconcile/decide responses."""
@@ -145,7 +148,7 @@ def test_first_run_failure_after_roster_load_passes_nonnull_roster_to_record_run
     import app.pipeline.orchestrator as orchestrator_module
     from app.models.roster import Roster
 
-    captured: dict = {}
+    captured: dict[str, Any] = {}
     real_record_run_error = fake_repo.record_run_error
 
     def _spy_record_run_error(run_id, reason, conn=None, **kwargs):
@@ -156,7 +159,7 @@ def test_first_run_failure_after_roster_load_passes_nonnull_roster_to_record_run
         captured["detail_exc"] = kwargs.get("detail_exc")
         return real_record_run_error(run_id, reason, conn=conn, **kwargs)
 
-    monkeypatch.setattr(orchestrator_module.repo, "record_run_error", _spy_record_run_error)
+    monkeypatch.setattr(orchestrator_module.repo, "record_run_error", _spy_record_run_error)  # type: ignore[attr-defined]  # patch the orchestrator module's own private `repo` import binding -- the exact seam run_pipeline calls
 
     # Force the extract stage itself to raise: a permanently-invalid payload
     # fails BOTH the original call and the retry (same pattern as
