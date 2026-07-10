@@ -334,12 +334,16 @@ def test_record_run_error_fails_open_when_scrub_raises(fake_conn, roster_from_se
     """D-8-04b — if the scrub step itself raises, record_run_error still writes the
     pre-existing error_reason and advances to ERROR; error_detail falls back to None.
     """
+    import app.db.repo.runs as repo_runs
     from app.db import repo
 
     def _boom(message, roster=None):
         raise RuntimeError("scrub exploded")
 
-    monkeypatch.setattr(repo, "_scrub", _boom)
+    # record_run_error's internal call chain to _scrub (via _build_error_detail)
+    # is a same-module bare-name lookup against runs.py's own globals (post-
+    # split), NOT the facade's — patch app.db.repo.runs directly.
+    monkeypatch.setattr(repo_runs, "_scrub", _boom)
 
     fake_conn.script_fetchone(("extracting",))
     repo.record_run_error(

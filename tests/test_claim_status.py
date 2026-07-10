@@ -140,11 +140,14 @@ def test_claim_status_invariant_doc_updated():
     """
     import pathlib
 
-    from app.db import repo as repo_mod
+    from app.db.repo import runs as repo_runs
 
-    src = pathlib.Path(repo_mod.__file__).read_text()
+    # Post-split, set_status/claim_status (and the "two writers" invariant they
+    # share) live in app/db/repo/runs.py, not the facade (which has no
+    # docstring body describing this invariant).
+    src = pathlib.Path(repo_runs.__file__).read_text()
     assert "two writers" in src, (
-        "app/db/repo.py must document 'two writers' in its docstring once Wave 1 "
+        "app/db/repo/runs.py must document 'two writers' in its docstring once Wave 1 "
         "adds claim_status (D-12 invariant doc — planted here so the executor "
         "knows to update the docstring as part of the impl)"
     )

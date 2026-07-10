@@ -219,6 +219,8 @@ def test_persist_decision_signature_has_no_final_status():
 
 
 def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn, monkeypatch):
+    import app.db.repo.runs as repo_runs
+
     calls = {"set_status": []}
     real_set_status = repo.set_status
 
@@ -226,7 +228,11 @@ def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn,
         calls["set_status"].append(status)
         return real_set_status(run_id, status, conn=conn)
 
-    monkeypatch.setattr(repo, "set_status", _spy)
+    # record_run_error's internal call to set_status is a same-module bare-name
+    # lookup against runs.py's own globals (post-split), NOT the facade's — a
+    # facade-level monkeypatch.setattr(repo, "set_status", ...) would not be
+    # seen by record_run_error at all. Patch app.db.repo.runs directly instead.
+    monkeypatch.setattr(repo_runs, "set_status", _spy)
 
     run_id = uuid.uuid4()
     # WR-03 CAS: record_run_error's guarded UPDATE ... RETURNING must yield a row
@@ -275,9 +281,21 @@ def test_persist_reconciliation_serializes_each_name(fake_conn):
 
 
 def test_repo_has_no_fstring_sql():
-    import pathlib
+    import inspect
 
-    src = pathlib.Path(repo.__file__).read_text()
+    import app.db.repo.demo as m_demo
+    import app.db.repo.emails as m_emails
+    import app.db.repo.pipeline_state as m_pipeline_state
+    import app.db.repo.roster as m_roster
+    import app.db.repo.runs as m_runs
+
+    # Post-split, the facade (repo.__file__) contains no SQL at all — this sweep
+    # must scan across all five aggregate modules to preserve its original
+    # whole-repo-layer guarantee (Codex Round 2 vacuous-scan finding).
+    src = "".join(
+        inspect.getsource(m)
+        for m in (m_runs, m_pipeline_state, m_emails, m_roster, m_demo)
+    )
     # No execute(f"...") f-string SQL, and no %-interpolated execute(...).
     assert not re.search(r"execute\(\s*f[\"']", src), "no f-string SQL in repo.py"
     # The references LIKE must be a named placeholder, never interpolated.

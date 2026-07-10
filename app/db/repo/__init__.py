@@ -8,16 +8,15 @@ call to set_status/_scrub inside runs.py) -- those two tests patch app.db.repo.r
 directly; see tests/test_gateway.py and tests/test_persistence.py.
 """
 
-from app.db.supabase import get_connection
 from app.db.repo._shared import _conn_ctx
 from app.db.repo.demo import (
     bind_demo_business,
     get_demo_binding,
+    get_record_only_flag,
     list_businesses,
     load_all_runs,
     load_line_items,
     set_record_only,
-    get_record_only_flag,
 )
 from app.db.repo.emails import (
     _HEADER_MATCH_PREDICATE,
@@ -56,6 +55,7 @@ from app.db.repo.roster import load_roster_for_business
 from app.db.repo.runs import (
     _ACCENT_CLASS_MAP,
     _TERMINAL_STATUSES,
+    RUN_COLS,
     _scrub,
     claim_status,
     create_run,
@@ -71,6 +71,7 @@ from app.db.repo.runs import (
     set_status,
     sweep_stranded_runs,
 )
+from app.db.supabase import get_connection
 
 __all__ = [
     "get_connection",
@@ -114,6 +115,7 @@ __all__ = [
     "load_roster_for_business",
     "_ACCENT_CLASS_MAP",
     "_TERMINAL_STATUSES",
+    "RUN_COLS",
     "_scrub",
     "claim_status",
     "create_run",

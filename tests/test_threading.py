@@ -185,9 +185,12 @@ def test_references_like_is_parameterized():
     """The references LIKE is a NAMED placeholder, never an f-string (T-04-01)."""
     import inspect
 
-    import app.db.repo as repo_mod
+    import app.db.repo.emails as emails_mod
 
-    src = inspect.getsource(repo_mod)
+    # The header-chain references LIKE SQL (find_awaiting_reply_for_header /
+    # find_any_run_for_header) lives in emails.py post-split, not the facade
+    # (which has no SQL at all).
+    src = inspect.getsource(emails_mod)
     assert "%(references)s" in src, "references must be a named placeholder"
     # No Message-ID value interpolated into the LIKE via f-string.
     assert "LIKE f'" not in src and 'LIKE f"' not in src
