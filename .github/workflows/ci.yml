@@ -56,3 +56,21 @@ jobs:
       # two-factor guards skip DB/live-LLM tests hermetically without either var.
       - name: Run test suite
         run: uv run pytest -q
+
+  typecheck:
+    name: "Type check (mypy --strict)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1 (v4)
+
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2 (v5)
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (all groups)
+        run: uv sync --locked
+
+      - name: Run mypy
+        run: uv run mypy
