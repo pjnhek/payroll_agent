@@ -2,135 +2,158 @@
 
 [![CI](https://github.com/pjnhek/payroll_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/pjnhek/payroll_agent/actions/workflows/ci.yml)
 
-**▶ [Live App (Live & Deployed)](https://payroll-agent.onrender.com/)**
+An email-driven payroll workflow that turns messy submitted hours into a calculated payroll run,
+pauses for one human approval, and sends the result back to the client.
 
-A messy payroll email goes in; a correct, human-approved payroll comes out.
-Every money-moving judgment call (name match, process-vs-clarify) is gated by
-deterministic code — not a model score.
+The central design choice is simple: the LLM reads the email, but deterministic code owns employee
+resolution and the process-or-clarify decision. Unresolved names, alias collisions, and missing
+required fields cannot silently advance to payroll calculation.
 
-> **Educational only — not tax-compliant software.**
-> This system is an educational portfolio demonstration of agentic pipeline design, not a real payroll service.
-> OBBBA provisions (qualified-tips/overtime above-the-line deductions, expanded 15-line W-4) are
-> explicitly excluded; the engine uses the standard Pub 15-T percentage method only.
-> Additional Medicare Tax (0.9% over $200k YTD) is NOT modeled — this never triggers in demo
-> wage ranges and is disclaimed here.
-> **Do not use this for real payroll.**
+**[Open the live demo](https://payroll-agent.onrender.com/)** ·
+**[Watch the walkthrough](https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4)**
 
-## Architecture
+> [!WARNING]
+> **Educational portfolio project — not tax-compliant payroll software.** The calculation engine
+> intentionally excludes some tax provisions and should not be used to pay real employees.
+
+## How it works
 
 ```mermaid
-graph TD
-    A[Client Email] --> B["POST /webhook/inbound"]
-    B --> C{gateway.verify}
-    C --invalid sig--> X[HTTP 400]
-    C --valid--> D["gateway.parse_inbound\ntwo-step Resend fetch"]
-    D --> E["Dedup on RFC message_id\nON CONFLICT DO NOTHING"]
-    E --duplicate--> Y[200 no pipeline]
-    E --new--> F["extract → reconcile_names → validate"]
-    F --> G{"decide.py\npure code gate"}
-    G --"unresolved/collision/missing"--> H["_clarify → send_outbound\nstatus: awaiting_reply"]
-    H --client replies--> B
-    G --process--> I["_compute_line_items\nstatus: awaiting_approval"]
-    I --> J{"Operator Dashboard\nApprove / Reject"}
-    J --approve--> K["_deliver → send confirmation\nstatus: reconciled"]
+flowchart TD
+    A["Client email or in-app composer"] --> B["LLM extracts names and hours"]
+    B --> C["Deterministic roster reconciliation"]
+    C --> D{"Pure-code safety gate"}
+    D -- "Unresolved name, collision, or missing field" --> E["Ask client to clarify"]
+    E --> B
+    D -- "Safe to process" --> F["Calculate payroll"]
+    F --> G{"Human review"}
+    G -- "Approve" --> H["Send confirmation and paystub PDFs"]
+    G -- "Reject" --> I["Stop the run"]
 ```
 
-![Architecture diagram](docs/architecture.png)
-*(See Mermaid diagram above for interactive version — PNG fallback for non-rendering environments)*
+The production path also verifies the Resend webhook signature, deduplicates inbound messages by
+RFC `Message-ID`, persists workflow state in Postgres, and resumes clarifications from the email
+thread. See the [detailed architecture diagram](docs/architecture.svg) for the implementation-level
+flow.
 
-## Demo
+## Demo story
 
-**▶ [Watch the demo (Loom)](https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4)**
+The walkthrough uses the deployed application and its in-app composer—no email client is required:
 
-The recording walks the three thesis beats on the live deployed service, driven entirely from the in-app composer (no email client needed):
+1. **Clean run:** submitted hours resolve against the roster, payroll is calculated, and the run
+   waits for operator approval.
+2. **Unknown name:** `David Reyez` does not match the roster, so deterministic code pauses the run.
+   The LLM may suggest `David Reyes` in the clarification email, but it cannot resolve the name or
+   advance payroll.
+3. **Learning loop:** after the client clarifies the name and the operator approves delivery, the
+   confirmed alias is stored only if a final collision check says it is safe. The same alias can
+   then resolve deterministically on a later run.
 
-1. **Clean run** — compose payroll → operator approves → confirmation sent.
-2. **Unknown shorthand → clarify** — "Dave Reyes" is ambiguous (David vs Daniel Reyes), so the **code gate** requests clarification; the LLM only suggests the likely employee, it never decides.
-3. **It learned** — after the operator confirms, the same shorthand resolves automatically on the next run — the alias was learned, so it stops asking.
+The separate collision fixture uses `D. Reyes`, an alias shared by David Reyes and Daniel Reyes.
+That case always clarifies rather than guessing between two employees.
 
-Closing shot: the eval view with **false_process_count = 0** — no run is ever processed on a name the system couldn't resolve.
+The Render service may need roughly 30–60 seconds to wake after inactivity. The recording is the
+most reliable way to see the complete flow without waiting for a cold start.
 
-*(The Render free service may take ~30-60s to wake from sleep; the recording is the primary artifact.)*
+## Evidence
 
-## Eval Chart
+The committed eval snapshot exercises extraction, reconciliation, and deterministic decisioning
+over labeled fixtures:
 
-![Eval chart](eval/chart.svg)
+| Metric | Committed snapshot |
+|---|---:|
+| Decision fixtures | 18 |
+| Process / clarify outcomes | 8 / 10 |
+| False-process decisions | 0 |
+| Extraction field accuracy | 99.1% |
+| Extraction F1 | 98.9% |
 
-## Key Design Choices
+These results describe the committed fixture suite generated on June 28, 2026—not production
+traffic or a guarantee about every possible email. In particular, zero false-process decisions
+show that the deterministic gate behaved correctly on those labeled cases.
 
-- **Deterministic decisioning**: `decide.py` is pure code over resolution facts — each submitted
-  name resolves to `exact / stored-alias / none`; unresolved names and collisions always clarify.
-  The LLM never decides. No confidence score, no guessing on a money-moving call.
-- **Single operator gate**: the pipeline pauses exactly once (at `awaiting_approval`) for a human
-  to review and approve the computed payroll before it reaches the client.
-- **Free-stack demo**: FastAPI on Render + Supabase Postgres + Resend email — end-to-end on zero
-  infrastructure cost.
+[View the full eval chart](eval/chart.svg) · [Inspect the snapshot data](eval/summary.json)
 
----
+## Engineering decisions
 
-## For Engineers
+- **Code-owned decisioning:** each submitted name resolves as `exact`, `alias`, or `none`.
+  `decide.py` branches only on those resolution facts and validation results—never a model score.
+- **Narrow LLM boundary:** models extract structured fields, draft emails, and optionally suggest a
+  likely employee in clarification copy. Extracted hours still influence calculation, which is why
+  the operator reviews the computed result before delivery.
+- **One operator gate:** normal runs pause at `awaiting_approval`; approval is claimed with a
+  compare-and-set transition before delivery. Client clarification is a separate input, not a
+  second operator approval.
+- **Durable workflow state:** Supabase Postgres stores runs, messages, decisions, paystub line
+  items, and clarification context. The application uses direct psycopg transactions and row-level
+  state transitions rather than an autonomous agent framework.
+- **Retry-safe boundaries:** inbound `Message-ID` deduplication and selected compare-and-set
+  transitions prevent duplicate work at the guarded seams. Delivery is intentionally described as
+  at-least-once rather than as a blanket exactly-once guarantee.
+- **Portfolio-oriented infrastructure:** the deployment uses free-tier hosting where available and
+  low-cost model APIs. Actual cost depends on provider usage and current pricing.
 
-### Stack
+## Technology
 
-| Layer | Tech |
-|-------|------|
-| Web server | FastAPI + uvicorn (Render free web service) |
-| Database | Supabase Postgres via psycopg3 (pooler 6543, transaction mode) |
-| Email | Resend (inbound webhook + outbound) |
-| PDF | reportlab (in-memory, no disk write) |
-| Package manager | uv (Python 3.12) |
+| Layer | Implementation |
+|---|---|
+| Application | FastAPI + uvicorn on Render |
+| State | Supabase Postgres via psycopg3 and the Supavisor transaction pooler |
+| Email | Resend inbound webhooks and outbound delivery |
+| LLM calls | DeepSeek extraction + Kimi drafting/suggestions through OpenAI-compatible clients |
+| Payroll output | Pure-Python calculation modules + in-memory reportlab PDFs |
+| Quality gates | pytest, Ruff, and mypy `--strict` in GitHub Actions |
+| Environment | Python 3.12 managed by uv |
 
-### Local Setup
+## Local development
 
 ```bash
-uv sync                    # create .venv, install all deps
-cp .env.example .env       # fill in DATABASE_URL, RESEND_API_KEY, etc.
+uv sync
+cp .env.example .env
+# Fill in DATABASE_URL and any provider credentials you want to exercise.
 uv run uvicorn app.main:app --reload
 ```
 
-### Run Tests
+The default test run is hermetic: live-database and live-model tests skip unless their explicit
+two-factor opt-ins and credentials are present.
 
 ```bash
-uv run pytest -q -m "not integration and not live_llm"
+uv run pytest -q
+uv run ruff check .
+uv run mypy
 ```
 
-### Deploy
+## Deployment notes
 
-1. Push to GitHub; Render picks up `render.yaml` blueprint automatically.
-2. Add these env vars in the Render dashboard:
-   - `DATABASE_URL` — Supabase Supavisor pooler URL (`pooler.supabase.com:6543`, transaction mode)
-   - `RESEND_API_KEY` — Resend API key
-   - `WEBHOOK_SIGNING_SECRET` — Resend webhook signing secret (`whsec_...`)
-   - `RESEND_REPLY_TO` — inbound `.resend.app` address (so client replies reach the webhook)
-   - `EXTRACTION_API_KEY` and `DRAFT_API_KEY` — LLM API keys (DeepSeek + Kimi)
+1. Connect the repository to Render and create a Blueprint from `render.yaml`. After that initial
+   setup, pushes can trigger deployments.
+2. Configure `DATABASE_URL`, `RESEND_API_KEY`, `WEBHOOK_SIGNING_SECRET`,
+   `EXTRACTION_API_KEY`, and `DRAFT_API_KEY` in Render.
+3. Set `RESEND_REPLY_TO` to the inbound `.resend.app` address wired to the webhook so client replies
+   return to the workflow.
 
-### Outbound Sender Constraint (Pass-6)
+The default Resend sender is `onboarding@resend.dev`, which is suitable for an account-owner demo.
+Sending to arbitrary client addresses requires a verified domain and a corresponding
+`RESEND_FROM_ADDR`.
 
-The demo runs on the Resend free tier: outbound emails are sent FROM `onboarding@resend.dev`,
-which can only deliver TO the Resend account-owner email. To send to arbitrary client addresses,
-verify a custom domain in the Resend Dashboard (Domains → Add Domain) and update
-`RESEND_FROM_ADDR` to your verified address.
+The scheduled `keepalive.yml` workflow wakes Render and touches Supabase twice weekly. It helps
+avoid prolonged inactivity but does **not** keep the Render service continuously warm.
 
-### Keep-Alive
-
-GitHub Actions `keepalive.yml` pings the Render URL and a Supabase health endpoint 2x/week
-so neither service sleeps during demo prep. Auto-disables after 60 days of no repo activity —
-re-enable with `workflow_dispatch`.
-
-### Demo Reset Between Takes
+To reset the curated demo state between recordings:
 
 ```bash
 uv run python scripts/demo_reset.py --confirm
 ```
 
-Clears all payroll runs + email messages, resets learned aliases via `seed()`, and
-re-arms the demo identity in `demo_sender_bindings`. Requires the explicit `--confirm`
-flag — the script does nothing without it. Run before every recording take so Beat 2
-(unknown-shorthand Metro Deli) triggers clarification cleanly.
+## Known limitations
 
-### Additional Medicare Tax Note
-
-The 0.9% Additional Medicare surtax (wages over $200k single / $250k MFJ / $125k MFS)
-is not modeled. At demo wage levels this never triggers; the engine sets a
-`additional_medicare_not_modeled` flag on `PaystubLineItem` when the threshold would be
-crossed so callers can detect the gap.
+- This is an educational demonstration, not tax-compliant payroll software.
+- The engine implements the standard 2026 Pub 15-T percentage-method path used by the demo but
+  excludes qualified-tips and qualified-overtime deductions and other out-of-scope provisions.
+- Additional Medicare Tax is not calculated. The application only raises an
+  `additional_medicare_not_modeled` limitation flag when its configured threshold estimate is
+  crossed.
+- State withholding is not implemented.
+- FastAPI `BackgroundTasks` runs in the web process rather than a durable job queue. Persisted
+  statuses and recovery paths mitigate several interruption cases, but a restart can still strand
+  in-flight work until it is retriggered or swept.
