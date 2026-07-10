@@ -175,9 +175,9 @@ def test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs(
     def _spy_send_outbound(**kwargs):
         send_calls.append(kwargs)
 
-    monkeypatch.setattr("app.pipeline.orchestrator.gateway.send_outbound", _spy_send_outbound)
+    monkeypatch.setattr("app.pipeline.delivery.gateway.send_outbound", _spy_send_outbound)
 
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     run_dict = fake_repo.load_run(run_id)
     _deliver(run_id, run_dict)
@@ -252,9 +252,9 @@ def test_deliver_multi_employee_subject_uses_start_only_period(
     def _spy_send_outbound(**kwargs):
         captured_subjects.append(kwargs.get("subject", ""))
 
-    monkeypatch.setattr("app.pipeline.orchestrator.gateway.send_outbound", _spy_send_outbound)
+    monkeypatch.setattr("app.pipeline.delivery.gateway.send_outbound", _spy_send_outbound)
 
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     run_dict = fake_repo.load_run(run_id)
     _deliver(run_id, run_dict)

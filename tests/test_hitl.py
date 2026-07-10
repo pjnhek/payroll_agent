@@ -169,7 +169,7 @@ def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, 
     across the boundary — not just that record_run_error was called.
     """
     import app.db.repo as repo_mod
-    from app.pipeline import orchestrator as orch
+    from app.pipeline import delivery as orch
 
     run_id = _run_at_awaiting_approval(fake_repo)
     sentinel_roster = object()  # identity check — must arrive unchanged
@@ -179,7 +179,7 @@ def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, 
         exc.payroll_roster = sentinel_roster
         raise exc
 
-    monkeypatch.setattr(orch, "_deliver", _deliver_boom)
+    monkeypatch.setattr(orch, "deliver", _deliver_boom)
 
     captured = {}
 
@@ -207,14 +207,14 @@ def test_approve_without_roster_on_exception_passes_none(client, fake_repo, monk
     roster=None — the boundary never loads a roster of its own.
     """
     import app.db.repo as repo_mod
-    from app.pipeline import orchestrator as orch
+    from app.pipeline import delivery as orch
 
     run_id = _run_at_awaiting_approval(fake_repo)
 
     def _deliver_boom(rid, run):
         raise RuntimeError("failure before the roster load")
 
-    monkeypatch.setattr(orch, "_deliver", _deliver_boom)
+    monkeypatch.setattr(orch, "deliver", _deliver_boom)
 
     captured = {}
 

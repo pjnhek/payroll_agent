@@ -488,7 +488,7 @@ def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
     exc.payroll_roster — the approve() boundary forwards it to record_run_error
     so the roster names in str(exc) get scrubbed from error_detail.
     """
-    from app.pipeline import orchestrator as orch
+    from app.pipeline import delivery as orch
 
     run_id = _run_id()
     roster, item = _minimal_roster_and_item(run_id)
@@ -513,7 +513,7 @@ def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
     monkeypatch.setattr(orch, "generate_paystub_pdf", _pdf_boom)
 
     with pytest.raises(RuntimeError) as excinfo:
-        orch._deliver(run_id, run)
+        orch.deliver(run_id, run)
 
     assert getattr(excinfo.value, "payroll_roster", None) is roster, (
         "_deliver must stash the ALREADY-LOADED roster on the raised exception "
@@ -526,7 +526,7 @@ def test_deliver_failure_before_roster_load_carries_no_roster(monkeypatch):
     with NO payroll_roster attribute — approve()'s getattr default (None) keeps
     the locked D-8-01b behavior (email-regex-only scrub) for those failures.
     """
-    from app.pipeline import orchestrator as orch
+    from app.pipeline import delivery as orch
 
     run_id = _run_id()
     run = {"id": run_id, "business_id": uuid.uuid4(),
@@ -543,7 +543,7 @@ def test_deliver_failure_before_roster_load_carries_no_roster(monkeypatch):
     monkeypatch.setattr(orch.repo, "load_line_items", _items_boom)
 
     with pytest.raises(RuntimeError) as excinfo:
-        orch._deliver(run_id, run)
+        orch.deliver(run_id, run)
 
     assert not hasattr(excinfo.value, "payroll_roster"), (
         "a pre-roster-load failure must NOT carry payroll_roster (nothing was "

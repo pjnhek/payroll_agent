@@ -39,11 +39,13 @@ from datetime import UTC, date, datetime
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
-from app.pipeline.orchestrator import (
-    _combined_context_email,
-    _render_asked_summary,
-    resume_pipeline,
+from app.pipeline.clarification import (
+    combined_context_email as _combined_context_email,
 )
+from app.pipeline.clarification import (
+    render_asked_summary as _render_asked_summary,
+)
+from app.pipeline.orchestrator import resume_pipeline
 
 # ---------------------------------------------------------------------------
 # Stable identifiers (mirrors tests/test_resume_pipeline.py / test_multiround_

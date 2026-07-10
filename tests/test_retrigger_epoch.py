@@ -37,7 +37,8 @@ from decimal import Decimal
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
-from app.pipeline.orchestrator import _clarify, resume_pipeline
+from app.pipeline.clarification import clarify as _clarify
+from app.pipeline.orchestrator import resume_pipeline
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"

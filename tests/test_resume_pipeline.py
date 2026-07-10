@@ -288,7 +288,7 @@ def test_n2_asked_written_before_send(fake_repo, mock_llm, monkeypatch):
     invariant — never send before writing 'asked'.
     """
     import app.db.repo as repo_mod
-    import app.pipeline.orchestrator as orch_mod
+    from app.pipeline import clarification
 
     ordering: list[str] = []
 
@@ -300,7 +300,7 @@ def test_n2_asked_written_before_send(fake_repo, mock_llm, monkeypatch):
 
     monkeypatch.setattr(repo_mod, "set_clarified_fields", _spy_set_clarified)
 
-    original_clarify = orch_mod._clarify
+    original_clarify = clarification.clarify
 
     def _spy_clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarification"):
         ordering.append("_clarify")
@@ -308,7 +308,7 @@ def test_n2_asked_written_before_send(fake_repo, mock_llm, monkeypatch):
             run_id, email, decision, roster, extracted, llm=llm, purpose=purpose
         )
 
-    monkeypatch.setattr(orch_mod, "_clarify", _spy_clarify)
+    monkeypatch.setattr(clarification, "clarify", _spy_clarify)
 
     # Set up Round-1 with OT=2 in snapshot, Round-1 reply drops OT → field regression
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
@@ -404,7 +404,7 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
     This pins the approved==sent invariant: the paystub the operator sees IS the
     paystub in the confirmation email.
     """
-    import app.pipeline.orchestrator as orch_mod
+    from app.pipeline import delivery
 
     # Step 1: drive to AWAITING_APPROVAL via Round-2 carry-forward
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
@@ -431,17 +431,17 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
     # Step 3: capture what compose_confirmation receives — same line items from repo
     # (Finding 8: confirmation must use repo.load_line_items which reads the persisted paystub)
     confirmation_items_received = []
-    original_compose = orch_mod.compose_confirmation
+    original_compose = delivery.compose_confirmation
 
     def _capture_compose(paystubs, run, *, timeout_s=3.0):
         confirmation_items_received.extend(paystubs)
         return original_compose(paystubs, run, timeout_s=timeout_s)
 
-    monkeypatch.setattr(orch_mod, "compose_confirmation", _capture_compose)
+    monkeypatch.setattr(delivery, "compose_confirmation", _capture_compose)
 
-    # Invoke _deliver (the confirmation path)
+    # Invoke deliver (the confirmation path)
     run_dict = fake_repo.load_run(run_id)
-    orch_mod._deliver(run_id, run_dict)
+    delivery.deliver(run_id, run_dict)
 
     # Assert the confirmation saw the same OT=2 paystub
     assert confirmation_items_received, (

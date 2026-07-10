@@ -410,26 +410,43 @@ def test_clarify_suggestion_never_reaches_the_decision(fake_repo, mock_llm, monk
 
 
 def test_orchestrator_suggest_called_after_decide():
-    """Source-level: in the orchestrator the suggestion call lives ONLY on the
-    clarify branch, AFTER decide has returned (D-21-05). decide() is invoked in
-    _run_stages; suggest_employees() is invoked inside _clarify (the else branch),
-    so the suggestion can never precede or feed the decision."""
+    """Source-level (Phase 13 Plan 02 re-mechanized): decide() stays in
+    orchestrator.py; suggest_employees() moved to clarification.py's clarify()
+    (the else branch of the old orchestrator._clarify). The single-file position
+    assumption no longer holds post-split, so this test now asserts the SAME
+    invariant (D-21-05: the suggestion is wired strictly after the decision, and
+    is never fed into decide()) across the two-module boundary:
+      - orchestrator.py: decide() is called, and the clarify branch calls
+        clarification.clarify(...) — never suggest_employees directly.
+      - clarification.py: suggest_employees() is present, and decide( is ABSENT
+        entirely — closing the gap a naive "still passes" retarget would open."""
     import pathlib
 
-    from app.pipeline import orchestrator
+    from app.pipeline import clarification, orchestrator
 
-    src = pathlib.Path(orchestrator.__file__).read_text()
-    decide_pos = src.index("decision = decide(")
-    suggest_pos = src.index("suggest_employees(")
-    assert decide_pos < suggest_pos, (
-        "suggest_employees must be called AFTER decide() in the orchestrator source "
-        "— the suggestion is wired strictly after the decision (D-21-05)"
+    orch_src = pathlib.Path(orchestrator.__file__).read_text()
+    decide_pos = orch_src.index("decision = decide(")
+    clarify_call_pos = orch_src.index("clarification.clarify(")
+    assert decide_pos < clarify_call_pos, (
+        "clarification.clarify must be called AFTER decide() in the orchestrator "
+        "source — the suggestion is wired strictly after the decision (D-21-05)"
     )
     # decide() takes only (extracted, matches, issues) — the suggestion is never an
     # argument to it.
-    decide_call = src[decide_pos : src.index(")", decide_pos) + 1]
+    decide_call = orch_src[decide_pos : orch_src.index(")", decide_pos) + 1]
     assert "suggest" not in decide_call, (
         "the suggestion must never be passed into decide() (D-21-05)"
+    )
+
+    clarification_src = pathlib.Path(clarification.__file__).read_text()
+    assert "suggest_employees(" in clarification_src, (
+        "suggest_employees must be called inside clarification.py's clarify() "
+        "(the suggestion cluster moved here in Phase 13 Plan 02)"
+    )
+    assert "decide(" not in clarification_src, (
+        "clarification.py must never call decide() — the suggestion is advisory "
+        "copy only and must never precede or feed the decision (D-21-05); decide() "
+        "stays exclusively in orchestrator.py's _run_stages"
     )
 
 

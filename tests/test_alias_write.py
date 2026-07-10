@@ -37,10 +37,11 @@ from app.db.repo import get_outbound_message_id  # noqa: F401 (already exists; u
 from app.models.contracts import Decision, Extracted, ExtractedEmployee
 from app.models.roster import Employee, NameMatchResult, Roster
 
-# This import WILL FAIL RED — _safe_to_learn_alias does not yet exist.
-# Wave 4 Plan 07 Task 2 adds it to app/pipeline/reconcile_names.py.
-from app.pipeline.reconcile_names import (
-    _safe_to_learn_alias,  # noqa: F401 (RED: not yet implemented)
+# Phase 13 Plan 02: _safe_to_learn_alias relocated + renamed to
+# alias_learning.safe_to_learn_alias — local alias keeps every call site below
+# unchanged.
+from app.pipeline.alias_learning import (
+    safe_to_learn_alias as _safe_to_learn_alias,
 )
 
 # 09-02: patches repo_mod.get_connection to the FakeConnection double so tests
@@ -257,7 +258,7 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
 
     import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from app.pipeline.orchestrator import _clarify
+    from app.pipeline.clarification import clarify as _clarify
 
     send_calls: list = []
 
@@ -367,7 +368,7 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from app.pipeline.orchestrator import _clarify
+    from app.pipeline.clarification import clarify as _clarify
 
     set_alias_candidates_calls: list = []
 
@@ -470,17 +471,18 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
 
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
-    import app.pipeline.orchestrator as orchestrator_mod
+    import app.pipeline.clarification as clarification_mod
     from app.models.contracts import InboundEmail
-    from app.pipeline.orchestrator import _clarify
+    from app.pipeline.clarification import clarify as _clarify
 
     # Deterministic stub for the never-strand degradation path — see docstring.
-    # _clarify imports suggest_employees into its own module namespace, so patch
-    # it there. Returning {} means no full_name->id mapping, so the captured
-    # candidate's "suggested" is None, isolating this test to the D-11-14
-    # capture-shape contract and off the live draft LLM's nondeterminism.
+    # clarify (clarification.py, Phase 13 Plan 02) imports suggest_employees into
+    # its own module namespace, so patch it there. Returning {} means no
+    # full_name->id mapping, so the captured candidate's "suggested" is None,
+    # isolating this test to the D-11-14 capture-shape contract and off the live
+    # draft LLM's nondeterminism.
     monkeypatch.setattr(
-        orchestrator_mod, "suggest_employees", lambda *a, **kw: {}, raising=True
+        clarification_mod, "suggest_employees", lambda *a, **kw: {}, raising=True
     )
 
     set_alias_candidates_calls: list = []
@@ -578,7 +580,7 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from app.pipeline.orchestrator import _clarify
+    from app.pipeline.clarification import clarify as _clarify
 
     set_alias_candidates_calls: list = []
 
@@ -672,7 +674,7 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
     from app.models.contracts import InboundEmail
-    from app.pipeline.orchestrator import _clarify
+    from app.pipeline.clarification import clarify as _clarify
 
     call_log: list[str] = []
 
@@ -1438,7 +1440,7 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
 def test_normalize_candidate_none_value():
     """A flat None value (never resolved, pre-Phase-11 shape) normalizes to
     {"suggested": None, "bound": None} — behaves as still-pending."""
-    from app.pipeline.orchestrator import _normalize_candidate
+    from app.pipeline.alias_learning import normalize_candidate as _normalize_candidate
 
     assert _normalize_candidate(None) == {"suggested": None, "bound": None}
 
@@ -1448,7 +1450,7 @@ def test_normalize_candidate_legacy_flat_bound_string():
     normalizes to {"suggested": None, "bound": <the string>} — a legacy row
     that was ALREADY bound under the old logic keeps behaving as bound (the
     write side will still learn it), even though "suggested" is unknown."""
-    from app.pipeline.orchestrator import _normalize_candidate
+    from app.pipeline.alias_learning import normalize_candidate as _normalize_candidate
 
     legacy_id = str(uuid.uuid4())
     assert _normalize_candidate(legacy_id) == {"suggested": None, "bound": legacy_id}
@@ -1457,7 +1459,7 @@ def test_normalize_candidate_legacy_flat_bound_string():
 def test_normalize_candidate_nested_dict_is_idempotent():
     """A value that is ALREADY the D-11-14 nested shape passes through
     unchanged (idempotent) — _normalize_candidate never double-wraps a dict."""
-    from app.pipeline.orchestrator import _normalize_candidate
+    from app.pipeline.alias_learning import normalize_candidate as _normalize_candidate
 
     nested = {"suggested": "abc", "bound": None}
     assert _normalize_candidate(nested) is nested or _normalize_candidate(nested) == nested
@@ -1468,7 +1470,7 @@ def test_write_aliases_if_safe_handles_legacy_flat_shape_without_raising(monkeyp
     alias_candidates row — {token: "employee_id_str"} — and must still learn
     the alias (the value IS the bound id under legacy semantics, Pitfall #6)."""
     import app.db.repo as repo_mod
-    from app.pipeline.orchestrator import _write_aliases_if_safe
+    from app.pipeline.alias_learning import write_aliases_if_safe as _write_aliases_if_safe
 
     roster, david, _daniel = _make_roster()
     legacy_candidates = {"Dave Reyez": str(david.id)}  # OLD flat-bound shape

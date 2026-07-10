@@ -306,7 +306,7 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     from app.db.seed import seed
     from app.models.roster import Roster
     from app.models.status import RunStatus
-    from app.pipeline import orchestrator
+    from app.pipeline import clarification
 
     run_id = uuid.uuid4()
 
@@ -372,11 +372,11 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     # Mock LLM helpers
     mock_llm = MagicMock()
     monkeypatch.setattr(
-        "app.pipeline.orchestrator.suggest_employees",
+        "app.pipeline.clarification.suggest_employees",
         lambda names, roster, **kw: {},
     )
     monkeypatch.setattr(
-        "app.pipeline.orchestrator.compose_clarification",
+        "app.pipeline.clarification.compose_clarification",
         lambda decision, **kw: "Clarification body",
     )
 
@@ -390,7 +390,7 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
             pay_period_end=None,
         )
 
-    orchestrator._clarify(
+    clarification.clarify(
         run_id, email, decision, roster, _minimal_extracted(run_id), llm=mock_llm
     )
 
@@ -415,9 +415,9 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
 
 
 def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
-    """_deliver with record_only=True: skips gateway.send_outbound; writes outbound row."""
+    """deliver with record_only=True: skips gateway.send_outbound; writes outbound row."""
     from app.models.status import RunStatus
-    from app.pipeline import orchestrator
+    from app.pipeline import delivery
 
     run_id = uuid.uuid4()
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -477,22 +477,22 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
         lambda **kw: send_outbound_calls.append(kw),
     )
     monkeypatch.setattr(
-        "app.pipeline.orchestrator.compose_confirmation",
+        "app.pipeline.delivery.compose_confirmation",
         lambda paystubs, run, **kw: "Confirmation body",
     )
     monkeypatch.setattr(
-        "app.pipeline.orchestrator.generate_paystub_pdf",
+        "app.pipeline.delivery.generate_paystub_pdf",
         lambda *a, **kw: b"pdf",
     )
     monkeypatch.setattr(
-        "app.pipeline.orchestrator._write_aliases_if_safe",
+        "app.pipeline.alias_learning.write_aliases_if_safe",
         lambda *a, **kw: None,
     )
-    # 09-02: _deliver's record_only finalize sequence now opens its own transaction.
+    # 09-02: deliver's record_only finalize sequence now opens its own transaction.
     import app.db.repo as repo_mod
     patch_get_connection(monkeypatch, repo_mod)
 
-    orchestrator._deliver(run_id, run)
+    delivery.deliver(run_id, run)
 
     assert len(send_outbound_calls) == 0, (
         "gateway.send_outbound must NOT be called for record_only run"
@@ -507,13 +507,13 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
 
 
 def test_orchestrator_live_run_still_calls_resend(monkeypatch):
-    """_clarify with record_only=False keeps calling gateway.send_outbound (no regression)."""
+    """clarify with record_only=False keeps calling gateway.send_outbound (no regression)."""
     from datetime import datetime
 
     from app.db.seed import seed
     from app.models.contracts import InboundEmail
     from app.models.roster import Roster
-    from app.pipeline import orchestrator
+    from app.pipeline import clarification
 
     run_id = uuid.uuid4()
 
@@ -548,9 +548,9 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         "app.email.gateway.send_outbound",
         lambda **kw: send_outbound_calls.append(kw),
     )
-    monkeypatch.setattr("app.pipeline.orchestrator.suggest_employees", lambda *a, **kw: {})
+    monkeypatch.setattr("app.pipeline.clarification.suggest_employees", lambda *a, **kw: {})
     monkeypatch.setattr(
-        "app.pipeline.orchestrator.compose_clarification",
+        "app.pipeline.clarification.compose_clarification",
         lambda *a, **kw: "body",
     )
     # 09-02: the live-gateway AWAITING_REPLY exit path now opens its own transaction.
@@ -568,7 +568,7 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         )
 
     mock_llm = MagicMock()
-    orchestrator._clarify(
+    clarification.clarify(
         run_id, email, decision, roster, _minimal_extracted_live(run_id), llm=mock_llm
     )
 

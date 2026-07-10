@@ -200,7 +200,7 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     # _deliver calls the REAL _write_aliases_if_safe (never mocked in this
     # test) — the D-01b collision re-check runs, then update_known_alias
     # persists known_aliases via the real repo call (mirrored by fake_repo).
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     claimed = fake_repo.claim_status(
         run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED
@@ -345,7 +345,7 @@ def test_misname_reply_binds_nothing_end_to_end(fake_repo, mock_llm):
     )
 
     # Approve — the write side must skip this candidate (bound is None).
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     claimed = fake_repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED)
     assert claimed

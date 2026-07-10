@@ -117,13 +117,15 @@ def _stub_pipeline_and_send(monkeypatch):
         app_main, "_run_pipeline", lambda run_id: pipeline_calls.append(run_id)
     )
 
-    # Surface B: `_deliver` is imported INSIDE the approve route (main.py:753),
-    # so it must be patched on the orchestrator module — patching app_main here
-    # would be a silent no-op and every concurrent approval would attempt a
-    # real send.
+    # Surface B: `main.py`'s approve() route calls `delivery.deliver` via a
+    # top-level `from app.pipeline import delivery` import (Phase 13 Plan 02 —
+    # this used to be a function-body `from app.pipeline.orchestrator import
+    # _deliver`, patched on the orchestrator module; that gap is now closed, so
+    # this patches the delivery module's own `deliver` attribute, which is what
+    # main.py's module-object reference actually resolves through).
     deliver_calls: list = []
     monkeypatch.setattr(
-        "app.pipeline.orchestrator._deliver",
+        "app.pipeline.delivery.deliver",
         lambda rid, run: deliver_calls.append(rid),
     )
 

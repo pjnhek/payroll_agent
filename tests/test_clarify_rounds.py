@@ -45,7 +45,7 @@ from decimal import Decimal
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
-from app.pipeline.orchestrator import _clarify
+from app.pipeline.clarification import clarify as _clarify
 
 # ---------------------------------------------------------------------------
 # Shared seed identifiers (mirrors tests/test_atomic_persist.py / test_resume_pipeline.py)
@@ -283,9 +283,9 @@ def test_clarify_finalize_paths_advance_round_before_status_ast():
     `with conn.transaction():` block (D-9-02 status-advance-last), copying
     test_atomic_persist.py's AST/indentation technique.
     """
-    import app.pipeline.orchestrator as orch_mod
+    import app.pipeline.clarification as clarification_mod
 
-    src_path = orch_mod.__file__
+    src_path = clarification_mod.__file__
     with open(src_path) as f:
         src = f.read()
     tree = ast.parse(src)
@@ -293,7 +293,7 @@ def test_clarify_finalize_paths_advance_round_before_status_ast():
     func = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_clarify"
+        if isinstance(node, ast.FunctionDef) and node.name == "clarify"
     )
 
     def _call_name(node):
@@ -305,7 +305,7 @@ def test_clarify_finalize_paths_advance_round_before_status_ast():
                 return f.attr
         return None
 
-    # Find every `with conn.transaction():` block inside _clarify. There are
+    # Find every `with conn.transaction():` block inside clarify. There are
     # FOUR total: the cap-escalation block (set_status(NEEDS_OPERATOR) only,
     # no round advance — D-11-09 silent terminal handoff) plus the THREE
     # finalize blocks this test targets (early-return, record_only, live
@@ -373,9 +373,9 @@ def test_clarify_cap_check_precedes_any_transaction_block():
     transaction, and long before any LLM/gateway call (D-9-01 trivially
     satisfied by construction: the cap check `return`s before reaching them).
     """
-    import app.pipeline.orchestrator as orch_mod
+    import app.pipeline.clarification as clarification_mod
 
-    src_path = orch_mod.__file__
+    src_path = clarification_mod.__file__
     with open(src_path) as f:
         src = f.read()
     tree = ast.parse(src)
@@ -383,7 +383,7 @@ def test_clarify_cap_check_precedes_any_transaction_block():
     func = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_clarify"
+        if isinstance(node, ast.FunctionDef) and node.name == "clarify"
     )
 
     tx_blocks = [

@@ -46,7 +46,8 @@ from app.main import IN_FLIGHT_STATUSES, app
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
-from app.pipeline.orchestrator import MAX_CLARIFICATION_ROUNDS, _clarify
+from app.pipeline.clarification import MAX_CLARIFICATION_ROUNDS
+from app.pipeline.clarification import clarify as _clarify
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -176,10 +177,11 @@ def test_at_cap_send_escalates_with_no_gateway_or_llm_call(monkeypatch, fake_rep
     monkeypatch.setattr(gateway_mod, "send_outbound", _fail_send_outbound)
     monkeypatch.setattr(suggest_mod, "suggest_employees", _fail_suggest)
     monkeypatch.setattr(compose_mod, "compose_clarification", _fail_compose)
-    # Also patch the names as imported into orchestrator (import-time binding).
-    import app.pipeline.orchestrator as orch_mod
-    monkeypatch.setattr(orch_mod, "suggest_employees", _fail_suggest)
-    monkeypatch.setattr(orch_mod, "compose_clarification", _fail_compose)
+    # Also patch the names as imported into clarification.py (import-time binding,
+    # Phase 13 Plan 02 — clarify moved from orchestrator.py to clarification.py).
+    import app.pipeline.clarification as clarification_mod
+    monkeypatch.setattr(clarification_mod, "suggest_employees", _fail_suggest)
+    monkeypatch.setattr(clarification_mod, "compose_clarification", _fail_compose)
 
     _clarify(run_id, email, decision, roster, extracted, llm=None, purpose="clarification")
 
@@ -227,21 +229,24 @@ def test_escalation_writes_no_outbound_row(fake_repo):
 
 def test_escalation_transaction_writes_only_status():
     """AST pin: the cap-escalation `with conn.transaction():` block in
-    _clarify's source contains set_status as its only tracked write and does
+    clarify's source contains set_status as its only tracked write and does
     NOT call set_clarification_round (escalation is terminal, D-11-09) — the
     complementary assertion to test_clarify_rounds.py's cap-precedes-
     transactions test, focused on the escalation block's CONTENTS.
-    """
-    import app.pipeline.orchestrator as orch_mod
 
-    with open(orch_mod.__file__) as f:
+    Phase 13 Plan 02: clarify moved to clarification.py (renamed from _clarify);
+    parses clarification.py's source, not orchestrator.py's.
+    """
+    import app.pipeline.clarification as clarification_mod
+
+    with open(clarification_mod.__file__) as f:
         src = f.read()
     tree = ast.parse(src)
 
     func = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_clarify"
+        if isinstance(node, ast.FunctionDef) and node.name == "clarify"
     )
 
     def _call_name(node):

@@ -232,9 +232,13 @@ def test_process_branch_crash_leaves_run_unadvanced(seeded_db, monkeypatch):
 def test_run_stages_process_branch_call_order_and_status_last():
     """Offline (FakeConnection): pin the exact call order + status-advance-last
     inside _run_stages' process-branch transaction (D-9-02/D-9-04), and confirm
-    the request_clarification branch's _clarify(...) call site is a SIBLING
-    statement outside the `with conn.transaction():` block (D-9-01), via an
-    AST/indentation check on the live source (checker's own technique).
+    the request_clarification branch's clarification.clarify(...) call site is a
+    SIBLING statement outside the `with conn.transaction():` block (D-9-01), via
+    an AST/indentation check on the live source (checker's own technique).
+
+    Phase 13 Plan 02: _run_stages stays in orchestrator.py, but clarify moved to
+    clarification.py -- the call is now a module-qualified ast.Attribute
+    (`clarification.clarify(...)`), not a bare ast.Name (`_clarify(...)`).
     """
     import ast
 
@@ -270,24 +274,27 @@ def test_run_stages_process_branch_call_order_and_status_last():
         f"found {tx_count}"
     )
 
-    # The _clarify(...) call inside _run_stages is NEVER nested inside any `with` block.
+    # The clarification.clarify(...) call inside _run_stages is NEVER nested
+    # inside any `with` block.
     def _walk(node, in_with=False):
         found = []
         for child in ast.iter_child_nodes(node):
             child_in_with = in_with or isinstance(child, ast.With)
             if isinstance(child, ast.Call):
                 f = child.func
-                if isinstance(f, ast.Name) and f.id == "_clarify":
+                if isinstance(f, ast.Attribute) and f.attr == "clarify":
                     found.append((child.lineno, in_with))
             found.extend(_walk(child, child_in_with))
         return found
 
     clarify_calls = _walk(func)
-    assert clarify_calls, "_run_stages must call _clarify(...) on the clarification branch"
+    assert clarify_calls, (
+        "_run_stages must call clarification.clarify(...) on the clarification branch"
+    )
     for lineno, in_with in clarify_calls:
         assert in_with is False, (
-            f"_clarify(...) call at line {lineno} must be OUTSIDE any 'with' block "
-            "(D-9-01 — no transaction may span an LLM/provider call)"
+            f"clarification.clarify(...) call at line {lineno} must be OUTSIDE any "
+            "'with' block (D-9-01 — no transaction may span an LLM/provider call)"
         )
 
 
@@ -307,7 +314,7 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
     """
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
-    from app.pipeline.orchestrator import _clarify
+    from app.pipeline.clarification import clarify as _clarify
     from tests.conftest import patch_get_connection
 
     ordering: list[tuple[str, bool]] = []
@@ -417,16 +424,22 @@ def _bare_decision():
 def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
     monkeypatch,
 ):
-    """Offline (FakeConnection): _defer_field_regression_clarification's Step 3
+    """Offline (FakeConnection): defer_field_regression_clarification's Step 3
     (set_clarified_fields) is the ONLY call inside its own `with
     conn.transaction():` block, and that block closes (AST/indentation check)
-    before the Step 5 _clarify(...) call — sibling statement, never nested.
+    before the Step 5 clarify(...) call — sibling statement, never nested.
+
+    Phase 13 Plan 02: defer_field_regression_clarification moved entirely to
+    clarification.py (renamed from _defer_field_regression_clarification), and
+    clarify is now CO-LOCATED in the same module — so its internal call stays a
+    bare ast.Name check (same-module call), only the target function's own name
+    changed from "_clarify" to "clarify".
     """
     import ast
 
-    import app.pipeline.orchestrator as orch_mod
+    import app.pipeline.clarification as clarification_mod
 
-    with open(orch_mod.__file__) as f:
+    with open(clarification_mod.__file__) as f:
         src = f.read()
     tree = ast.parse(src)
 
@@ -434,7 +447,7 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef)
-        and node.name == "_defer_field_regression_clarification"
+        and node.name == "defer_field_regression_clarification"
     )
 
     def _walk(node, in_with=False):
@@ -449,7 +462,7 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
                 f = child.func
                 if isinstance(f, ast.Attribute) and f.attr == "set_clarified_fields":
                     results.append(("SET_CLARIFIED", child.lineno, in_with))
-                if isinstance(f, ast.Name) and f.id == "_clarify":
+                if isinstance(f, ast.Name) and f.id == "clarify":
                     results.append(("CLARIFY_CALL", child.lineno, in_with))
             results.extend(_walk(child, child_in_with))
         return results
@@ -460,23 +473,23 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
     clarify_events = [e for e in events if e[0] == "CLARIFY_CALL"]
     assert len(set_clarified_events) == 1, (
         f"expected exactly one set_clarified_fields call in "
-        f"_defer_field_regression_clarification; found {len(set_clarified_events)}"
+        f"defer_field_regression_clarification; found {len(set_clarified_events)}"
     )
     assert set_clarified_events[0][2] is True, (
         "set_clarified_fields must be called INSIDE a 'with' block (its own transaction)"
     )
-    assert clarify_events, "_defer_field_regression_clarification must call _clarify(...)"
+    assert clarify_events, "defer_field_regression_clarification must call clarify(...)"
     for lineno, in_with in [(e[1], e[2]) for e in clarify_events]:
         assert in_with is False, (
-            f"_clarify(...) call at line {lineno} must be OUTSIDE any 'with' block "
+            f"clarify(...) call at line {lineno} must be OUTSIDE any 'with' block "
             "(sibling statement, after the set_clarified_fields transaction closes)"
         )
-    # Source-order: the transaction's WITH line comes before the _clarify call line.
+    # Source-order: the transaction's WITH line comes before the clarify call line.
     with_lines = [e[1] for e in events if e[0] == "WITH"]
     assert with_lines, "expected a 'with' block wrapping the Step 3 write"
     assert max(with_lines) < min(e[1] for e in clarify_events), (
         "the set_clarified_fields transaction block must close BEFORE the "
-        "_clarify(...) call in source order"
+        "clarify(...) call in source order"
     )
 
 
@@ -523,11 +536,11 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
     LiveMockOpenAI.calls = []
 
     def _boom_clarify(*a, **kw):
-        raise RuntimeError("injected crash — _clarify after Step-3 commit")
+        raise RuntimeError("injected crash — clarify after Step-3 commit")
 
-    import app.pipeline.orchestrator as orch_mod
+    from app.pipeline import clarification
 
-    monkeypatch.setattr(orch_mod, "_clarify", _boom_clarify)
+    monkeypatch.setattr(clarification, "clarify", _boom_clarify)
 
     reply = _live_inbound("Maria Chen 40 regular hours")
 
@@ -750,7 +763,7 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
     conn.transaction():`.
     """
     from app.db import repo
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
 
@@ -758,12 +771,12 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
     repo.set_status(run_id, RunStatus.APPROVED)
     run = repo.load_run(run_id)
 
-    import app.pipeline.orchestrator as orch_mod
+    from app.pipeline import alias_learning
 
     def _boom_alias(*a, **kw):
         raise RuntimeError("injected crash — alias write")
 
-    monkeypatch.setattr(orch_mod, "_write_aliases_if_safe", _boom_alias)
+    monkeypatch.setattr(alias_learning, "write_aliases_if_safe", _boom_alias)
 
     _deliver(run_id, run)
 
@@ -798,7 +811,7 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     """
 
     from app.db import repo
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
 
@@ -843,7 +856,7 @@ def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeyp
     never left at 'sent' alone with 'reconciled' missing.
     """
     from app.db import repo
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
 
@@ -879,7 +892,7 @@ def test_deliver_finalize_crash_preserves_wr04_payroll_roster_attribute(seeded_d
     existing WR-04 try/except, not outside or replacing it.
     """
     from app.db import repo
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
 
@@ -910,7 +923,7 @@ def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, m
     must reach status == 'reconciled' — closing the silent-alias-skip gap.
     """
     from app.db import repo
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
 
@@ -928,16 +941,16 @@ def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, m
     # already-sent guard branch is what we're exercising).
     repo.set_status(run_id, RunStatus.APPROVED)
 
-    import app.pipeline.orchestrator as orch_mod
+    from app.pipeline import alias_learning
 
     alias_calls: list = []
-    original_write = orch_mod._write_aliases_if_safe
+    original_write = alias_learning.write_aliases_if_safe
 
     def _spy_write(run_id_, run_, roster_, conn=None):
         alias_calls.append(1)
         return original_write(run_id_, run_, roster_, conn=conn)
 
-    monkeypatch.setattr(orch_mod, "_write_aliases_if_safe", _spy_write)
+    monkeypatch.setattr(alias_learning, "write_aliases_if_safe", _spy_write)
 
     run2 = repo.load_run(run_id)
     _deliver(run_id, run2)

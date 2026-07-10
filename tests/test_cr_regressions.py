@@ -312,7 +312,7 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     """
     import app.db.repo as repo
     import app.email.gateway as gw
-    from app.pipeline.orchestrator import _deliver
+    from app.pipeline.delivery import deliver as _deliver
 
     run_id = uuid.uuid4()
     business_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -372,8 +372,10 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     monkeypatch.setattr(repo, "get_record_only_flag", lambda *a, **kw: False, raising=False)
 
     # Also stub _write_aliases_if_safe (called inside _deliver before SENT).
-    import app.pipeline.orchestrator as orch
-    monkeypatch.setattr(orch, "_write_aliases_if_safe", lambda *a, **kw: None, raising=False)
+    from app.pipeline import alias_learning
+    monkeypatch.setattr(
+        alias_learning, "write_aliases_if_safe", lambda *a, **kw: None, raising=False
+    )
     # 09-02: _deliver's finalize sequence now opens its own transaction.
     from tests.conftest import patch_get_connection
     patch_get_connection(monkeypatch, repo)
