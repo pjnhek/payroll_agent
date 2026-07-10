@@ -1,0 +1,360 @@
+"""BOUND-01 regression guard: no cross-module private-name coupling.
+
+An AST-walking static scanner over `app/`, `eval/`, `scripts/` that flags any
+cross-module reference to a private name (leading underscore, not dunder), in
+either of two forms:
+
+1. `ast.ImportFrom` — `from module import _name`, whether at module level or
+   inside a function body, whether absolute (`node.level == 0`) or relative
+   (`node.level > 0`, resolved against the importing file's own module name
+   and its `is_package` status).
+2. `ast.Attribute` access — `module._name` where `module` is a name bound by a
+   module-level `ast.Import` of a first-party module (`import X` / `import X
+   as Y`), EXCEPT when the imported target is itself a package `__init__.py`
+   (the declared facade-boundary exemption: a package deliberately re-exporting
+   a private name via its own `__init__.py` is the facade pattern working as
+   designed, not a violation of it).
+
+`tests/` is intentionally NOT scanned (D-14): tests routinely reach into a
+module's own internals for unit-testing purposes, which is same-module by
+construction and outside this guard's cross-module scope.
+
+Both the scanner's helper functions and its two pytest entry points live in
+this one file: `test_no_cross_module_private_imports` runs the scanner against
+the LIVE repository tree (the permanent CI gate); `test_scanner_detects_synthetic_violation`
+proves the scanner's own detection logic against a constructed tmp_path fixture
+covering every violation shape and every legitimate-pattern exemption (the
+permanent replacement for a one-time manual scratch-file check).
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+
+SCAN_ROOTS = ["app", "eval", "scripts"]
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# D-01/D-03 (13-01-SUMMARY.md): `app/db/repo/` is a package whose internal
+# plumbing module (`_shared.py`, holding `_conn_ctx`/`_nulltx`) is DELIBERATELY
+# imported directly by its sibling aggregate modules ("submodules import
+# siblings directly" — D-03), and whose own `__init__.py` facade DELIBERATELY
+# re-exports a full live attribute surface INCLUDING private names
+# (`_conn_ctx`, `_scrub`, `_TERMINAL_STATUSES`, `_ACCENT_CLASS_MAP`,
+# `_pad_references`, `_HEADER_MATCH_PREDICATE`, `_nulltx`) so that
+# `monkeypatch.setattr(repo, "_scrub", ...)`-style seams keep working
+# unchanged post-split (D-01). This is the ONE declared, documented exception
+# to BOUND-01's cross-module-private-import rule — narrowly scoped to this one
+# package, not a general "same top-level package is fine" carve-out (compare
+# `app.routes.runs` importing `app.routes.templating`'s private badge filters,
+# which IS a genuine violation this guard correctly flags despite also being
+# "same package").
+_DECLARED_INTERNAL_PLUMBING_PACKAGE = "app.db.repo"
+
+
+def _in_declared_plumbing_package(own_module: str, target_module: str) -> bool:
+    """True when BOTH the importing file and the import target live inside the
+    one package (`app.db.repo`) whose internal-plumbing/facade-re-export
+    pattern is explicitly declared legitimate design (D-01/D-03), not an
+    accidental BOUND-01 violation.
+    """
+    prefix = _DECLARED_INTERNAL_PLUMBING_PACKAGE
+    same_package = (own_module == prefix or own_module.startswith(prefix + ".")) and (
+        target_module == prefix or target_module.startswith(prefix + ".")
+    )
+    return same_package
+
+
+def _is_private(name: str) -> bool:
+    """True for a leading-underscore name that is NOT a dunder (e.g. `__init__`)."""
+    return name.startswith("_") and not name.startswith("__")
+
+
+def _module_name_and_is_package(
+    py_file: pathlib.Path, root_parent: pathlib.Path
+) -> tuple[str, bool]:
+    """Compute a file's own dotted module name and whether it IS a package `__init__.py`.
+
+    Module name is relative to `root_parent` (the scan root's PARENT directory),
+    with `__init__.py` normalized away: `app/routes/__init__.py` -> `app.routes`,
+    NOT `app.routes.__init__`. `is_package` is True exactly when the file IS an
+    `__init__.py`.
+    """
+    rel = py_file.relative_to(root_parent)
+    parts = list(rel.with_suffix("").parts)
+    is_package = parts[-1] == "__init__"
+    if is_package:
+        parts = parts[:-1]
+    return ".".join(parts), is_package
+
+
+def _resolve_import_from_target(
+    node: ast.ImportFrom, own_module: str, own_is_package: bool
+) -> str | None:
+    """Resolve an `ast.ImportFrom` node to a single target-module dotted string.
+
+    Absolute (`node.level == 0`): the target is `node.module` directly.
+
+    Relative (`node.level > 0`): resolve by walking UP from the IMPORTING
+    FILE's own module name `node.level` times, honoring `is_package` — a
+    package's `__init__.py` module name already points AT the package, so a
+    `level=1` relative import inside it resolves relative to that SAME name,
+    not one level further up (dropping the `__init__` segment during module-name
+    computation already accounted for one level of nesting).
+    """
+    if node.level == 0:
+        return node.module
+
+    own_parts = own_module.split(".") if own_module else []
+    # own_is_package: own_module already points AT the package; level=1 resolves
+    # relative to it directly, level=2 walks up one more, etc. Otherwise,
+    # own_module points at a submodule inside its package; level=1 resolves
+    # relative to its immediate parent package.
+    trim = node.level - 1 if own_is_package else node.level
+    base_parts = own_parts[: len(own_parts) - trim] if trim <= len(own_parts) else []
+    base = ".".join(base_parts)
+    if node.module:
+        return f"{base}.{node.module}" if base else node.module
+    return base or None
+
+
+def _type_checking_only_nodes(tree: ast.AST) -> set[ast.AST]:
+    """Return every node that lives inside an `if TYPE_CHECKING:` block's body.
+
+    A `TYPE_CHECKING`-guarded import is never executed at runtime — it exists
+    solely so a static type checker can resolve an annotation string/forward
+    reference. This guard's purpose (T-13-13: catch a runtime private-name
+    coupling that could silently break a monkeypatch seam) does not apply to
+    code that never runs, so these nodes are exempted from the ImportFrom scan.
+    """
+    guarded: set[ast.AST] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        is_type_checking_test = (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
+        if not is_type_checking_test:
+            continue
+        for child in node.body:
+            for sub in ast.walk(child):
+                guarded.add(sub)
+    return guarded
+
+
+def _scan_import_from_violations(
+    tree: ast.AST, py_file: pathlib.Path, own_module: str, own_is_package: bool
+) -> list[str]:
+    violations: list[str] = []
+    type_checking_nodes = _type_checking_only_nodes(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node in type_checking_nodes:
+            continue
+        target_module = _resolve_import_from_target(node, own_module, own_is_package)
+        if target_module is None or target_module == own_module:
+            continue
+        if _in_declared_plumbing_package(own_module, target_module):
+            continue
+        for alias in node.names:
+            if _is_private(alias.name):
+                violations.append(
+                    f"{py_file}:{node.lineno} imports private '{alias.name}' "
+                    f"via '{target_module}'"
+                )
+    return violations
+
+
+def _is_package_import_target(module_dotted: str, search_roots: list[pathlib.Path]) -> bool:
+    """True if `module_dotted` resolves to a package (has its own `__init__.py`)."""
+    rel_path = pathlib.Path(*module_dotted.split("."))
+    for root_parent in search_roots:
+        candidate = root_parent / rel_path / "__init__.py"
+        if candidate.is_file():
+            return True
+    return False
+
+
+def _scan_attribute_violations(
+    tree: ast.AST, py_file: pathlib.Path, own_module: str, search_roots: list[pathlib.Path]
+) -> list[str]:
+    """Flag `module._private` where `module` is bound by a module-level `ast.Import`
+    of a first-party module under one of SCAN_ROOTS that is NOT itself a package
+    (`__init__.py`) — package imports are the declared facade-boundary exemption.
+    """
+    violations: list[str] = []
+
+    # Map local bound name -> imported dotted module, for module-level `ast.Import`
+    # statements only (function-body imports of this shape are out of scope for
+    # the attribute-access check per the plan's design; the codebase's one
+    # function-body `import X as Y` case, _shared.py's call-time self-import,
+    # does not access a private attribute and is exercised in the live scan).
+    bound_modules: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname or alias.name.split(".")[0]
+                bound_modules[local_name] = alias.name
+
+    if not bound_modules:
+        return violations
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if not _is_private(node.attr):
+            continue
+        if not isinstance(node.value, ast.Name):
+            continue
+        local_name = node.value.id
+        target_module = bound_modules.get(local_name)
+        if target_module is None:
+            continue
+        if target_module == own_module:
+            continue
+        # Facade-boundary exemption: importing a PACKAGE (its __init__.py IS the
+        # declared facade) is out of scope; importing a SUBMODULE is not exempt.
+        if _is_package_import_target(target_module, search_roots):
+            continue
+        violations.append(
+            f"{py_file}:{node.lineno} accesses private '{node.attr}' via '{target_module}'"
+        )
+    return violations
+
+
+def scan_tree_for_violations(
+    scan_roots: list[pathlib.Path], root_parent: pathlib.Path
+) -> list[str]:
+    """Walk every `.py` file under `scan_roots` and return all BOUND-01 violations
+    (both ImportFrom and attribute-access forms), as human-readable strings.
+    """
+    violations: list[str] = []
+    for root in scan_roots:
+        if not root.is_dir():
+            continue
+        for py_file in sorted(root.rglob("*.py")):
+            source = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(py_file))
+            own_module, own_is_package = _module_name_and_is_package(py_file, root_parent)
+            violations.extend(
+                _scan_import_from_violations(tree, py_file, own_module, own_is_package)
+            )
+            violations.extend(
+                _scan_attribute_violations(tree, py_file, own_module, scan_roots)
+            )
+    return violations
+
+
+def test_no_cross_module_private_imports() -> None:
+    """The permanent CI gate: scans the LIVE app/, eval/, scripts/ trees and
+    asserts zero cross-module private-name references remain, in either the
+    ImportFrom (absolute + resolved-relative) or attribute-access form.
+    """
+    scan_roots = [REPO_ROOT / name for name in SCAN_ROOTS]
+    violations = scan_tree_for_violations(scan_roots, REPO_ROOT)
+    assert not violations, "BOUND-01 violation(s) found:\n" + "\n".join(violations)
+
+
+def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
+    """Prove the scanner's own detection logic against synthetic fixtures BEFORE
+    trusting it as a permanent gate — covers every violation shape (absolute
+    ImportFrom, relative ImportFrom crossing a real package boundary,
+    attribute-access) and every legitimate-pattern exemption (same-module
+    reference, bare relative module import, a level-1 relative import inside a
+    package's own `__init__.py`).
+    """
+    pkgroot = tmp_path / "pkgroot"
+    pkgroot.mkdir()
+
+    (pkgroot / "module_a.py").write_text("_private_thing = 1\n", encoding="utf-8")
+
+    (pkgroot / "module_b.py").write_text(
+        "def use_private_via_function_body():\n"
+        "    from pkgroot.module_a import _private_thing\n"
+        "    return _private_thing\n"
+        "\n"
+        "\n"
+        "import pkgroot.module_a as mod_a\n"
+        "\n"
+        "\n"
+        "def use_private_via_attribute_access():\n"
+        "    return mod_a._private_thing\n",
+        encoding="utf-8",
+    )
+
+    (pkgroot / "module_c.py").write_text(
+        "_local_helper = 1\n"
+        "\n"
+        "\n"
+        "def use_same_module():\n"
+        "    return _local_helper\n"
+        "\n"
+        "\n"
+        "from . import module_a\n"
+        "\n"
+        "\n"
+        "def use_bare_relative_module_import():\n"
+        "    return module_a\n",
+        encoding="utf-8",
+    )
+
+    sub = pkgroot / "sub"
+    sub.mkdir()
+    (sub / "__init__.py").write_text("", encoding="utf-8")
+    (sub / "module_d.py").write_text(
+        "def reach_into_parent_package():\n"
+        "    from ..module_a import _private_thing\n"
+        "    return _private_thing\n",
+        encoding="utf-8",
+    )
+
+    (pkgroot / "__init__.py").write_text("from . import module_a\n", encoding="utf-8")
+
+    scan_roots = [tmp_path / "pkgroot"]
+    violations = scan_tree_for_violations(scan_roots, tmp_path)
+
+    violation_text = "\n".join(violations)
+
+    module_b_file = str(pkgroot / "module_b.py")
+    module_d_file = str(sub / "module_d.py")
+    module_c_file = str(pkgroot / "module_c.py")
+    init_file = str(pkgroot / "__init__.py")
+
+    # module_b.py: BOTH violations must be detected (function-body absolute
+    # ImportFrom + module-attribute-access).
+    assert any(
+        v.startswith(module_b_file) and "_private_thing" in v and "imports" in v
+        for v in violations
+    ), f"expected module_b.py ImportFrom violation, got:\n{violation_text}"
+    assert any(
+        v.startswith(module_b_file) and "_private_thing" in v and "accesses" in v
+        for v in violations
+    ), f"expected module_b.py attribute-access violation, got:\n{violation_text}"
+
+    # module_d.py: the level-2 relative import crossing OUT of `sub` back into
+    # `pkgroot` to reach a private name MUST be detected.
+    assert any(
+        v.startswith(module_d_file) and "_private_thing" in v for v in violations
+    ), f"expected module_d.py relative-import violation, got:\n{violation_text}"
+
+    # module_c.py: zero violations (same-module reference + bare relative
+    # module import, neither of which references a private symbol FROM another
+    # module).
+    assert not any(
+        v.startswith(module_c_file) for v in violations
+    ), f"module_c.py should have zero violations, got:\n{violation_text}"
+
+    # pkgroot/__init__.py: zero violations (level-1 relative import of a
+    # sibling module, resolved correctly relative to `pkgroot` itself, not one
+    # level further up to tmp_path, proving the is_package handling).
+    assert not any(
+        v.startswith(init_file) for v in violations
+    ), f"pkgroot/__init__.py should have zero violations, got:\n{violation_text}"
+
+    # Exactly the three expected violations total (2 from module_b.py, 1 from
+    # module_d.py) -- confirms no unexpected false positives elsewhere in the
+    # synthetic tree.
+    assert len(violations) == 3, f"expected exactly 3 violations, got:\n{violation_text}"

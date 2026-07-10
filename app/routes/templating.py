@@ -48,15 +48,15 @@ _BADGE_LABEL: dict[str, str] = {
 }
 
 
-def _badge_class_filter(status: str) -> str:
+def badge_class_filter(status: str) -> str:
     """Map a payroll_runs.status to a CSS badge class suffix (UI-SPEC Badge Contract)."""
     return _BADGE_CLASS.get(str(status), "neutral")
 
 
-def _badge_label_filter(status: str) -> str:
+def badge_label_filter(status: str) -> str:
     """Map a payroll_runs.status to its display label (UI-SPEC Copywriting Contract)."""
     return _BADGE_LABEL.get(str(status), str(status).replace("_", " ").title())
 
 
-templates.env.filters["badge_class"] = _badge_class_filter
-templates.env.filters["badge_label"] = _badge_label_filter
+templates.env.filters["badge_class"] = badge_class_filter
+templates.env.filters["badge_label"] = badge_label_filter

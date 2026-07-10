@@ -22,7 +22,7 @@ from app.models.status import RunStatus
 from app.pipeline import delivery
 from app.routes import pipeline_glue
 from app.routes.demo import DEMO_FIXTURES
-from app.routes.templating import _badge_class_filter, _badge_label_filter, templates
+from app.routes.templating import badge_class_filter, badge_label_filter, templates
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -526,8 +526,8 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
     return JSONResponse(
         content={
             "status": status,
-            "badge_class": _badge_class_filter(status),
-            "badge_label": _badge_label_filter(status),
+            "badge_class": badge_class_filter(status),
+            "badge_label": badge_label_filter(status),
         }
     )
 
