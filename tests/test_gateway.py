@@ -281,21 +281,27 @@ def test_persist_reconciliation_serializes_each_name(fake_conn):
 
 
 def test_repo_has_no_fstring_sql():
+    import importlib
     import inspect
+    import pkgutil
 
-    import app.db.repo.demo as m_demo
-    import app.db.repo.emails as m_emails
-    import app.db.repo.pipeline_state as m_pipeline_state
-    import app.db.repo.roster as m_roster
-    import app.db.repo.runs as m_runs
+    import app.db.repo as repo_pkg
 
     # Post-split, the facade (repo.__file__) contains no SQL at all — this sweep
-    # must scan across all five aggregate modules to preserve its original
+    # must scan across ALL the package's modules to preserve its original
     # whole-repo-layer guarantee (Codex Round 2 vacuous-scan finding).
-    src = "".join(
-        inspect.getsource(m)
-        for m in (m_runs, m_pipeline_state, m_emails, m_roster, m_demo)
+    # Enumerate the package DYNAMICALLY (Phase 13 review WR-03) so a future
+    # sixth aggregate module — or SQL added to _shared.py — can never silently
+    # escape the sweep the way a hardcoded module tuple would let it.
+    modules = {
+        m.name: importlib.import_module(f"app.db.repo.{m.name}")
+        for m in pkgutil.iter_modules(repo_pkg.__path__)
+    }
+    known = {"_shared", "demo", "emails", "pipeline_state", "roster", "runs"}
+    assert known <= set(modules), (
+        f"repo package enumeration lost a known module: {sorted(known - set(modules))}"
     )
+    src = "".join(inspect.getsource(m) for m in modules.values())
     # No execute(f"...") f-string SQL, and no %-interpolated execute(...).
     assert not re.search(r"execute\(\s*f[\"']", src), "no f-string SQL in repo.py"
     # The references LIKE must be a named placeholder, never interpolated.

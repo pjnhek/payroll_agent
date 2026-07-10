@@ -470,28 +470,33 @@ def test_no_clarification_message_id_column_written():
     The orchestrator never mentions such a column at all; the repo may DOCUMENT its
     deliberate absence in prose, but must never SET it on payroll_runs (no UPDATE
     payroll_runs ... clarification_message_id)."""
+    import importlib
     import inspect
     import pathlib
+    import pkgutil
     import re
 
-    import app.db.repo.demo as m_demo
-    import app.db.repo.emails as m_emails
-    import app.db.repo.pipeline_state as m_pipeline_state
-    import app.db.repo.roster as m_roster
-    import app.db.repo.runs as m_runs
+    import app.db.repo as repo_pkg
     from app.pipeline import orchestrator
 
     orch_src = pathlib.Path(orchestrator.__file__).read_text()
     assert "clarification_message_id" not in orch_src
 
     # Post-split, repo.__file__ (the facade) contains no SQL at all — this sweep
-    # must scan across all five aggregate modules to preserve its original
+    # must scan across ALL the package's modules to preserve its original
     # whole-repo-layer guarantee (Codex Round 2 vacuous-scan finding), matching
-    # test_gateway.py's test_repo_has_no_fstring_sql retarget.
-    repo_src = "".join(
-        inspect.getsource(m)
-        for m in (m_runs, m_pipeline_state, m_emails, m_roster, m_demo)
+    # test_gateway.py's test_repo_has_no_fstring_sql retarget. Enumerate the
+    # package DYNAMICALLY (Phase 13 review WR-03) so a future sixth aggregate
+    # module — or SQL added to _shared.py — can never silently escape.
+    modules = {
+        m.name: importlib.import_module(f"app.db.repo.{m.name}")
+        for m in pkgutil.iter_modules(repo_pkg.__path__)
+    }
+    known = {"_shared", "demo", "emails", "pipeline_state", "roster", "runs"}
+    assert known <= set(modules), (
+        f"repo package enumeration lost a known module: {sorted(known - set(modules))}"
     )
+    repo_src = "".join(inspect.getsource(m) for m in modules.values())
     # No UPDATE of a payroll_runs clarification_message_id column anywhere.
     assert not re.search(
         r"payroll_runs[^;]*SET[^;]*clarification_message_id", repo_src, re.IGNORECASE | re.DOTALL
