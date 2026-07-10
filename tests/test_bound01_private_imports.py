@@ -168,10 +168,17 @@ def _scan_import_from_violations(
     return violations
 
 
-def _is_package_import_target(module_dotted: str, search_roots: list[pathlib.Path]) -> bool:
-    """True if `module_dotted` resolves to a package (has its own `__init__.py`)."""
+def _is_package_import_target(module_dotted: str, root_parents: list[pathlib.Path]) -> bool:
+    """True if `module_dotted` resolves to a package (has its own `__init__.py`).
+
+    `root_parents` entries are each the PARENT directory of a scan root (the
+    directory a dotted module name is relative to), NOT the scan roots
+    themselves — for `app.db.repo` the probe is `<root_parent>/app/db/repo/
+    __init__.py`. Passing the scan roots here (WR-01, Phase 13 review) probed
+    the never-existing `<root>/app/...` and made the facade exemption dead code.
+    """
     rel_path = pathlib.Path(*module_dotted.split("."))
-    for root_parent in search_roots:
+    for root_parent in root_parents:
         candidate = root_parent / rel_path / "__init__.py"
         if candidate.is_file():
             return True
@@ -179,7 +186,7 @@ def _is_package_import_target(module_dotted: str, search_roots: list[pathlib.Pat
 
 
 def _scan_attribute_violations(
-    tree: ast.AST, py_file: pathlib.Path, own_module: str, search_roots: list[pathlib.Path]
+    tree: ast.AST, py_file: pathlib.Path, own_module: str, root_parents: list[pathlib.Path]
 ) -> list[str]:
     """Flag `module._private` where `module` is bound by a module-level `ast.Import`
     of a first-party module under one of SCAN_ROOTS that is NOT itself a package
@@ -217,7 +224,7 @@ def _scan_attribute_violations(
             continue
         # Facade-boundary exemption: importing a PACKAGE (its __init__.py IS the
         # declared facade) is out of scope; importing a SUBMODULE is not exempt.
-        if _is_package_import_target(target_module, search_roots):
+        if _is_package_import_target(target_module, root_parents):
             continue
         violations.append(
             f"{py_file}:{node.lineno} accesses private '{node.attr}' via '{target_module}'"
@@ -242,8 +249,13 @@ def scan_tree_for_violations(
             violations.extend(
                 _scan_import_from_violations(tree, py_file, own_module, own_is_package)
             )
+            # WR-01 (Phase 13 review): the attribute scan's package-exemption
+            # probe resolves dotted module names against root PARENTS — passing
+            # `scan_roots` here probed `<root>/app/...` (never exists) and made
+            # the facade exemption dead code, false-positiving the blessed
+            # `import app.db.repo as repo_mod` pattern.
             violations.extend(
-                _scan_attribute_violations(tree, py_file, own_module, scan_roots)
+                _scan_attribute_violations(tree, py_file, own_module, [root_parent])
             )
     return violations
 
@@ -264,7 +276,8 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
     ImportFrom, relative ImportFrom crossing a real package boundary,
     attribute-access) and every legitimate-pattern exemption (same-module
     reference, bare relative module import, a level-1 relative import inside a
-    package's own `__init__.py`).
+    package's own `__init__.py`, and the facade-boundary exemption for a
+    private attribute reached through an imported PACKAGE).
     """
     pkgroot = tmp_path / "pkgroot"
     pkgroot.mkdir()
@@ -313,6 +326,23 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
 
     (pkgroot / "__init__.py").write_text("from . import module_a\n", encoding="utf-8")
 
+    # module_e.py: the facade-boundary exemption branch (WR-01, Phase 13
+    # review). `import pkgroot as pkg_facade` binds the PACKAGE (its
+    # `__init__.py` IS the declared facade), so `pkg_facade._private_thing`
+    # is exempt — in contrast to module_b's `import pkgroot.module_a as
+    # mod_a`, a plain SUBMODULE import whose private access IS flagged. This
+    # pins the exemption the live gate blesses for `import app.db.repo as
+    # repo_mod`, which shipped dead (probed the wrong path root) precisely
+    # because no fixture exercised it.
+    (pkgroot / "module_e.py").write_text(
+        "import pkgroot as pkg_facade\n"
+        "\n"
+        "\n"
+        "def use_facade_reexported_private():\n"
+        "    return pkg_facade._private_thing\n",
+        encoding="utf-8",
+    )
+
     scan_roots = [tmp_path / "pkgroot"]
     violations = scan_tree_for_violations(scan_roots, tmp_path)
 
@@ -321,6 +351,7 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
     module_b_file = str(pkgroot / "module_b.py")
     module_d_file = str(sub / "module_d.py")
     module_c_file = str(pkgroot / "module_c.py")
+    module_e_file = str(pkgroot / "module_e.py")
     init_file = str(pkgroot / "__init__.py")
 
     # module_b.py: BOTH violations must be detected (function-body absolute
@@ -354,7 +385,14 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
         v.startswith(init_file) for v in violations
     ), f"pkgroot/__init__.py should have zero violations, got:\n{violation_text}"
 
+    # module_e.py: zero violations — the PACKAGE import (`import pkgroot as
+    # pkg_facade`) hits the facade-boundary exemption even though the accessed
+    # attribute is private (WR-01: the exemption branch must actually fire).
+    assert not any(
+        v.startswith(module_e_file) for v in violations
+    ), f"module_e.py (facade package import) should be exempt, got:\n{violation_text}"
+
     # Exactly the three expected violations total (2 from module_b.py, 1 from
-    # module_d.py) -- confirms no unexpected false positives elsewhere in the
-    # synthetic tree.
+    # module_d.py; module_e.py's facade access is exempt) -- confirms no
+    # unexpected false positives elsewhere in the synthetic tree.
     assert len(violations) == 3, f"expected exactly 3 violations, got:\n{violation_text}"
