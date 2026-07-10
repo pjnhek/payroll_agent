@@ -260,3 +260,34 @@ Execution should wait for the HIGH items to be incorporated, especially preservi
 MEDIUM (13-04): relative-import resolution must apply the same check after resolving `node.level>0`; preserve `is_package` when resolving relative imports inside `__init__.py`; limit the facade exemption to the declared `app.db.repo` facade only.
 
 **Recommended next step:** `/gsd-plan-phase 13 --reviews` (round 2 replan), then a final confirming review before execution.
+
+---
+
+# Cross-AI CODE Review — Phase 13 (post-execution, Codex)
+
+- reviewed_at: 2026-07-10T03:17:28Z
+- reviewer: codex (codex-cli 0.144.0, `codex exec`)
+- scope: committed diff 356fc41..e91d831 (50 source files; .planning/ excluded)
+- context given: refactor contract + internal 13-REVIEW.md WR-01..04 marked already-fixed, instructed to verify fixes and find NEW issues
+- verdict: NOT READY (solely due to CX-CODE-01 guard bypass; zero money-path findings; all 4 WR fixes independently verified sound)
+
+## Codex Output (verbatim)
+
+  1. **MEDIUM — Verified:** BOUND-01 misses unaliased dotted imports. It records `import app.pipeline.orchestrator` under the local name `app`, then ignores `app.pipeline.orchestrator._compute_line_items` because the attribute receiver is not an `ast.Name`. [tests/test_bound01_private_imports.py:236](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:236>) [tests/test_bound01_private_imports.py:255](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:255>)  
+     Concrete failure: a new cross-module private access in that standard import form passes CI; I invoked the scanner on this exact shape and it returned no violations.
+  
+  2. **LOW — Verified:** The repo facade does not fully preserve the prior attribute surface: `_nulltx` remains defined in [_shared.py:38](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/_shared.py:38>) but is neither re-exported nor listed by [__init__.py:11](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/__init__.py:11>) / [__init__.py:76](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/__init__.py:76>).  
+     Concrete failure: pre-split `from app.db import repo; repo._nulltx()` worked; it now raises `AttributeError`. No current `app/`, `eval/`, or `scripts/` caller uses it, hence Low severity.
+  
+  WR-fix verification:
+  
+  - WR-01: sound — the facade probe now receives the repository root parent at [test_bound01_private_imports.py:302](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:302>); `app.db.repo` resolves as a package.
+  - WR-02: sound — `ImportFrom` module bindings are resolved and scanned at [test_bound01_private_imports.py:238](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:238>).
+  - WR-03: sound — both repo source sweeps enumerate package modules dynamically with a known-module floor.
+  - WR-04: sound — simulate-reply now branches on the returned JSON status, logging success only for `"resumed"` at [runs.py:790](</Users/pnhek/usf msds/github/payroll_agent/app/routes/runs.py:790>).
+  
+  I found no CRITICAL/HIGH money-path regression: `_compute_line_items`, delivery transaction ordering, approve → `delivery.deliver`, and webhook ingest classification/linking are preserved. The reply classification/linking remains atomic; `finish_reply_resume` remains post-commit exactly as in the base version.
+  
+  Validation: 50 changed Python files AST-parsed; core imports succeeded; 6 targeted regressions passed.
+  
+  **Overall verdict: NOT READY** — the new CI boundary guard has a verified bypass.
