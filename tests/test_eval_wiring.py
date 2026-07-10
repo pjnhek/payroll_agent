@@ -157,3 +157,12 @@ def test_eval_normalize_nfd_matches_nfc():
         "Plan 07-02 must update run_eval.py:_normalize to NFC(casefold(NFC(s))) "
         "matching the new reconcile_names._norm (RESEARCH.md §Target 9 CORRECTION)"
     )
+
+
+def test_record_extraction_llm_client_import_resolves(tmp_path, monkeypatch):
+    """The --record lazy-import path must resolve the live client module."""
+    from eval import run_eval  # noqa: PLC0415 -- exercise the lazy-import caller
+
+    monkeypatch.setattr(run_eval, "FIXTURE_DIR", tmp_path)
+
+    run_eval._record_extraction()
