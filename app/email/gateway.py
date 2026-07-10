@@ -40,8 +40,9 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parseaddr
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
+import psycopg
 import resend
 
 from app.config import get_settings
@@ -67,7 +68,7 @@ class _ReceivedEmailLike(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def _is_resend_envelope(data: dict) -> bool:
+def _is_resend_envelope(data: dict[str, Any]) -> bool:
     """Return True if `data` has the Resend webhook envelope shape (data.email_id present).
 
     This is purely structural detection — not based on headers or env flags.
@@ -112,7 +113,7 @@ def verify(raw_body: bytes, headers: dict[str, str], signing_secret: str) -> Non
 # ---------------------------------------------------------------------------
 
 
-def parse_inbound(raw: dict | str | bytes) -> InboundEmail:
+def parse_inbound(raw: dict[str, Any] | str | bytes) -> InboundEmail:
     """Parse an inbound payload into a canonical InboundEmail — DUAL-PATH.
 
     Path A (Resend envelope — has data.email_id):
@@ -142,7 +143,7 @@ def parse_inbound(raw: dict | str | bytes) -> InboundEmail:
     return InboundEmail.model_validate(data)
 
 
-def _parse_resend_envelope(data: dict) -> InboundEmail:
+def _parse_resend_envelope(data: dict[str, Any]) -> InboundEmail:
     """Path A: parse a Resend webhook envelope by fetching the full email via EmailsReceiving.get.
 
     This is the real two-step: metadata webhook → fetch → InboundEmail (D-01a).
@@ -201,7 +202,7 @@ def send_outbound(
     purpose: str | None = None,
     send_state: str = "sent",
     round: int = 0,
-    conn=None,
+    conn: psycopg.Connection | None = None,
 ) -> str:
     """Send an outbound email via Resend with D-13c crash-safe ordering.
 
@@ -240,6 +241,7 @@ def send_outbound(
     # chain from DB state and append the new in_reply_to token. Building from DB state
     # (not ephemeral webhook state) means the chain survives dropped/duplicated deliveries.
     prior_chain = repo.get_outbound_references_chain(run_id, conn=conn)
+    accumulated_references: str | None
     if prior_chain is not None and in_reply_to:
         accumulated_references = f"{prior_chain} {in_reply_to}"
     elif in_reply_to:
@@ -267,25 +269,28 @@ def send_outbound(
     )
 
     # Step 2 (HIGH-3 + REPLY-TO TOPOLOGY): build the send dict and call the provider.
-    send_params: dict = {
-        "from": from_addr or get_settings().resend_from_addr,
-        "to": [to_addr],
-        "subject": subject,
-        "text": body,
-        "headers": {
-            k: v
-            for k, v in [
-                ("Message-ID", message_id),
-                ("In-Reply-To", in_reply_to),
-                ("References", accumulated_references),
-            ]
-            if v
+    send_params = cast(
+        resend.Emails.SendParams,
+        {
+            "from": from_addr or get_settings().resend_from_addr,
+            "to": [to_addr],
+            "subject": subject,
+            "text": body,
+            "headers": {
+                k: v
+                for k, v in [
+                    ("Message-ID", message_id),
+                    ("In-Reply-To", in_reply_to),
+                    ("References", accumulated_references),
+                ]
+                if v
+            },
+            "attachments": [
+                {"filename": name, "content": base64.b64encode(pdf_bytes).decode()}
+                for name, pdf_bytes in (attachments or [])
+            ],
         },
-        "attachments": [
-            {"filename": name, "content": base64.b64encode(pdf_bytes).decode()}
-            for name, pdf_bytes in (attachments or [])
-        ],
-    }
+    )
 
     # REPLY-TO TOPOLOGY (P6): resend_reply_to is the inbound .resend.app address
     # (owned by 06-02); when set, directs client replies to the address the webhook
