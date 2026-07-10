@@ -463,11 +463,11 @@ def test_consumed_marker_from_resume_drives_next_round_accumulation(fake_repo, m
         _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}]),
         _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}]),
     ]
-    orch_mod.extract = _spy_extract  # type: ignore[attr-defined]
+    orch_mod.extract = _spy_extract  # type: ignore[attr-defined]  # deliberate module-attr spy swap over orchestrator's own `extract` binding, restored in finally
     try:
         resume_pipeline(run_id, reply_2)
     finally:
-        orch_mod.extract = real_extract  # type: ignore[attr-defined]
+        orch_mod.extract = real_extract  # type: ignore[attr-defined]  # restore the original binding swapped above
 
     assert captured_bodies, "the second resume must call extract() at least once"
     assert any(reply_1_body in b for b in captured_bodies), (

@@ -31,7 +31,7 @@ import pytest
 import resend
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
-from app.models.roster import NameMatchResult
+from app.models.roster import NameMatchResult, Roster
 from app.models.status import RunStatus
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
@@ -359,9 +359,9 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
 
     run_id = uuid.uuid4()
     _biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
-    roster = _bare_roster(_biz_id)  # type: ignore[no-untyped-call]
-    email = _bare_inbound()  # type: ignore[no-untyped-call]
-    decision = _bare_decision()  # type: ignore[no-untyped-call]
+    roster = _bare_roster(_biz_id)
+    email = _bare_inbound()
+    decision = _bare_decision()
     extracted = Extracted(
         run_id=run_id,
         employees=[ExtractedEmployee(submitted_name="__stub__", hours_regular=Decimal("0"))],
@@ -381,13 +381,11 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
     )
 
 
-def _bare_roster(business_id):
-    from app.models.roster import Roster
-
+def _bare_roster(business_id: uuid.UUID) -> Roster:
     return Roster(business_id=business_id, employees=[])
 
 
-def _bare_inbound():
+def _bare_inbound() -> InboundEmail:
     return InboundEmail(
         id=uuid.uuid4(),
         message_id="<orig@test.example>",
@@ -401,7 +399,7 @@ def _bare_inbound():
     )
 
 
-def _bare_decision():
+def _bare_decision() -> Decision:
     return Decision(
         final_action="request_clarification",
         gate_reasons=["David Reyez: unresolved"],
