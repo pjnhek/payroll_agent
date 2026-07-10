@@ -10,9 +10,10 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse

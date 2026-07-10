@@ -13,7 +13,6 @@ from __future__ import annotations
 
 # Test doubles intentionally expose only the draft-provider surface.
 # mypy: disable-error-code="type-arg,no-untyped-call"
-
 import logging
 import uuid
 from datetime import UTC, datetime

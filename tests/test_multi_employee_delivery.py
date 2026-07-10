@@ -16,9 +16,9 @@ Proves two properties of the multi-employee path in _deliver:
 from __future__ import annotations
 
 import uuid
-from typing import Any
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.models.contracts import PaystubLineItem
 from app.models.status import RunStatus

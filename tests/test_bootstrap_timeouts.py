@@ -1,7 +1,8 @@
 import pathlib
 
-import app.db.bootstrap as bootstrap
 import psycopg
+
+import app.db.bootstrap as bootstrap
 
 
 def test_bootstrap_timeout_constants_defined():

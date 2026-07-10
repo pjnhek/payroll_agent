@@ -36,7 +36,9 @@ class _DraftLLM:
         self._body = body
         self.calls: list[tuple[Any, Any, float]] = []
 
-    def call_text(self, tier: Any, messages: Any, temperature: float = 0.7, **kwargs: Any) -> str | None:
+    def call_text(
+        self, tier: Any, messages: Any, temperature: float = 0.7, **kwargs: Any
+    ) -> str | None:
         self.calls.append((tier, messages, temperature))
         self.last_kwargs = kwargs
         return self._body

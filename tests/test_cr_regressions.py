@@ -22,7 +22,6 @@ from __future__ import annotations
 
 # These fixtures cross dynamic JSONB and UUID repository boundaries.
 # mypy: disable-error-code="no-any-return,type-arg,union-attr"
-
 import uuid
 from datetime import UTC, date, datetime
 

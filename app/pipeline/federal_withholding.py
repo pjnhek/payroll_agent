@@ -18,11 +18,11 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.roster import Employee
 from app.pipeline.tax_tables_2026 import (
-    BracketRow,
     STANDARD_BRACKETS,
     STEP1_STANDARD,
     STEP2_BRACKETS,
     TAX_YEAR,  # noqa: F401 — imported for module-level traceability
+    BracketRow,
 )
 
 # Local copy of _money() — NOT imported from calculate.py.
