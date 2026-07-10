@@ -91,7 +91,28 @@ Plans:
   2. mypy runs with zero errors over the rest of the repo (`eval/`, `scripts/`, `tests/`) — there is no type-checking blind spot anywhere in the codebase.
   3. The CI workflow from Phase 12 is extended with a blocking mypy step, so a push that introduces a type error fails CI the same way a lint or test failure does.
 
-**Plans**: TBD
+**Plans**: 9 plans
+Plans:
+**Wave 1**
+
+- [ ] 14-01-PLAN.md — mypy config (strict + pydantic plugin + tests/reportlab overrides), D-08 bug fixes (eval/run_eval.py llm_client import, gateway.py TypedDict/ResponseDict cast), federal_withholding.py BracketRow fix
+
+**Wave 2** *(blocked on 14-01 completion)*
+
+- [ ] 14-02-PLAN.md — Annotate app/db/ (incl. repo/ package), app/models/, app/llm/, app/config.py to mypy-clean
+- [ ] 14-03-PLAN.md — Annotate app/pipeline/ (money-path core + delivery D-09 ignore) and app/main.py to mypy-clean
+- [ ] 14-04-PLAN.md — Annotate app/routes/ and app/email/clean.py to mypy-clean
+- [ ] 14-05-PLAN.md — Annotate eval/ and scripts/ to mypy-clean
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 14-06-PLAN.md — Annotate tests/ group 1 (19 files) to mypy-clean
+- [ ] 14-07-PLAN.md — Annotate tests/ group 2 (18 files incl. conftest.py) to mypy-clean
+- [ ] 14-08-PLAN.md — Annotate tests/ group 3 (18 files), confirm full-repo mypy clean
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 14-09-PLAN.md — Wire typecheck CI job, red-proof checkpoint, VERIFICATION.md evidence
 
 ### Phase 15: Comment Hygiene & Deferred-Polish Triage
 
@@ -137,5 +158,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
-| 14. Full Type-Checking (mypy) | v3 | 0/TBD | Not started | - |
+| 14. Full Type-Checking (mypy) | v3 | 0/9 | Not started | - |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
