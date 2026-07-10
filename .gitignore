@@ -6,3 +6,7 @@ dist/
 *.egg-info/
 .venv/
 venv/
+
+# Personal system-design audit prep (not project artifacts)
+SYSTEM_DESIGN_AUDIT_CHANGELOG.md
+system_design_audit.html
