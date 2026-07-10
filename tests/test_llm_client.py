@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from openai import NOT_GIVEN, NotGiven
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.llm.client import _STRUCTURED_TIMEOUT_S, call_structured, call_text
@@ -83,7 +84,7 @@ class _FakeOpenAI:
         *,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float | None = None,
+        timeout: float | NotGiven | None = None,
         max_retries: int | None = None,
         **_: Any,
     ) -> None:
@@ -234,7 +235,10 @@ def test_non_deepseek_tier_omits_non_thinking_toggle(monkeypatch):
         response_model=_Payload,
     )
     kwargs = _FakeOpenAI.instances[0].create_calls[0]
-    assert "extra_body" not in kwargs, "non-deepseek tier must NOT send extra_body"
+    assert kwargs.get("extra_body") is None, (
+        "non-deepseek tier must NOT send the non-thinking toggle "
+        "(extra_body=None is the SDK default -- nothing goes on the wire)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +416,9 @@ def test_call_text_client_has_max_retries_zero_when_timeout_s_omitted(monkeypatc
         messages=[{"role": "user", "content": "Draft."}],
     )
     inst = _FakeOpenAI.instances[0]
-    assert inst.timeout is None, "no timeout_s was passed, so no timeout kwarg is set"
+    assert inst.timeout is NOT_GIVEN, (
+        "no timeout_s was passed, so the library default applies (NOT_GIVEN == omitted)"
+    )
     assert inst.max_retries == 0, (
         "call_text must pass max_retries=0 UNCONDITIONALLY — even with no "
         "timeout_s at all, the library's own max_retries=2 default must still "

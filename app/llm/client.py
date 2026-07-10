@@ -30,7 +30,7 @@ from __future__ import annotations
 import copy
 from typing import Literal
 
-from openai import OpenAI
+from openai import NOT_GIVEN, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ValidationError
 
@@ -149,23 +149,16 @@ def call_structured[T: BaseModel](
 
     last_error: ValidationError | None = None
     for attempt in (1, 2):  # ONE reflective retry (CLAUDE.md locks ONE)
-        if _is_deepseek(cfg.model):
-            resp = client.chat.completions.create(
-                model=cfg.model,
-                messages=convo,
-                temperature=0,
-                response_format={"type": "json_object"},
-                max_tokens=_MAX_TOKENS,
-                extra_body=_NON_THINKING_EXTRA_BODY,
-            )
-        else:
-            resp = client.chat.completions.create(
-                model=cfg.model,
-                messages=convo,
-                temperature=0,
-                response_format={"type": "json_object"},
-                max_tokens=_MAX_TOKENS,
-            )
+        resp = client.chat.completions.create(
+            model=cfg.model,
+            messages=convo,
+            temperature=0,
+            response_format={"type": "json_object"},
+            max_tokens=_MAX_TOKENS,
+            # extra_body=None is the SDK default (nothing sent on the wire):
+            # only DeepSeek tiers get the non-thinking toggle.
+            extra_body=_NON_THINKING_EXTRA_BODY if _is_deepseek(cfg.model) else None,
+        )
         content = resp.choices[0].message.content
         try:
             if not content:  # DeepSeek can return empty content — treat as failure
@@ -237,30 +230,25 @@ def call_text(
     # Pass timeout to the OpenAI client if provided (D-10b hard timeout).
     # Unconditional (not gated on timeout_s is not None): suppress the library's
     # own retry layer for every call_text caller (09-04, Codex round-2).
-    if timeout_s is None:
-        client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key, max_retries=0)
-    else:
-        client = OpenAI(
-            base_url=cfg.base_url,
-            api_key=cfg.api_key,
-            timeout=timeout_s,
-            max_retries=0,
-        )
+    client = OpenAI(
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        # NOT_GIVEN == the kwarg omitted: the library's own default timeout
+        # applies when no timeout_s was passed (identical to the old branch).
+        timeout=timeout_s if timeout_s is not None else NOT_GIVEN,
+        max_retries=0,
+    )
 
-    if _is_deepseek(cfg.model):
-        resp = client.chat.completions.create(
-            model=cfg.model,
-            messages=list(messages),
-            temperature=temperature,
-            max_tokens=_MAX_TOKENS,
-            extra_body=copy.deepcopy(_NON_THINKING_EXTRA_BODY),
-        )
-    else:
-        resp = client.chat.completions.create(
-            model=cfg.model,
-            messages=list(messages),
-            temperature=temperature,
-            max_tokens=_MAX_TOKENS,
-        )
+    resp = client.chat.completions.create(
+        model=cfg.model,
+        messages=list(messages),
+        temperature=temperature,
+        max_tokens=_MAX_TOKENS,
+        # extra_body=None is the SDK default (nothing sent on the wire):
+        # only DeepSeek tiers get the non-thinking toggle.
+        extra_body=copy.deepcopy(_NON_THINKING_EXTRA_BODY)
+        if _is_deepseek(cfg.model)
+        else None,
+    )
     content = resp.choices[0].message.content
     return content if content else None
