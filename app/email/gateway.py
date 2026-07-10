@@ -37,8 +37,10 @@ import base64
 import json
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parseaddr
+from typing import Protocol, cast
 
 import resend
 
@@ -50,6 +52,14 @@ from app.models.contracts import InboundEmail
 _OUTBOUND_DOMAIN = "payroll-agent.local"
 
 logger = logging.getLogger(__name__)
+
+
+class _ReceivedEmailLike(Protocol):
+    """Runtime attribute shape returned by Resend's receiving endpoint."""
+
+    headers: Mapping[str, str]
+    message_id: str | None
+    text: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +156,9 @@ def _parse_resend_envelope(data: dict) -> InboundEmail:
     resend.api_key = get_settings().resend_api_key
 
     # Step 4: fetch the full email (body + headers + RFC message_id)
-    email_obj = resend.EmailsReceiving.get(email_id)
+    # Resend types this as ReceivedEmail (a TypedDict), but returns ResponseDict
+    # at runtime; ResponseDict is a dict subclass with __getattr__ forwarding.
+    email_obj = cast(_ReceivedEmailLike, resend.EmailsReceiving.get(email_id))
 
     # Step 5: normalize headers case-insensitively (Pitfall 4 / D-18)
     headers_lower = {k.lower(): v for k, v in email_obj.headers.items()}
