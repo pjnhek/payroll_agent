@@ -721,7 +721,7 @@ def _record_extraction() -> None:
     """
     # Lazy imports: live pieces only on the --record path (T-04-07).
     # uuid is already imported at module level -- no lazy re-import needed (IN-01).
-    from app.llm.client import llm_client  # noqa: PLC0415
+    from app.llm import client as llm_client  # noqa: PLC0415
     from app.pipeline.extract import extract  # noqa: PLC0415
 
     fixture_paths = sorted(FIXTURE_DIR.glob("*.json"))
