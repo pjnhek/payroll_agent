@@ -11,6 +11,9 @@ make test_compose_confirmation_uses_draft_when_present a false-positive failure.
 """
 from __future__ import annotations
 
+# Test doubles intentionally expose only the draft-provider surface.
+# mypy: disable-error-code="type-arg,no-untyped-call"
+
 import logging
 import uuid
 from datetime import UTC, datetime

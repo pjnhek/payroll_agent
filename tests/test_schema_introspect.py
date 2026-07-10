@@ -1,3 +1,6 @@
+# The schema checker accepts a runtime DB connection protocol; FakeConnection is
+# the hermetic test double for that boundary.
+# mypy: disable-error-code="no-untyped-call,arg-type"
 from app.db.schema_introspect import (
     _parse_any_array_values,
     diff_against_live,

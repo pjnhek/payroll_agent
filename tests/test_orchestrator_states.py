@@ -14,6 +14,9 @@ clarify run), NOT the dead layer-2 reconcile / advisory-decide responses.
 """
 from __future__ import annotations
 
+# This module uses deliberately small dynamic test doubles and monkeypatch seams.
+# mypy: disable-error-code="no-any-return,no-untyped-call,type-arg,attr-defined"
+
 import json
 import uuid
 from datetime import UTC, datetime

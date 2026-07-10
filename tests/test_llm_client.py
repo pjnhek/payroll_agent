@@ -11,6 +11,9 @@ Run with the default CI selection (no markers): these always run, free, offline.
 """
 from __future__ import annotations
 
+# Test doubles intentionally model only the small runtime surface under test.
+# mypy: disable-error-code="no-untyped-call,type-arg"
+
 from decimal import Decimal
 
 import pytest

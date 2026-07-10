@@ -20,6 +20,9 @@ CR-03 — _deliver must enrich the run dict with business_name + pay_period_labe
 """
 from __future__ import annotations
 
+# These fixtures cross dynamic JSONB and UUID repository boundaries.
+# mypy: disable-error-code="no-any-return,type-arg,union-attr"
+
 import uuid
 from datetime import UTC, date, datetime
 

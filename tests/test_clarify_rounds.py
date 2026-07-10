@@ -38,6 +38,9 @@ never log strings.
 """
 from __future__ import annotations
 
+# AST and provider test doubles are intentionally lightweight in this module.
+# mypy: disable-error-code="no-untyped-call,type-arg"
+
 import ast
 import uuid
 from datetime import UTC, datetime

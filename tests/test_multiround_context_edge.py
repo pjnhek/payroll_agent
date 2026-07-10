@@ -50,6 +50,9 @@ explicitly rejected in favor of (a) (11-CONTEXT.md D-11-12).
 """
 from __future__ import annotations
 
+# JSON-shaped fixtures and UUIDs cross dynamic repository seams in these tests.
+# mypy: disable-error-code="type-arg,no-any-return"
+
 import json
 import uuid
 from datetime import UTC, date, datetime

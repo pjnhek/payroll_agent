@@ -8,6 +8,8 @@ asserts the resulting Thomas Bergmann paystub equals the Phase-3 golden. It clos
 the join between the eval (which otherwise stops at decide) and the 'computes
 payroll' headline, reusing the golden already trusted (no second net_pay oracle).
 """
+# The eval harness exposes private helpers used by these wiring tests.
+# mypy: disable-error-code="arg-type,attr-defined"
 import json
 import pathlib
 from decimal import Decimal

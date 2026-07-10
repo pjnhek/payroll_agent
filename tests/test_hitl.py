@@ -13,6 +13,9 @@ transitions; claim_status for gates — D-12, FOUND-04).
 """
 from __future__ import annotations
 
+# Route/repository monkeypatches intentionally use dynamic test seams.
+# mypy: disable-error-code="no-any-return,attr-defined"
+
 import uuid
 
 import pytest
