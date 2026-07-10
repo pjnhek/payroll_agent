@@ -1,14 +1,15 @@
 """DB repo package facade -- re-exports the full live attribute surface (public API
-plus get_connection, _conn_ctx, _TERMINAL_STATUSES, _ACCENT_CLASS_MAP, _pad_references,
-_scrub) so existing callers (`from app.db import repo`, `import app.db.repo as repo_mod`)
-and most test monkeypatch seams (`monkeypatch.setattr(repo, "fn", ...)`) keep working
-unchanged post-split. NOTE: a facade-level patch does NOT intercept an internal
+plus get_connection, _conn_ctx, _nulltx, _TERMINAL_STATUSES, _ACCENT_CLASS_MAP,
+_pad_references, _scrub) so existing callers (`from app.db import repo`,
+`import app.db.repo as repo_mod`) and most test monkeypatch seams
+(`monkeypatch.setattr(repo, "fn", ...)`) keep working unchanged post-split.
+NOTE: a facade-level patch does NOT intercept an internal
 same-module call inside one of the aggregate modules (e.g. record_run_error's own
 call to set_status/_scrub inside runs.py) -- those two tests patch app.db.repo.runs
 directly; see tests/test_gateway.py and tests/test_persistence.py.
 """
 
-from app.db.repo._shared import _conn_ctx
+from app.db.repo._shared import _conn_ctx, _nulltx
 from app.db.repo.demo import (
     bind_demo_business,
     get_demo_binding,
@@ -76,6 +77,7 @@ from app.db.supabase import get_connection
 __all__ = [
     "get_connection",
     "_conn_ctx",
+    "_nulltx",
     "bind_demo_business",
     "get_demo_binding",
     "list_businesses",
