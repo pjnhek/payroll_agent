@@ -18,6 +18,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.roster import Employee
 from app.pipeline.tax_tables_2026 import (
+    BracketRow,
     STANDARD_BRACKETS,
     STEP1_STANDARD,
     STEP2_BRACKETS,
@@ -42,7 +43,7 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
-def _find_bracket(annual_wage: Decimal, brackets: list) -> object:
+def _find_bracket(annual_wage: Decimal, brackets: list[BracketRow]) -> BracketRow:
     """Find the matching Pub 15-T bracket row via linear scan (O(n), 8 rows max).
 
     Returns the first row (scanning in reverse) where annual_wage >= row.lower.
