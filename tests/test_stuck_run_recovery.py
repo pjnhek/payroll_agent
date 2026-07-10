@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from typing import Any, cast
 
 import pytest
 
@@ -43,7 +44,7 @@ def test_sweep_stranded_runs_sql_shape():
     conn = FakeConnection()
     conn.script_fetchall([])
 
-    repo.sweep_stranded_runs(90, conn=conn)
+    repo.sweep_stranded_runs(90, conn=cast(Any, conn))
 
     assert conn.executed, "sweep_stranded_runs must execute at least one SQL statement"
     sql_executed = conn.all_sql()
@@ -74,7 +75,7 @@ def test_sweep_stranded_runs_scope_pin_d_9_12():
     conn = FakeConnection()
     conn.script_fetchall([])
 
-    repo.sweep_stranded_runs(90, conn=conn)
+    repo.sweep_stranded_runs(90, conn=cast(Any, conn))
 
     scope_lists = [
         params[3]
@@ -107,7 +108,7 @@ def test_sweep_stranded_runs_returns_empty_list_when_no_rows():
     conn = FakeConnection()
     conn.script_fetchall([])
 
-    result = repo.sweep_stranded_runs(90, conn=conn)
+    result = repo.sweep_stranded_runs(90, conn=cast(Any, conn))
 
     assert result == [], (
         "sweep_stranded_runs must return [] when fetchall() yields no rows"
@@ -123,7 +124,7 @@ def test_sweep_stranded_runs_returns_swept_ids():
     id1, id2 = uuid.uuid4(), uuid.uuid4()
     conn.script_fetchall([(str(id1),), (str(id2),)])
 
-    result = repo.sweep_stranded_runs(90, conn=conn)
+    result = repo.sweep_stranded_runs(90, conn=cast(Any, conn))
 
     assert result == [id1, id2], (
         "sweep_stranded_runs must return the RETURNING id rows as a list of "
@@ -144,7 +145,7 @@ def test_find_run_by_message_id_sql_shape():
     conn = FakeConnection()
     conn.script_fetchone(None)
 
-    repo.find_run_by_message_id("<client-001@acme.test>", conn=conn)
+    repo.find_run_by_message_id("<client-001@acme.test>", conn=cast(Any, conn))
 
     assert conn.executed, "find_run_by_message_id must execute at least one SQL statement"
     sql_executed = conn.all_sql()
@@ -162,7 +163,7 @@ def test_find_run_by_message_id_returns_none_when_not_found():
     conn = FakeConnection()
     conn.script_fetchone(None)
 
-    result = repo.find_run_by_message_id("<unknown@nowhere.test>", conn=conn)
+    result = repo.find_run_by_message_id("<unknown@nowhere.test>", conn=cast(Any, conn))
 
     assert result is None
 
@@ -175,7 +176,7 @@ def test_find_run_by_message_id_returns_uuid_when_found():
     run_id = uuid.uuid4()
     conn.script_fetchone((str(run_id),))
 
-    result = repo.find_run_by_message_id("<client-001@acme.test>", conn=conn)
+    result = repo.find_run_by_message_id("<client-001@acme.test>", conn=cast(Any, conn))
 
     assert result == run_id
 
@@ -196,15 +197,22 @@ def test_runs_list_calls_sweep_before_load_all_runs(monkeypatch):
     from app.db import repo as repo_mod
 
     call_order: list[str] = []
+    def _record_call(label: str) -> None:
+        call_order.append(label)
+
+    def _load_runs() -> list[Any]:
+        _record_call("load")
+        return []
+
     monkeypatch.setattr(
         repo_mod,
         "sweep_stranded_runs",
-        lambda threshold_seconds: call_order.append("sweep"),
+        lambda threshold_seconds: _record_call("sweep"),
     )
     monkeypatch.setattr(
         repo_mod,
         "load_all_runs",
-        lambda: call_order.append("load") or [],
+        _load_runs,
     )
 
     client = TestClient(app_main.app)
@@ -296,7 +304,7 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     swept_ids = repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
     assert run_id in swept_ids, "the stranded run must appear in the swept list"
 
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
     assert run["status"] == "error"
     assert run["error_reason"] == "StrandedRunSwept"
     assert run["error_detail"] is not None
@@ -324,7 +332,7 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     assert response.status_code in (200, 303), (
         f"retrigger route must return a success status; got {response.status_code}"
     )
-    reloaded = repo.load_run(run_id)
+    reloaded = cast(dict[str, Any], repo.load_run(run_id))
     assert reloaded["status"] == "received", (
         "the swept-to-ERROR run must be claimed to a progressing status "
         "(received) by the actual retrigger route"
@@ -366,5 +374,5 @@ def test_parked_statuses_never_swept_live(seeded_db):
             "waiting on a human, not stranded (D-9-12)"
         )
         # Confirm the status is untouched.
-        run = repo.load_run(run_id)
+        run = cast(dict[str, Any], repo.load_run(run_id))
         assert run["status"] != "error"

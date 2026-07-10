@@ -81,6 +81,7 @@ import copy
 import importlib
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 import pytest
 
@@ -777,7 +778,7 @@ def test_bracket_boundary_above_B() -> None:
 def test_federal_withholding_golden(
     desc: str,
     wages_this_period: Decimal,
-    emp_kwargs: dict,
+    emp_kwargs: dict[str, Any],
     expected_wh: Decimal,
 ) -> None:
     """All expected values are hand-computed; see module docstring for methodology."""

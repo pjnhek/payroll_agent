@@ -18,6 +18,7 @@ import os
 import unicodedata
 import uuid
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -640,7 +641,7 @@ def test_decision_roundtrip(seeded_db):
     repo.persist_decision(run_id, decision)
     repo.persist_reconciliation(run_id, matches)
 
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
     assert run["decision"] is not None
     assert run["decision"]["final_action"] == "process"
     assert run["reconciliation"] is not None, "reconciliation must NOT be NULL (D-A3-05)"

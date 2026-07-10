@@ -25,6 +25,7 @@ import os
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 import resend
@@ -57,48 +58,48 @@ CHEN_ID = uuid.UUID("e0000001-0000-0000-0000-000000000001")
 
 
 class _LiveMockMessage:
-    def __init__(self, content):
+    def __init__(self, content: Any):
         self.content = content
 
 
 class _LiveMockChoice:
-    def __init__(self, content):
+    def __init__(self, content: Any):
         self.message = _LiveMockMessage(content)
 
 
 class _LiveMockResponse:
-    def __init__(self, content):
+    def __init__(self, content: Any):
         self.choices = [_LiveMockChoice(content)]
 
 
 class _LiveMockCompletions:
-    def __init__(self, parent):
+    def __init__(self, parent: Any):
         self._parent = parent
 
-    def create(self, **kwargs):
+    def create(self, **kwargs: Any) -> _LiveMockResponse:
         self._parent.calls.append(kwargs)
         content = self._parent.script.pop(0) if self._parent.script else "{}"
         return _LiveMockResponse(content)
 
 
 class _LiveMockChat:
-    def __init__(self, parent):
+    def __init__(self, parent: Any):
         self.completions = _LiveMockCompletions(parent)
 
 
 class LiveMockOpenAI:
     """Same shape as tests/conftest.py's MockOpenAI, kept local and DB-URL-free."""
 
-    script: list = []
-    calls: list = []
+    script: list[str] = []
+    calls: list[dict[str, Any]] = []
 
-    def __init__(self, *, base_url=None, api_key=None, **_):
+    def __init__(self, *, base_url: Any = None, api_key: Any = None, **_: Any):
         self.base_url = base_url
         self.api_key = api_key
         self.chat = _LiveMockChat(LiveMockOpenAI)
 
 
-def _extraction_json(employees: list[dict], pay_period_start: str = "2026-06-15") -> str:
+def _extraction_json(employees: list[dict[str, Any]], pay_period_start: str = "2026-06-15") -> str:
     return json.dumps(
         {"employees": employees, "pay_period_start": pay_period_start, "pay_period_end": None}
     )
@@ -184,6 +185,7 @@ def test_process_branch_crash_leaves_run_unadvanced(seeded_db, monkeypatch):
     run_id = _seed_live_run(body="Maria Chen 40 regular")
 
     pre_run = repo.load_run(run_id)
+    assert pre_run is not None
     pre_status = pre_run["status"]
     assert pre_run["extracted_data"] is None
     assert pre_run["decision"] is None
@@ -212,7 +214,8 @@ def test_process_branch_crash_leaves_run_unadvanced(seeded_db, monkeypatch):
     with pytest.raises(RuntimeError, match="injected crash"):
         orch_mod._run_stages(run_id, email, roster, llm=None)
 
-    post_run = repo.load_run(run_id)
+    post_run = cast(dict[str, Any], repo.load_run(run_id))
+    assert post_run is not None
     assert post_run["status"] == pre_status, (
         "SC1: run status must be UNCHANGED after a crash mid-persist-sequence — "
         f"expected {pre_status!r}, got {post_run['status']!r}"
@@ -276,7 +279,7 @@ def test_run_stages_process_branch_call_order_and_status_last():
 
     # The clarification.clarify(...) call inside _run_stages is NEVER nested
     # inside any `with` block.
-    def _walk(node, in_with=False):
+    def _walk(node: ast.AST, in_with: bool = False) -> list[tuple[Any, ...]]:
         found = []
         for child in ast.iter_child_nodes(node):
             child_in_with = in_with or isinstance(child, ast.With)
@@ -356,9 +359,9 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
 
     run_id = uuid.uuid4()
     _biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
-    roster = _bare_roster(_biz_id)
-    email = _bare_inbound()
-    decision = _bare_decision()
+    roster = _bare_roster(_biz_id)  # type: ignore[no-untyped-call]
+    email = _bare_inbound()  # type: ignore[no-untyped-call]
+    decision = _bare_decision()  # type: ignore[no-untyped-call]
     extracted = Extracted(
         run_id=run_id,
         employees=[ExtractedEmployee(submitted_name="__stub__", hours_regular=Decimal("0"))],
@@ -450,8 +453,8 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
         and node.name == "defer_field_regression_clarification"
     )
 
-    def _walk(node, in_with=False):
-        results = []
+    def _walk(node: ast.AST, in_with: bool = False) -> list[tuple[Any, ...]]:
+        results: list[tuple[Any, ...]] = []
         for child in ast.iter_child_nodes(node):
             child_in_with = in_with or isinstance(child, ast.With)
             if isinstance(child, ast.With):
@@ -549,7 +552,7 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
     # live source, app/pipeline/orchestrator.py resume_pipeline's except clause).
     resume_pipeline(run_id, reply)
 
-    post_run = repo.load_run(run_id)
+    post_run = cast(dict[str, Any], repo.load_run(run_id))
     clarified = repo.load_clarified_fields(run_id)
     chen_id_str = str(CHEN_ID)
     assert clarified.get(chen_id_str, {}).get("hours_overtime") == "asked", (
@@ -674,7 +677,7 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
         f"inside _run_stages' own transaction; got: {clarified!r}"
     )
 
-    post_run = real_repo.load_run(run_id)
+    post_run = cast(dict[str, Any], real_repo.load_run(run_id))
     assert post_run["status"] != RunStatus.AWAITING_APPROVAL.value, (
         "SC1: _run_stages' own crashed transaction must roll back cleanly and never "
         f"advance the run to AWAITING_APPROVAL; got status={post_run['status']!r}"
@@ -708,8 +711,8 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
         if isinstance(node, ast.FunctionDef) and node.name == "resume_pipeline"
     )
 
-    def _walk(node, in_with=False):
-        results = []
+    def _walk(node: ast.AST, in_with: bool = False) -> list[tuple[Any, ...]]:
+        results: list[tuple[Any, ...]] = []
         for child in ast.iter_child_nodes(node):
             child_in_with = in_with or isinstance(child, ast.With)
             if isinstance(child, ast.With):
@@ -769,7 +772,7 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
 
     from app.pipeline import alias_learning
 
@@ -780,7 +783,7 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
 
     _deliver(run_id, run)
 
-    post_run = repo.load_run(run_id)
+    post_run = cast(dict[str, Any], repo.load_run(run_id))
     assert post_run["status"] == "reconciled", (
         "a forced alias-write failure must NOT roll back the delivery finalize — "
         f"the run must still reach 'reconciled'; got {post_run['status']!r}"
@@ -824,7 +827,7 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     # and does not collide with any other employee's name/alias in the seeded
     # Coastal roster — _safe_to_learn_alias's collision guard passes.
     repo.set_alias_candidates(run_id, {"Maria C.": str(CHEN_ID)})
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
 
     def _boom_update_known_alias(employee_id, new_alias, conn=None):
         # A GENUINE DB-level error — not a Python `raise` — executed against the
@@ -839,7 +842,7 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
 
     _deliver(run_id, run)
 
-    post_run = repo.load_run(run_id)
+    post_run = cast(dict[str, Any], repo.load_run(run_id))
     assert post_run["status"] == "reconciled", (
         "a genuine DB-level error (psycopg.errors.UndefinedColumn) inside the "
         "alias-write path must NOT poison _deliver's finalize transaction — the "
@@ -862,7 +865,7 @@ def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeyp
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
 
     def _boom_status(run_id_, status, conn=None):
         raise RuntimeError("injected crash — set_status(SENT)")
@@ -876,7 +879,7 @@ def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeyp
     monkeypatch.undo()
     from app.db import repo as real_repo
 
-    post_run = real_repo.load_run(run_id)
+    post_run = cast(dict[str, Any], real_repo.load_run(run_id))
     assert post_run["status"] == RunStatus.APPROVED.value, (
         "a crash between the alias write and set_status(SENT) must leave the run "
         f"at APPROVED (unadvanced) — never 'sent' alone; got {post_run['status']!r}"
@@ -898,7 +901,7 @@ def test_deliver_finalize_crash_preserves_wr04_payroll_roster_attribute(seeded_d
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
 
     def _boom_status(run_id_, status, conn=None):
         raise RuntimeError("injected crash — WR-04 preservation check")
@@ -929,11 +932,11 @@ def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, m
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
-    run = repo.load_run(run_id)
+    run = cast(dict[str, Any], repo.load_run(run_id))
 
     # First call: real happy path, genuinely reaches SENT + RECONCILED.
     _deliver(run_id, run)
-    post_first = repo.load_run(run_id)
+    post_first = cast(dict[str, Any], repo.load_run(run_id))
     assert post_first["status"] == "reconciled"
 
     # Simulate "operator retriggers _deliver again" by resetting status back to
@@ -943,7 +946,7 @@ def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, m
 
     from app.pipeline import alias_learning
 
-    alias_calls: list = []
+    alias_calls: list[int] = []
     original_write = alias_learning.write_aliases_if_safe
 
     def _spy_write(run_id_, run_, roster_, conn=None):
@@ -952,14 +955,14 @@ def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, m
 
     monkeypatch.setattr(alias_learning, "write_aliases_if_safe", _spy_write)
 
-    run2 = repo.load_run(run_id)
+    run2 = cast(dict[str, Any], repo.load_run(run_id))
     _deliver(run_id, run2)
 
     assert len(alias_calls) == 1, (
         "the hardened already-sent guard must invoke _write_aliases_if_safe "
         f"exactly once on a retry-over-sent call; got {len(alias_calls)} calls"
     )
-    post_second = repo.load_run(run_id)
+    post_second = cast(dict[str, Any], repo.load_run(run_id))
     assert post_second["status"] == "reconciled", (
         "the retry-over-sent path must still reach 'reconciled'; got "
         f"{post_second['status']!r}"

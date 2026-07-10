@@ -31,6 +31,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC
 from decimal import Decimal
+from typing import Any, cast
 
 # This import provides get_outbound_message_id for idempotency stub tests.
 from app.db.repo import get_outbound_message_id  # noqa: F401 (already exists; used in stubs)
@@ -260,7 +261,7 @@ def test_clarify_idempotency_skips_if_clarification_already_sent(monkeypatch):
     from app.models.contracts import InboundEmail
     from app.pipeline.clarification import clarify as _clarify
 
-    send_calls: list = []
+    send_calls: list[dict[str, Any]] = []
 
     def _fake_send_outbound(**kw):
         send_calls.append(kw)
@@ -370,7 +371,7 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
     from app.models.contracts import InboundEmail
     from app.pipeline.clarification import clarify as _clarify
 
-    set_alias_candidates_calls: list = []
+    set_alias_candidates_calls: list[dict[str, Any]] = []
 
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
@@ -485,7 +486,7 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
         clarification_mod, "suggest_employees", lambda *a, **kw: {}, raising=True
     )
 
-    set_alias_candidates_calls: list = []
+    set_alias_candidates_calls: list[dict[str, Any]] = []
 
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
@@ -582,7 +583,7 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     from app.models.contracts import InboundEmail
     from app.pipeline.clarification import clarify as _clarify
 
-    set_alias_candidates_calls: list = []
+    set_alias_candidates_calls: list[dict[str, Any]] = []
 
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
@@ -835,7 +836,7 @@ def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypa
     #   call 3: post_run_data = load_run (post-snapshot after _run_stages) — returns
     #           post-reconciliation
     _load_run_calls = [0]
-    _set_alias_candidates_calls: list = []
+    _set_alias_candidates_calls: list[dict[str, Any]] = []
 
     def _fake_load_run(run_id, conn=None):
         _load_run_calls[0] += 1
@@ -1035,7 +1036,7 @@ def test_resume_binding_exploit_unrelated_resolution_binds_nothing(monkeypatch):
     ]
 
     _load_run_calls = [0]
-    _set_alias_candidates_calls: list = []
+    _set_alias_candidates_calls: list[dict[str, Any]] = []
 
     def _fake_load_run(run_id, conn=None):
         _load_run_calls[0] += 1
@@ -1180,7 +1181,7 @@ def test_resume_binding_skips_when_no_newly_resolved_employee(monkeypatch):
         },
     ]
 
-    _set_alias_candidates_calls: list = []
+    _set_alias_candidates_calls: list[dict[str, Any]] = []
 
     def _fake_load_run(run_id, conn=None):
         return {
@@ -1322,7 +1323,7 @@ def test_resume_binding_does_not_learn_misname_as_alias(monkeypatch):
         },
     ]
 
-    _set_alias_candidates_calls: list = []
+    _set_alias_candidates_calls: list[dict[str, Any]] = []
     _load_run_calls = {"n": 0}
 
     def _fake_load_run(run_id, conn=None):
@@ -1485,7 +1486,7 @@ def test_write_aliases_if_safe_handles_legacy_flat_shape_without_raising(monkeyp
     monkeypatch.setattr(
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
-    written_calls: list = []
+    written_calls: list[tuple[uuid.UUID, str]] = []
 
     def _fake_update_known_alias(employee_id, alias, conn=None):
         written_calls.append((employee_id, alias))
@@ -1496,7 +1497,7 @@ def test_write_aliases_if_safe_handles_legacy_flat_shape_without_raising(monkeyp
     )
 
     # Must not raise.
-    _write_aliases_if_safe(run_data["id"], run_data, roster)
+    _write_aliases_if_safe(cast(uuid.UUID, run_data["id"]), run_data, roster)
 
     assert written_calls == [(david.id, "Dave Reyez")], (
         "a legacy flat-bound row must still be learned via update_known_alias "
@@ -1564,7 +1565,9 @@ def test_set_alias_candidates_merges_across_two_tokens_two_rounds(fake_repo):
         run_id, {"TokenB": {"suggested": str(id_b), "bound": None}}
     )
 
-    persisted = repo.load_run(run_id)["alias_candidates"]
+    persisted_run = repo.load_run(run_id)
+    assert persisted_run is not None
+    persisted = persisted_run["alias_candidates"]
 
     assert persisted.get("TokenA") == {"suggested": str(id_a), "bound": str(id_a)}, (
         "WR-1: TokenA's CONFIRMED bind from round 1 must survive TokenB's "
