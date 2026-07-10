@@ -8,9 +8,12 @@ either of two forms:
    inside a function body, whether absolute (`node.level == 0`) or relative
    (`node.level > 0`, resolved against the importing file's own module name
    and its `is_package` status).
-2. `ast.Attribute` access — `module._name` where `module` is a name bound by a
-   module-level `ast.Import` of a first-party module (`import X` / `import X
-   as Y`), EXCEPT when the imported target is itself a package `__init__.py`
+2. `ast.Attribute` access — `module._name` where `module` is a name bound to a
+   first-party module object, by EITHER binding form: `ast.Import` (`import X`
+   / `import X as Y`) or `ast.ImportFrom` whose imported name resolves to a
+   first-party module file/package (`from app.db import repo`, `from
+   app.db.repo import runs as repo_runs` — the codebase's dominant idiom,
+   WR-02). EXCEPT when the bound target is itself a package `__init__.py`
    (the declared facade-boundary exemption: a package deliberately re-exporting
    a private name via its own `__init__.py` is the facade pattern working as
    designed, not a violation of it).
@@ -185,26 +188,61 @@ def _is_package_import_target(module_dotted: str, root_parents: list[pathlib.Pat
     return False
 
 
+def _is_first_party_module(module_dotted: str, root_parents: list[pathlib.Path]) -> bool:
+    """True if `module_dotted` resolves to a first-party MODULE under one of
+    `root_parents` — either a plain `.py` file or a package directory with its
+    own `__init__.py`. Used to distinguish an `ast.ImportFrom` alias that binds
+    a module object (`from app.db import repo`) from one that binds an ordinary
+    name (`from app.db.repo import get_connection`)."""
+    rel_path = pathlib.Path(*module_dotted.split("."))
+    for root_parent in root_parents:
+        if (root_parent / rel_path).with_suffix(".py").is_file():
+            return True
+        if (root_parent / rel_path / "__init__.py").is_file():
+            return True
+    return False
+
+
 def _scan_attribute_violations(
-    tree: ast.AST, py_file: pathlib.Path, own_module: str, root_parents: list[pathlib.Path]
+    tree: ast.AST,
+    py_file: pathlib.Path,
+    own_module: str,
+    own_is_package: bool,
+    root_parents: list[pathlib.Path],
 ) -> list[str]:
-    """Flag `module._private` where `module` is bound by a module-level `ast.Import`
-    of a first-party module under one of SCAN_ROOTS that is NOT itself a package
-    (`__init__.py`) — package imports are the declared facade-boundary exemption.
+    """Flag `module._private` where `module` is a name bound to a first-party
+    module under one of SCAN_ROOTS that is NOT itself a package (`__init__.py`)
+    — package imports are the declared facade-boundary exemption, and the
+    `app.db.repo`-internal plumbing accesses are the declared D-01/D-03 one.
     """
     violations: list[str] = []
+    type_checking_nodes = _type_checking_only_nodes(tree)
 
-    # Map local bound name -> imported dotted module, for module-level `ast.Import`
-    # statements only (function-body imports of this shape are out of scope for
-    # the attribute-access check per the plan's design; the codebase's one
-    # function-body `import X as Y` case, _shared.py's call-time self-import,
-    # does not access a private attribute and is exercised in the live scan).
+    # Map local bound name -> bound dotted module, walking the WHOLE tree
+    # (module level and function bodies alike), for BOTH module-binding forms:
+    #   * `ast.Import` — `import X` / `import X as Y`;
+    #   * `ast.ImportFrom` — `from P import M [as Y]` where `P.M` resolves to a
+    #     first-party module file or package (WR-02, Phase 13 review: this is
+    #     the codebase's DOMINANT module-binding idiom — every production module
+    #     does `from app.db import repo` — and was previously invisible here,
+    #     letting a whole class of `bound_module._private` accesses escape the
+    #     gate). Relative forms resolve against the importing file's own module
+    #     name; TYPE_CHECKING-guarded imports never run at runtime and are
+    #     skipped, mirroring the ImportFrom scan's exemption.
     bound_modules: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 local_name = alias.asname or alias.name.split(".")[0]
                 bound_modules[local_name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node not in type_checking_nodes:
+            base = _resolve_import_from_target(node, own_module, own_is_package)
+            if base is None:
+                continue
+            for alias in node.names:
+                dotted = f"{base}.{alias.name}"
+                if _is_first_party_module(dotted, root_parents):
+                    bound_modules[alias.asname or alias.name] = dotted
 
     if not bound_modules:
         return violations
@@ -221,6 +259,12 @@ def _scan_attribute_violations(
         if target_module is None:
             continue
         if target_module == own_module:
+            continue
+        # D-01/D-03 declared exemption: `app.db.repo`-internal files reaching
+        # sibling plumbing (e.g. a submodule binding `_shared` and calling
+        # `_shared._conn_ctx`) is the package's documented internal design,
+        # mirroring the same exemption in the ImportFrom scan.
+        if _in_declared_plumbing_package(own_module, target_module):
             continue
         # Facade-boundary exemption: importing a PACKAGE (its __init__.py IS the
         # declared facade) is out of scope; importing a SUBMODULE is not exempt.
@@ -255,7 +299,9 @@ def scan_tree_for_violations(
             # the facade exemption dead code, false-positiving the blessed
             # `import app.db.repo as repo_mod` pattern.
             violations.extend(
-                _scan_attribute_violations(tree, py_file, own_module, [root_parent])
+                _scan_attribute_violations(
+                    tree, py_file, own_module, own_is_package, [root_parent]
+                )
             )
     return violations
 
@@ -274,7 +320,8 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
     """Prove the scanner's own detection logic against synthetic fixtures BEFORE
     trusting it as a permanent gate — covers every violation shape (absolute
     ImportFrom, relative ImportFrom crossing a real package boundary,
-    attribute-access) and every legitimate-pattern exemption (same-module
+    attribute-access via BOTH `ast.Import`- and `ast.ImportFrom`-bound
+    modules) and every legitimate-pattern exemption (same-module
     reference, bare relative module import, a level-1 relative import inside a
     package's own `__init__.py`, and the facade-boundary exemption for a
     private attribute reached through an imported PACKAGE).
@@ -343,6 +390,28 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
         encoding="utf-8",
     )
 
+    # module_f.py: the `ast.ImportFrom` module-binding forms (WR-02, Phase 13
+    # review — previously a scanner blind spot). `from pkgroot import module_a
+    # as bound_mod` binds a plain SUBMODULE object, so `bound_mod
+    # ._private_thing` MUST be flagged (this is the shape that let
+    # `from app.db import repo` bindings escape the gate entirely). `from
+    # pkgroot import sub` binds a PACKAGE, so `sub._sub_private` hits the
+    # facade-boundary exemption — proving the (WR-01-fixed) exemption also
+    # applies to ImportFrom-resolved targets.
+    (pkgroot / "module_f.py").write_text(
+        "from pkgroot import module_a as bound_mod\n"
+        "from pkgroot import sub\n"
+        "\n"
+        "\n"
+        "def use_private_via_importfrom_bound_module():\n"
+        "    return bound_mod._private_thing\n"
+        "\n"
+        "\n"
+        "def use_private_via_importfrom_bound_package():\n"
+        "    return sub._sub_private\n",
+        encoding="utf-8",
+    )
+
     scan_roots = [tmp_path / "pkgroot"]
     violations = scan_tree_for_violations(scan_roots, tmp_path)
 
@@ -352,6 +421,7 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
     module_d_file = str(sub / "module_d.py")
     module_c_file = str(pkgroot / "module_c.py")
     module_e_file = str(pkgroot / "module_e.py")
+    module_f_file = str(pkgroot / "module_f.py")
     init_file = str(pkgroot / "__init__.py")
 
     # module_b.py: BOTH violations must be detected (function-body absolute
@@ -392,7 +462,22 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
         v.startswith(module_e_file) for v in violations
     ), f"module_e.py (facade package import) should be exempt, got:\n{violation_text}"
 
-    # Exactly the three expected violations total (2 from module_b.py, 1 from
-    # module_d.py; module_e.py's facade access is exempt) -- confirms no
-    # unexpected false positives elsewhere in the synthetic tree.
-    assert len(violations) == 3, f"expected exactly 3 violations, got:\n{violation_text}"
+    # module_f.py: exactly ONE violation — the ImportFrom-bound SUBMODULE's
+    # private access is flagged (WR-02: the previously-invisible binding form),
+    # while the ImportFrom-bound PACKAGE's private access is facade-exempt.
+    assert any(
+        v.startswith(module_f_file)
+        and "_private_thing" in v
+        and "accesses" in v
+        and "pkgroot.module_a" in v
+        for v in violations
+    ), f"expected module_f.py ImportFrom-bound-module violation, got:\n{violation_text}"
+    assert not any(
+        v.startswith(module_f_file) and "_sub_private" in v for v in violations
+    ), f"module_f.py's ImportFrom-bound PACKAGE access should be exempt, got:\n{violation_text}"
+
+    # Exactly the four expected violations total (2 from module_b.py, 1 from
+    # module_d.py, 1 from module_f.py; module_e.py's facade access and
+    # module_f.py's package-bound access are exempt) -- confirms no unexpected
+    # false positives elsewhere in the synthetic tree.
+    assert len(violations) == 4, f"expected exactly 4 violations, got:\n{violation_text}"
