@@ -17,7 +17,7 @@
 
 - [x] **Phase 12: CI Quality Gates** - `ci.yml` runs `ruff check` and the full hermetic test suite on every push, backed by a committed ruff config, so every subsequent refactor phase in this milestone is protected by CI from the start (CI-01, CI-02, CI-03) (completed 2026-07-09)
 - [x] **Phase 13: Module Structure & Boundaries** - The three god-files (`main.py`, `repo.py`, `orchestrator.py`) split into right-sized, per-concern modules with a stable import surface and zero behavior change, and cross-module `_private` imports are promoted to deliberate public names (STRUCT-01, STRUCT-02, STRUCT-03, STRUCT-04, BOUND-01) (completed 2026-07-10)
-- [ ] **Phase 14: Full Type-Checking (mypy)** - mypy with the pydantic plugin runs clean over the entire codebase (`app/`, `eval/`, `scripts/`, `tests/`) and is wired in as a blocking CI check (TYPE-01, TYPE-02, TYPE-03)
+- [x] **Phase 14: Full Type-Checking (mypy)** - mypy with the pydantic plugin runs clean over the entire codebase (`app/`, `eval/`, `scripts/`, `tests/`) and is wired in as a blocking CI check (TYPE-01, TYPE-02, TYPE-03) (completed 2026-07-10)
 - [ ] **Phase 15: Comment Hygiene & Deferred-Polish Triage** - Ticket-ID/provenance comments are stripped in favor of plain maintainer-facing constraint comments, the hand-maintained `repo.py` function-index docstring is replaced across the split DB modules, and the two remaining v2 deferred-polish todos are closed (COMM-01, COMM-02, COMM-03, POLISH-01, POLISH-02)
 
 ## Phase Details
@@ -91,7 +91,7 @@ Plans:
   2. mypy runs with zero errors over the rest of the repo (`eval/`, `scripts/`, `tests/`) — there is no type-checking blind spot anywhere in the codebase.
   3. The CI workflow from Phase 12 is extended with a blocking mypy step, so a push that introduces a type error fails CI the same way a lint or test failure does.
 
-**Plans**: 5/10 plans executed
+**Plans**: 10/10 plans complete
 Plans:
 **Wave 1**
 
@@ -112,17 +112,17 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 — tests import app incl. routes/main and eval)*
 
-- [ ] 14-06-PLAN.md — Annotate tests/ group 1 (19 files + tests/__init__.py) to mypy-clean
-- [ ] 14-07-PLAN.md — Annotate tests/ group 2 (18 files incl. conftest.py) to mypy-clean
-- [ ] 14-08-PLAN.md — Annotate tests/ group 3 (18 files) to mypy-clean
+- [x] 14-06-PLAN.md — Annotate tests/ group 1 (19 files + tests/__init__.py) to mypy-clean
+- [x] 14-07-PLAN.md — Annotate tests/ group 2 (18 files incl. conftest.py) to mypy-clean
+- [x] 14-08-PLAN.md — Annotate tests/ group 3 (18 files) to mypy-clean
 
 **Wave 6** *(blocked on Wave 5 — runs solo)*
 
-- [ ] 14-09-PLAN.md — Full-repo integration gate: bare `uv run mypy` exits 0, residual cross-module fixes owned here
+- [x] 14-09-PLAN.md — Full-repo integration gate: bare `uv run mypy` exits 0, residual cross-module fixes owned here
 
 **Wave 7** *(blocked on 14-09)*
 
-- [ ] 14-10-PLAN.md — Wire typecheck CI job, red-proof checkpoint, commit VERIFICATION.md evidence post-approval
+- [x] 14-10-PLAN.md — Wire typecheck CI job, red-proof checkpoint, commit VERIFICATION.md evidence post-approval
 
 ### Phase 15: Comment Hygiene & Deferred-Polish Triage
 
@@ -168,5 +168,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 11. Clarification Round Machine & Alias Learning | v2 | 9/9 | Complete | 2026-07-07 |
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
-| 14. Full Type-Checking (mypy) | v3 | 5/10 | In Progress|  |
+| 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
