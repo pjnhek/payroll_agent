@@ -45,6 +45,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Seed business IDs — stable literals matching app/db/seed.py _BUSINESSES (D-11)
@@ -62,7 +63,7 @@ _SEED_BUSINESS_IDS: dict[str, uuid.UUID] = {
 # ---------------------------------------------------------------------------
 
 
-def _rearm_demo_identity(conn) -> None:
+def _rearm_demo_identity(conn: Any) -> None:
     """Re-UPSERT the demo_sender_bindings row for the env-configured identity.
 
     Uses DEMO_CONTACT_EMAIL (operator_email) and DEMO_BUSINESS_NAME to resolve

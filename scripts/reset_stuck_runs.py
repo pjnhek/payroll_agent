@@ -11,13 +11,14 @@ Two modes:
 Run with: uv run python scripts/reset_stuck_runs.py --list
 """
 import sys
+from typing import Any
 
 from app.db import repo
 
 IN_FLIGHT = ("received", "extracting", "computed")
 
 
-def _counts(c):
+def _counts(c: Any) -> None:
     rows = c.execute(
         "SELECT status, count(*) FROM payroll_runs GROUP BY status ORDER BY count(*) DESC"
     ).fetchall()
