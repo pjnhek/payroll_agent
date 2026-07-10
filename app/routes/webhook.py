@@ -153,6 +153,7 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
                 email.message_id, conn=conn
             )
         elif email.in_reply_to or email.references_header:
+            assert email_id is not None
             # Reply-classification READS run INSIDE the transaction, BEFORE
             # any code path that could reach create_run (Codex HIGH-1 fix).
             reply_run_id = repo.find_awaiting_reply_for_header(
@@ -271,6 +272,7 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
         # reintroduce the same race in a different shape). Re-run ONLY the
         # existing sender-revalidation (FIX 5), a pure read-then-branch with no
         # write, unchanged in its own logic.
+        assert reply_run_id is not None
         return pipeline_glue.finish_reply_resume(reply_run_id, email, cleaned, background_tasks)
 
     if outcome == "late_reply":
@@ -294,6 +296,7 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     # outcome == "new_run"
     # Schedule the LLM-heavy pipeline AFTER the commit (in prod); SYNCHRONOUS
     # under TestClient so the end-to-end test can assert the pause immediately.
+    assert run_id is not None
     background_tasks.add_task(pipeline_glue.run_pipeline_bg, run_id)
 
     return JSONResponse(

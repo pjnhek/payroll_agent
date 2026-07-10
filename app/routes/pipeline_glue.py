@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -24,7 +25,7 @@ from app.models.status import RunStatus
 logger = logging.getLogger("payroll_agent.webhook")
 
 
-def row_to_inbound(row: dict) -> InboundEmail:
+def row_to_inbound(row: dict[str, Any]) -> InboundEmail:
     """Build an InboundEmail from a PERSISTED email_messages row dict (Plan 11-05).
 
     The single conversion point reused by both the WR-04 duplicate-redelivery
@@ -53,7 +54,7 @@ def row_to_inbound(row: dict) -> InboundEmail:
     )
 
 
-def reply_sender_ok(row: dict, run: dict) -> bool:
+def reply_sender_ok(row: dict[str, Any], run: dict[str, Any]) -> bool:
     """Re-assert FIX-5's sender revalidation for an already-persisted reply row (GAP-5/CR-5).
 
     A reply is linked to its run INSIDE the webhook's ingest transaction based
