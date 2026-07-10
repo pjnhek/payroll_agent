@@ -27,7 +27,7 @@ from app.pipeline.orchestrator import run_pipeline
 
 
 def _seed_run(
-    fake_repo: Any, *, business_id: str, body: str = "Maria Chen 40 regular. James salaried."
+    fake_repo: Any, *, business_id: uuid.UUID, body: str = "Maria Chen 40 regular. James salaried."
 ) -> uuid.UUID:
     """Insert a cleaned inbound email + a received run into the in-memory store."""
     email = InboundEmail(
@@ -54,8 +54,8 @@ def _seed_run(
     return run_id
 
 
-def _coastal_business_id(fake_repo: Any) -> str:
-    business_id: str = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+def _coastal_business_id(fake_repo: Any) -> uuid.UUID:
+    business_id: uuid.UUID = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     return business_id
 
 
