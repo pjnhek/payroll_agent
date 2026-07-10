@@ -1,12 +1,20 @@
 ---
 phase: 13-module-structure-boundaries
 verified: 2026-07-10T03:15:00Z
-status: human_needed
-score: 4/5 must-haves fully verified (1 partially verified — see gaps)
+status: passed
+score: 5/5 must-haves verified (BOUND-01 gap closed post-verification — see resolution note in gap below)
 overrides_applied: 0
 gaps:
   - truth: "BOUND-01's regression-guard artifact (tests/test_bound01_private_imports.py) correctly flags any cross-module private-name reference, including the module._private attribute-access form via BOTH import binding styles used in this codebase (`import X as Y` and `from pkg import Y`)"
-    status: partial
+    status: resolved
+    resolution: >
+      Human decision 2026-07-10: fix now (option a). WR-01 fixed in commit 3363ca3
+      (facade exemption probes root parents, not scan roots) and WR-02 fixed in commit
+      96680cd (attribute scan tracks ImportFrom-bound modules). Fixer re-ran the live
+      probes from this verification pass: the facade pattern is no longer flagged, the
+      ImportFrom-bound `runs._scrub` probe now fails the gate, the scripts' legitimate
+      `repo._conn_ctx` facade accesses stay green, and the live tree passes clean.
+      Full suite 615 passed / 50 skipped, ruff clean. See 13-REVIEW-FIX.md.
     reason: >
       The substantive BOUND-01 renames (_norm, _HOURS_FIELDS, _is_paid, _safe_to_learn_alias
       and all Phase 13 promotions) are genuinely done and verified directly against source —
