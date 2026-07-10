@@ -24,7 +24,7 @@ import contextlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -370,8 +370,10 @@ class InMemoryRepo:
 
     def load_run(
         self, run_id: uuid.UUID, conn: Any = None
-    ) -> dict[str, Any]:
-        return cast(dict[str, Any], self.runs.get(str(run_id)))
+    ) -> dict[str, Any] | None:
+        # Mirror the real seam's contract (app/db/repo/runs.py load_run):
+        # a missing run is None, not a cast-stamped lie.
+        return self.runs.get(str(run_id))
 
     def load_source_email(self, run_id, conn=None):
         run = self.runs.get(str(run_id))

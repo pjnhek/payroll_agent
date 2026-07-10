@@ -430,7 +430,9 @@ def test_two_concurrent_stale_retriggers_only_one_wins():
         "Second stale retrigger must lose: run is already EXTRACTING after first "
         "claim — RECEIVED→EXTRACTING target ensures exclusivity (R2-HIGH fix)"
     )
-    assert store.load_run(run_id)["status"] == RunStatus.EXTRACTING.value, (
+    final_run = store.load_run(run_id)
+    assert final_run is not None, "run seeded above must still exist"
+    assert final_run["status"] == RunStatus.EXTRACTING.value, (
         "After both retriggers, run must be in EXTRACTING (the CAS winner's target)"
     )
 
