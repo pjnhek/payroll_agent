@@ -291,3 +291,7 @@ MEDIUM (13-04): relative-import resolution must apply the same check after resol
   Validation: 50 changed Python files AST-parsed; core imports succeeded; 6 targeted regressions passed.
   
   **Overall verdict: NOT READY** — the new CI boundary guard has a verified bypass.
+
+## Resolution addendum (2026-07-10T03:50:53Z)
+
+Both findings from this round are FIXED and verified: CX-CODE-01 (= WR-05 in 13-REVIEW.md) in commit 32302e9 — dotted-attribute-chain resolution + root->root binding-semantics correction + module_g fixture shape, live probe matrix correct for all three import shapes; CX-CODE-02 (= WR-06) in commit 3e728ce — `_nulltx` re-exported. Suite 615 passed / 50 skipped, ruff clean. The round's NOT READY verdict is resolved; cumulative review state: 6/6 warnings fixed across 2 fix iterations (see 13-REVIEW-FIX.md).

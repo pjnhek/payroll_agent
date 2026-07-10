@@ -1,12 +1,16 @@
 ---
 phase: 13-module-structure-boundaries
-fixed_at: 2026-07-09T20:15:00-07:00
+fixed_at: 2026-07-09T21:30:00-07:00
 review_path: .planning/phases/13-module-structure-boundaries/13-REVIEW.md
-iteration: 1
-findings_in_scope: 4
-fixed: 4
+iteration: 2
+findings_in_scope: 2
+fixed: 2
 skipped: 0
 status: all_fixed
+cumulative:
+  findings_in_scope: 6
+  fixed: 6
+  skipped: 0
 ---
 
 # Phase 13: Code Review Fix Report
@@ -66,3 +70,51 @@ None — all in-scope findings fixed. (IN-01..IN-04 are Info-tier and out of sco
 _Fixed: 2026-07-09T20:15:00-07:00_
 _Fixer: Claude (gsd-code-fixer)_
 _Iteration: 1_
+
+---
+
+# Iteration 2 (2026-07-09T21:30:00-07:00)
+
+**Source review:** 13-REVIEW.md (amended 2026-07-10 with WR-05/WR-06 from the Codex post-execution cross-AI review)
+
+**Summary (iteration 2):**
+- Findings in scope: 2 (WR-05, WR-06 — the only findings marked "NOT yet fixed"; WR-01..WR-04 were fixed in iteration 1 and were NOT re-touched; IN-01..IN-04 remain out of scope for `fix_scope: critical_warning`)
+- Fixed: 2
+- Skipped: 0
+
+## Fixed Issues (iteration 2)
+
+### WR-05: BOUND-01 attribute scan is blind to unaliased dotted imports
+
+**Files modified:** `tests/test_bound01_private_imports.py`
+**Commit:** 32302e9
+**Applied fix:** The attribute scan now resolves dotted `ast.Attribute` receiver chains: a new `_receiver_dotted_path` helper walks any receiver back to its root `ast.Name` and reconstructs the full dotted path (`app.db.repo.runs` for the receiver of `app.db.repo.runs._scrub`); the scan substitutes the root name's binding and resolves the result exactly like aliased/ImportFrom bindings, with the facade-package exemption applied the same way. Unaliased `ast.Import` bindings were also corrected to map root→root (`import a.b.c` binds local name `a` to the ROOT package `a` per Python semantics — the previous root→full-dotted mapping both misattributed bare `a._x` accesses and left dotted receivers unresolvable). Dotted chains that do not land on a first-party module file/package (e.g. `mod.SomeClass._x`, `pathlib.Path._flavour`) are skipped, so no new false-positive class is introduced. Synthetic fixture extended with `module_g.py` pinning the third import shape: `import pkgroot.module_a` + `pkgroot.module_a._private_thing` MUST flag, while `import pkgroot.sub` + `pkgroot.sub._sub_private` (dotted chain landing on a package `__init__.py`) stays facade-exempt. Pinned expected-violation count updated 4 → 5; module docstring updated to document the third receiver shape.
+**Verification:** Guard tests pass. Live probe matrix (all four shapes, probe files written under `app/`, scanner invoked, probes deleted):
+1. `import app.db.repo as repo_mod; repo_mod._TERMINAL_STATUSES` → EXEMPT (green) ✓
+2. `from app.db.repo import runs; runs._scrub` → DETECTED ✓
+3. `import app.db.repo.runs; app.db.repo.runs._scrub` → DETECTED (the WR-05 shape) ✓
+4. `import app.db.repo; app.db.repo._conn_ctx` → EXEMPT (facade, dotted shape) ✓
+Live tree stays clean with zero violations. All probe files deleted before commit; `git status` clean apart from the intended change.
+
+### WR-06: Repo facade omits `_nulltx` from the pre-split attribute surface
+
+**Files modified:** `app/db/repo/__init__.py`
+**Commit:** 3e728ce
+**Applied fix:** `_nulltx` is re-exported from `app/db/repo/_shared.py` alongside `_conn_ctx` (added to the import line, `__all__`, and the facade docstring's re-export list, with the docstring rewrapped for the 100-char line limit). This restores the full pre-split live attribute surface (13-01 plan must-have) and makes the BOUND-01 guard docstring's existing `_nulltx` claim (IN-01a) true.
+**Verification:** `uv run python -c "from app.db import repo; repo._nulltx"` resolves (`<function _nulltx>`; also present in `repo.__all__`). Ruff clean.
+
+## Skipped Issues (iteration 2)
+
+None — both open findings fixed.
+
+## Session verification (iteration 2)
+
+- Full suite after both fixes: **614 passed, 51 skipped** — identical to the iteration-1 worktree baseline (zero delta; the review's 615/50 figure reflects the reviewer's shell `DATABASE_URL`, absent in the fix environment — see iteration 1's baseline control). No new tests collected (fixture assertions extend existing test functions).
+- `uv run ruff check .` → clean.
+- BOUND-01 guard file: `uv run pytest tests/test_bound01_private_imports.py -q` → 2 passed.
+
+---
+
+_Fixed: 2026-07-09T21:30:00-07:00_
+_Fixer: Claude (gsd-code-fixer)_
+_Iteration: 2_
