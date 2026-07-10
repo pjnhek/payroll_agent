@@ -49,10 +49,12 @@ import json
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
 from app.pipeline.orchestrator import resume_pipeline, run_pipeline
+from tests.conftest import InMemoryRepo
 
 # ---------------------------------------------------------------------------
 # Stable identifiers (Business 1 / Coastal Cleaning Co. seed data). James
@@ -65,7 +67,9 @@ JAMES_ID = uuid.UUID("e0000002-0000-0000-0000-000000000002")
 JAMES_ID_STR = str(JAMES_ID)
 
 
-def _extraction_json(employees: list[dict], pay_period_start: str = "2026-06-15") -> str:
+def _extraction_json(
+    employees: list[dict[str, Any]], pay_period_start: str = "2026-06-15"
+) -> str:
     return json.dumps(
         {"employees": employees, "pay_period_start": pay_period_start, "pay_period_end": None}
     )
@@ -82,7 +86,9 @@ def _suggestion_json(suggestions: dict[str, str]) -> str:
     )
 
 
-def _seed_inbound_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.UUID:
+def _seed_inbound_run(
+    fake_repo: InMemoryRepo, *, body: str, from_addr: str = COASTAL_EMAIL
+) -> uuid.UUID:
     """Seed a fresh inbound email + run (mirrors the real webhook's create_run
     call) — this is a genuinely FIRST submission, driven through run_pipeline,
     not a hand-built awaiting_reply row."""
@@ -99,7 +105,11 @@ def _seed_inbound_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -
 
 
 def _inbound_persisted(
-    fake_repo, run_id: uuid.UUID, body: str, message_id: str, from_addr: str = COASTAL_EMAIL
+    fake_repo: InMemoryRepo,
+    run_id: uuid.UUID,
+    body: str,
+    message_id: str,
+    from_addr: str = COASTAL_EMAIL,
 ) -> InboundEmail:
     """Build a reply InboundEmail AND persist its row in fake_repo, linked to
     run_id — mirrors what the real webhook does (insert_inbound_email +
@@ -114,6 +124,7 @@ def _inbound_persisted(
         to_addr="agent@payroll-agent.local",
         body_text=body,
     )
+    assert eid is not None, "persisting a reply must return an email id"
     fake_repo.link_email_to_run(eid, run_id)
     return InboundEmail(
         id=eid,

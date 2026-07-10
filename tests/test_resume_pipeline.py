@@ -27,6 +27,7 @@ import os
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -34,6 +35,7 @@ from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
 from app.pipeline.orchestrator import resume_pipeline
+from tests.conftest import InMemoryRepo
 
 # ---------------------------------------------------------------------------
 # Module-level skip guard — skip != evidence (D-7.5-04)
@@ -68,7 +70,7 @@ OKAFOR_ID_STR = str(OKAFOR_ID)
 # ---------------------------------------------------------------------------
 
 def _mk_extracted(
-    employees_data: list[dict],
+    employees_data: list[dict[str, Any]],
     pay_period_start: str = "2026-06-15",
     pay_period_end: str | None = None,
     run_id: uuid.UUID | None = None,
@@ -100,7 +102,9 @@ def _mk_match(
     )
 
 
-def _seed_run(fake_repo, *, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.UUID:
+def _seed_run(
+    fake_repo: InMemoryRepo, *, body: str, from_addr: str = COASTAL_EMAIL
+) -> uuid.UUID:
     """Seed an inbound email + run in the fake_repo."""
     eid, _ = fake_repo.insert_inbound_email(
         message_id=f"<{uuid.uuid4()}@test.example>",
@@ -133,7 +137,7 @@ def _inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
 
 
 def _extraction_json(
-    employees: list[dict],
+    employees: list[dict[str, Any]],
     pay_period_start: str = "2026-06-15",
 ) -> str:
     """Serialize extraction as the mock LLM response JSON string."""
@@ -170,7 +174,10 @@ def _snapshot_extracted(
     run_id: uuid.UUID | None = None,
 ) -> Extracted:
     """Build a pre-clarify snapshot Extracted."""
-    emp: dict = {"submitted_name": submitted_name, "hours_regular": hours_regular}
+    emp: dict[str, Any] = {
+        "submitted_name": submitted_name,
+        "hours_regular": hours_regular,
+    }
     if hours_overtime is not None:
         emp["hours_overtime"] = hours_overtime
     return _mk_extracted([emp], run_id=run_id)
@@ -404,7 +411,7 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
     This pins the approved==sent invariant: the paystub the operator sees IS the
     paystub in the confirmation email.
     """
-    from app.pipeline import delivery
+    import app.pipeline.delivery as delivery
 
     # Step 1: drive to AWAITING_APPROVAL via Round-2 carry-forward
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
@@ -430,14 +437,16 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
 
     # Step 3: capture what compose_confirmation receives — same line items from repo
     # (Finding 8: confirmation must use repo.load_line_items which reads the persisted paystub)
-    confirmation_items_received = []
-    original_compose = delivery.compose_confirmation
+    confirmation_items_received: list[Any] = []
+    from app.pipeline.compose_email import compose_confirmation as original_compose
 
     def _capture_compose(paystubs, run, *, timeout_s=3.0):
         confirmation_items_received.extend(paystubs)
         return original_compose(paystubs, run, timeout_s=timeout_s)
 
-    monkeypatch.setattr(delivery, "compose_confirmation", _capture_compose)
+    monkeypatch.setattr(
+        "app.pipeline.delivery.compose_confirmation", _capture_compose
+    )
 
     # Invoke deliver (the confirmation path)
     run_dict = fake_repo.load_run(run_id)

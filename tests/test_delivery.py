@@ -445,7 +445,7 @@ def test_two_concurrent_stale_retriggers_only_one_wins():
 # ---------------------------------------------------------------------------
 
 
-def _minimal_roster_and_item(run_id):
+def _minimal_roster_and_item(run_id: uuid.UUID):
     from datetime import datetime
     from decimal import Decimal
 
@@ -488,23 +488,30 @@ def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
     exc.payroll_roster — the approve() boundary forwards it to record_run_error
     so the roster names in str(exc) get scrubbed from error_detail.
     """
-    from app.pipeline import delivery as orch
+    import app.pipeline.delivery as orch
 
     run_id = _run_id()
     roster, item = _minimal_roster_and_item(run_id)
     run = {"id": run_id, "business_id": roster.business_id,
            "pay_period_start": None, "pay_period_end": None}
 
-    monkeypatch.setattr(orch.repo, "load_business_name", lambda bid, conn=None: "Coastal")
     monkeypatch.setattr(
-        orch.repo, "get_outbound_message_id", lambda rid, purpose, conn=None: None
+        "app.pipeline.delivery.repo.load_business_name",
+        lambda bid, conn=None: "Coastal",
     )
-    monkeypatch.setattr(orch.repo, "load_line_items", lambda rid, conn=None: [item])
+    monkeypatch.setattr(
+        "app.pipeline.delivery.repo.get_outbound_message_id",
+        lambda rid, purpose, conn=None: None,
+    )
+    monkeypatch.setattr(
+        "app.pipeline.delivery.repo.load_line_items", lambda rid, conn=None: [item]
+    )
     monkeypatch.setattr(
         orch, "compose_confirmation", lambda paystubs, run, timeout_s=3.0: "body"
     )
     monkeypatch.setattr(
-        orch.repo, "load_roster_for_business", lambda bid, conn=None: roster
+        "app.pipeline.delivery.repo.load_roster_for_business",
+        lambda bid, conn=None: roster,
     )
 
     def _pdf_boom(*args, **kwargs):
@@ -526,21 +533,25 @@ def test_deliver_failure_before_roster_load_carries_no_roster(monkeypatch):
     with NO payroll_roster attribute — approve()'s getattr default (None) keeps
     the locked D-8-01b behavior (email-regex-only scrub) for those failures.
     """
-    from app.pipeline import delivery as orch
+    import app.pipeline.delivery as orch
 
     run_id = _run_id()
     run = {"id": run_id, "business_id": uuid.uuid4(),
            "pay_period_start": None, "pay_period_end": None}
 
-    monkeypatch.setattr(orch.repo, "load_business_name", lambda bid, conn=None: "Coastal")
     monkeypatch.setattr(
-        orch.repo, "get_outbound_message_id", lambda rid, purpose, conn=None: None
+        "app.pipeline.delivery.repo.load_business_name",
+        lambda bid, conn=None: "Coastal",
+    )
+    monkeypatch.setattr(
+        "app.pipeline.delivery.repo.get_outbound_message_id",
+        lambda rid, purpose, conn=None: None,
     )
 
     def _items_boom(rid, conn=None):
         raise RuntimeError("db blip before roster load")
 
-    monkeypatch.setattr(orch.repo, "load_line_items", _items_boom)
+    monkeypatch.setattr("app.pipeline.delivery.repo.load_line_items", _items_boom)
 
     with pytest.raises(RuntimeError) as excinfo:
         orch.deliver(run_id, run)

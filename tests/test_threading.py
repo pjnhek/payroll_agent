@@ -26,11 +26,12 @@ import json
 import pathlib
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.contracts import InboundEmail
+from app.models.contracts import Decision, InboundEmail
 
 # The seeded David Reyes employee id (app/db/seed.py emp 3) — the hero gate run.
 _DAVID_REYES_ID = "e0000003-0000-0000-0000-000000000003"
@@ -119,7 +120,7 @@ def _drive_to_awaiting_reply(client, fake_repo, mock_llm) -> tuple[str, str]:
     return run_id, msg_id
 
 
-def _reply_payload(*, in_reply_to: str, from_addr: str, body: str) -> dict:
+def _reply_payload(*, in_reply_to: str, from_addr: str, body: str) -> dict[str, Any]:
     """A canonical reply InboundEmail payload (answer-only by default)."""
     return InboundEmail(
         id=uuid.uuid4(),
@@ -280,9 +281,9 @@ def test_partial_reply_preserves_hours():
     """
     from app.pipeline import orchestrator
 
-    captured = {}
+    captured: dict[str, Any] = {}
 
-    def _fake_extracted(run_id):
+    def _fake_extracted(run_id: uuid.UUID):
         from decimal import Decimal
 
         from app.models.contracts import Extracted, ExtractedEmployee
@@ -296,7 +297,7 @@ def test_partial_reply_preserves_hours():
         )
 
     # Spy on extract to capture the combined body the resume stage builds + the run_id.
-    def _spy_extract(email, roster, *, run_id, llm=None):
+    def _spy_extract(email, roster, *, run_id: uuid.UUID, llm=None):
         captured["body"] = email.body_text
         captured["run_id"] = run_id
         return _fake_extracted(run_id)
@@ -326,7 +327,9 @@ def test_partial_reply_preserves_hours():
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
         monkey.setattr(orchestrator, "extract", _spy_extract)
         monkey.setattr(
-            orchestrator, "reconcile_names", lambda names, roster, **kw: _stub_matches(names)
+            orchestrator,
+            "reconcile_names",
+            lambda names, roster, **kw: _stub_matches(names),
         )
         monkey.setattr(orchestrator, "validate", lambda *a, **kw: [])
         monkey.setattr(orchestrator, "decide", lambda *a, **kw: _stub_decision_process())
@@ -375,7 +378,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
 
     extract_called = {"n": 0}
 
-    def _spy_extract(email, roster, *, run_id, llm=None):
+    def _spy_extract(email, roster, *, run_id: uuid.UUID, llm=None):
         extract_called["n"] += 1
         return _fake_extracted_unused(run_id)
 
@@ -430,7 +433,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
     assert run["decision"] is None
 
 
-def _fake_extracted_unused(run_id):
+def _fake_extracted_unused(run_id: uuid.UUID):
     """An Extracted only used to prove extract() was NOT called (CR-02 short-circuit)."""
     from decimal import Decimal
 
@@ -633,7 +636,7 @@ def test_reply_with_no_matching_outbound_handled_gracefully(client, fake_repo, m
 # ---------------------------------------------------------------------------
 
 
-def _stub_matches(names):
+def _stub_matches(names: list[str]):
     from app.models.roster import NameMatchResult
 
     return [
@@ -648,7 +651,7 @@ def _stub_matches(names):
     ]
 
 
-def _stub_decision_process():
+def _stub_decision_process() -> Decision:
     from app.models.contracts import Decision
 
     return Decision(
@@ -663,7 +666,7 @@ def _stub_decision_process():
 class _MiniStore:
     """A tiny in-memory repo for the orchestrator-level partial-reply test."""
 
-    def __init__(self, run_id):
+    def __init__(self, run_id: uuid.UUID) -> None:
         self.run_id = run_id
         self.runs = {
             str(run_id): {

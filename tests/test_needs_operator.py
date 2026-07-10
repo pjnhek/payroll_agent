@@ -39,6 +39,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -49,6 +50,7 @@ from app.models.status import RunStatus
 from app.pipeline.clarification import MAX_CLARIFICATION_ROUNDS
 from app.pipeline.clarification import clarify as _clarify
 from app.routes.runs import IN_FLIGHT_STATUSES
+from tests.conftest import InMemoryRepo
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -56,7 +58,7 @@ COASTAL_EMAIL = "payroll@coastalcleaning.example"
 client = TestClient(app, raise_server_exceptions=False)
 
 
-def _bare_roster(business_id=COASTAL_BIZ_ID):
+def _bare_roster(business_id: uuid.UUID = COASTAL_BIZ_ID):
     from app.models.roster import Roster
 
     return Roster(business_id=business_id, employees=[])
@@ -127,7 +129,7 @@ def test_below_cap_send_proceeds(monkeypatch, fake_repo, mock_llm):
     }
     fake_repo.outbound[str(run_id)] = []
 
-    send_calls: list = []
+    send_calls: list[dict[str, Any]] = []
     real_send_outbound = gateway_mod.send_outbound
 
     def _spy_send_outbound(**kw):
@@ -250,7 +252,7 @@ def test_escalation_transaction_writes_only_status():
         if isinstance(node, ast.FunctionDef) and node.name == "clarify"
     )
 
-    def _call_name(node):
+    def _call_name(node: ast.AST) -> str | None:
         if isinstance(node, ast.Call):
             f = node.func
             if isinstance(f, ast.Attribute):
@@ -269,7 +271,7 @@ def test_escalation_transaction_writes_only_status():
         )
     ]
 
-    def _tracked_calls(node):
+    def _tracked_calls(node: ast.AST) -> list[str | None]:
         return [
             _call_name(stmt)
             for stmt in ast.walk(node)
@@ -319,8 +321,8 @@ def test_needs_operator_excluded_from_retrigger_stale_statuses():
     stale_sets = [node for node in ast.walk(tree) if isinstance(node, ast.Set)]
     assert stale_sets, "retrigger's stale_statuses set literal must be present in its source"
 
-    def _const_values(set_node):
-        values = []
+    def _const_values(set_node: ast.Set) -> list[str]:
+        values: list[str] = []
         for elt in set_node.elts:
             # Each element is RunStatus.<MEMBER>.value — an ast.Attribute chain.
             if isinstance(elt, ast.Attribute) and elt.attr == "value":
@@ -411,7 +413,9 @@ def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
 # ===========================================================================
 
 
-def _needs_operator_run_row(run_id, business_id, unresolved_names):
+def _needs_operator_run_row(
+    run_id: uuid.UUID, business_id: uuid.UUID, unresolved_names: list[str]
+) -> dict[str, Any]:
     from app.models.contracts import Decision as _Decision
 
     decision = _Decision(
@@ -546,7 +550,7 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
 
-    resume_calls: list = []
+    resume_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     monkeypatch.setattr(
         "app.pipeline.orchestrator.resume_pipeline",
         lambda *a, **kw: resume_calls.append((a, kw)),
@@ -661,7 +665,13 @@ def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
 # ===========================================================================
 
 
-def _seed_needs_operator_run_real(fake_repo, *, business_id, from_addr, unresolved_token):
+def _seed_needs_operator_run_real(
+    fake_repo: InMemoryRepo,
+    *,
+    business_id: uuid.UUID,
+    from_addr: str,
+    unresolved_token: str,
+) -> uuid.UUID:
     """Seed a run that has genuinely reached needs_operator via a real inbound
     email + create_run (mirrors _seed_inbound_run in test_alias_full_loop.py),
     then directly set clarification_round/status/decision/reconciliation to

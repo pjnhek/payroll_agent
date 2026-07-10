@@ -97,7 +97,9 @@ N_INGEST = 5
 # ---------------------------------------------------------------------------
 
 
-def _stub_pipeline_and_send(monkeypatch):
+def _stub_pipeline_and_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
     """Install the wholesale no-op stubbing this proof depends on (load-bearing).
 
     `.env` carries LIVE DeepSeek/Kimi/Resend keys. TestClient runs FastAPI
@@ -113,7 +115,7 @@ def _stub_pipeline_and_send(monkeypatch):
     # direct repo-seam call bypasses the webhook route entirely), but the
     # stub is kept so nothing downstream can ever fire a live call, and so
     # the module's isolation invariant is uniform across all three surfaces.
-    pipeline_calls: list = []
+    pipeline_calls: list[uuid.UUID] = []
     monkeypatch.setattr(
         pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
     )
@@ -125,7 +127,7 @@ def _stub_pipeline_and_send(monkeypatch):
     # closed, so this patches the delivery module's own `deliver` attribute,
     # which is what runs.py's module-object reference actually resolves
     # through).
-    deliver_calls: list = []
+    deliver_calls: list[uuid.UUID] = []
     monkeypatch.setattr(
         "app.pipeline.delivery.deliver",
         lambda rid, run: deliver_calls.append(rid),
@@ -251,7 +253,9 @@ def test_dedup_exactly_one_run_per_message_id(seeded_db, monkeypatch):
             "(SELECT id FROM email_messages WHERE message_id = %s)",
             (same_message_id,),
         )
-        (count,) = cur.fetchone()
+        row = cur.fetchone()
+        assert row is not None
+        (count,) = row
     assert count == 1, f"expected exactly one run row for {same_message_id}, got {count}"
 
 
@@ -359,6 +363,7 @@ def test_concurrent_distinct_runs_no_lost_update(seeded_db, monkeypatch):
             body_text="Maria Chen 40 regular hours.",
         )
         assert inserted, f"distinct message_id {mid} must always insert cleanly"
+        assert eid is not None, "a successful insert must return an email id"
         rid = repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=eid)
         with lock:
             results.append((mid, eid, rid))

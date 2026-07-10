@@ -24,6 +24,7 @@ import contextlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
@@ -94,10 +95,10 @@ class FakeCursor:
         self._conn.executed.append((sql, params))
         return self
 
-    def fetchone(self):
+    def fetchone(self) -> Any:
         return self._conn._next_fetchone()
 
-    def fetchall(self):
+    def fetchall(self) -> Any:
         return self._conn._next_fetchall()
 
 
@@ -120,21 +121,21 @@ class FakeConnection:
     """
 
     def __init__(self) -> None:
-        self.executed: list[tuple] = []
-        self._fetchone_q: list = []
-        self._fetchall_q: list = []
+        self.executed: list[tuple[Any, Any]] = []
+        self._fetchone_q: list[Any] = []
+        self._fetchall_q: list[Any] = []
 
     # --- scripting helpers (test-facing) ---
-    def script_fetchone(self, row) -> None:
+    def script_fetchone(self, row: Any) -> None:
         self._fetchone_q.append(row)
 
-    def script_fetchall(self, rows) -> None:
+    def script_fetchall(self, rows: Any) -> None:
         self._fetchall_q.append(rows)
 
-    def _next_fetchone(self):
+    def _next_fetchone(self) -> Any:
         return self._fetchone_q.pop(0) if self._fetchone_q else None
 
-    def _next_fetchall(self):
+    def _next_fetchall(self) -> Any:
         return self._fetchall_q.pop(0) if self._fetchall_q else []
 
     # --- psycopg.Connection surface used by repo.py ---
@@ -158,7 +159,7 @@ class FakeConnection:
     def all_sql(self) -> str:
         return "\n".join(str(sql) for sql, _ in self.executed)
 
-    def last(self) -> tuple:
+    def last(self) -> tuple[Any, Any]:
         return self.executed[-1]
 
 
@@ -253,12 +254,12 @@ class InMemoryRepo:
     """Mirror of the repo surface the webhook + orchestrator exercise, in RAM."""
 
     def __init__(self) -> None:
-        self.emails: dict[str, dict] = {}  # message_id -> email row
-        self.email_by_id: dict[str, dict] = {}  # email_id -> email row
-        self.runs: dict[str, dict] = {}  # run_id -> run row
-        self.line_items: dict[str, list] = {}  # run_id -> list[PaystubLineItem]
+        self.emails: dict[str, dict[str, Any]] = {}  # message_id -> email row
+        self.email_by_id: dict[str, dict[str, Any]] = {}  # email_id -> email row
+        self.runs: dict[str, dict[str, Any]] = {}  # run_id -> run row
+        self.line_items: dict[str, list[Any]] = {}  # run_id -> list[PaystubLineItem]
         # Outbound email_messages rows (the FIX 3 anchor): run_id -> list of rows.
-        self.outbound: dict[str, list] = {}
+        self.outbound: dict[str, list[dict[str, Any]]] = {}
         # Seed businesses for sender matching.
         from app.db.seed import seed
 
@@ -266,12 +267,12 @@ class InMemoryRepo:
         self.contact_to_business = {
             b["contact_email"]: b["id"] for b in seeded.businesses
         }
-        self.business_employees: dict[str, list] = {}
+        self.business_employees: dict[str, list[Any]] = {}
         for emp in seeded.employees:
             self.business_employees.setdefault(str(emp.business_id), []).append(emp)
 
     # --- ingest / lifecycle ---
-    def insert_inbound_email(self, **kw):
+    def insert_inbound_email(self, **kw: Any) -> tuple[uuid.UUID | None, bool]:
         mid = kw["message_id"]
         if mid in self.emails:
             return None, False
@@ -298,7 +299,9 @@ class InMemoryRepo:
     def find_business_by_sender(self, from_addr, conn=None):
         return self.contact_to_business.get(from_addr)
 
-    def link_email_to_run(self, email_id, run_id, conn=None):
+    def link_email_to_run(
+        self, email_id: uuid.UUID, run_id: uuid.UUID, conn: Any = None
+    ) -> None:
         """Mirror repo.link_email_to_run (WR-03 phase-9 review fix).
 
         Back-fills run_id on an already-inserted inbound row once the ingest
@@ -335,8 +338,16 @@ class InMemoryRepo:
                 return run["id"]
         return None
 
-    def create_run(self, *, business_id, source_email_id, pay_period_start=None,
-                   pay_period_end=None, record_only=False, conn=None):
+    def create_run(
+        self,
+        *,
+        business_id: uuid.UUID,
+        source_email_id: uuid.UUID | None,
+        pay_period_start: Any = None,
+        pay_period_end: Any = None,
+        record_only: bool = False,
+        conn: Any = None,
+    ) -> uuid.UUID:
         rid = uuid.uuid4()
         self.runs[str(rid)] = {
             "id": rid,
@@ -357,8 +368,10 @@ class InMemoryRepo:
         }
         return rid
 
-    def load_run(self, run_id, conn=None):
-        return self.runs.get(str(run_id))
+    def load_run(
+        self, run_id: uuid.UUID, conn: Any = None
+    ) -> dict[str, Any]:
+        return cast(dict[str, Any], self.runs.get(str(run_id)))
 
     def load_source_email(self, run_id, conn=None):
         run = self.runs.get(str(run_id))
@@ -395,12 +408,14 @@ class InMemoryRepo:
         )
 
     # --- status / persistence ---
-    def set_status(self, run_id, status, conn=None):
+    def set_status(self, run_id: uuid.UUID, status: Any, conn: Any = None) -> None:
         from app.models.status import RunStatus
 
         self.runs[str(run_id)]["status"] = RunStatus(status).value
 
-    def claim_status(self, run_id, expected, new, conn=None):
+    def claim_status(
+        self, run_id: uuid.UUID, expected: Any, new: Any, conn: Any = None
+    ) -> bool:
         """Atomic CAS for the in-memory store (mirrors repo.claim_status, D-12).
 
         Returns True and advances the run's status if the current status matches
@@ -855,7 +870,7 @@ class InMemoryRepo:
         """
         threshold = timedelta(seconds=threshold_seconds)
         now = datetime.now(UTC)
-        found: list[dict] = []
+        found: list[dict[str, Any]] = []
         for row in self.emails.values():
             if row.get("direction") != "inbound" or row.get("consumed_round") is not None:
                 continue
@@ -895,7 +910,9 @@ class InMemoryRepo:
         """
         self.update_email_message_state(message_id, "sent", conn=conn)
 
-    def update_email_message_state(self, message_id, state, conn=None):
+    def update_email_message_state(
+        self, message_id: str, state: str, conn: Any = None
+    ) -> None:
         """Set send_state on the outbound row with this synthetic message_id.
 
         Mirrors repo.update_email_message_state (D-13c crash-safe flip, HIGH-3).
@@ -907,7 +924,12 @@ class InMemoryRepo:
                     return
 
     # --- header-chain reply routing (CLAR-02/03, Plan 04) ---
-    def _header_matches(self, in_reply_to, references_header, row):
+    def _header_matches(
+        self,
+        in_reply_to: str | None,
+        references_header: str | None,
+        row: dict[str, Any],
+    ) -> bool:
         """Mirror the repo SQL: outbound Message-ID == in_reply_to OR is a WHOLE
         whitespace-bounded token in References (WR-02 anchoring — not a bare
         substring, so `<a@x>` never matches inside `<a@xtra>`)."""
@@ -1029,32 +1051,32 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
 
 
 class _MockMessage:
-    def __init__(self, content):
+    def __init__(self, content: Any) -> None:
         self.content = content
 
 
 class _MockChoice:
-    def __init__(self, content):
+    def __init__(self, content: Any) -> None:
         self.message = _MockMessage(content)
 
 
 class _MockResponse:
-    def __init__(self, content):
+    def __init__(self, content: Any) -> None:
         self.choices = [_MockChoice(content)]
 
 
 class _MockCompletions:
-    def __init__(self, parent):
+    def __init__(self, parent: type[MockOpenAI]) -> None:
         self._parent = parent
 
-    def create(self, **kwargs):
+    def create(self, **kwargs: Any) -> _MockResponse:
         self._parent.calls.append(kwargs)
         content = self._parent.script.pop(0) if self._parent.script else "{}"
         return _MockResponse(content)
 
 
 class _MockChat:
-    def __init__(self, parent):
+    def __init__(self, parent: type[MockOpenAI]) -> None:
         self.completions = _MockCompletions(parent)
 
 
@@ -1066,10 +1088,10 @@ class MockOpenAI:
     the next scripted JSON string in order.
     """
 
-    script: list = []
-    calls: list = []
+    script: list[Any] = []
+    calls: list[dict[str, Any]] = []
 
-    def __init__(self, *, base_url=None, api_key=None, **_):
+    def __init__(self, *, base_url: Any = None, api_key: Any = None, **_: Any) -> None:
         self.base_url = base_url
         self.api_key = api_key
         self.chat = _MockChat(MockOpenAI)
@@ -1157,13 +1179,13 @@ class _FakeResendReceivedEmail:
         message_id: str = "<test-recv@resend.test>",
         text: str | None = "Maria 40 hours",
         html: str | None = None,
-        headers: dict | None = None,
+        headers: dict[str, Any] | None = None,
     ) -> None:
         self.message_id = message_id
         self.text = text
         self.html = html
         # Default: mixed-case keys to exercise the normalization path (A1 assumption).
-        self.headers: dict = headers if headers is not None else {
+        self.headers: dict[str, Any] = headers if headers is not None else {
             "In-Reply-To": "<prev@x.test>",
             "References": "<prev@x.test>",
             "Subject": "Payroll hours",
@@ -1215,9 +1237,9 @@ def mock_resend_send(monkeypatch):
     Returns {"id": "<out-test@resend.com>"} — the shape the real SDK returns on success.
     Captures all calls in a list for assertion in tests.
     """
-    calls: list[dict] = []
+    calls: list[dict[str, Any]] = []
 
-    def _fake_send(params):
+    def _fake_send(params: dict[str, Any]) -> dict[str, str]:
         calls.append(params)
         return {"id": "<out-test@resend.com>"}
 
