@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.db import repo
 from app.email import gateway
-from app.models.contracts import Extracted, InboundEmail
+from app.models.contracts import Decision, Extracted, InboundEmail
+from app.models.roster import Roster
 from app.models.status import RunStatus
 from app.pipeline.compose_email import clarification_subject, compose_clarification
 from app.pipeline.reconcile_names import normalize_name
@@ -41,13 +42,13 @@ MAX_CLARIFICATION_ROUNDS = 3
 
 
 def defer_field_regression_clarification(
-    run_id,
-    clarified: dict,
+    run_id: uuid.UUID,
+    clarified: dict[str, dict[str, Any]],
     stage: _RunStagesResult,
     combined_email: InboundEmail,
-    roster,
+    roster: Roster,
     *,
-    llm,
+    llm: Any,
 ) -> None:
     """Shared helper for deferred field-regression clarification (IN-01, CR-02 fix).
 
@@ -67,9 +68,10 @@ def defer_field_regression_clarification(
     """
     # Step 1: Load fresh reconciliation so we can look up emp_id by submitted_name.
     post_run = repo.load_run(run_id)
-    name_to_id_post = {
+    post_reconciliation = post_run.get("reconciliation") if post_run else None
+    name_to_id_post: dict[str, Any] = {
         m["submitted_name"]: m["matched_employee_id"]
-        for m in (post_run.get("reconciliation") or [])
+        for m in (post_reconciliation or [])
         if isinstance(m, dict) and m.get("matched_employee_id")
     }
     # Step 2: Write 'asked' for each NEW field_regression issue (N2 ordering).
@@ -129,7 +131,9 @@ def defer_field_regression_clarification(
         )
 
 
-def render_asked_summary(decision, clarified_fields: dict) -> list[str]:
+def render_asked_summary(
+    decision: Decision | None, clarified_fields: dict[str, dict[str, Any]]
+) -> list[str]:
     """Render the code-owned "what we asked" lines from PERSISTED decision facts only
     (D-11-10). NEVER the LLM-drafted outbound clarification body — that anchor must
     stay deterministic and string-testable, not dependent on model phrasing.
@@ -192,7 +196,16 @@ def combined_context_email(
     return reply.model_copy(update={"body_text": combined_body})
 
 
-def clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarification") -> None:
+def clarify(
+    run_id: uuid.UUID,
+    email: InboundEmail,
+    decision: Decision,
+    roster: Roster,
+    extracted: Extracted,
+    *,
+    llm: Any,
+    purpose: str = "clarification",
+) -> None:
     """Draft a clarification, stub-send it, and pause the run at AWAITING_REPLY.
 
     The cheap DRAFT_* tier drafts the body (templated fallback on empty content so
@@ -358,7 +371,7 @@ def clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarifi
     # None (production), suggest_employees binds its own default client — passing
     # llm=None would force the cheap call onto a None client and silently degrade
     # every suggestion to the generic ask.
-    suggest_kwargs = {}
+    suggest_kwargs: dict[str, Any] = {}
     if llm is not None:
         suggest_kwargs["llm"] = llm
     suggestions = suggest_employees(
@@ -392,7 +405,7 @@ def clarify(run_id, email, decision, roster, extracted, *, llm, purpose="clarifi
             1 if _suggested_id is not None else 0,
         )
 
-    compose_kwargs = {"suggestions": suggestions}
+    compose_kwargs: dict[str, Any] = {"suggestions": suggestions}
     if llm is not None:
         compose_kwargs["llm"] = llm
     body = compose_clarification(decision, **compose_kwargs)

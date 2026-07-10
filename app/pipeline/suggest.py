@@ -25,6 +25,7 @@ NEVER raises out of this stage. The caller falls back to the generic ask.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -61,7 +62,7 @@ def suggest_employees(
     unresolved_names: list[str],
     roster: Roster,
     *,
-    llm=llm_client,
+    llm: Any = llm_client,
 ) -> dict[str, str]:
     """Suggest the likely intended roster employee for each unresolved name.
 

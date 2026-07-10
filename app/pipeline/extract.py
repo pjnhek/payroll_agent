@@ -22,6 +22,7 @@ FIX 1 — the non_numeric path is an EXTRACTION-stage parse failure:
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from app.llm import client as llm_client
 from app.llm.prompts import extract as extract_prompt
@@ -34,7 +35,7 @@ def extract(
     roster: Roster,
     *,
     run_id: uuid.UUID,
-    llm=llm_client,
+    llm: Any = llm_client,
 ) -> Extracted:
     """Extract employees + pay period from a cleaned inbound email.
 

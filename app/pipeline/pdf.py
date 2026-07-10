@@ -101,7 +101,7 @@ _FULL_WIDTH = 504.0
 _MARGIN = 54.0  # 0.75 inch margins (slightly tighter than default for a compact stub)
 
 
-def _fmt(val) -> str:
+def _fmt(val: Decimal) -> str:
     """Format a Decimal or numeric value as $X,XXX.XX."""
     return f"${val:,.2f}"
 
@@ -145,7 +145,7 @@ def _build_header_band(
     The band is implemented as a 2-column Table so the left and right
     cells sit on the same baseline without manual x/y positioning.
     """
-    left_paras: list = []
+    left_paras: list[Paragraph] = []
     if business_name:
         left_paras.append(Paragraph(business_name, _STYLE_BAND_TITLE))
     left_paras.append(Paragraph(f"Pay Period: {period_lbl}", _STYLE_BAND_PERIOD))
@@ -228,7 +228,11 @@ def _build_earnings_table(
     ]
 
     show_rate = hourly_rate is not None
-    ot_rate = (hourly_rate * Decimal("1.5")).quantize(Decimal("0.01")) if show_rate else None
+    ot_rate = (
+        (hourly_rate * Decimal("1.5")).quantize(Decimal("0.01"))
+        if hourly_rate is not None
+        else None
+    )
 
     if show_rate:
         header = [["Earnings", "Rate", "Hours", "Amount"]]

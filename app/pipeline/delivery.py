@@ -11,6 +11,7 @@ import contextlib
 import logging
 import re
 import uuid
+from typing import Any
 
 from app.db import repo
 from app.email import gateway
@@ -22,7 +23,7 @@ from app.pipeline.pdf import generate_paystub_pdf
 logger = logging.getLogger("payroll_agent.orchestrator")
 
 
-def deliver(run_id: uuid.UUID, run: dict) -> None:
+def deliver(run_id: uuid.UUID, run: dict[str, Any]) -> None:
     """Compose + send the confirmation email + per-employee PDFs.
 
     Called synchronously by the approve route. Raises freely — the caller (approve
@@ -228,5 +229,5 @@ def deliver(run_id: uuid.UUID, run: dict) -> None:
         # best-effort (suppress) — an exception type rejecting attributes must
         # never mask the real delivery failure.
         with contextlib.suppress(Exception):
-            exc.payroll_roster = roster
+            exc.payroll_roster = roster  # type: ignore[attr-defined]  # WR-04: best-effort debug attribute on an arbitrary exception, suppressed if assignment fails; never restructure — see WR-04 comment above
         raise

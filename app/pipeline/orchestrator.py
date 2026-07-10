@@ -48,10 +48,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any, cast
 
 from app.db import repo
-from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
-from app.models.roster import NameMatchResult
+from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail, PaystubLineItem
+from app.models.roster import NameMatchResult, Roster, ValidationIssue
 from app.models.status import RunStatus
 from app.pipeline import alias_learning, clarification
 from app.pipeline.calculate import calculate
@@ -76,11 +77,17 @@ class _RunStagesResult:
     """
 
     clarify_deferred: bool = False
-    matches: object = None   # list[NameMatchResult]
-    issues: object = None    # list[ValidationIssue]
+    matches: list[NameMatchResult] | None = None
+    issues: list[ValidationIssue] | None = None
 
 
-def backfill_extracted(extracted, snapshot, prior_matches, matches, resolved_drops):
+def backfill_extracted(
+    extracted: Extracted,
+    snapshot: Extracted | None,
+    prior_matches: list[NameMatchResult] | None,
+    matches: list[NameMatchResult] | None,
+    resolved_drops: set[tuple[str, str]] | None,
+) -> Extracted:
     """Fill silence fields from the pre-clarify snapshot (D-7.5-10 Phase 2, MONEY-03).
 
     Pure function with no DB calls. Operates on Pydantic-validated Extracted objects.
@@ -130,10 +137,10 @@ def backfill_extracted(extracted, snapshot, prior_matches, matches, resolved_dro
         if m.resolved and m.matched_employee_id is not None
     }
 
-    _resolved_drops = resolved_drops or set()
+    _resolved_drops: set[tuple[str, str]] = resolved_drops or set()
 
     # Build the updated employees list.
-    new_employees = []
+    new_employees: list[ExtractedEmployee] = []
     for emp in extracted.employees:
         emp_id_str = name_to_id_current.get(emp.submitted_name)  # may be None if unresolved
         snap_emp = id_to_snapshot_emp.get(emp_id_str) if emp_id_str else None
@@ -171,7 +178,7 @@ def backfill_extracted(extracted, snapshot, prior_matches, matches, resolved_dro
     )
 
 
-def run_pipeline(run_id: uuid.UUID, *, llm=None) -> None:
+def run_pipeline(run_id: uuid.UUID, *, llm: Any = None) -> None:
     """Drive one run from received → awaiting_approval (or awaiting_reply on a clarification).
 
     `llm` is the client module the stages call; defaults to each stage's own
@@ -187,7 +194,7 @@ def run_pipeline(run_id: uuid.UUID, *, llm=None) -> None:
     _run(run_id, llm=llm)
 
 
-def _run(run_id: uuid.UUID, *, llm) -> None:
+def _run(run_id: uuid.UUID, *, llm: Any) -> None:
     """Load the run, run the four judgment stages, and self-contain any failure.
 
     HIGH #1 fix: this function owns its OWN try/except (moved here from
@@ -230,7 +237,7 @@ def resume_pipeline(
     run_id: uuid.UUID,
     inbound: InboundEmail | None = None,
     *,
-    llm=None,
+    llm: Any = None,
     from_status: RunStatus = RunStatus.AWAITING_REPLY,
     overrides: dict[str, str] | None = None,
 ) -> None:
@@ -317,6 +324,7 @@ def resume_pipeline(
                 body_text="",
                 created_at=datetime.now(UTC),
             )
+        assert inbound is not None
 
         # D-11-02: write the consumed marker the INSTANT processing actually starts
         # (immediately after the winning CAS claim, before anything else runs). This
@@ -843,17 +851,17 @@ def resume_pipeline(
 
 
 def _run_stages(
-    run_id,
-    email,
-    roster,
+    run_id: uuid.UUID,
+    email: InboundEmail,
+    roster: Roster,
     *,
-    llm,
-    prior=None,
-    prior_matches=None,
-    resolved_drops=None,
-    suppress_detection=None,
-    extracted=None,
-    overrides=None,
+    llm: Any,
+    prior: Extracted | None = None,
+    prior_matches: list[NameMatchResult] | None = None,
+    resolved_drops: set[tuple[str, str]] | None = None,
+    suppress_detection: set[tuple[str, str]] | None = None,
+    extracted: Extracted | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> _RunStagesResult:
     """The shared four-stage gate path: extract → reconcile → validate → decide →
     persist → branch. Used by BOTH run_pipeline (first run) and resume_pipeline (the
@@ -934,7 +942,7 @@ def _run_stages(
     # raise) never opens a doomed transaction. Computed unconditionally here (cheap,
     # pure) and only USED below on the process branch — this keeps the persist
     # transaction's body free of anything that can raise for a business reason.
-    line_items = None
+    line_items: list[PaystubLineItem] | None = None
     if decision.final_action == "process":
         line_items = _compute_line_items(run_id, extracted, matches, roster)
 
@@ -951,6 +959,7 @@ def _run_stages(
         repo.persist_reconciliation(run_id, matches, conn=conn)  # never NULL on a clean run
 
         if decision.final_action == "process":
+            assert line_items is not None
             repo.replace_line_items(run_id, line_items, conn=conn)  # DELETE-by-run then insert
             repo.set_status(run_id, RunStatus.COMPUTED, conn=conn)
             repo.set_status(run_id, RunStatus.AWAITING_APPROVAL, conn=conn)  # HITL-01 pause
@@ -984,12 +993,17 @@ def _run_stages(
     return _RunStagesResult(clarify_deferred=clarify_deferred, matches=matches, issues=issues)
 
 
-def _compute_line_items(run_id, extracted, matches, roster):
+def _compute_line_items(
+    run_id: uuid.UUID,
+    extracted: Extracted,
+    matches: list[NameMatchResult],
+    roster: Roster,
+) -> list[PaystubLineItem]:
     """Build PaystubLineItems for the resolved (matched) employees on a process run."""
     match_by_name = {m.submitted_name: m for m in matches}
     emp_by_id = {e.id: e for e in roster.employees}
 
-    items = []
+    items: list[PaystubLineItem] = []
     for ee in extracted.employees:
         m = match_by_name.get(ee.submitted_name)
         if m is None or m.matched_employee_id is None:
@@ -1015,7 +1029,9 @@ def _compute_line_items(run_id, extracted, matches, roster):
             "hours_holiday": ee.hours_holiday,
         }
         item = calculate(
-            resolved_hours, employee, ee.contribution_401k_override
+            cast(dict[str, object], resolved_hours),
+            employee,
+            ee.contribution_401k_override,
         )
         # Stamp the real run identity + the submitted name (the per-name provenance;
         # there is no score on a deterministic resolution, D-21-01/04).

@@ -17,6 +17,7 @@ send + status transition.
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 from app.llm import client as llm_client
 from app.llm.prompts import clarify as clarify_prompt
@@ -47,7 +48,7 @@ def _field_regression_lines(gate_reasons: list[str]) -> list[str]:
 
     Returns a list of D-7.5-09 wording lines, one per field regression gate_reason.
     """
-    lines = []
+    lines: list[str] = []
     for reason in gate_reasons:
         if reason.startswith("field regression: "):
             qualified = reason[len("field regression: "):]
@@ -151,7 +152,7 @@ def compose_clarification(
     decision: Decision,
     *,
     suggestions: dict[str, str] | None = None,
-    llm=llm_client,
+    llm: Any = llm_client,
 ) -> str:
     """Draft a clarification email body for a gated run (CLAR-01).
 
@@ -175,8 +176,11 @@ def compose_clarification(
     # is VISIBLE rather than silently templating every clarification.
     api_error = False
     try:
-        body = llm.call_text(
-            "draft", messages, temperature=0.3, timeout_s=_CLARIFICATION_TIMEOUT_S
+        body = cast(
+            str | None,
+            llm.call_text(
+                "draft", messages, temperature=0.3, timeout_s=_CLARIFICATION_TIMEOUT_S
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (CLAR-01)
         # Log the failure TYPE only — no exc_info (a traceback can echo the prompt /
@@ -227,7 +231,7 @@ def clarification_subject(original_subject: str | None = None) -> str:
 
 def _confirmation_template_body(
     paystubs: list[PaystubLineItem],
-    run: dict,
+    run: dict[str, Any],
 ) -> str:
     """Deterministic confirmation floor — fires when draft times out or fails (D-10).
 
@@ -248,7 +252,9 @@ def _confirmation_template_body(
     return "\n".join(lines)
 
 
-def confirmation_subject(run: dict, original_subject: str | None = None) -> str:
+def confirmation_subject(
+    run: dict[str, Any], original_subject: str | None = None
+) -> str:
     """The confirmation email subject line (HITL-02, UI-SPEC Copywriting Contract).
 
     Format: "Payroll Confirmation — {business_name} — {pay_period_label}".
@@ -271,9 +277,9 @@ def confirmation_subject(run: dict, original_subject: str | None = None) -> str:
 
 def compose_confirmation(
     paystubs: list[PaystubLineItem],
-    run: dict,
+    run: dict[str, Any],
     *,
-    llm=llm_client,
+    llm: Any = llm_client,
     timeout_s: float = 3.0,
 ) -> str:
     """Draft a confirmation email body for an approved run (HITL-02).
@@ -316,7 +322,10 @@ def compose_confirmation(
     # falling back to the template floor. Broad except so a timeout also degrades.
     api_error = False
     try:
-        body = llm.call_text("draft", messages, temperature=0.3, timeout_s=timeout_s)
+        body = cast(
+            str | None,
+            llm.call_text("draft", messages, temperature=0.3, timeout_s=timeout_s),
+        )
     except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (D-10)
         # Log the failure TYPE only — no exc_info (traceback can echo PII, D-A1-03).
         logger.warning(
