@@ -285,7 +285,7 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     underlying claim primitive) — proving the recovery path a human operator
     actually uses, per Codex Round-2's MEDIUM finding.
     """
-    from app.main import STALE_THRESHOLD_SECONDS
+    from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     # --- Strand a run in EXTRACTING with a backdated updated_at ------------
     run_id = _seed_live_run()
@@ -311,10 +311,11 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     from fastapi.testclient import TestClient
 
     import app.main as app_main
+    import app.routes.pipeline_glue as pipeline_glue_mod
 
     dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(
-        app_main, "_run_pipeline", lambda rid: dispatched.append(rid)
+        pipeline_glue_mod, "run_pipeline_bg", lambda rid: dispatched.append(rid)
     )
 
     client = TestClient(app_main.app)
@@ -343,7 +344,7 @@ def test_parked_statuses_never_swept_live(seeded_db):
     above): a run in awaiting_reply/awaiting_approval/approved with a
     backdated updated_at must NEVER be swept — it is waiting on a HUMAN, not
     stranded."""
-    from app.main import STALE_THRESHOLD_SECONDS
+    from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     parked_statuses = [
         RunStatus.AWAITING_REPLY,

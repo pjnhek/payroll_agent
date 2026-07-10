@@ -460,10 +460,10 @@ def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypat
     """CLAR2-07: retrigger clears clarified_fields, pre_clarify_extracted,
     clarification_round, AND alias_candidates after the winning claim — and
     still dispatches the re-run (D-11-04, WR-06)."""
-    import app.main as app_main
+    import app.routes.pipeline_glue as app_main
 
     dispatched: list = []
-    monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: dispatched.append(rid))
+    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: dispatched.append(rid))
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
 
@@ -497,10 +497,10 @@ def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
     one clear_reply_context call before _run_pipeline is scheduled."""
     from datetime import datetime, timedelta
 
-    import app.main as app_main
+    import app.routes.pipeline_glue as app_main
 
     dispatched: list = []
-    monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: dispatched.append(rid))
+    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: dispatched.append(rid))
 
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
@@ -533,9 +533,9 @@ def test_clar207_stale_provenance_cannot_reproduce_after_retrigger(client, fake_
     bool(clarified)` for the re-run must see an EMPTY clarified_fields — the
     persisted/derived state a fresh run would see — not the pre-retrigger
     provenance. Asserted on the persisted column (not a rendered label)."""
-    import app.main as app_main
+    import app.routes.pipeline_glue as app_main
 
-    monkeypatch.setattr(app_main, "_run_pipeline", lambda rid: None)
+    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: None)
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
     # Sanity: before retrigger, clarified_fields is genuinely non-empty (the

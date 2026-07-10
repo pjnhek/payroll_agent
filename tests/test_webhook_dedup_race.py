@@ -45,17 +45,18 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
     from fastapi.testclient import TestClient
 
     import app.main as app_main
+    import app.routes.pipeline_glue as pipeline_glue_mod
 
     # Codex MEDIUM (SC2 test isolation): TestClient runs FastAPI BackgroundTasks
     # SYNCHRONOUSLY, so the "winning" thread's request would otherwise launch the
-    # REAL pipeline (real LLM calls) inside this test. Monkeypatch _run_pipeline to
-    # a no-op BEFORE firing the two threads so this test proves ONLY the
+    # REAL pipeline (real LLM calls) inside this test. Monkeypatch run_pipeline_bg
+    # to a no-op BEFORE firing the two threads so this test proves ONLY the
     # dedup/race property against real Postgres. This test's message_id is fresh
     # and carries no reply headers, so the race can only ever hit the new-run
-    # path — _resume_pipeline is not monkeypatched because it cannot be reached.
+    # path — resume_pipeline_bg is not monkeypatched because it cannot be reached.
     pipeline_calls: list = []
     monkeypatch.setattr(
-        app_main, "_run_pipeline", lambda run_id: pipeline_calls.append(run_id)
+        pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
     )
 
     client = TestClient(app_main.app)

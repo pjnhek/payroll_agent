@@ -42,12 +42,13 @@ from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
-from app.main import IN_FLIGHT_STATUSES, app
+from app.main import app
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
 from app.pipeline.clarification import MAX_CLARIFICATION_ROUNDS
 from app.pipeline.clarification import clarify as _clarify
+from app.routes.runs import IN_FLIGHT_STATUSES
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -310,9 +311,9 @@ def test_needs_operator_excluded_from_retrigger_stale_statuses():
     not a generic retrigger-from-original (D-11-06)."""
     import inspect
 
-    import app.main as main_mod
+    import app.routes.runs as runs_mod
 
-    src = inspect.getsource(main_mod.retrigger)
+    src = inspect.getsource(runs_mod.retrigger)
     tree = ast.parse(src)
 
     stale_sets = [node for node in ast.walk(tree) if isinstance(node, ast.Set)]

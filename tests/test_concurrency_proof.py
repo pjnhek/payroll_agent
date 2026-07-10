@@ -102,11 +102,12 @@ def _stub_pipeline_and_send(monkeypatch):
 
     `.env` carries LIVE DeepSeek/Kimi/Resend keys. TestClient runs FastAPI
     BackgroundTasks SYNCHRONOUSLY, and the approve route calls `_deliver`
-    synchronously inline (main.py:764) — any unstubbed path here would fire a
-    real LLM call or a real Resend send on every concurrent request, flaking
-    the proof and burning API credits. Returns (pipeline_calls, deliver_calls).
+    synchronously inline (app/routes/runs.py's approve()) — any unstubbed path
+    here would fire a real LLM call or a real Resend send on every concurrent
+    request, flaking the proof and burning API credits. Returns
+    (pipeline_calls, deliver_calls).
     """
-    import app.main as app_main
+    import app.routes.pipeline_glue as pipeline_glue_mod
 
     # Surfaces A + C: create_run does not itself schedule the pipeline (the
     # direct repo-seam call bypasses the webhook route entirely), but the
@@ -114,15 +115,16 @@ def _stub_pipeline_and_send(monkeypatch):
     # the module's isolation invariant is uniform across all three surfaces.
     pipeline_calls: list = []
     monkeypatch.setattr(
-        app_main, "_run_pipeline", lambda run_id: pipeline_calls.append(run_id)
+        pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
     )
 
-    # Surface B: `main.py`'s approve() route calls `delivery.deliver` via a
-    # top-level `from app.pipeline import delivery` import (Phase 13 Plan 02 —
-    # this used to be a function-body `from app.pipeline.orchestrator import
-    # _deliver`, patched on the orchestrator module; that gap is now closed, so
-    # this patches the delivery module's own `deliver` attribute, which is what
-    # main.py's module-object reference actually resolves through).
+    # Surface B: `app/routes/runs.py`'s approve() route calls `delivery.deliver`
+    # via a top-level `from app.pipeline import delivery` import (Phase 13 Plan
+    # 02 — this used to be a function-body `from app.pipeline.orchestrator
+    # import _deliver`, patched on the orchestrator module; that gap is now
+    # closed, so this patches the delivery module's own `deliver` attribute,
+    # which is what runs.py's module-object reference actually resolves
+    # through).
     deliver_calls: list = []
     monkeypatch.setattr(
         "app.pipeline.delivery.deliver",

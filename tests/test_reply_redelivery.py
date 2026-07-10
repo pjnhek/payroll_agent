@@ -57,18 +57,19 @@ def client(fake_repo, monkeypatch):
 
 @pytest.fixture
 def resume_spy(monkeypatch):
-    """Monkeypatch app.main._resume_pipeline to a spy that records calls
-    instead of driving the real orchestrator — this module only needs to
-    prove WHETHER/WITH-WHAT a re-schedule happened, not exercise the full
-    resume pipeline (that is test_combined_context.py's job)."""
-    import app.main as app_main
+    """Monkeypatch app.routes.pipeline_glue.resume_pipeline_bg to a spy that
+    records calls instead of driving the real orchestrator — this module
+    only needs to prove WHETHER/WITH-WHAT a re-schedule happened, not
+    exercise the full resume pipeline (that is test_combined_context.py's
+    job)."""
+    import app.routes.pipeline_glue as pipeline_glue_mod
 
     calls: list[tuple] = []
 
     def _spy(run_id, inbound):
         calls.append((run_id, inbound))
 
-    monkeypatch.setattr(app_main, "_resume_pipeline", _spy)
+    monkeypatch.setattr(pipeline_glue_mod, "resume_pipeline_bg", _spy)
     return calls
 
 
@@ -256,7 +257,7 @@ def test_redelivery_to_non_awaiting_reply_run_no_ops(client, fake_repo, resume_s
 def test_runs_list_reschedules_stale_unconsumed_reply(client, fake_repo, resume_spy):
     """GET /runs re-schedules _resume_pipeline for a stale unconsumed reply
     against an awaiting_reply run (D-11-05)."""
-    from app.main import STALE_THRESHOLD_SECONDS
+    from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     message_id = f"<stranded-{uuid.uuid4()}@metrodeli.example>"
     old_created_at = datetime.now(UTC) - timedelta(
@@ -312,7 +313,7 @@ def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resum
     """A needs_operator run with a stale unconsumed reply must NEVER be
     re-scheduled by the runs-list load — the query scope structurally
     excludes it (D-11-06: needs_operator exits only via /resolve or reject)."""
-    from app.main import STALE_THRESHOLD_SECONDS
+    from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     message_id = f"<needs-operator-{uuid.uuid4()}@metrodeli.example>"
     old_created_at = datetime.now(UTC) - timedelta(
@@ -390,7 +391,7 @@ def test_stranded_sweep_never_resumes_fix5_failed_reply(client, fake_repo, resum
 
     MUST FAIL before the fix (the sweep loop only checked consumed_round/
     run_id/status, never the sender) and MUST PASS after."""
-    from app.main import STALE_THRESHOLD_SECONDS
+    from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     message_id = f"<stranded-spoofed-{uuid.uuid4()}@metrodeli.example>"
     old_created_at = datetime.now(UTC) - timedelta(

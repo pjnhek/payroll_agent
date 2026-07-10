@@ -67,7 +67,7 @@ def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, mon
     D-13b boundary — NOT leave the run silently stuck at APPROVED and return a raw 500
     (INGEST-05 'nothing silently hangs'). The fix moved load_run inside the try/except.
     """
-    import app.main as main_mod
+    import app.routes.runs as runs_mod
 
     run_id = _run_at_awaiting_approval(fake_repo)
 
@@ -78,7 +78,7 @@ def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, mon
     def _boom(rid, conn=None):
         raise RuntimeError("simulated transient DB failure during load_run")
 
-    monkeypatch.setattr(main_mod.repo, "load_run", _boom)
+    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)
 
     r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
     assert r.status_code == 303, (

@@ -178,12 +178,13 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
         lambda from_addr, conn=None: _uuid_module.UUID("cccccccc-0000-0000-0000-000000000001"),
     )
 
-    # Spy on _run_pipeline by patching it at app.main (the private bg task function).
-    import app.main as _main
+    # Spy on run_pipeline_bg by patching it at app.routes.pipeline_glue (the
+    # promoted-public bg task function).
+    import app.routes.pipeline_glue as _main
     pipeline_runs: list = []
     monkeypatch.setattr(
         _main,
-        "_run_pipeline",
+        "run_pipeline_bg",
         lambda run_id, conn=None: pipeline_runs.append(run_id),
     )
     # Also patch find_awaiting_reply_for_header so the reply-routing path doesn't interfere.

@@ -229,10 +229,12 @@ def test_late_reply_no_new_run_no_background_task(client, fake_repo, mock_llm, m
 
     called = {"resume": False, "run": False}
     monkeypatch.setattr(
-        "app.main._resume_pipeline", lambda *a, **k: called.__setitem__("resume", True)
+        "app.routes.pipeline_glue.resume_pipeline_bg",
+        lambda *a, **k: called.__setitem__("resume", True),
     )
     monkeypatch.setattr(
-        "app.main._run_pipeline", lambda *a, **k: called.__setitem__("run", True)
+        "app.routes.pipeline_glue.run_pipeline_bg",
+        lambda *a, **k: called.__setitem__("run", True),
     )
 
     reply_payload = {
@@ -298,7 +300,7 @@ def test_reply_and_late_reply_rows_linked_to_run(client, fake_repo, mock_llm, mo
         send_state="sent",
     )
     # Keep the resume out of the way — this test asserts the LINK, not the resume.
-    monkeypatch.setattr("app.main._resume_pipeline", lambda *a, **k: None)
+    monkeypatch.setattr("app.routes.pipeline_glue.resume_pipeline_bg", lambda *a, **k: None)
 
     # 1) reply_candidate: run parked at awaiting_reply → reply row must link.
     fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value

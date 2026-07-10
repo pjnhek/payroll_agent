@@ -1076,17 +1076,17 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
 
     # We cannot easily spy on BackgroundTasks.add_task in TestClient mode,
     # so we monkeypatch the internal pipeline functions and assert which was called.
-    import app.main as _main
+    import app.routes.pipeline_glue as _main
     resume_called: list = []
     monkeypatch.setattr(
         _main,
-        "_resume_pipeline",
+        "resume_pipeline_bg",
         lambda run_id, reply_email_id, conn=None: resume_called.append(run_id),
     )
     run_pipeline_called: list = []
     monkeypatch.setattr(
         _main,
-        "_run_pipeline",
+        "run_pipeline_bg",
         lambda run_id, conn=None: run_pipeline_called.append(run_id),
     )
     # Also patch insert_inbound_email to succeed
@@ -1557,8 +1557,8 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
         "find_any_run_for_header",
         lambda *, in_reply_to, references_header, conn=None: None,
     )
-    import app.main as _main
-    monkeypatch.setattr(_main, "_run_pipeline", lambda run_id, conn=None: None)
+    import app.routes.pipeline_glue as _main
+    monkeypatch.setattr(_main, "run_pipeline_bg", lambda run_id, conn=None: None)
 
     # 09-03 (DATA-02): inbound() now wraps its ingest sequence in one
     # `with repo.get_connection() as conn: with conn.transaction(): ...` block.

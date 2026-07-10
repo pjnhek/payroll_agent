@@ -544,11 +544,11 @@ def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
 
     # _route_reply must NOT be called; track any call via a spy.
     route_reply_calls = []
-    import app.main as _main
+    import app.routes.pipeline_glue as _main
 
     monkeypatch.setattr(
         _main,
-        "_route_reply",
+        "route_reply",
         lambda email, cleaned, bt: route_reply_calls.append(1) or None,
     )
 
@@ -589,11 +589,11 @@ def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch):
         lambda rid, purpose=None, conn=None: None,
     )
 
-    import app.main as _main
+    import app.routes.pipeline_glue as _main
     route_reply_calls = []
     monkeypatch.setattr(
         _main,
-        "_route_reply",
+        "route_reply",
         lambda email, cleaned, bt: route_reply_calls.append(1) or None,
     )
 
@@ -667,14 +667,14 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
 
     # Spy on _route_reply to capture the synthetic InboundEmail it receives.
     captured = {}
-    import app.main as _main
+    import app.routes.pipeline_glue as _main
 
     def spy_route_reply(email, cleaned, bt):
         captured["email"] = email
         captured["cleaned"] = cleaned
         return None  # simulate: not matched (so simulate-reply 303s cleanly)
 
-    monkeypatch.setattr(_main, "_route_reply", spy_route_reply)
+    monkeypatch.setattr(_main, "route_reply", spy_route_reply)
 
     response = client.post(
         f"/runs/{run_id}/simulate-reply",

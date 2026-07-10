@@ -529,9 +529,9 @@ def test_webhook_uses_both_header_lookups():
     find_any_run_for_header for late-reply observability (FIX 10)."""
     import inspect
 
-    import app.main as main_mod
+    import app.routes.webhook as webhook_mod
 
-    src = inspect.getsource(main_mod)
+    src = inspect.getsource(webhook_mod)
     assert "find_awaiting_reply_for_header" in src
     assert "find_any_run_for_header" in src
 

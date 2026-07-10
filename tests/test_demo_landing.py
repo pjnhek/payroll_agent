@@ -807,9 +807,13 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    # Patch _run_pipeline to be a no-op
-    import app.main as main_mod
-    monkeypatch.setattr(main_mod, "_run_pipeline", lambda run_id: None, raising=False)
+    # Patch run_pipeline_bg to be a no-op. raising=True (the default) is used
+    # deliberately: if run_pipeline_bg is ever renamed again, this patch must
+    # fail LOUDLY (AttributeError) instead of silently becoming a no-op that
+    # would let the real route call the REAL pipeline_glue.run_pipeline_bg
+    # against this repo's live LLM/gateway keys (T-13-14).
+    import app.routes.pipeline_glue as pipeline_glue_mod
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
 
     from fastapi.testclient import TestClient
 
@@ -873,8 +877,11 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    import app.main as main_mod
-    monkeypatch.setattr(main_mod, "_run_pipeline", lambda run_id: None, raising=False)
+    # raising=True (the default) is used deliberately here: if run_pipeline_bg
+    # is ever renamed again, this patch must fail LOUDLY instead of silently
+    # becoming a no-op (T-13-14).
+    import app.routes.pipeline_glue as pipeline_glue_mod
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
 
     from fastapi.testclient import TestClient
 
@@ -930,8 +937,11 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    import app.main as main_mod
-    monkeypatch.setattr(main_mod, "_run_pipeline", lambda run_id: None, raising=False)
+    # raising=True (the default) is used deliberately here: if run_pipeline_bg
+    # is ever renamed again, this patch must fail LOUDLY instead of silently
+    # becoming a no-op (T-13-14).
+    import app.routes.pipeline_glue as pipeline_glue_mod
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
 
     from fastapi.testclient import TestClient
 
