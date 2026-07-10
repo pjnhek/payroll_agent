@@ -295,3 +295,26 @@ MEDIUM (13-04): relative-import resolution must apply the same check after resol
 ## Resolution addendum (2026-07-10T03:50:53Z)
 
 Both findings from this round are FIXED and verified: CX-CODE-01 (= WR-05 in 13-REVIEW.md) in commit 32302e9 — dotted-attribute-chain resolution + root->root binding-semantics correction + module_g fixture shape, live probe matrix correct for all three import shapes; CX-CODE-02 (= WR-06) in commit 3e728ce — `_nulltx` re-exported. Suite 615 passed / 50 skipped, ruff clean. The round's NOT READY verdict is resolved; cumulative review state: 6/6 warnings fixed across 2 fix iterations (see 13-REVIEW-FIX.md).
+
+---
+
+# Cross-AI CODE Review — Phase 13 (Round 2, confirming, Codex)
+
+- reviewed_at: 2026-07-10T04:05:31Z
+- reviewer: codex (codex-cli 0.144.0, `codex exec`)
+- scope: confirming pass on fix commits 32302e9/3e728ce + full phase diff 356fc41..795c1d2
+- verdict: READY — CX-CODE-01 and CX-CODE-02 fixes both CONFIRMED via fresh adversarial probes (aliased/from-bound/unaliased-dotted/relative/facade-chain shapes all correct); no CRITICAL/HIGH/MEDIUM; 2 new LOW guard-precision items recorded as IN-05/IN-06 in 13-REVIEW.md
+
+## Codex Output (verbatim)
+
+  1. **LOW — verified**: [tests/test_bound01_private_imports.py:307](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:307>) only verifies first-party resolution when the receiver has a dotted suffix. Thus `import pathlib; pathlib._flavour` and `import fastapi as f; f._compat` falsely fail BOUND-01. This predates WR-05 but is a newly found Phase 13 guard defect.
+  
+  2. **LOW — verified, synthetic only**: [tests/test_bound01_private_imports.py:260](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:260>) builds bindings without scope/shadow analysis. After `import app.db.repo.runs`, `def f(app): return app.db.repo.runs._scrub` is falsely flagged even though the parameter shadows the import. No live-tree instance exists.
+  
+  CX-CODE-01 fix soundness: **confirmed**. Aliased imports, `from`-bound modules, unaliased dotted imports, dotted facade exemptions, relative imports, and facade-to-submodule chains all behaved correctly in fresh in-memory probes; `module_g` explicitly asserts both detection and exemption at [lines 560](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:560>) and [567](</Users/pnhek/usf msds/github/payroll_agent/tests/test_bound01_private_imports.py:567>). Dynamic `importlib` remains outside this static-binding guard’s scope, with no production use.
+  
+  CX-CODE-02 fix soundness: **confirmed**. `_nulltx` is documented, imported, exported via `__all__`, identity-matches `_shared._nulltx`, and works as a context manager.
+  
+  The two remediation commits contain no unrelated functional changes. Live BOUND-01 scan, full AST parsing, and Ruff pass. The pytest fixture using `tmp_path` could not run under this read-only sandbox; its live gate passed directly, and equivalent module_g probes passed.
+  
+  **Overall verdict: READY** — no CRITICAL/HIGH/MEDIUM findings; the two LOW guard-precision issues can be tightened separately.

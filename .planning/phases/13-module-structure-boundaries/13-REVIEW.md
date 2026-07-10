@@ -57,10 +57,10 @@ files_reviewed_list:
 findings:
   critical: 0
   warning: 6
-  info: 4
-  total: 10
+  info: 6
+  total: 12
 status: issues_found
-amended: "2026-07-10 — WR-05/WR-06 added from Codex post-execution cross-AI review (13-REVIEWS.md); WR-01..WR-04 already FIXED (13-REVIEW-FIX.md, commits 3363ca3/96680cd/48a5b64/32ec59d) — do NOT re-apply"
+amended: "2026-07-10 — WR-05/WR-06 added from Codex R1 (both FIXED, iteration 2); IN-05/IN-06 added from Codex R2 confirming round (verdict READY); WR-01..WR-04 already FIXED (13-REVIEW-FIX.md, commits 3363ca3/96680cd/48a5b64/32ec59d) — do NOT re-apply"
 ---
 
 # Phase 13: Code Review Report
@@ -176,6 +176,18 @@ else:
 **File:** `app/pipeline/orchestrator.py:41-42`; `app/db/repo/emails.py:266` (and similar prose in `runs.py`)
 **Issue:** `orchestrator.py`'s module docstring says `delivery.deliver` "is called directly from app/main.py's approve() route" — the approve route now lives in `app/routes/runs.py`; `app/main.py` is assembly-only. `emails.py`'s `get_inbound_by_message_id` docstring likewise references "app.main's `_row_to_inbound` helper," which is now the public `app/routes/pipeline_glue.row_to_inbound`. Harmless today, but stale location pointers are exactly what makes the next refactor's seam-tracing slower.
 **Fix:** Update both references to `app/routes/runs.py::approve` and `app.routes.pipeline_glue.row_to_inbound`.
+
+### IN-05: BOUND-01 guard falsely flags third-party dotted private access (source: Codex round 2, verified; guard-precision, no live instance)
+
+**File:** `tests/test_bound01_private_imports.py:307`
+**Issue:** First-party resolution is only verified when the receiver has a dotted suffix, so `import pathlib; pathlib._flavour` or `import fastapi as f; f._compat` would falsely fail BOUND-01. Predates WR-05 but newly found. Zero live instances; would only bite if app code legitimately needs a third-party `_private`.
+**Fix:** Apply the first-party module-file check uniformly before flagging suffix-less receivers.
+
+### IN-06: BOUND-01 guard has no scope/shadow analysis (source: Codex round 2, verified synthetic-only)
+
+**File:** `tests/test_bound01_private_imports.py:260`
+**Issue:** After `import app.db.repo.runs`, a function `def f(app): return app.db.repo.runs._scrub` is falsely flagged — the parameter shadows the import binding. Purely synthetic; no live-tree instance.
+**Fix:** Only if it ever bites: track local bindings per-scope (FunctionDef args/assignments) before resolving receivers.
 
 ---
 
