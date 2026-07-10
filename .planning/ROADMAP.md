@@ -91,28 +91,38 @@ Plans:
   2. mypy runs with zero errors over the rest of the repo (`eval/`, `scripts/`, `tests/`) — there is no type-checking blind spot anywhere in the codebase.
   3. The CI workflow from Phase 12 is extended with a blocking mypy step, so a push that introduces a type error fails CI the same way a lint or test failure does.
 
-**Plans**: 9 plans
+**Plans**: 10 plans *(replanned 2026-07-10 after Codex cross-AI review — waves follow mypy's import traversal, not file ownership alone)*
 Plans:
 **Wave 1**
 
-- [ ] 14-01-PLAN.md — mypy config (strict + pydantic plugin + tests/reportlab overrides), D-08 bug fixes (eval/run_eval.py llm_client import, gateway.py TypedDict/ResponseDict cast), federal_withholding.py BracketRow fix
+- [ ] 14-01-PLAN.md — mypy config (strict + pydantic plugin + tests/reportlab overrides), D-08 bug fix (eval/run_eval.py llm_client import, test-first), gateway.py ResponseDict Protocol+cast, federal_withholding.py BracketRow fix
 
-**Wave 2** *(blocked on 14-01 completion)*
+**Wave 2** *(blocked on 14-01)*
 
-- [ ] 14-02-PLAN.md — Annotate app/db/ (incl. repo/ package), app/models/, app/llm/, app/config.py to mypy-clean
-- [ ] 14-03-PLAN.md — Annotate app/pipeline/ (money-path core + delivery D-09 ignore) and app/main.py to mypy-clean
-- [ ] 14-04-PLAN.md — Annotate app/routes/ and app/email/clean.py to mypy-clean
+- [ ] 14-02-PLAN.md — Annotate the typed substrate: app/config.py, app/models/, app/llm/, then app/db/ (incl. repo/ package) to mypy-clean
+
+**Wave 3** *(blocked on 14-02 — pipeline/email import the substrate)*
+
+- [ ] 14-03-PLAN.md — Annotate app/pipeline/ (money-path core + delivery D-09 ignore) and app/email/ (gateway residuals + clean.py) to mypy-clean
+
+**Wave 4** *(blocked on 14-02 + 14-03 — routes/eval import db+pipeline+gateway)*
+
+- [ ] 14-04-PLAN.md — Annotate app/routes/ and app/main.py to mypy-clean
 - [ ] 14-05-PLAN.md — Annotate eval/ and scripts/ to mypy-clean
 
-**Wave 3** *(blocked on Wave 2 completion)*
+**Wave 5** *(blocked on Wave 4 — tests import app incl. routes/main and eval)*
 
-- [ ] 14-06-PLAN.md — Annotate tests/ group 1 (19 files) to mypy-clean
+- [ ] 14-06-PLAN.md — Annotate tests/ group 1 (19 files + tests/__init__.py) to mypy-clean
 - [ ] 14-07-PLAN.md — Annotate tests/ group 2 (18 files incl. conftest.py) to mypy-clean
-- [ ] 14-08-PLAN.md — Annotate tests/ group 3 (18 files), confirm full-repo mypy clean
+- [ ] 14-08-PLAN.md — Annotate tests/ group 3 (18 files) to mypy-clean
 
-**Wave 4** *(blocked on Wave 3 completion)*
+**Wave 6** *(blocked on Wave 5 — runs solo)*
 
-- [ ] 14-09-PLAN.md — Wire typecheck CI job, red-proof checkpoint, VERIFICATION.md evidence
+- [ ] 14-09-PLAN.md — Full-repo integration gate: bare `uv run mypy` exits 0, residual cross-module fixes owned here
+
+**Wave 7** *(blocked on 14-09)*
+
+- [ ] 14-10-PLAN.md — Wire typecheck CI job, red-proof checkpoint, commit VERIFICATION.md evidence post-approval
 
 ### Phase 15: Comment Hygiene & Deferred-Polish Triage
 
