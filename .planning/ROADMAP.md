@@ -137,7 +137,26 @@ Plans:
   4. Todo 260623-01 (Phase 05 review warnings) is resolved or explicitly dispositioned — WR-01 threading-after-retrigger is verified, and WR-02's Phase-8 pool-singleton fix is confirmed and the todo closed.
   5. Todo 260623-05 (fixture 10's `fixture_category` label) is corrected, and the eval chart's per-category grouping is verified unaffected by the fix.
 
-**Plans**: TBD
+**Plans**: 10 plans
+Plans:
+**Wave 1**
+
+- [ ] 15-01-PLAN.md — POLISH-01 code work, test-first: WR-01 hermetic crash→retrigger→send threading regression test, WR-05 path-containment fix in eval_view, INFO-02 retry-prompt scrub
+- [ ] 15-02-PLAN.md — Sweep eval/ + scripts/ comments; POLISH-02 fixture-10 relabel to "typo" with atomic hermetic regeneration (summary.json + chart.svg) and todo 260623-05 closure
+- [ ] 15-03-PLAN.md — Sweep app/pipeline orchestrator.py, clarification.py, delivery.py (heaviest ticket-comment files, D-02 depth)
+- [ ] 15-04-PLAN.md — Sweep the money-core (calculate/tax tables/withholding/decide/validate), remaining pipeline stages, and app/models/
+- [ ] 15-05-PLAN.md — COMM-02 real module-purpose docstrings across the split DB repo/ package + sweep seed/bootstrap/supabase + schema.sql comments (parity-safe)
+- [ ] 15-06-PLAN.md — D-06 test renames (functions + 2 file renames, collect-count-neutral) + sweep the eight rename-affected test files
+- [ ] 15-07-PLAN.md — Sweep tests group B: conftest.py + calculation/persistence/alias test cluster (12 files)
+- [ ] 15-08-PLAN.md — Sweep tests group C: gateway/threading/validation/guard/integration cluster (14 files)
+
+**Wave 2** *(blocked on 15-01)*
+
+- [ ] 15-09-PLAN.md — Sweep app/routes/, llm/, email/, config, template + CSS (incl. the user-visible demo caption) + the sixteen remaining test files
+
+**Wave 3** *(blocked on all prior plans)*
+
+- [ ] 15-10-PLAN.md — Comment-provenance guard test (D-07..D-09, rides existing CI test job) + straggler fixes + POLISH-01 seven-item disposition record, todo 260623-01 closure, STATE.md deferred-items update
 
 ## Backlog
 
