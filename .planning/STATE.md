@@ -5,7 +5,7 @@ milestone_name: — Production-Ready Codebase
 current_phase: 15
 current_phase_name: Comment Hygiene & Deferred-Polish Triage
 status: ready
-stopped_at: Phase 15 context gathered
+stopped_at: Phase 15 planned (10 plans, 3 waves)
 last_updated: "2026-07-11T02:23:33.368Z"
 last_activity: 2026-07-10
 last_activity_desc: "Completed quick task 260710-iw0: recruiter-first README rewrite and claim audit"
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v3 makes the codebase read as production-quality: enforced CI, right-sized modules, full type-checking, constraint-documenting comments.**
-**Current focus:** Phase 14 — full-type-checking-mypy
+**Current focus:** Phase 15 — comment-hygiene-deferred-polish-triage
 
 ## Current Position
 
 Phase: 15 — Comment Hygiene & Deferred-Polish Triage
-Plan: Not started
-Status: Not started
-Last activity: 2026-07-10 — Completed quick task 260710-iw0: recruiter-first README rewrite and claim audit
+Plan: 0/10 complete (3 waves)
+Status: Ready to execute
+Last activity: 2026-07-11 — Phase 15 planned: 10 plans in 3 waves, checker passed after 1 revision
 
 ## Performance Metrics
 
