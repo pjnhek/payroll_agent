@@ -326,14 +326,20 @@ Not applicable in the usual sense (no external ecosystem). The relevant "current
 | A1 | Pydantic 2.13 `ValidationError.errors()` accepts `include_input=False, include_url=False` for the INFO-02 scrub | Don't Hand-Roll / POLISH-01 | Low — fall back to formatting only `loc`/`type` from `exc.errors()` dicts, which exists in all v2 releases. Verify with `uv run python -c "..."` during planning |
 | A2 | `_assert_regression` compares per-category aggregates (its docstring says "ALL scored metrics"; I verified confusion-matrix + overall comparisons directly, per-category blocks were below the read window) | POLISH-02 | None in practice — the safe plan (regenerate summary.json atomically with the relabel) is correct whether or not per-category is compared |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four resolved during planning — owning plan noted per question.
 
 1. **Do requirement IDs (CALC-03, DASH-01, BOUND-01…) and secondary provenance (`T-8-07`, `Codex HIGH-2`, `finding #1`, `R2-MEDIUM`, `OPS2-01`, `NEW-1`) get guard-enforced or only sweep-rewritten?**
+   - RESOLVED → plan 15-10 Task 1: the guard enforces exactly the D-08 subset (secondary shapes appended only if a full-tree run shows zero false positives); the sweep plans handle the rest editorially, and requirement IDs never match.
    - What we know: D-08 enumerates the blocklist and demands zero false positives; D-01/D-03 demand sweeping ALL process references. Requirement IDs arguably aren't "process history" — they map to REQUIREMENTS.md which lives in `.planning/` (invisible to the future maintainer per the audience test), yet they are the codebase's requirement-traceability convention.
    - Recommendation: guard enforces exactly D-08's list (append `R2-\d`, `\bOPS2?-\d`, `T-\d+-\d+` only if the final corpus shows zero FPs); the sweep rewrites everything under D-01 judgment, including requirement-ID prose where it reads as provenance ("CLAR-04 purpose-aware idempotency guard (finding #1)" → keep the purpose-aware idempotency explanation, drop the labels). Planner should make this call explicit per D-08's "tune the final regex set."
 2. **Test file renames (`test_cr_regressions.py`, `test_cr01_classify_union.py`)** — D-06 covers function names only. Renaming the files is cleaner (their names ARE ticket provenance) but touches nothing CI references. Claude's-discretion; recommend renaming both (e.g. `test_alias_and_run_column_regressions.py`, `test_reply_classify_union.py`) with `git mv` in the same commit as their function renames.
+   - RESOLVED → plan 15-06 Task 1: both files renamed via `git mv` to the recommended names, with collect-count identity enforced against a pre-rename baseline.
 3. **Dead `"computing"` badge-map entry** (templating.py) — not any RunStatus member. Removing it is a one-line behavior-neutral cleanup adjacent to INFO-01's disposition; include or leave, planner's call.
+   - RESOLVED → plan 15-09 sweep rubric: deliberately left in place (behavior edits beyond 15-01's three sanctioned fixes are out of phase scope); plan 15-10 Task 2 documents the call in the disposition record.
 4. **`run_detail.html:108` user-visible text "(demo only — Phase 6 uses real inbound webhook)"** — this is rendered UI copy, not a comment; the sweep should rewrite it ("demo only — production uses the real inbound webhook") since it faces the hiring-manager audience directly.
+   - RESOLVED → plan 15-09 Task 2: caption rewritten to "(demo only — production uses the real inbound webhook)", with a pre-check for any test pinning the old wording.
 
 ## Environment Availability
 
