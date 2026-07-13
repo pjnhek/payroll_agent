@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v3
 milestone_name: — Production-Ready Codebase
 current_phase: 15
-current_phase_name: comment-hygiene-deferred-polish-triage
-status: executing
-stopped_at: Phase 15 planned (11 plans, 3 waves)
-last_updated: "2026-07-13T17:23:56.650Z"
+status: ready
+stopped_at: v3 milestone complete — all 4 phases shipped
+last_updated: "2026-07-13T21:27:29.153Z"
 last_activity: 2026-07-13
-last_activity_desc: Phase 15 execution started
+last_activity_desc: Phase 15 complete
 progress:
   total_phases: 4
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 29
-  completed_plans: 18
-  percent: 62
+  completed_plans: 29
+  percent: 100
+current_phase_name: comment-hygiene-deferred-polish-triage
 ---
 
 # Project State
@@ -24,20 +24,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v3 makes the codebase read as production-quality: enforced CI, right-sized modules, full type-checking, constraint-documenting comments.**
-**Current focus:** Phase 15 — comment-hygiene-deferred-polish-triage
+**Current focus:** v3 milestone COMPLETE. Next: /gsd-complete-milestone (archive + tag v3).
 
 ## Current Position
 
-Phase: 15 (comment-hygiene-deferred-polish-triage) — EXECUTING
-Plan: 1 of 11
-Status: Executing Phase 15
-Last activity: 2026-07-13 — Phase 15 execution started
+Phase: 15 — Comment Hygiene & Deferred-Polish Triage (COMPLETE)
+Plan: 11/11 complete
+Status: v3 milestone COMPLETE — all 4 phases (12, 13, 14, 15) shipped
+Last activity: 2026-07-13 — Phase 15 complete
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 61
+- Total plans completed: 72
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -59,6 +59,7 @@ Last activity: 2026-07-13 — Phase 15 execution started
 | 12 | 4 | - | - |
 | 13 | 4 | - | - |
 | 14 | 10 | - | - |
+| 15 | 11 | - | - |
 
 **Recent Trend:**
 

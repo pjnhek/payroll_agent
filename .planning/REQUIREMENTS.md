@@ -28,9 +28,9 @@
 
 ### Comment Hygiene (COMM)
 
-- [ ] **COMM-01**: Ticket-ID/provenance comments (`D-21-01`, `FIX B`, `CR-01`, `(review fix)`, `Pitfall #6`…) are stripped across `app/`, preserving the constraints they document as plain maintainer-facing comments
-- [ ] **COMM-02**: The hand-maintained function-index docstring style (repo.py's 76-line table of contents) is replaced with short module-purpose statements across the split DB modules
-- [ ] **COMM-03**: Module docstrings state purpose and invariants, not phase history or review provenance
+- [x] **COMM-01**: Ticket-ID/provenance comments (`D-21-01`, `FIX B`, `CR-01`, `(review fix)`, `Pitfall #6`…) are stripped across `app/`, preserving the constraints they document as plain maintainer-facing comments
+- [x] **COMM-02**: The hand-maintained function-index docstring style (repo.py's 76-line table of contents) is replaced with short module-purpose statements across the split DB modules
+- [x] **COMM-03**: Module docstrings state purpose and invariants, not phase history or review provenance
 
 ### Module Boundaries (BOUND)
 
@@ -38,8 +38,8 @@
 
 ### Deferred-Polish Triage (POLISH)
 
-- [ ] **POLISH-01**: Phase 05 review warnings (todo 260623-01) are resolved or explicitly dispositioned — WR-01 threading-after-retrigger verified; WR-02 pool singleton was already fixed in Phase 8 (verify and close the todo)
-- [ ] **POLISH-02**: Fixture 10's `fixture_category` label is corrected and the eval chart's per-category grouping verified unaffected (todo 260623-05)
+- [x] **POLISH-01**: Phase 05 review warnings (todo 260623-01) are resolved or explicitly dispositioned — WR-01 threading-after-retrigger verified; WR-02 pool singleton was already fixed in Phase 8 (verify and close the todo)
+- [x] **POLISH-02**: Fixture 10's `fixture_category` label is corrected and the eval chart's per-category grouping verified unaffected (todo 260623-05)
 
 ## Future Requirements
 

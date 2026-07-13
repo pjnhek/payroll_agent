@@ -189,4 +189,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
-| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete   | 2026-07-13 |
+| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
