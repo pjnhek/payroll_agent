@@ -1,9 +1,12 @@
 ---
 phase: 15
 reviewers: [codex]
-review_rounds: 2
-reviewed_at: 2026-07-13T15:43:29Z
-plans_reviewed: [15-01-PLAN.md, 15-02-PLAN.md, 15-03-PLAN.md, 15-04-PLAN.md, 15-05-PLAN.md, 15-06-PLAN.md, 15-07-PLAN.md, 15-08-PLAN.md, 15-09-PLAN.md, 15-10-PLAN.md]
+review_rounds: 3
+reviewed_at: 2026-07-13T00:00:00Z
+plans_reviewed: [15-01-PLAN.md, 15-02-PLAN.md, 15-03-PLAN.md, 15-04-PLAN.md, 15-05-PLAN.md, 15-06-PLAN.md, 15-07-PLAN.md, 15-08-PLAN.md, 15-09-PLAN.md, 15-10-PLAN.md, 15-11-PLAN.md]
+reviewers_attempted: [codex, cursor]
+reviewers_failed:
+  cursor: "Authentication required (agent login / CURSOR_API_KEY not set)"
 ---
 
 # Cross-AI Plan Review — Phase 15
@@ -85,7 +88,9 @@ The actual code fixes are low-risk and technically appropriate. The principal ri
 
 ---
 
-## Codex Review — Round 2 (2026-07-13) — CURRENT
+## Codex Review — Round 2 (2026-07-13) — HISTORICAL
+
+> Status: Round-2 verdict was NOT READY on 4 findings. All four were incorporated at commit `de5783c` and re-verified by Codex in Round 3 below (all VERIFIED CLOSED). Kept for provenance; the CURRENT actionable set is Round 3.
 
 > Confirming review of the revised plans (post-1bd0dbb). Codex received its Round-1 findings and verified each disposition against plan text + live repo, then did a fresh pass.
 
@@ -156,15 +161,62 @@ The revision genuinely closes most Round-1 findings, especially route wiring, sw
 
 ---
 
+### Round-2 Actionable Findings (all now CLOSED — see Round 3)
+1. **HIGH — WR-01's "real persistence" proof tests the fake repo.**
+2. **MEDIUM — WR-05 test setup likely breaks template loading** (`monkeypatch.chdir` vs the relative Jinja searchpath).
+3. **MEDIUM — crash-seeding fallback** proves recovery-from-state, not crash-produces-state.
+4. **LOW — guard zero-FP evaluation needs a machine-readable record** (`EDITORIAL_ONLY_PATTERNS` + synthetic exclusion test).
+
+---
+
+## Codex Review — Round 3 (2026-07-13) — CURRENT
+
+> Confirming pass on **the fix** (post-`de5783c`, 11 plans). Codex re-verified each Round-2 disposition against live source, then did a fresh adversarial pass looking for defects introduced *by the revision itself*. It was also given the CI-vacuity constraint discovered during replanning (see below) and told to scrutinize it hardest.
+
+### Round-2 Disposition Table
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| 1. WR-01 tested the fake repository | **VERIFIED CLOSED** | Revised plan separates the hermetic test from the production SQL proof (`15-01-PLAN.md:49-60`). The fixture does patch `insert_email_message` (`tests/conftest.py:972-1027`), and the new integration test is forbidden from using `fake_repo`, calling production repo functions directly (`15-01-PLAN.md:321-338`). |
+| 2. WR-05 test broke template loading | **VERIFIED CLOSED** | Hazard is real: relative loader at `app/routes/templating.py:9-11`, relative data paths at `app/routes/dashboard.py:112-123`. Revised plan removes `chdir`, hoists paths to monkeypatchable constants, redirects only those (`15-11-PLAN.md:127-159`). |
+| 3. Crash proof allowed seeded ERROR state | **VERIFIED CLOSED** | One-shot failure now mandatory after `send_outbound`, before clarification persistence (`15-01-PLAN.md:152-170`) — matches real production ordering (`app/pipeline/clarification.py:456-477`); orchestrator catches and persists ERROR (`app/pipeline/orchestrator.py:208-234`). |
+| 4. Zero-FP guard was unenforceable | **VERIFIED CLOSED** | Named `EDITORIAL_ONLY_PATTERNS` table + synthetic exclusion test + emitted machine-readable record (`15-10-PLAN.md:120-139`, `:172-182`). |
+| **CI-vacuity constraint** (found during replanning, not by any review) | **VERIFIED CLOSED** | Workflow does select only one file (`concurrency-proof.yml:50-53`); normal CI job has no DB vars (`ci.yml:55-58`). Revised plan changes the real-Postgres run line to name both files and retain `-m integration` (`15-01-PLAN.md:415-427`). **If that edit is omitted, the specified run-line grep fails.** |
+
+### New Concerns
+
+#### MEDIUM — "Byte-for-byte unchanged" is not actually tested
+
+The plan repeatedly claims the historical row is byte-for-byte unchanged (`15-01-PLAN.md:18`, `:307-313`), but the proposed SQL read-back selects only `message_id, round, epoch, send_state` (`15-01-PLAN.md:349-353`). It would not detect mutation of `in_reply_to`, `references_header`, `subject`, `body_text`, addresses, or timestamps. **The core append/no-clobber proof is still valid, but the wording overclaims the assertion surface.**
+
+#### LOW — The CI check proves selection wiring, not execution outcome
+
+The workflow run line will correctly select the new module, and its environment satisfies the two-factor guard. But the acceptance check is text-based (a grep) and does not require CI output to show the integration tests *executed* rather than *skipped*. Partially addressed by the required non-skipped local run (`15-01-PLAN.md:365-368`). The acknowledged push-to-master/not-PR limitation is accurate and correctly documented (`15-01-PLAN.md:429-434`).
+
+### Suggestions
+- Expand the integration `SELECT` to include all audit-relevant columns, **or** rename the claim from "byte-for-byte unchanged" to "identity and lifecycle fields unchanged."
+- Assert the new epoch-1 row's `send_state` and `message_id` explicitly.
+- In the CI verification, require a nonzero executed-test count or a post-run assertion that no selected integration test was skipped.
+
+### Verdict
+
+**READY**
+
+> All four Round-2 findings and the CI-vacuity constraint are substantively closed in the revised plans. The remaining issues are assertion-strength and CI-observability improvements, not a recurrence of the prior vacuity or fake-repository defect.
+
+---
+
 ## Consensus Summary
 
-Single-reviewer confirming round (Codex). Round-2 verdict: **NOT READY** — two findings must be resolved before execution.
+Single-reviewer confirming round (Codex; Cursor was attempted but is unauthenticated). **Round-3 verdict: READY.** The phase is executable as planned.
 
-### Current Actionable Findings (Round 2)
-1. **HIGH — WR-01's "real persistence" proof tests the fake repo:** the mandated `fake_repo` fixture patches `insert_email_message` (`tests/conftest.py:992`, `:1027`) with an in-memory epoch/upsert reimplementation (`:709+`), so the test proves route/gateway behavior against the fake, not the production `(run_id, purpose, round, epoch)` SQL arbiter. Either split into (a) hermetic route/threading test + (b) real-Postgres persistence test, or narrow the acceptance language to what the hermetic test actually proves and lean on existing SQL arbiter tests.
-2. **MEDIUM — WR-05 test setup likely breaks template loading:** `monkeypatch.chdir(tmp_path)` + `GET /eval` will make the relative `Jinja2Templates(directory="app/templates")` (`app/routes/templating.py:5`) raise `TemplateNotFound`. Patch only the dashboard file paths or use an absolute template config.
-3. **MEDIUM — crash-seeding fallback:** direct ERROR-state seeding proves recovery-from-state, not crash-produces-state; make post-send failure injection the mandatory path (seeding only as documented fallback).
-4. **LOW — guard zero-FP evaluation needs a machine-readable record:** require an `EDITORIAL_ONLY_PATTERNS` constant in the guard module plus a synthetic test for exclusions, so a narrative claim can't satisfy the criterion.
+### Current Actionable Findings (Round 3) — both non-blocking
 
-### Verified Closed (Round 1 → Round 2)
-eval.html/runs_list.html inventory closure, guard vocabulary expansion, 15-01 fallback withdrawal, fresh-manifest rule, rename reference checks. Partially closed: provider-boundary (subsumed by finding 1), crash realism (finding 3), 15-09 scope (accepted risk, documented).
+1. **MEDIUM — the "byte-for-byte unchanged" claim exceeds the proof.** The integration test's read-back selects only 4 columns, so it cannot detect mutation of `in_reply_to`, `references_header`, `subject`, `body_text`, addresses, or timestamps. This is the *same class of defect* the whole phase has been fighting — a claim stronger than its evidence — so it should be fixed rather than accepted. Fix: either widen the `SELECT` to the audit-relevant columns, or narrow the wording to "identity and lifecycle fields unchanged."
+2. **LOW — the CI acceptance criterion greps the workflow text, proving *selection*, not *execution*.** A run where both integration tests silently skip would still satisfy the grep. Fix: assert a nonzero executed-test count (or no-skips) in the CI/verification step, not just that the path appears in the run line.
+
+### Verified Closed (Round 2 → Round 3)
+All four Round-2 findings — the `fake_repo` persistence contradiction (HIGH), the `chdir`/Jinja template break (MEDIUM), the crash-seeding fallback (MEDIUM), and the narrative guard rule (LOW) — plus the CI-vacuity constraint surfaced during replanning. No regressions introduced by the revision.
+
+### Divergent Views
+None — single reviewer this round.
