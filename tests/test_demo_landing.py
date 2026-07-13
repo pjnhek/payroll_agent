@@ -307,10 +307,12 @@ def _make_decision_with_unresolved(names: list[str]) -> Decision:
 
 
 def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkeypatch):
-    """_clarify with record_only=True: skips send_outbound; alias capture still runs.
+    """_clarify with record_only=True skips send_outbound, but alias capture STILL runs.
 
-    This is the HIGH-2 ordering test: set_alias_candidates must be called BEFORE
-    the record_only branch skips the real transport.
+    Ordering test: set_alias_candidates must be called BEFORE the record_only branch
+    short-circuits the transport. If the capture sat after the branch, the demo path
+    would silently stop recording alias candidates — and the learning loop would look
+    broken in exactly the flow a viewer is watching.
     """
     from app.db.seed import seed
     from app.models.roster import Roster
@@ -405,14 +407,14 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         run_id, email, decision, roster, _minimal_extracted(run_id), llm=mock_llm
     )
 
-    # Key assertions for HIGH-2
+    # The ordering assertions: no transport, but the alias capture still happened.
     assert len(send_outbound_calls) == 0, (
         "gateway.send_outbound must NOT be called for record_only run"
     )
     assert len(insert_calls) >= 1, "repo.insert_email_message must be called (record-only write)"
     assert len(alias_capture_calls) >= 1, (
         "repo.set_alias_candidates must be called BEFORE the record_only branch "
-        "(Beat 3 guard — HIGH-2 ordering fix)"
+        "short-circuits, or the demo path silently stops capturing alias candidates"
     )
     # Check the inserted row has the right purpose
     assert any(
@@ -769,9 +771,11 @@ def test_compose_subject_length_cap_rejects_over_limit(monkeypatch):
 
 
 def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
-    """POST /demo/compose routes by seed UUID; NEVER calls find_business_by_sender.
+    """POST /demo/compose routes by seed UUID and NEVER calls find_business_by_sender.
 
-    This is the load-bearing HIGH-2 test.
+    The demo composer already KNOWS which seeded business it is driving, so resolving the
+    business by sender address would be a second, fallible path to an answer it was
+    handed — and one that breaks the moment a demo email is sent from any other address.
     """
     import app.db.repo as repo_mod
 
@@ -818,9 +822,9 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
 
     # Patch run_pipeline_bg to be a no-op. raising=True (the default) is used
     # deliberately: if run_pipeline_bg is ever renamed again, this patch must
-    # fail LOUDLY (AttributeError) instead of silently becoming a no-op that
-    # would let the real route call the REAL pipeline_glue.run_pipeline_bg
-    # against this repo's live LLM/gateway keys (T-13-14).
+    # fail LOUDLY (AttributeError) instead of silently becoming a no-op that would let
+    # the real route call the REAL pipeline_glue.run_pipeline_bg against this repo's
+    # live LLM/gateway keys — a test that quietly bills real API calls.
     import app.routes.pipeline_glue as pipeline_glue_mod
     monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
 
@@ -847,7 +851,7 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     metro_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     assert create_run_calls, "create_run must be called"
     assert create_run_calls[0].get("business_id") == metro_id, (
-        "create_run must use Metro seed UUID directly (HIGH-2)"
+        "create_run must use the Metro seed UUID directly, not a sender lookup"
     )
 
 
@@ -886,9 +890,9 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    # raising=True (the default) is used deliberately here: if run_pipeline_bg
-    # is ever renamed again, this patch must fail LOUDLY instead of silently
-    # becoming a no-op (T-13-14).
+    # raising=True (the default) is used deliberately here: if run_pipeline_bg is ever
+    # renamed, this patch must fail LOUDLY instead of silently becoming a no-op that
+    # lets the real pipeline fire against this repo's live LLM/gateway keys.
     import app.routes.pipeline_glue as pipeline_glue_mod
     monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
 
@@ -946,9 +950,9 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    # raising=True (the default) is used deliberately here: if run_pipeline_bg
-    # is ever renamed again, this patch must fail LOUDLY instead of silently
-    # becoming a no-op (T-13-14).
+    # raising=True (the default) is used deliberately here: if run_pipeline_bg is ever
+    # renamed, this patch must fail LOUDLY instead of silently becoming a no-op that
+    # lets the real pipeline fire against this repo's live LLM/gateway keys.
     import app.routes.pipeline_glue as pipeline_glue_mod
     monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
 

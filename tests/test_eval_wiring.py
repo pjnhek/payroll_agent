@@ -1,12 +1,18 @@
-"""D-09 decide->calculate WIRING smoke test (Codex Round-3 fix).
+"""decide -> calculate WIRING smoke test.
 
-Round-2 only called calculate() directly, which merely duplicated the Phase-3
-calculate golden and tested NONE of the wiring D-09 exists to prove. This version
-drives the 12_exact_process_summit fixture through the SAME production spine --
-reconcile_names -> validate -> decide -> _compute_line_items -> calculate -- and
-asserts the resulting Thomas Bergmann paystub equals the Phase-3 golden. It closes
-the join between the eval (which otherwise stops at decide) and the 'computes
-payroll' headline, reusing the golden already trusted (no second net_pay oracle).
+The eval scores the judgment stages and stops at decide; the calculate golden tests
+calculate() in isolation. Neither one exercises the JOIN between them, so a break in
+_compute_line_items — the production code that hands decide's resolved matches to
+calculate() — would leave both suites green while the paystub numbers went wrong.
+
+This module closes that gap: it drives the 12_exact_process_summit fixture through the
+SAME production spine (reconcile_names -> validate -> decide -> _compute_line_items ->
+calculate) and asserts the resulting Thomas Bergmann paystub equals the already-trusted
+calculate golden. Reusing that golden is deliberate — inventing a second net_pay oracle
+here would just be a second chance to be wrong.
+
+Calling calculate() directly instead would prove nothing about the join, and is exactly
+the mistake this test exists to avoid.
 """
 # The eval harness exposes private helpers used by these wiring tests.
 import json
@@ -49,23 +55,22 @@ def summit_roster_and_fixture():
 
 
 # ---------------------------------------------------------------------------
-# D-09 wiring smoke test
+# The wiring smoke test
 # ---------------------------------------------------------------------------
 
 
 def test_decide_to_calculate_wiring_thomas_bergmann(summit_roster_and_fixture):
-    """D-09: drives 12_exact_process_summit through reconcile->validate->decide->
-    _compute_line_items and asserts == Phase-3 golden (penny-exact).
+    """Drive the fixture through the real spine and assert the paystub is penny-exact.
 
-    The LABELED expected extraction (PATH A, D-07) feeds the deterministic stages
-    so the test is unconfounded by extraction noise. _compute_line_items is the
-    EXACT production code that joins decide's resolved matches to calculate() --
-    importing it is what makes this a WIRING test, not a mere calculate() test.
+    The LABELED expected extraction feeds the deterministic stages, so a flaky
+    extraction cannot confound the result — the only thing under test is the join.
+    _compute_line_items is imported from production rather than reimplemented: a local
+    copy would pass while the shipping code was broken.
     """
     raw, roster = summit_roster_and_fixture
 
-    # Build the labeled expected extraction (PATH A -- D-07).
-    # Use the fixture's expected block (Thomas Bergmann salaried, all hours null).
+    # Use the fixture's labeled expected block (Thomas Bergmann salaried, hours null)
+    # rather than a live extraction, so extraction noise cannot fail this test.
     exp = raw["expected"]["extracted"]
     extracted = Extracted.model_validate(
         {
@@ -82,14 +87,15 @@ def test_decide_to_calculate_wiring_thomas_bergmann(summit_roster_and_fixture):
     issues = validate(extracted, roster, matches)
     decision = decide(extracted, matches, issues)
 
-    # D-09 precondition: the clean exact fixture must gate to process so calculate runs.
+    # Precondition: the clean exact fixture must gate to process, or calculate never
+    # runs and every assertion below would be vacuously unreached.
     assert decision.final_action == "process", (
-        "D-09 precondition: the clean exact fixture must gate to process so calculate runs"
+        "precondition: the clean exact fixture must gate to process so calculate runs"
     )
 
-    # THE WIRING under test: the production join from decide's resolved matches
-    # to calculate(). Do NOT call calculate() directly -- that would retest the
-    # Phase-3 golden but prove NONE of the reconcile->_compute_line_items join.
+    # THE WIRING under test: the production join from decide's resolved matches to
+    # calculate(). Calling calculate() directly here would retest the calculate golden
+    # and prove nothing about the reconcile -> _compute_line_items join.
     items = _compute_line_items(
         uuid.UUID("00000000-0000-0000-0000-000000000000"), extracted, matches, roster
     )
@@ -97,55 +103,55 @@ def test_decide_to_calculate_wiring_thomas_bergmann(summit_roster_and_fixture):
     assert len(items) == 1
     item = items[0]
 
-    # Phase-3 golden values (test_federal_withholding.py:1131-1137, paycheckcity.com
-    # verified penny-exact). Thomas Bergmann: annual=$240k, biweekly/26, MFJ, 8% 401k,
-    # ytd_ss_wages=$183,900 (remaining SS cap = $600).
-    assert item.gross_pay == Decimal("9230.77"), "D-09 wiring: gross_pay"
-    assert item.pretax_401k == Decimal("738.46"), "D-09 wiring: pretax_401k"
+    # The trusted golden values (mirrored from the federal-withholding suite, verified
+    # penny-exact against paycheckcity.com). Thomas Bergmann: annual=$240k, biweekly/26,
+    # MFJ, 8% 401k, ytd_ss_wages=$183,900 — which leaves only $600 of SS cap remaining,
+    # so this fixture also exercises the Social-Security wage-base straddle.
+    assert item.gross_pay == Decimal("9230.77"), "wiring: gross_pay"
+    assert item.pretax_401k == Decimal("738.46"), "wiring: pretax_401k"
     assert item.federal_withholding == Decimal("881.39"), (
-        "D-09 wiring: federal_withholding (Phase-3 golden, paycheckcity.com verified)"
+        "wiring: federal_withholding (golden, paycheckcity.com verified)"
     )
     assert item.fica_ss == Decimal("37.20"), (
-        "D-09 wiring: fica_ss (SS-straddle remaining_cap=600 -> 600*0.062=37.20)"
+        "wiring: fica_ss (SS straddle — only 600 of cap remains, 600 * 0.062 = 37.20)"
     )
-    # Independent oracle (WR-04): Medicare is 1.45% of full gross, no cap, no 401k
-    # exemption -> money(9230.77 * 0.0145) = 133.85. Net ties the reconciliation:
+    # Medicare is checked against an independent hand-computed oracle rather than the
+    # engine's own logic: 1.45% of the FULL gross, no cap and no 401k exemption ->
+    # money(9230.77 * 0.0145) = 133.85. Net then ties the reconciliation identity:
     # gross - pretax_401k - fica_ss - fica_medicare - federal_withholding.
     assert item.fica_medicare == Decimal("133.85"), (
-        "D-09 wiring: fica_medicare (9230.77 * 0.0145 = 133.85)"
+        "wiring: fica_medicare (9230.77 * 0.0145 = 133.85)"
     )
     assert item.net_pay == Decimal("7439.87"), (
-        "D-09 wiring: net_pay (9230.77 - 738.46 - 37.20 - 133.85 - 881.39 = 7439.87)"
+        "wiring: net_pay (9230.77 - 738.46 - 37.20 - 133.85 - 881.39 = 7439.87)"
     )
 
 
 # ---------------------------------------------------------------------------
-# C-4 eval _normalize parity RED test (Wave 1 — RESEARCH.md §Target 9)
+# The eval's name normalizer must stay in lockstep with production's.
 #
-# This test FAILS RED until Plan 07-02 updates run_eval.py:_normalize to use
-# NFC normalization matching the new _norm in reconcile_names.
-# The current _normalize does casefold().split() without NFC.
+# The eval scores production's judgment functions, so any normalization the eval does
+# on its own must match theirs exactly. If the eval's _normalize drifts from
+# reconcile_names._norm, accented-name fixtures score as failures that production
+# handles correctly — the chart reports a regression that does not exist.
 # ---------------------------------------------------------------------------
 
 
 def test_eval_normalize_nfd_matches_nfc():
-    """C-4 RED: eval's _normalize must treat NFD and NFC forms of a name identically.
+    """The eval's _normalize must treat NFD and NFC forms of a name identically.
 
-    RESEARCH.md §Target 9 / Correction C-4: run_eval.py defines its own _normalize
-    (line 51) that does `casefold().split()` without unicodedata.normalize. After
-    MONEY-02 fixes reconcile_names._norm to NFC(casefold(NFC(s))), the eval's
-    _normalize is left behind -- it produces different output for NFD vs NFC inputs,
-    causing NFD-name fixtures to score incorrectly (false eval regressions, Pitfall 5).
-
-    RED because current _normalize(NFD) != _normalize(NFC) -- the two forms produce
-    different casefold byte sequences without NFC pre-normalization.
-    Plan 07-02 fixes _normalize to match the new _norm form.
+    Production's reconcile_names._norm is double-NFC — NFC(casefold(NFC(s))) — so that
+    visually identical names in different Unicode normalization forms resolve to the
+    same employee. A plain casefold().split() in the eval does NOT: NFD and NFC inputs
+    casefold to different byte sequences, so the eval would mis-score every accented
+    name and report false regressions against a production path that is working.
     """
     import unicodedata
 
-    # Deliberately import run_eval's private re-export binding (not the defining
-    # module) to prove the eval itself uses the NFC-fixed normalizer.
-    from eval.run_eval import (  # type: ignore[attr-defined]  # private re-export binding, see comment above
+    # Import run_eval's own private binding rather than the defining module: that is
+    # what proves the EVAL uses the NFC-correct normalizer, which is the whole point.
+    # mypy cannot see a private re-export, hence the ignore.
+    from eval.run_eval import (  # type: ignore[attr-defined]  # private re-export, invisible to mypy
         _normalize,  # noqa: PLC0415 -- intentional late import of a private re-export
     )
 
@@ -158,10 +164,10 @@ def test_eval_normalize_nfd_matches_nfc():
     )
 
     assert _normalize(nfd_form) == _normalize(nfc_form), (
-        f"C-4 RED: _normalize(NFD) != _normalize(NFC) -- "
+        f"_normalize(NFD) != _normalize(NFC) -- "
         f"got {_normalize(nfd_form)!r} vs {_normalize(nfc_form)!r}. "
-        "Plan 07-02 must update run_eval.py:_normalize to NFC(casefold(NFC(s))) "
-        "matching the new reconcile_names._norm (RESEARCH.md §Target 9 CORRECTION)"
+        "run_eval.py:_normalize must be NFC(casefold(NFC(s))), matching "
+        "reconcile_names._norm, or accented-name fixtures score as false regressions"
     )
 
 

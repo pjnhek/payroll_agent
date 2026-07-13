@@ -1,52 +1,47 @@
-"""OPS2-03 concurrency proof capstone (Phase 10, D-10-01/02/05/06/07).
+"""The concurrency proof — the evidence behind the "production-grade" claim.
 
-Phase 9 established the atomicity/dedup/recovery invariants; this module PROVES
-them under genuine concurrency against a real Postgres — the evidence behind
-the "production-grade" claim. Three surfaces, four invariants:
+The atomicity, dedup, and recovery invariants are established elsewhere; this module
+PROVES them under genuine concurrency against a real Postgres. Three surfaces, four
+invariants:
 
   Surface A — test_dedup_exactly_one_run_per_message_id
-      N_INGEST threads, released simultaneously by a threading.Barrier, all
-      call `repo.insert_inbound_email` directly with ONE shared message_id,
-      then `repo.create_run` on the winner. This drives real DB-level MVCC
-      contention on the `ON CONFLICT (message_id) DO NOTHING` clause — NOT
-      through the async `/webhook/inbound` route (see CR-01 note below).
-      Must resolve to EXACTLY ONE run (no duplicate run per message_id).
+      N_INGEST threads, released simultaneously by a threading.Barrier, all call
+      `repo.insert_inbound_email` directly with ONE shared message_id, then
+      `repo.create_run` on the winner. This drives real DB-level MVCC contention on the
+      `ON CONFLICT (message_id) DO NOTHING` clause — deliberately NOT through the async
+      `/webhook/inbound` route (see the note below). Must resolve to EXACTLY ONE run.
 
   Surface B — test_concurrent_approvals_exactly_one_wins
-      N_APPROVE concurrent POSTs to the REAL HTTP /runs/{run_id}/approve route
-      (a *sync* FastAPI route, dispatched to Starlette's anyio worker
-      threadpool — genuinely parallel OS threads) on ONE seeded run must
-      result in EXACTLY ONE _deliver call and the run reaching 'approved'
-      exactly once (no double-approval, D-10-06). This is the route-level
-      upgrade over test_claim_status.py's CAS-primitive-only stub — it
-      catches regressions ABOVE the CAS, not just inside it.
+      N_APPROVE concurrent POSTs to the REAL HTTP /runs/{run_id}/approve route (a *sync*
+      FastAPI route, so Starlette dispatches it to the anyio worker threadpool — real
+      parallel OS threads) against ONE seeded run must produce EXACTLY ONE delivery and
+      advance the run to 'approved' exactly once. Driving the ROUTE rather than the CAS
+      primitive is the point: it catches a regression ABOVE the CAS, not just inside it.
 
   Surface C — test_concurrent_distinct_runs_no_lost_update
-      N_INGEST threads, released simultaneously by a threading.Barrier, call
-      `repo.insert_inbound_email` + `repo.create_run` directly with N_INGEST
-      DISTINCT message_ids. Must produce EXACTLY N_INGEST runs (no lost
-      update) and every run row must carry a non-null source_email_id with a
-      matching email_messages row (no half-written state, D-9-09 ingest-
-      transaction atomicity).
+      N_INGEST barrier-released threads call `repo.insert_inbound_email` +
+      `repo.create_run` with N_INGEST DISTINCT message_ids. Must produce EXACTLY
+      N_INGEST runs (no lost update), and every run row must carry a non-null
+      source_email_id with a matching email_messages row (no half-written state).
 
-CR-01 note (why Surfaces A/C bypass the HTTP route): `/webhook/inbound` is
-`async def` (app/main.py:276) whose only `await` is `await request.body()`,
-BEFORE any DB work — the dedup insert -> create_run body is synchronous
-blocking psycopg with no yield point. Starlette runs `async def` endpoints
-directly on the single event loop, and a shared TestClient funnels every
-thread through one ASGI portal, so N threads posting to that route execute
-strictly one-at-a-time: the ON CONFLICT / lost-update races are never
-triggered (confirmed against live source; the old HTTP-fan-out version of
-this test would pass even with the ON CONFLICT clause deleted). Surface B's
-route (`def approve`, sync) IS dispatched to a real worker threadpool, so it
-stays HTTP-driven and its CAS proof is genuinely parallel and sound (D-10-06)
-— left unchanged here.
+WHY SURFACES A AND C BYPASS THE HTTP ROUTE — do not "fix" this back.
+`/webhook/inbound` is `async def`, and its only `await` is `await request.body()`,
+which happens BEFORE any DB work; the dedup-insert -> create_run body is synchronous
+blocking psycopg with no yield point. Starlette runs `async def` endpoints directly on
+the single event loop, and a shared TestClient funnels every thread through one ASGI
+portal — so N threads POSTing to that route execute strictly ONE AT A TIME. The
+ON CONFLICT and lost-update races would never actually be triggered: an HTTP-fan-out
+version of these two tests passes even with the ON CONFLICT clause deleted, which makes
+it a proof of nothing. Driving the sync repo seam directly under a Barrier is what makes
+the contention real.
 
-Each test is guarded by the two-factor live-DB skip (DATABASE_URL +
-ALLOW_DB_RESET=1) and depends on the seeded_db fixture (Coastal business +
-roster). The default hermetic suite (`uv run pytest -m 'not integration'`)
-never touches this module (D-10-04) — it is excluded by the `integration`
-pytest marker.
+Surface B's route (`def approve`, sync) IS dispatched to a real worker threadpool, so it
+is genuinely parallel over HTTP and stays route-driven.
+
+Each test is guarded by the two-factor live-DB skip (DATABASE_URL + ALLOW_DB_RESET=1) and
+depends on the seeded_db fixture (Coastal business + roster). The default hermetic suite
+(`uv run pytest -m 'not integration'`) never touches this module — it is excluded by the
+`integration` marker.
 
 Local invocation (requires a real/local Postgres):
 
@@ -70,7 +65,7 @@ import pytest
 from tests.conftest import _SKIP_LIVE_DB
 
 # ---------------------------------------------------------------------------
-# Shared seed identifiers (mirrors tests/test_atomic_persist.py:49-50)
+# Shared seed identifiers (the same Coastal business tests/test_atomic_persist.py uses)
 # ---------------------------------------------------------------------------
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -79,16 +74,14 @@ COASTAL_EMAIL = "payroll@coastalcleaning.example"
 # sub-ms CAS update, so 8 brief holders comfortably cycle through the pool.
 N_APPROVE = 8
 
-# Surfaces A & C (direct repo-seam ingest race, WR-01/IN-02): each
-# barrier-released thread holds a pooled connection for the FULL ingest
-# transaction (insert_inbound_email -> create_run), i.e. these threads are
-# simultaneous connection HOLDERS, not brief CAS callers like Surface B. The
-# app pool is min_size=1/max_size=5/timeout=5s (app/db/supabase.py), so
-# N_INGEST must be <= 5 — otherwise the 6th+ thread blocks on
-# pool.connection() and can hit the 5s PoolTimeout under a cold/slow CI
-# runner, flaking the test on pool exhaustion rather than the invariant
-# under test. N_INGEST == max_size (5) exercises the pool at full genuine
-# concurrency without exceeding it.
+# Surfaces A & C (the direct repo-seam ingest race): each barrier-released thread holds a
+# pooled connection for the FULL ingest transaction (insert_inbound_email -> create_run),
+# so these threads are simultaneous connection HOLDERS, not brief CAS callers like
+# Surface B. The app pool is min_size=1 / max_size=5 / timeout=5s (app/db/supabase.py),
+# so N_INGEST MUST stay <= 5: a 6th thread would block on pool.connection() and could hit
+# the 5s PoolTimeout on a cold CI runner — flaking the test on pool exhaustion rather than
+# on the invariant under test, which is the worst kind of red. N_INGEST == max_size
+# exercises the pool at full genuine concurrency without exceeding it.
 N_INGEST = 5
 
 
@@ -120,13 +113,11 @@ def _stub_pipeline_and_send(
         pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
     )
 
-    # Surface B: `app/routes/runs.py`'s approve() route calls `delivery.deliver`
-    # via a top-level `from app.pipeline import delivery` import (Phase 13 Plan
-    # 02 — this used to be a function-body `from app.pipeline.orchestrator
-    # import _deliver`, patched on the orchestrator module; that gap is now
-    # closed, so this patches the delivery module's own `deliver` attribute,
-    # which is what runs.py's module-object reference actually resolves
-    # through).
+    # Surface B: `app/routes/runs.py`'s approve() route reaches `delivery.deliver`
+    # through a top-level `from app.pipeline import delivery` module-object import, so
+    # the patch must target the delivery module's own `deliver` attribute — that is the
+    # binding runs.py actually resolves through. Patching any other module's copy would
+    # leave the real delivery path live, firing a genuine Resend send per request.
     deliver_calls: list[uuid.UUID] = []
     monkeypatch.setattr(
         "app.pipeline.delivery.deliver",
@@ -175,11 +166,13 @@ def _seed_live_run(*, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.UUID:
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_dedup_exactly_one_run_per_message_id(seeded_db, monkeypatch):
-    """N_INGEST threads, released simultaneously by a threading.Barrier, race
-    `insert_inbound_email` for ONE shared message_id — proving the `ON
-    CONFLICT (message_id) DO NOTHING` + `create_run` sequence resolves the
-    Resend-redelivery race via genuine Postgres MVCC contention (OPS2-03,
-    D-9-09), not sequential-request serialization."""
+    """N_INGEST threads race insert_inbound_email for ONE shared message_id.
+
+    Released simultaneously by a threading.Barrier, they prove the
+    `ON CONFLICT (message_id) DO NOTHING` + `create_run` sequence resolves a
+    Resend-redelivery race through genuine Postgres MVCC contention — one payroll run per
+    email, no matter how many times the webhook is delivered.
+    """
     from app.db import repo
 
     _pipeline_calls, _deliver_calls = _stub_pipeline_and_send(monkeypatch)
@@ -216,9 +209,9 @@ def test_dedup_exactly_one_run_per_message_id(seeded_db, monkeypatch):
 
     assert len(results) == N_INGEST
 
-    # WR-02: assert the winner/loser split EXPLICITLY — do not filter None
-    # out of a set, which would silently pass even if every loser fabricated
-    # a bogus run_id or the winner lookup were broken.
+    # Assert the winner/loser split EXPLICITLY. Filtering None out of a set instead
+    # would silently pass even if every loser fabricated a bogus run_id, or if the
+    # winner lookup were broken outright.
     winners = [r for r in results if r[1] is True]
     losers = [r for r in results if r[1] is False]
     assert len(winners) == 1, (
@@ -267,19 +260,20 @@ def test_dedup_exactly_one_run_per_message_id(seeded_db, monkeypatch):
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_concurrent_approvals_exactly_one_wins(seeded_db, monkeypatch):
-    """N_APPROVE concurrent POSTs to the REAL /runs/{run_id}/approve route on
-    ONE seeded run must fire EXACTLY ONE `_deliver` and reach 'approved'
-    exactly once — proving `claim_status`'s CAS (AWAITING_APPROVAL ->
-    APPROVED) closes the double-approval race at the ROUTE level, not just
-    inside the CAS primitive (D-10-06, upgrading test_claim_status.py's
-    stub-only coverage). `/approve` is a *sync* FastAPI route, so Starlette
-    dispatches these N_APPROVE requests to its anyio worker threadpool —
-    genuinely parallel OS threads, unlike the async `/webhook/inbound` route
-    (see the module docstring's CR-01 note).
+    """N_APPROVE concurrent POSTs to the REAL approve route: exactly one delivery.
 
-    The route ALWAYS 303-redirects regardless of claim outcome (main.py:783),
-    so HTTP status is NOT a signal of who won — the winning side effect
-    (deliver_calls / terminal DB status) is asserted instead.
+    The run must reach 'approved' exactly once and fire EXACTLY ONE delivery — proving
+    claim_status's CAS (AWAITING_APPROVAL -> APPROVED) closes the double-approval race at
+    the ROUTE level, not merely inside the CAS primitive. A double approval means the
+    client is emailed their payroll twice.
+
+    `/approve` is a *sync* FastAPI route, so Starlette dispatches these requests to its
+    anyio worker threadpool — genuinely parallel OS threads, unlike the async
+    `/webhook/inbound` route (see the module docstring).
+
+    The route ALWAYS 303-redirects regardless of claim outcome, so the HTTP status is NOT
+    a signal of who won. The winning SIDE EFFECT (deliver_calls / terminal DB status) is
+    what gets asserted.
     """
     from app.config import get_settings
     from app.db import repo
@@ -331,12 +325,14 @@ def test_concurrent_approvals_exactly_one_wins(seeded_db, monkeypatch):
 def test_concurrent_distinct_runs_no_lost_update(seeded_db, monkeypatch):
     """N_INGEST threads, released simultaneously by a threading.Barrier, call
     `insert_inbound_email` + `create_run` directly with N_INGEST DISTINCT
-    message_ids — proving no distinct concurrent ingest is dropped or
-    silently merged (no lost update) AND every run row carries a non-null
-    source_email_id with a matching email_messages row (no half-write — the
-    ingest transaction is atomic per D-9-09, even under real concurrent
-    load). This is the throughput/atomicity-under-load surface distinct from
-    Surface A's single-message_id dedup race.
+    message_ids — proving no distinct concurrent ingest is dropped or silently
+    merged (no lost update) AND that every run row carries a non-null
+    source_email_id with a matching email_messages row (no half-write: the ingest
+    transaction stays atomic even under real concurrent load). A dropped ingest here
+    means a client emailed their hours and no payroll run ever appeared.
+
+    This is the atomicity-under-load surface, distinct from Surface A's
+    single-message_id dedup race.
     """
     from app.db import repo
 
@@ -405,8 +401,8 @@ def test_concurrent_distinct_runs_no_lost_update(seeded_db, monkeypatch):
     )
     for run_pk, source_email_id, matched_email_pk in rows:
         assert source_email_id is not None, (
-            f"run {run_pk} has a null source_email_id — half-written state "
-            f"under concurrent distinct ingest (D-9-09 violation)"
+            f"run {run_pk} has a null source_email_id — half-written state under "
+            f"concurrent distinct ingest; the ingest transaction was not atomic"
         )
         assert matched_email_pk is not None, (
             f"run {run_pk}'s source_email_id={source_email_id} has no matching "

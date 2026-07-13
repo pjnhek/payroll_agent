@@ -1,18 +1,21 @@
-"""Deterministic name-resolution tests (LLM-04, D-21-01). Pure, DB-free, NO model.
+"""Deterministic name-resolution tests (LLM-04). Pure, DB-free, NO model.
 
-reconcile_names is now PURE CODE — there is no LLM layer. Per submitted name it
-resolves against the roster exactly three ways (D-21-01):
+reconcile_names is PURE CODE — there is no LLM layer here, because deciding WHICH
+employee a name refers to is a money-moving judgment the system must never guess at.
+Per submitted name it resolves against the roster in exactly three ways:
 
   - ``source="exact"`` — exact normalized (casefold + whitespace) match to exactly
     ONE employee, resolved=True.
   - ``source="alias"`` — a stored ``known_alias`` match for exactly ONE employee,
-    resolved=True (the READ side of the learning loop, D-21-07).
+    resolved=True (the READ side of the learning loop).
   - ``source="none"`` — anything else (typo, first-time nickname, unknown, or a
     name that matches 2+ employees) — resolved=False, matched_employee_id=None.
 
-A name that uniquely-resolves nowhere (first-time variant / typo / unknown) is NOT
-guessed at here — it degrades to unresolved and the run-level clarify path in
-decide() owns it. The eval (Phase 4) imports this SAME function (D-21-09).
+A name that uniquely resolves nowhere is NOT guessed at: it degrades to unresolved and
+the run-level clarify path in decide() owns it. "Probably David" is how the wrong person
+gets paid.
+
+The eval imports this SAME function, so the eval scores the code production actually runs.
 """
 from __future__ import annotations
 
@@ -77,8 +80,11 @@ def test_single_word_stored_alias_resolves(roster_from_seed):
 
 
 def test_first_time_alias_variant_is_unresolved(roster_from_seed):
-    """A first-time nickname NOT in known_aliases is NOT guessed at (D-21-07 READ
-    side only): no write path, no model — it degrades to unresolved."""
+    """A first-time nickname NOT in known_aliases is NOT guessed at.
+
+    The resolver only READS stored aliases; it never invents one. An alias is learned
+    later, and only from an explicit human confirmation — never inferred here.
+    """
     [result] = reconcile_names(["Mar"], roster_from_seed)
 
     assert result.source == "none"
@@ -113,8 +119,12 @@ def test_unknown_name_is_unresolved(roster_from_seed):
 
 
 def test_name_matching_two_employees_does_not_resolve(roster_from_seed):
-    """If the normalized submitted name matches 2+ roster employees, the resolver
-    refuses to pick one — it returns source='none' (D-21-02 uniqueness)."""
+    """A name matching 2+ roster employees resolves to NEITHER.
+
+    Resolution requires UNIQUENESS. With two employees sharing a name, picking either
+    one is a coin flip over someone's paycheck, so the resolver returns source='none'
+    and the run clarifies.
+    """
     from app.models.roster import Roster as _R
 
     base = _emp(roster_from_seed, "Maria Chen")
@@ -152,9 +162,13 @@ def test_alias_shared_by_two_employees_does_not_resolve(roster_from_seed):
 def test_name_is_one_employees_fullname_and_another_employees_alias_does_not_resolve(
     roster_from_seed,
 ):
-    """CROSS-TIER collision (review fix): a name that is employee A's exact full_name
-    AND employee B's stored alias is ambiguous between TWO employees, so it must NOT
-    silently resolve to A — uniqueness is enforced across both tiers (D-21-02)."""
+    """A CROSS-TIER collision must not resolve either.
+
+    A name that is employee A's exact full_name AND employee B's stored alias is
+    ambiguous between two people. A resolver that checked the exact tier first and
+    returned on the first hit would silently pay A and never notice B — so uniqueness
+    must be enforced ACROSS both tiers, not within each one.
+    """
     import uuid
 
     from app.models.roster import Roster as _R
@@ -178,9 +192,12 @@ def test_name_is_one_employees_fullname_and_another_employees_alias_does_not_res
 
 
 def test_roster_rejects_duplicate_employee_ids(roster_from_seed):
-    """Review fix: a Roster with two employees sharing one UUID must raise — otherwise
-    the set-based uniqueness check in deterministic_match could collapse two distinct
-    rows into one candidate and wrongly resolve an ambiguous name."""
+    """A Roster with two employees sharing one UUID must raise.
+
+    The resolver's uniqueness check is set-based over employee ids. Two distinct rows
+    carrying the same id would collapse into ONE candidate, so an ambiguous name would
+    look unique and resolve — defeating the collision guard at its root.
+    """
     import pytest
     from pydantic import ValidationError
 
@@ -208,13 +225,17 @@ def test_one_result_per_submitted_name_in_order(roster_from_seed):
 
 
 # ---------------------------------------------------------------------------
-# purity: no llm parameter, no LLM/DB/prompt import (D-21-09)
+# Purity: no llm parameter, no LLM/DB/prompt import
 # ---------------------------------------------------------------------------
 
 
 def test_reconcile_is_pure_no_llm_no_db():
-    """reconcile_names takes NO llm/conn param and imports no LLM/DB/prompt module
-    (statically assertable) — it is a pure importable function the eval reuses."""
+    """reconcile_names takes NO llm/conn param and imports no LLM/DB/prompt module.
+
+    Purity is what lets the eval import and score the EXACT function production runs. An
+    llm= or conn= parameter would make the eval's scored path diverge from the shipped
+    one — and the eval's credibility rests entirely on them being the same code.
+    """
     import app.pipeline.reconcile_names as recon_mod
 
     params = inspect.signature(reconcile_names).parameters
@@ -230,30 +251,29 @@ def test_reconcile_is_pure_no_llm_no_db():
 
 
 # ---------------------------------------------------------------------------
-# MONEY-02 RED test (Wave 1 — D-04/D-05/D-07)
+# Unicode normalization (MONEY-02): visually identical names resolve identically.
 #
-# This test FAILS RED until Plan 07-02 adds NFC normalization to _norm.
-# The current _norm does casefold-only; NFD and NFC casefold to different byte
-# sequences so the NFD submitted name never matches the NFC roster name.
+# The roster stores names in NFC (precomposed) form, but a client's mail client may send
+# the very same name in NFD decomposition. The two are indistinguishable on screen yet
+# casefold to DIFFERENT byte sequences, so a casefold-only normalizer finds no match and
+# the employee silently fails to resolve — the client is asked to clarify a name they
+# spelled correctly. _norm normalizes both sides to NFC: NFC(casefold(NFC(s))).
 # ---------------------------------------------------------------------------
 
 
 def test_nfd_name_resolves_same_as_nfc(roster_from_seed):
-    """MONEY-02 RED (D-04/D-07): a submitted name in NFD Unicode form must resolve
-    to the same employee as its NFC equivalent.
+    """A submitted name in NFD Unicode form must resolve to the same employee as its
+    NFC equivalent — otherwise a correctly-spelled name is rejected as unknown.
 
     The roster stores names in NFC form. A client email may submit the same name in
     NFD decomposition (e.g. 'e' + combining acute rather than precomposed 'é').
     Without NFC normalization in _norm, the two forms casefold to different byte
-    sequences -> no match -> silent fail-to-resolve.
+    sequences -> no match -> a silent fail-to-resolve on a name the client spelled
+    perfectly. _norm therefore uses the hardened form NFC(casefold(NFC(s))).
 
-    RED because current _norm does `casefold()` without unicodedata.normalize('NFC')
-    -- NFD and NFC byte sequences diverge after casefold, producing no match.
-    Plan 07-02 fixes this with D-05's hardened form: NFC(casefold(NFC(s))).
-
-    This test builds a minimal roster with an employee whose full_name is the NFC form
-    of a name containing combining characters, submits the NFD form, and asserts the
-    match resolves to that employee's id.
+    The test builds a minimal roster with an employee whose full_name is the NFC form of
+    a name containing combining characters, submits the NFD form, and asserts the match
+    resolves to that employee's id.
     """
     import unicodedata
 
@@ -276,13 +296,13 @@ def test_nfd_name_resolves_same_as_nfc(roster_from_seed):
         employees=[jose],
     )
 
-    # Submit the NFD form -- the current _norm will fail to match the NFC roster entry.
+    # Submit the NFD form against the NFC-named roster entry.
     [result] = reconcile_names([nfd_name], roster_with_jose)
 
     assert result.resolved is True, (
-        f"MONEY-02 RED: NFD submitted name {nfd_name!r} must resolve to the same "
-        f"employee as the NFC roster name {nfc_name!r} -- current _norm is casefold-only "
-        "and produces no match across NFC/NFD forms (D-04/D-07)"
+        f"NFD submitted name {nfd_name!r} must resolve to the same employee as the NFC "
+        f"roster name {nfc_name!r} -- a casefold-only _norm produces no match across "
+        "the two forms and silently rejects a correctly-spelled name"
     )
     assert result.matched_employee_id == jose.id, (
         "MONEY-02: resolved employee must be the NFC-named roster entry"

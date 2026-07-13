@@ -36,9 +36,11 @@ _MSG_ID_RE = re.compile(r"^<[0-9a-f-]{36}@payroll-agent\.local>$")
 
 
 def _decision(action="process") -> Decision:
-    """A deterministic Decision (D-21-01): final_action + gate detail + per-name
-    resolutions. No model action, no score — decide computes final_action purely
-    from the resolution facts."""
+    """A deterministic Decision: final_action + gate detail + per-name resolutions.
+
+    No model action and no confidence score — decide computes final_action purely
+    from the resolution facts.
+    """
     return Decision(
         final_action=action,
         gate_reasons=[],
@@ -181,7 +183,7 @@ def test_set_status_writes_enum_value(fake_conn):
 
 
 # ---------------------------------------------------------------------------
-# persist_decision — writes the decision JSONB ONLY, never status (FIX B)
+# persist_decision — writes the decision JSONB ONLY, never status
 # ---------------------------------------------------------------------------
 
 
@@ -191,7 +193,7 @@ def test_persist_decision_serializes_via_model_dump_json(fake_conn):
     sql, params = fake_conn.last()
     assert "decision" in str(sql).lower()
     # The deterministic Decision round-trips via model_dump(mode="json"): the
-    # per-name resolutions are folded into the decision JSONB (D-21-04), so the
+    # per-name resolutions are folded into the decision JSONB, so the
     # submitted_name + source land in the serialized params.
     assert "Maria Chen" in str(params), "resolutions must serialize into the decision JSONB"
     assert "exact" in str(params), "the resolution source must serialize"
@@ -200,8 +202,8 @@ def test_persist_decision_serializes_via_model_dump_json(fake_conn):
 def test_persist_decision_never_writes_status(fake_conn):
     repo.persist_decision(uuid.uuid4(), _decision(), conn=fake_conn)
     assert "status" not in fake_conn.all_sql().lower(), (
-        "persist_decision must NOT touch status (FIX B); the orchestrator calls "
-        "set_status separately to advance state"
+        "persist_decision must NOT touch status; set_status is the sole status writer "
+        "and the orchestrator calls it separately to advance state"
     )
 
 
@@ -210,12 +212,13 @@ def test_persist_decision_signature_has_no_final_status():
 
     sig = inspect.signature(repo.persist_decision)
     assert "final_status" not in sig.parameters, (
-        "persist_decision must take NO final_status argument (FIX B)"
+        "persist_decision must take NO final_status argument — a status parameter here "
+        "would create a second status-write path outside set_status"
     )
 
 
 # ---------------------------------------------------------------------------
-# record_run_error — writes error_reason AND routes ERROR THROUGH set_status (FIX B)
+# record_run_error — writes error_reason AND routes ERROR THROUGH set_status
 # ---------------------------------------------------------------------------
 
 
@@ -230,14 +233,14 @@ def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn,
         return real_set_status(run_id, status, conn=conn)
 
     # record_run_error's internal call to set_status is a same-module bare-name
-    # lookup against runs.py's own globals (post-split), NOT the facade's — a
-    # facade-level monkeypatch.setattr(repo, "set_status", ...) would not be
-    # seen by record_run_error at all. Patch app.db.repo.runs directly instead.
+    # lookup against runs.py's own globals, NOT the facade's — a facade-level
+    # monkeypatch.setattr(repo, "set_status", ...) would not be seen by
+    # record_run_error at all. Patch app.db.repo.runs directly instead.
     monkeypatch.setattr(repo_runs, "set_status", _spy)
 
     run_id = uuid.uuid4()
-    # WR-03 CAS: record_run_error's guarded UPDATE ... RETURNING must yield a row
-    # for the claim to succeed (a None row means the run is terminal/missing).
+    # record_run_error claims the run with a guarded UPDATE ... RETURNING, which must
+    # yield a row for the claim to succeed (a None row means the run is terminal/missing).
     fake_conn.script_fetchone((str(run_id),))
     repo.record_run_error(run_id, "extraction failed twice", conn=fake_conn)
 
@@ -246,7 +249,8 @@ def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn,
     assert "extraction failed twice" in str(fake_conn.executed)
     # and the ERROR transition went THROUGH set_status (single status-write path)
     assert RunStatus.ERROR in calls["set_status"], (
-        "record_run_error must route its ERROR transition through set_status (FIX B)"
+        "record_run_error must route its ERROR transition through set_status — a direct "
+        "status UPDATE here would bypass the single status-write path"
     )
 
 
@@ -257,9 +261,9 @@ def test_record_run_error_writes_reason_and_routes_through_set_status(fake_conn,
 
 def test_persist_reconciliation_serializes_each_name(fake_conn):
     run_id = uuid.uuid4()
-    # An unresolved name (D-21-01): the deterministic resolver could not match the
-    # unknown shorthand to any roster employee — source="none", resolved=False, no
-    # employee guessed. No score is carried anywhere.
+    # An unresolved name: the deterministic resolver could not match the unknown
+    # shorthand to any roster employee — source="none", resolved=False, no employee
+    # guessed. No confidence score is carried anywhere.
     matches = [
         NameMatchResult(
             submitted_name="David Reyez",
@@ -277,7 +281,7 @@ def test_persist_reconciliation_serializes_each_name(fake_conn):
 
 
 # ---------------------------------------------------------------------------
-# Parameterized-SQL discipline across the whole repo module (T-injection)
+# Parameterized-SQL discipline across the whole repo package (SQL-injection guard)
 # ---------------------------------------------------------------------------
 
 
@@ -288,12 +292,11 @@ def test_repo_has_no_fstring_sql():
 
     import app.db.repo as repo_pkg
 
-    # Post-split, the facade (repo.__file__) contains no SQL at all — this sweep
-    # must scan across ALL the package's modules to preserve its original
-    # whole-repo-layer guarantee (Codex Round 2 vacuous-scan finding).
-    # Enumerate the package DYNAMICALLY (Phase 13 review WR-03) so a future
-    # sixth aggregate module — or SQL added to _shared.py — can never silently
-    # escape the sweep the way a hardcoded module tuple would let it.
+    # The facade (repo.__file__) contains no SQL at all, so scanning it alone would
+    # make this test vacuous — the sweep must cover EVERY module in the package to
+    # give a whole-data-layer guarantee. Enumerate the package DYNAMICALLY so a new
+    # aggregate module — or SQL added to _shared.py — can never silently escape the
+    # scan the way a hardcoded module tuple would let it.
     modules = {
         m.name: importlib.import_module(f"app.db.repo.{m.name}")
         for m in pkgutil.iter_modules(repo_pkg.__path__)
@@ -359,7 +362,8 @@ def test_find_any_run_for_header_matches_across_any_status(fake_conn):
     )
     sql = str(fake_conn.last()[0])
     assert "awaiting_reply" not in sql, (
-        "any-status lookup must NOT restrict by status (late-reply observability, FIX 10)"
+        "any-status lookup must NOT restrict by status — it exists so a late reply to a "
+        "run that already moved on is still traceable to its run instead of vanishing"
     )
 
 
@@ -409,7 +413,11 @@ def test_insert_inbound_email_uses_on_conflict_do_nothing(fake_conn):
 @pytest.mark.integration
 def test_inbound_body_roundtrip_is_not_recleaned(seeded_db):
     """insert_inbound_email persists the cleaned body; load_source_email returns it
-    unchanged — no re-cleaning on read (FIX C)."""
+    unchanged.
+
+    Cleaning happens exactly once, on the way in. Re-cleaning on read would let the
+    operator gate show a body that differs from the one extraction actually saw.
+    """
     from app.db.seed import seed as _seed
 
     result = _seed(dry_run=True)
@@ -435,7 +443,9 @@ def test_inbound_body_roundtrip_is_not_recleaned(seeded_db):
         pay_period_end="2026-06-21",
     )
     body = repo.load_source_email(run_id)
-    assert body == cleaned, "load_source_email must return the cleaned body unchanged (FIX C)"
+    assert body == cleaned, (
+        "load_source_email must return the stored body byte-for-byte — no cleaning on read"
+    )
 
 
 @_SKIP_LIVE_DB
@@ -470,42 +480,32 @@ def test_record_run_error_persists_reason_and_error_status(seeded_db):
 
 
 # ===========================================================================
-# Phase 6 Wave 0 xfail stubs — OPS-02 gateway (06-01 Task 2)
-#
-# ALL tests below target not-yet-implemented Phase 6 behavior. They are
-# decorated with @pytest.mark.xfail(strict=True, reason="implemented in 06-04").
-# strict=True means:
-#   - An XFAIL (expected failure) exits 0 — the no-op-swap gate stays GREEN.
-#   - An XPASS (unexpected pass) exits non-zero — the signal to REMOVE the
-#     markers in 06-04 when the real gateway lands.
-#
-# The ONE exception: test_parse_inbound_canonical_fixture_still_works has NO
-# xfail — it must stay GREEN throughout (HIGH-2 fixture-path guard).
+# Real Resend gateway behavior — signature verification, two-step inbound parse,
+# crash-safe outbound ordering, durable threading, and the unsigned-request policy.
+# Every test below monkeypatches the resend SDK surfaces; none makes a network call.
 # ===========================================================================
 
-import resend  # noqa: F401, E402 — installed via 06-01 Task 1; needed for monkeypatching, imported late to keep the patch target order documented above
+import resend  # noqa: F401, E402 — imported after the module-level tests so the monkeypatch targets read in the order the gateway calls them
 
 # ===========================================================================
-# MEDIUM-5: SDK smoke-check test (Wave 0 guard — Task 0)
-# Asserts resend==2.32.2 call surfaces exist so a Python SDK naming mismatch
-# is caught at Wave 0, not at the live human gate (D-09b). Researcher verified
-# these by source inspection; this locks it as an executable guard.
+# SDK smoke check: the resend call surfaces this gateway depends on must exist.
+# A silent SDK rename would otherwise only surface against the live provider.
 # ===========================================================================
 
 
 def test_resend_sdk_call_surfaces_exist():
-    """MEDIUM-5: SDK smoke check — asserts resend==2.32.2 call surfaces exist.
+    """The resend SDK call surfaces the gateway depends on must exist.
 
-    No network calls. Pure import + attribute inspection. Must PASS immediately
-    (no xfail). Catches Python SDK naming mismatches before the live demo gate.
+    No network calls — pure import + attribute inspection. Catches an SDK rename
+    at test time rather than against the live provider during a demo.
     """
     import inspect
 
-    # 1. resend.Webhooks.verify — the signature-verification surface (D-17).
+    # 1. resend.Webhooks.verify — the signature-verification surface.
     assert hasattr(resend, "Webhooks"), "resend.Webhooks does not exist"
     assert hasattr(resend.Webhooks, "verify"), "resend.Webhooks.verify does not exist"
 
-    # 2. resend.EmailsReceiving.get — the inbound email fetch surface (D-01a).
+    # 2. resend.EmailsReceiving.get — the inbound email fetch surface.
     assert hasattr(resend, "EmailsReceiving"), "resend.EmailsReceiving does not exist"
     assert hasattr(resend.EmailsReceiving, "get"), "resend.EmailsReceiving.get does not exist"
 
@@ -514,10 +514,10 @@ def test_resend_sdk_call_surfaces_exist():
     assert hasattr(resend.Emails, "send"), "resend.Emails.send does not exist"
 
     # 4. resend.Emails.send call-surface check.
-    # Researcher verified from source inspection that resend.Emails.send accepts a
-    # single SendParams TypedDict argument (a TypedDict, so dict subclass). The dict
-    # has keys including 'headers' and 'attachments'. We verify the signature accepts
-    # a positional param (the send dict) and check the send dict schema includes both keys.
+    # resend.Emails.send accepts a single SendParams TypedDict argument (a TypedDict,
+    # so a dict subclass) whose keys include 'headers' and 'attachments'. Verify the
+    # signature accepts a positional param (the send dict) and that the send-dict
+    # schema carries both keys the gateway relies on.
     sig = inspect.signature(resend.Emails.send)
     params_list = list(sig.parameters.keys())
     # The send method takes 'params' (the SendParams TypedDict) as first positional.
@@ -551,7 +551,7 @@ def test_resend_sdk_call_surfaces_exist():
 
 
 class _FakeReceivedEmail:
-    """Minimal stand-in for resend.ReceivedEmail used in gateway xfail tests.
+    """Minimal stand-in for resend.ReceivedEmail used across the gateway tests.
 
     Mirrors the shape returned by resend.EmailsReceiving.get(email_id).
     Each test that needs different field values constructs its own instance
@@ -573,18 +573,16 @@ class _FakeReceivedEmail:
 
 
 # ---------------------------------------------------------------------------
-# HIGH-2 fixture-path guard — MUST stay GREEN throughout (NO xfail)
+# Fixture-path guard — the whole fixture-first development contract rests on it
 # ---------------------------------------------------------------------------
 
 
 def test_parse_inbound_canonical_fixture_still_works():
-    """The fixture/dev path through the gateway seam works with the current stub.
+    """A canonical InboundEmail dict still round-trips through gateway.parse_inbound.
 
-    This test is NOT xfail — it must stay GREEN throughout all waves. It pins
-    that the canonical InboundEmail dict shape still round-trips cleanly through
-    gateway.parse_inbound (no provider call needed for the fixture path). This
-    is the HIGH-2 fixture-path guard: if it regresses, the whole fixture-first
-    development contract breaks. (OPS-02 / D-18)
+    The fixture path takes no provider call: parse_inbound must accept the canonical
+    dict shape directly. If this regresses, every fixture-driven test and the demo
+    "send test email" path lose their only way into the pipeline.
     """
     from uuid import uuid4
 
@@ -605,7 +603,7 @@ def test_parse_inbound_canonical_fixture_still_works():
 
 
 # ---------------------------------------------------------------------------
-# OPS-02 / D-17 — signature verification (xfail until 06-04)
+# Webhook signature verification
 # ---------------------------------------------------------------------------
 
 
@@ -613,18 +611,17 @@ def test_verify_raises_on_bad_signature(monkeypatch):
     """gateway.verify must propagate ValueError from resend.Webhooks.verify.
 
     The route calls gateway.verify(payload_bytes, svix_headers, secret) as step
-    zero before any parsing or dedup. When the HMAC check fails, ValueError must
-    propagate so the route can return 400 and abort. (OPS-02 / D-17)
+    zero, before any parsing or dedup. When the HMAC check fails, ValueError must
+    propagate so the route returns 400 and aborts — swallowing it would let a
+    forged payload create a payroll run.
     """
     def _reject(payload_dict):
         raise ValueError("bad sig")
 
     monkeypatch.setattr(resend.Webhooks, "verify", staticmethod(_reject))
 
-    # gateway.verify is the thin shim that calls resend.Webhooks.verify.
-    # It does not exist in the Phase 2 stub — this xfails because AttributeError
-    # (no 'verify' on the module) is an unexpected failure, not the expected ValueError.
-    # When 06-04 adds gateway.verify, the monkeypatched ValueError must propagate.
+    # gateway.verify is the thin shim over resend.Webhooks.verify; the rejection the
+    # SDK raises must surface to the caller unchanged.
     with pytest.raises(ValueError):
         gateway.verify(
             b'{"type":"email.received"}',
@@ -636,7 +633,7 @@ def test_verify_raises_on_bad_signature(monkeypatch):
 def test_verify_passes_on_valid_signature(monkeypatch):
     """gateway.verify must return cleanly when resend.Webhooks.verify succeeds.
 
-    Happy path: the HMAC check passes, no exception raised. (OPS-02 / D-17)
+    Happy path: the HMAC check passes, no exception raised.
     """
     def _noop(payload_dict):
         return None  # success
@@ -652,7 +649,7 @@ def test_verify_passes_on_valid_signature(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# OPS-02 / D-01a / D-18 — two-step parse: metadata webhook → fetch → InboundEmail
+# Two-step parse: metadata webhook → provider fetch → InboundEmail
 # ---------------------------------------------------------------------------
 
 
@@ -661,7 +658,7 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
 
     The Resend webhook payload is metadata-only (no body, no threading headers).
     parse_inbound must call resend.EmailsReceiving.get(email_id) to retrieve the
-    body + headers and return a fully-populated InboundEmail. (OPS-02 / D-01a)
+    body + headers and return a fully-populated InboundEmail.
     """
     from app.config import get_settings
     from app.models.contracts import InboundEmail
@@ -686,7 +683,7 @@ def test_parse_inbound_two_step_fetch(monkeypatch):
 
     monkeypatch.setattr(resend.EmailsReceiving, "get", staticmethod(_fake_get))
 
-    # Raw webhook payload — metadata only, no body (D-01a confirmed shape).
+    # Raw webhook payload — metadata only, no body: this is the shape Resend posts.
     raw_webhook = {
         "data": {
             "email_id": "re_123",
@@ -715,8 +712,8 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
     """parse_inbound must handle lowercase header keys from the provider.
 
     Real providers are inconsistent about header key casing — some send 'In-Reply-To',
-    others send 'in-reply-to'. The gateway must normalize case-insensitively.
-    (OPS-02 / D-18 / Pitfall 4)
+    others send 'in-reply-to'. The gateway must normalize case-insensitively, or a
+    lowercase-header provider silently loses the whole reply-threading chain.
     """
     from app.config import get_settings
     from app.models.contracts import InboundEmail
@@ -730,7 +727,7 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
         text="Maria 40 hours",
         html=None,
         headers={
-            "in-reply-to": "<prev@x.test>",  # lowercase keys (the pitfall case)
+            "in-reply-to": "<prev@x.test>",  # lowercase keys — the case that breaks naive lookup
             "references": "<prev@x.test>",
         },
     )
@@ -762,9 +759,10 @@ def test_parse_inbound_normalizes_headers_case_insensitively(monkeypatch):
 def test_parse_inbound_dedup_keys_on_rfc_message_id(monkeypatch):
     """The returned InboundEmail.message_id must be the RFC message_id, NOT email_id.
 
-    The Resend 'email_id' is an internal Resend identifier (e.g. 're_123').
-    The dedup key must be the RFC Message-ID from email_obj.message_id, which is
-    the globally-unique RFC value. (OPS-02 / D-13 dedup key correctness)
+    The Resend 'email_id' is a provider-internal identifier (e.g. 're_123') and is not
+    stable across a redelivery. The dedup key must be the globally-unique RFC Message-ID
+    from email_obj.message_id — keying on the provider ID would let a redelivered webhook
+    create a second payroll run for the same email.
     """
     from app.config import get_settings
     from app.models.contracts import InboundEmail
@@ -816,7 +814,8 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
 
     Real providers send display-name forms like 'HR Dept <hr@acme.test>'. The
     gateway must run email.utils.parseaddr to extract the bare address before
-    passing it to find_business_by_sender. (OPS-02 / D-18 / LOW-9)
+    passing it to find_business_by_sender — the raw display-name string would
+    never match a stored contact_email, so a known client would look unknown.
     """
     from app.config import get_settings
     from app.models.contracts import InboundEmail
@@ -842,7 +841,7 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
     raw_webhook = {
         "data": {
             "email_id": "re_display",
-            "from": "HR Dept <hr@acme.test>",  # display-name form (LOW-9)
+            "from": "HR Dept <hr@acme.test>",  # display-name form
             "to": ["agent@x.test"],
             "subject": "hours",
             "message_id": "<display@resend.com>",
@@ -861,20 +860,20 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# OPS-02 / D-13c / MEDIUM-6 — reserved→sent ordering (xfail until 06-04)
+# Crash-safe outbound ordering: reserved → send → sent/failed
 # ---------------------------------------------------------------------------
 
 
 def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     """send_outbound must write send_state='reserved' BEFORE calling resend.Emails.send.
 
-    D-13c crash-safe ordering: if the process dies between the reserved write and
-    the send call, the row is visible in the DB as reserved (not lost). The 'sent'
-    or 'failed' update follows the send call.
+    Crash-safe ordering: if the process dies between the reserved write and the send
+    call, the row is still visible in the DB as reserved rather than lost — an email
+    that may have gone out is never invisible to recovery. The 'sent' or 'failed'
+    update follows the send call.
 
-    MEDIUM-6: asserts RELATIVE order (not absolute index 0/1) because
-    get_outbound_references_chain adds a DB READ before the reserved INSERT, so
-    absolute indexing breaks. (OPS-02 / D-13c / MEDIUM-6)
+    The assertion checks RELATIVE order rather than an absolute index, because
+    get_outbound_references_chain issues a DB READ before the reserved INSERT.
     """
     from app.config import get_settings
 
@@ -906,8 +905,8 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
             break
 
     assert reserved_idx is not None, (
-        "send_outbound must write send_state='reserved' to email_messages before the send call "
-        "(D-13c crash-safe ordering)"
+        "send_outbound must write send_state='reserved' to email_messages before the send "
+        "call, so a crash mid-send still leaves the attempt visible in the DB"
     )
 
     # The send call must happen AFTER the reserved insert.
@@ -921,18 +920,18 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
         for sql, params in fake_conn.executed[reserved_idx + 1:]
     )
     assert sent_found, (
-        "send_outbound must update send_state to 'sent' after a successful resend.Emails.send call "
-        "(D-13c crash-safe ordering)"
+        "send_outbound must update send_state to 'sent' after a successful "
+        "resend.Emails.send call — a row left at 'reserved' would look like a crash"
     )
 
 
 def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
     """send_outbound must update send_state to 'failed' when resend.Emails.send raises.
 
-    HIGH-3 fix: when the provider call raises (network error, rate limit, etc.),
-    the outbound row must transition reserved→failed (not left as reserved) and the
-    exception must re-raise so the caller knows the send did not succeed.
-    (OPS-02 / D-13c / HIGH-3)
+    When the provider call raises (network error, rate limit, etc.), the outbound row
+    must transition reserved→failed rather than being left at 'reserved', and the
+    exception must re-raise so the caller knows the send did not succeed. A row stuck
+    at 'reserved' is indistinguishable from a crash mid-send and would be retried.
     """
     from app.config import get_settings
 
@@ -964,34 +963,34 @@ def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
         for _, params in fake_conn.executed
     )
     assert reserved_found, (
-        "send_outbound must write send_state='reserved' before the failing send attempt (D-13c)"
+        "send_outbound must write send_state='reserved' before the failing send attempt"
     )
 
-    # After the exception, the row must be updated to 'failed' (HIGH-3 fix).
+    # After the exception, the row must be updated to 'failed'.
     failed_found = any(
         params and "failed" in str(params)
         for _, params in fake_conn.executed
     )
     assert failed_found, (
         "send_outbound must update send_state to 'failed' when resend.Emails.send raises "
-        "(HIGH-3 fix — reserved→failed, not left as reserved)"
+        "— reserved→failed, never left at reserved"
     )
 
 
 # ---------------------------------------------------------------------------
-# OPS-02 / D-14 — durable threading from DB state (xfail until 06-04)
+# Durable threading: the References chain is rebuilt from DB state
 # ---------------------------------------------------------------------------
 
 
 def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     """send_outbound must build the References chain from persisted DB state.
 
-    D-14 durable threading: the chain is rebuilt from the PERSISTED outbound row in
-    email_messages, NOT from caller-passed values alone. This ensures the chain
-    survives dropped/duplicated deliveries. Setup: FakeConnection is pre-seeded to
-    return a prior outbound row with references_header='<prior@x.test>'. The test
-    asserts the INSERT params include BOTH '<prior@x.test>' AND '<inbound@x.test>'
-    in the references_header. (OPS-02 / D-14)
+    The chain is rebuilt from the PERSISTED outbound row in email_messages, not from
+    caller-passed values alone, so it survives dropped or duplicated deliveries — the
+    client's mail app only groups the conversation if every References link is intact.
+    Setup: FakeConnection is pre-seeded to return a prior outbound row with
+    references_header='<prior@x.test>'; the INSERT params must carry BOTH that prior
+    link and the new inbound message_id.
     """
     from app.config import get_settings
 
@@ -1031,13 +1030,11 @@ def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
 def test_inbound_reply_routes_to_correct_run(monkeypatch):
     """POST /webhook/inbound with in_reply_to matching an awaiting_reply run must resume it.
 
-    MEDIUM-7 fix: when an inbound email's In-Reply-To matches an outbound clarification
-    Message-ID for an awaiting_reply run, the route must call resume_pipeline (via
-    BackgroundTasks.add_task), NOT run_pipeline. This confirms reply routing works end-
-    to-end for the mock case. (OPS-02 / D-14)
-
-    xfail removed in 06-04 Task 3 — the route was restructured to async Request with
-    ALLOW_UNSIGNED_FIXTURES support, enabling canonical dict POSTs in dev mode.
+    When an inbound email's In-Reply-To matches an outbound clarification Message-ID for
+    an awaiting_reply run, the route must queue resume_pipeline (via
+    BackgroundTasks.add_task), NOT run_pipeline. Starting a fresh run instead of resuming
+    would strand the original run at awaiting_reply forever and drop the answer the
+    client just gave.
     """
     from fastapi.testclient import TestClient
 
@@ -1045,8 +1042,8 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     from app.main import app
 
     run_id = uuid.uuid4()
-    # Use a fixed business_id so the FIX-5 spoof guard passes:
-    # find_business_by_sender must return the SAME id as awaiting_run["business_id"].
+    # Use a fixed business_id so the sender-spoof guard passes: the route only accepts a
+    # reply whose sender resolves to the SAME business as the run it claims to answer.
     sender_business_id = uuid.uuid4()
     clarification_mid = "<clar-abc@payroll-agent.local>"
 
@@ -1056,14 +1053,14 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         "find_awaiting_reply_for_header",
         lambda *, in_reply_to, references_header, conn=None: run_id,
     )
-    # Monkeypatch: find_business_by_sender returns the SAME business_id as the run.
-    # FIX-5 spoof guard: str(reply_business_id) must equal str(run["business_id"]).
+    # Monkeypatch: find_business_by_sender returns the SAME business_id as the run, which
+    # is what the spoof guard requires — a reply from another business must not resume it.
     monkeypatch.setattr(
         _repo,
         "find_business_by_sender",
         lambda from_addr, conn=None: sender_business_id,
     )
-    # Monkeypatch: load_run to return an awaiting_reply run (for FIX-5 guard)
+    # Monkeypatch: load_run returns an awaiting_reply run for the spoof guard to compare
     awaiting_run = {
         "id": run_id,
         "business_id": sender_business_id,  # must match find_business_by_sender return
@@ -1104,11 +1101,11 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         lambda **kw: (uuid.uuid4(), True),
     )
 
-    # 09-03 (DATA-02): inbound() now wraps dedup + reply-classification + routing in
-    # one `with repo.get_connection() as conn: with conn.transaction(): ...` block.
-    # This test monkeypatches individual _repo functions (not the fake_repo fixture),
-    # so get_connection must be patched to a FakeConnection double too, or the route
-    # attempts a real pool connection with the bogus DATABASE_URL below.
+    # inbound() wraps dedup + reply-classification + routing in one
+    # `with repo.get_connection() as conn: with conn.transaction(): ...` block. This test
+    # monkeypatches individual _repo functions (not the fake_repo fixture), so
+    # get_connection must be patched to a FakeConnection double too — otherwise the route
+    # attempts a real pool connection against the bogus DATABASE_URL set below.
     import contextlib as _contextlib
 
     from tests.conftest import FakeConnection
@@ -1119,8 +1116,8 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
 
     monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
 
-    # WARNING-1 remediation (06-04 Task 2): route now requires ALLOW_UNSIGNED_FIXTURES=true
-    # for canonical dict POSTs without svix-* signature headers.
+    # The route requires ALLOW_UNSIGNED_FIXTURES=true for canonical dict POSTs that carry
+    # no svix-* signature headers; without it this POST would (correctly) be rejected 400.
     from app.config import get_settings
     get_settings.cache_clear()
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
@@ -1145,7 +1142,7 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
     # The reply must route to resume_pipeline, NOT run_pipeline.
     assert len(resume_called) > 0, (
         "POST /webhook/inbound with in_reply_to matching an awaiting_reply run must call "
-        "resume_pipeline (not run_pipeline) — MEDIUM-7 fix (D-14)"
+        "resume_pipeline, not run_pipeline — otherwise the original run never resumes"
     )
     assert len(run_pipeline_called) == 0, (
         "run_pipeline must NOT be called for a reply to an awaiting_reply run"
@@ -1163,7 +1160,6 @@ def test_inbound_reply_routes_to_correct_run_integration():
     end-to-end. Setup: INSERT a real outbound email_messages row for a run in
     status awaiting_reply, then POST a reply whose in_reply_to matches that row's
     message_id. Assert resume_pipeline (not run_pipeline) is queued.
-    (OPS-02 / D-14 / MEDIUM-5 real-SQL integration path)
     """
     if not (_HAS_DB and _HAS_RESET):
         pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — live-DB required")
@@ -1227,17 +1223,17 @@ def test_inbound_reply_routes_to_correct_run_integration():
 
 
 # ===========================================================================
-# Task 1 (06-04) new tests — HIGH-1-AUTH, HIGH-3 attachments, LOW-9 parseaddr,
-# REPLY-TO TOPOLOGY
+# Outbound send dict: API key, PDF attachments, and the Reply-To topology
 # ===========================================================================
 
 
 def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
-    """HIGH-1-AUTH (R5 — live-demo-critical): send_outbound sets resend.api_key as its
-    FIRST action, even when called from /demo/send-test without a prior parse_inbound.
+    """send_outbound must set resend.api_key as its FIRST action.
 
-    Asserts that resend.api_key is updated from a stale/unset value to the configured
-    key before resend.Emails.send is invoked.
+    The module-level resend.api_key is process-global state. /demo/send-test calls
+    send_outbound without any prior parse_inbound, so send_outbound cannot assume some
+    earlier call already configured the key — if it does, the demo send authenticates
+    with a stale or unset key and fails against the live provider.
     """
     from app.config import get_settings
 
@@ -1273,20 +1269,21 @@ def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
     assert len(key_at_send_time) == 1, "resend.Emails.send must be called exactly once"
     assert key_at_send_time[0] == "test-key-123", (
         f"resend.api_key must equal 'test-key-123' at the time resend.Emails.send is invoked; "
-        f"got {key_at_send_time[0]!r} — send_outbound must set api_key as its FIRST line "
-        "(HIGH-1-AUTH: /demo/send-test calls send_outbound without prior parse_inbound)"
+        f"got {key_at_send_time[0]!r} — send_outbound must set api_key as its FIRST line, "
+        "because /demo/send-test reaches it without any prior parse_inbound"
     )
     assert resend.api_key == "test-key-123", (
-        "resend.api_key was not updated from the stale value — HIGH-1-AUTH fix missing"
+        "resend.api_key was not updated from the stale value left by a prior caller"
     )
     get_settings.cache_clear()
 
 
 def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
-    """HIGH-3 attachments: send_outbound must base64-encode and forward PDF bytes.
+    """send_outbound must base64-encode and forward PDF bytes as attachments.
 
     Asserts that resend.Emails.send is called with an 'attachments' key containing
-    the expected filename and base64-encoded PDF content. (OPS-02 / HIGH-3)
+    the expected filename and base64-encoded PDF content — without it the client
+    receives a confirmation email with no paystubs.
     """
     import base64 as _b64
 
@@ -1321,7 +1318,7 @@ def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
     assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
     send_dict = captured_params[0]
     assert "attachments" in send_dict, (
-        "resend.Emails.send dict must contain 'attachments' key (HIGH-3 fix)"
+        "resend.Emails.send dict must contain an 'attachments' key when PDFs are passed"
     )
     attachments = send_dict["attachments"]
     assert len(attachments) == 1, "exactly one attachment expected"
@@ -1338,9 +1335,11 @@ def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
 
 
 def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch):
-    """REPLY-TO TOPOLOGY: send_outbound includes reply_to in the send dict when
-    resend_reply_to is non-empty. The reply_to value is the inbound .resend.app address
-    that the webhook IS connected to (not onboarding@resend.dev). (T-06-04-13)
+    """send_outbound includes reply_to in the send dict when resend_reply_to is non-empty.
+
+    The reply_to value is the inbound address the webhook is actually connected to. The
+    from-address is not: a client replying to it would reach nothing, which silently
+    breaks the whole clarification round-trip.
     """
     from app.config import get_settings
 
@@ -1372,8 +1371,8 @@ def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch)
     assert len(captured_params) == 1, "resend.Emails.send must be called exactly once"
     send_dict = captured_params[0]
     assert "reply_to" in send_dict, (
-        "resend.Emails.send dict must contain 'reply_to' key when resend_reply_to is configured "
-        "(REPLY-TO TOPOLOGY: directs client replies to the inbound webhook address)"
+        "resend.Emails.send dict must contain a 'reply_to' key when resend_reply_to is "
+        "configured — it is what directs client replies to the inbound webhook address"
     )
     assert send_dict["reply_to"] == "payroll@jiodnel.resend.app", (
         f"reply_to must equal 'payroll@jiodnel.resend.app'; got {send_dict['reply_to']!r}"
@@ -1382,9 +1381,10 @@ def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch)
 
 
 def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch):
-    """REPLY-TO TOPOLOGY: send_outbound omits reply_to from the send dict when
-    resend_reply_to is empty. Passing an empty string would send a malformed
-    Reply-To header — the key must be absent, not set to ''. (T-06-04-13)
+    """send_outbound omits reply_to entirely when resend_reply_to is empty.
+
+    Passing an empty string would send a malformed Reply-To header — the key must be
+    absent, not set to ''.
     """
     from app.config import get_settings
 
@@ -1392,10 +1392,9 @@ def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
     monkeypatch.setenv("RESEND_API_KEY", "test-key")
     # Force resend_reply_to empty. delenv() is NOT enough: Settings reads .env
-    # (env_file=".env"), so a RESEND_REPLY_TO line in a developer's local .env
-    # (added during the 06-03 deploy) would bleed through and the key would be
-    # present. An explicit empty OS env var overrides the .env value (verified),
-    # making this test deterministic regardless of local .env contents.
+    # (env_file=".env"), so a RESEND_REPLY_TO line in a developer's local .env would
+    # bleed through and the key would be present. An explicit empty OS env var overrides
+    # the .env value, making this test deterministic regardless of local .env contents.
     monkeypatch.setenv("RESEND_REPLY_TO", "")
 
     # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
@@ -1429,18 +1428,17 @@ def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# BLOCKER-2 / HIGH-4 — ALLOW_UNSIGNED_FIXTURES prod-auth closure (Task 2)
+# ALLOW_UNSIGNED_FIXTURES — unsigned inbound is rejected in production
 # ---------------------------------------------------------------------------
 
 
 def test_allow_unsigned_fixtures_prod_default_returns_400(monkeypatch):
-    """BLOCKER-2 + HIGH-4: unsigned Resend-envelope payload without svix-* headers returns 400
-    in production (ALLOW_UNSIGNED_FIXTURES=False, the default).
+    """An unsigned Resend-envelope payload returns 400 in production.
 
-    This is the ONLY consistent statement about unsigned requests in prod:
-    they return 400 regardless of shape (Resend-envelope OR canonical).
-    NOT xfail — must be GREEN immediately after Task 2 route restructure.
-    (T-06-04-01 / T-06-04-11)
+    ALLOW_UNSIGNED_FIXTURES defaults to False, and the rule for unsigned requests in
+    production is unconditional: 400 regardless of payload shape (Resend-envelope OR
+    canonical). Any shape-dependent exception would be an unauthenticated path into
+    the payroll pipeline.
     """
     from fastapi.testclient import TestClient
 
@@ -1475,19 +1473,17 @@ def test_allow_unsigned_fixtures_prod_default_returns_400(monkeypatch):
     assert response.status_code == 400, (
         f"Unsigned Resend-envelope POST must return 400 in prod "
         f"(ALLOW_UNSIGNED_FIXTURES=False default); got {response.status_code}. "
-        f"BLOCKER-2: unsigned inbound must be rejected before any pipeline work."
+        f"Unsigned inbound must be rejected before any pipeline work begins."
     )
     get_settings.cache_clear()
 
 
 def test_allow_unsigned_fixtures_canonical_shape_prod_default_returns_400(monkeypatch):
-    """HIGH-4 + MEDIUM-4: unsigned canonical InboundEmail-shaped POST returns 400 in prod.
+    """An unsigned canonical InboundEmail-shaped POST also returns 400 in production.
 
     This closes the canonical-bypass hole: even a perfectly-shaped InboundEmail dict POST
-    without svix-* auth headers returns 400 in prod (ALLOW_UNSIGNED_FIXTURES=False).
-    MEDIUM-4 consistent statement: unsigned canonical → 400 in prod. Full stop.
-    NOT xfail — must be GREEN immediately after Task 2 route restructure.
-    (T-06-04-11)
+    without svix-* auth headers returns 400 when ALLOW_UNSIGNED_FIXTURES is False. The
+    fixture shape is a dev convenience, never an authentication exemption.
     """
     from fastapi.testclient import TestClient
 
@@ -1518,16 +1514,16 @@ def test_allow_unsigned_fixtures_canonical_shape_prod_default_returns_400(monkey
     assert response.status_code == 400, (
         f"Unsigned canonical InboundEmail POST must return 400 in prod "
         f"(ALLOW_UNSIGNED_FIXTURES=False default); got {response.status_code}. "
-        f"HIGH-4: canonical fixture bypass must be closed in production."
+        f"The canonical fixture shape must not be an authentication bypass."
     )
     get_settings.cache_clear()
 
 
 def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatch):
-    """HIGH-4: canonical InboundEmail dict POST returns 200 in dev mode
-    (ALLOW_UNSIGNED_FIXTURES=True). Dev path preserved when flag is explicitly set.
-    NOT xfail — must be GREEN immediately after Task 2 route restructure.
-    (T-06-04-07 — flag is never in render.yaml; only in tests and local .env)
+    """A canonical InboundEmail dict POST returns 200 when ALLOW_UNSIGNED_FIXTURES=True.
+
+    The fixture-first dev path stays open only behind an explicitly-set flag, which is
+    never part of the deployed environment — it lives in tests and a local .env only.
     """
     from fastapi.testclient import TestClient
 
@@ -1568,10 +1564,10 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
     import app.routes.pipeline_glue as _main
     monkeypatch.setattr(_main, "run_pipeline_bg", lambda run_id, conn=None: None)
 
-    # 09-03 (DATA-02): inbound() now wraps its ingest sequence in one
-    # `with repo.get_connection() as conn: with conn.transaction(): ...` block.
-    # This test monkeypatches individual _repo functions (not the fake_repo
-    # fixture), so get_connection must be patched to a FakeConnection double too.
+    # inbound() wraps its ingest sequence in one
+    # `with repo.get_connection() as conn: with conn.transaction(): ...` block. This test
+    # monkeypatches individual _repo functions (not the fake_repo fixture), so
+    # get_connection must be patched to a FakeConnection double too.
     import contextlib as _contextlib
 
     from tests.conftest import FakeConnection
@@ -1600,6 +1596,6 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
     assert response.status_code == 200, (
         f"Canonical InboundEmail POST must return 200 in dev mode "
         f"(ALLOW_UNSIGNED_FIXTURES=True); got {response.status_code}. "
-        f"HIGH-4: dev path preserved when flag is explicitly set."
+        f"The fixture-first dev path must stay open when the flag is explicitly set."
     )
     get_settings.cache_clear()

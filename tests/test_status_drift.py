@@ -1,18 +1,19 @@
 """CI drift guard: SQL CHECK value sets must match their Python source of truth.
 
-D-03: Python is the canonical source; schema.sql mirrors it.  Any value
-enumerated in BOTH Python and a SQL CHECK is a drift risk — if one side gains or
-loses a value, this test fails CI immediately.  No DB connection required.
+Python is the canonical source; schema.sql mirrors it. Any value enumerated in BOTH
+places is a drift risk: if one side gains or loses a value, the other silently starts
+rejecting rows the application considers valid (or accepting ones it does not). This test
+fails CI the moment they diverge, and needs no DB connection to do it.
 
-Coverage (WR-09 — generalized from the original status-only guard):
-- payroll_runs.status        ↔ RunStatus enum
-- employees.pay_type         ↔ Employee.pay_type            Literal["hourly","salary"]
-- employees.filing_status    ↔ Employee.filing_status       Literal[3 statuses]
-- employees.pay_periods_per_year ↔ Employee.pay_periods_per_year Literal[12,24,26,52]
+Coverage:
+- payroll_runs.status            ↔ RunStatus enum
+- employees.pay_type             ↔ Employee.pay_type              Literal["hourly","salary"]
+- employees.filing_status        ↔ Employee.filing_status         Literal[3 statuses]
+- employees.pay_periods_per_year ↔ Employee.pay_periods_per_year  Literal[12,24,26,52]
 
-The Python side is read live via typing.get_args on the model field annotation
-(not a hardcoded copy) so the test fails the moment a Literal changes without the
-matching CHECK edit — exactly the drift the status guard already proved out.
+The Python side is read LIVE via typing.get_args on the model field annotation rather
+than from a hardcoded copy in this file — a copy would itself be a third thing that could
+drift, and the guard would then be checking two stale lists against each other.
 
 Runs on every push with:
     pytest tests/test_status_drift.py -v
@@ -192,42 +193,42 @@ class TestEnumCheckDrift:
     def test_needs_clarification_absent_file_wide(self) -> None:
         """'needs_clarification' has zero occurrences anywhere in schema.sql.
 
-        Belt-and-suspenders proof (review fix, folded todo 260623-06) that the
-        removed status value is gone from every location — inline CHECK, DO-block
-        re-add list, and any stray comment — not just the two CHECK definitions.
+        The two CHECK definitions are not the only places a removed status value can
+        linger: it can also survive in a DO-block re-add list or a stray comment, and a
+        DO-block re-add would quietly put the dead value straight back into the live
+        constraint. Scanning the whole file is the only way to prove it is really gone.
         """
         sql = _SCHEMA_SQL.read_text()
         assert "needs_clarification" not in sql, (
-            "'needs_clarification' still appears in schema.sql — it must be fully "
-            "removed (folded todo 260623-06)"
+            "'needs_clarification' still appears in schema.sql — the removed status "
+            "value must be gone from every location, including DO-block re-add lists"
         )
 
     def test_do_block_constraint_drops_are_column_anchored(self) -> None:
-        """WR-06 (phase-8 review): DO-block DROPs must be column-anchored, not name-fuzzy.
+        """DO-block constraint DROPs must be column-anchored, never name-fuzzy.
 
-        The old idiom — `SELECT conname INTO _con_name ... WHERE conname LIKE
-        '%status%'` (and the mirrored '%purpose%' block) — silently took one
-        arbitrary matching row (no STRICT) and would DROP-and-never-restore any
-        unrelated future constraint whose NAME merely contained the substring.
-        The fixed blocks select CHECK constraints by their actual column set
-        (conkey -> pg_attribute) instead. This static guard pins the idiom so a
-        future schema edit cannot reintroduce a name-substring DROP.
+        A name-substring idiom — `SELECT conname INTO _con_name ... WHERE conname LIKE
+        '%status%'` — takes ONE arbitrary matching row (there is no STRICT), so it can
+        DROP an unrelated constraint whose name merely contains the substring, and then
+        never restore it: the migration silently removes a guard nobody asked it to
+        touch. Anchoring instead on the constraint's actual column set (conkey ->
+        pg_attribute) makes the match exact. This static guard pins that idiom so a
+        future schema edit cannot reintroduce the fuzzy one.
         """
-        # Strip line comments first (same normalization the value-set parsers
-        # use) — the WR-06 explanatory comments legitimately mention the old
-        # idiom; only EXECUTABLE SQL must be free of it.
+        # Strip line comments first (the same normalization the value-set parsers use):
+        # the explanatory comments above legitimately quote the old idiom, and only
+        # EXECUTABLE SQL must be free of it.
         sql = re.sub(r"--[^\n]*", "", _SCHEMA_SQL.read_text())
         assert "conname LIKE" not in sql, (
             "schema.sql must never DROP a constraint matched by a name substring "
-            "(conname LIKE) — anchor on the constraint's column set via conkey "
-            "instead (WR-06)"
+            "(conname LIKE) — anchor on the constraint's column set via conkey instead"
         )
-        # Both migration DO-blocks (payroll_runs.status, email_messages.purpose)
-        # must use the conkey-anchored matcher.
+        # Both migration DO-blocks (payroll_runs.status, email_messages.purpose) must use
+        # the conkey-anchored matcher.
         assert sql.count("ANY (c.conkey)") == 2, (
-            "expected exactly 2 conkey-anchored constraint matchers (the status "
-            "and purpose DO-blocks); update this count only alongside a reviewed "
-            "new migration block (WR-06)"
+            "expected exactly 2 conkey-anchored constraint matchers (the status and "
+            "purpose DO-blocks); only update this count alongside a reviewed new "
+            "migration block"
         )
 
     def test_no_db_connection_needed(self) -> None:
@@ -264,13 +265,14 @@ class TestEnumCheckDrift:
 
 
 class TestIndexStaticGuard:
-    """D-8-10 static half of the hot-path index guard (the live half is 08-03).
+    """The static half of the hot-path index guard (the other half runs against a live DB).
 
-    Mirrors TestEnumCheckDrift's parse-and-assert shape: purely textual assertions
-    against schema.sql, no DB connection.  Proves the 3 OPS2-02 CREATE INDEX
-    statements exist with their exact researched column order, and that
-    businesses.contact_email / uq_email_run_purpose coverage facts still hold
-    (the substitute proof for D-8-09's non-duplication decision).
+    Mirrors TestEnumCheckDrift's parse-and-assert shape: purely textual assertions against
+    schema.sql, no DB connection. It proves the three hot-path CREATE INDEX statements
+    exist with their exact column ORDER — a composite index with its columns transposed
+    still creates cleanly and still fails to serve the query it was written for — and that
+    the businesses.contact_email and uq_email_run_purpose coverage facts still hold, which
+    is what justifies NOT adding a duplicate index for contact_email.
     """
 
     def test_schema_file_exists(self) -> None:
@@ -282,7 +284,8 @@ class TestIndexStaticGuard:
             "CREATE INDEX IF NOT EXISTS idx_email_messages_run_direction_state"
             in sql
         ), "idx_email_messages_run_direction_state statement not found"
-        # Column order is locked by D-8-09 / 08-RESEARCH.md Pattern 3.
+        # Column order is load-bearing: a composite index only serves a query whose
+        # predicates match its leading columns, so a transposed list is a silent no-op.
         m = re.search(
             r"idx_email_messages_run_direction_state\s*\n?\s*ON\s+email_messages\s*\(([^)]*)\)",
             sql,
@@ -328,10 +331,12 @@ class TestIndexStaticGuard:
         )
 
     def test_contact_email_still_not_null_unique(self) -> None:
-        """D-8-09 substitute proof: contact_email's UNIQUE constraint is untouched.
+        """businesses.contact_email's UNIQUE constraint is untouched.
 
-        No separate CREATE INDEX on businesses(contact_email) should ever exist —
-        the NOT NULL UNIQUE constraint's implicit index already covers it.
+        This is the proof behind the decision NOT to add an index for contact_email: the
+        NOT NULL UNIQUE constraint already creates an implicit index that covers the
+        sender lookup. A separate CREATE INDEX would be pure duplicated write cost, so
+        the constraint must stay — and no duplicate index may appear.
         """
         sql = _SCHEMA_SQL.read_text()
         m = re.search(r"contact_email\s+TEXT\s+NOT NULL UNIQUE", sql)
@@ -340,7 +345,7 @@ class TestIndexStaticGuard:
             r"CREATE INDEX[^\n]*\n?\s*ON\s+businesses\s*\(\s*contact_email\s*\)",
             sql,
             re.IGNORECASE,
-        ), "a duplicate index on businesses(contact_email) must not exist (D-8-09)"
+        ), "a duplicate index on businesses(contact_email) must not exist"
 
     def test_uq_email_run_purpose_still_present(self) -> None:
         sql = _SCHEMA_SQL.read_text()

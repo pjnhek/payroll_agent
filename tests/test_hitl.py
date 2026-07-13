@@ -1,15 +1,21 @@
-"""Operator approve/reject/retrigger re-entry tests (HITL-01/02/03; D-12, D-13b).
+"""Operator approve/reject/retrigger re-entry tests (HITL-01/02/03).
 
-Plan 05-05 (Wave 3) hardens the routes:
-- approve: CAS claim (AWAITING_APPROVAL → APPROVED) + _deliver inside D-13b error
-  boundary → 303 POST-redirect-GET to run detail (HITL-02, FOUND-04)
-- reject: CAS claim (AWAITING_APPROVAL → REJECTED) → 303 (HITL-01)
-- retrigger: claim from ERROR/APPROVED + stale in-flight states → background pipeline
-  → 303 (INGEST-05, finding #6)
+The operator gate is the ONE human gate in the system, so its routes must be safe
+against a double-click, a crash mid-delivery, and a transient DB blip:
 
-Both approve and reject return 303 RedirectResponse (follow=False to inspect).
-All status writes go through claim_status (two writers: set_status for uncontended
-transitions; claim_status for gates — D-12, FOUND-04).
+- approve: CAS claim (AWAITING_APPROVAL → APPROVED), then delivery inside the error
+  boundary → 303 POST-redirect-GET to run detail (HITL-02, FOUND-04);
+- reject: CAS claim (AWAITING_APPROVAL → REJECTED) → 303 (HITL-01);
+- retrigger: claim from ERROR/APPROVED and from stale in-flight states → background
+  pipeline → 303 (INGEST-05).
+
+Both approve and reject return a 303 redirect (the tests pass follow_redirects=False so
+they can inspect it): a POST-redirect-GET means a browser refresh re-GETs the detail
+page instead of re-POSTing the approval.
+
+There are exactly TWO status writers — set_status for uncontended transitions, and
+claim_status for the gates (FOUND-04). Every gate write goes through the CAS, so two
+concurrent approvals cannot both win.
 """
 from __future__ import annotations
 
@@ -40,16 +46,16 @@ def test_approve_sets_approved_or_reconciled(client, fake_repo):
     """Approve claims the run and either advances it to APPROVED (then _deliver
     advances to RECONCILED on success) or records ERROR on delivery failure.
 
-    Plan 05-05 approve uses CAS (claim_status) and calls _deliver synchronously.
-    With no live DB/LLM, _deliver may raise (e.g. load_line_items returns empty list
-    and compose_confirmation raises), advancing to ERROR — that is also a valid
-    post-approve terminal state. Either way the route returns 303 (D-06b).
+    Approve claims via CAS (claim_status) and runs delivery synchronously. With no live
+    DB/LLM, delivery may legitimately raise here (load_line_items returns an empty list,
+    compose_confirmation then raises), which advances the run to ERROR — also a valid
+    post-approve terminal state. Either way the route must return 303, never a 500.
     """
     run_id = _run_at_awaiting_approval(fake_repo)
     # follow_redirects=False so we see the 303 directly.
     r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
     assert r.status_code == 303, (
-        f"approve must return 303 POST-redirect-GET (D-06b); got {r.status_code}"
+        f"approve must return 303 POST-redirect-GET; got {r.status_code}"
     )
     assert f"/runs/{run_id}" in r.headers.get("location", ""), (
         "approve must redirect to the run detail page"
@@ -63,10 +69,13 @@ def test_approve_sets_approved_or_reconciled(client, fake_repo):
 
 
 def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, monkeypatch):
-    """REVIEW-4 WR-01 regression: if repo.load_run raises AFTER the CAS claim (e.g. a
-    transient DB/pooler blip), the approve route must route to ERROR + error_reason via the
-    D-13b boundary — NOT leave the run silently stuck at APPROVED and return a raw 500
-    (INGEST-05 'nothing silently hangs'). The fix moved load_run inside the try/except.
+    """A load_run failure AFTER the CAS claim routes to ERROR, not a raw 500.
+
+    A transient DB/pooler blip between the claim and the delivery leaves the run already
+    flipped to APPROVED. If load_run raises OUTSIDE the error boundary, the route 500s
+    and the run sits at APPROVED forever with no error_reason and nothing to retrigger —
+    exactly the silent hang INGEST-05 forbids. load_run must therefore sit INSIDE the
+    try/except that records the error.
     """
     import app.routes.runs as runs_mod
 
@@ -79,7 +88,7 @@ def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, mon
     def _boom(rid, conn=None):
         raise RuntimeError("simulated transient DB failure during load_run")
 
-    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)  # type: ignore[attr-defined]  # patch the route module's own private `repo` import binding -- the exact seam approve() calls
+    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)  # type: ignore[attr-defined]  # patch the route module's own `repo` import binding -- the exact seam approve() calls; mypy cannot see the module attribute
 
     r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
     assert r.status_code == 303, (
@@ -100,7 +109,7 @@ def test_reject_sets_rejected(client, fake_repo):
     run_id = _run_at_awaiting_approval(fake_repo)
     r = client.post(f"/runs/{run_id}/reject", follow_redirects=False)
     assert r.status_code == 303, (
-        f"reject must return 303 POST-redirect-GET (D-06b); got {r.status_code}"
+        f"reject must return 303 POST-redirect-GET; got {r.status_code}"
     )
     assert f"/runs/{run_id}" in r.headers.get("location", ""), (
         "reject must redirect to the run detail page"
@@ -152,7 +161,8 @@ def test_retrigger_from_error_backgrounds_pipeline(client, fake_repo):
 
 
 def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
-    """D-13b: retrigger from APPROVED (delivery died before ERROR recorded) → 303."""
+    """Retrigger from APPROVED — where a run lands if delivery died before recording
+    an error — must be accepted, or the run is unrecoverable."""
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.APPROVED)
@@ -163,11 +173,16 @@ def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
 
 
 def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, monkeypatch):
-    """WR-04 (phase-8 review): when _deliver raises an exception carrying the
-    roster it had already loaded (exc.payroll_roster), the approve() D-13b
-    boundary must forward that roster to record_run_error so _scrub can redact
-    employee names from the delivery error_detail. Traces the ARGUMENT FLOW
-    across the boundary — not just that record_run_error was called.
+    """approve() forwards the delivery exception's stashed roster to record_run_error.
+
+    When delivery raises an exception carrying the roster it had already loaded
+    (exc.payroll_roster), the approve() error boundary must pass that roster through to
+    record_run_error, or _scrub has no names to redact and employee names land in a
+    dashboard-rendered error_detail.
+
+    This traces the ARGUMENT FLOW across the boundary via an identity check on a
+    sentinel — asserting merely that record_run_error was CALLED would pass even if the
+    roster were dropped on the way.
     """
     import app.db.repo as repo_mod
     from app.pipeline import delivery as orch
@@ -177,7 +192,7 @@ def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, 
 
     def _deliver_boom(rid, run):
         exc = RuntimeError("gateway exploded sending Maria Chen's paystub")
-        exc.payroll_roster = sentinel_roster  # type: ignore[attr-defined]  # mirrors delivery.py's WR-04 best-effort debug attribute on an arbitrary exception
+        exc.payroll_roster = sentinel_roster  # type: ignore[attr-defined]  # mirrors delivery.py stashing the loaded roster onto an arbitrary exception; RuntimeError has no such attribute declared
         raise exc
 
     monkeypatch.setattr(orch, "deliver", _deliver_boom)
@@ -195,17 +210,20 @@ def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, 
     assert r.status_code == 303
 
     assert captured.get("roster") is sentinel_roster, (
-        "approve() must forward exc.payroll_roster (the roster _deliver already "
-        "loaded) to record_run_error's roster= kwarg — WR-04"
+        "approve() must forward exc.payroll_roster (the roster delivery already loaded) "
+        "to record_run_error's roster= kwarg, or employee names cannot be scrubbed"
     )
     assert captured.get("stage") == "delivery"
     assert captured.get("reason") == "RuntimeError"
 
 
 def test_approve_without_roster_on_exception_passes_none(client, fake_repo, monkeypatch):
-    """WR-04 / D-8-01b locked design: an exception WITHOUT payroll_roster (failure
-    before _deliver's roster load, or load_run itself failing) must pass
-    roster=None — the boundary never loads a roster of its own.
+    """An exception WITHOUT payroll_roster must pass roster=None.
+
+    This is the shape of a failure that happened before delivery loaded a roster (or of
+    load_run itself failing). The boundary must pass None rather than fetching a roster
+    of its own: an error handler that hits the DB can fail a second time — or hang —
+    while trying to report the first failure.
     """
     import app.db.repo as repo_mod
     from app.pipeline import delivery as orch
@@ -228,5 +246,5 @@ def test_approve_without_roster_on_exception_passes_none(client, fake_repo, monk
     assert r.status_code == 303
     assert captured.get("roster") is None, (
         "with no payroll_roster on the exception, approve() must pass "
-        "roster=None (D-8-01b: the error path never loads a roster)"
+        "roster=None — the error path never loads a roster itself"
     )

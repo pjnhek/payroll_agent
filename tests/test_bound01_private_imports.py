@@ -12,27 +12,30 @@ either of two forms:
    first-party module object, by EITHER binding form: `ast.Import` (`import X`
    / `import X as Y`) or `ast.ImportFrom` whose imported name resolves to a
    first-party module file/package (`from app.db import repo`, `from
-   app.db.repo import runs as repo_runs` — the codebase's dominant idiom,
-   WR-02). The receiver may be a bare bound name OR a dotted attribute chain
-   rooted at one — `import app.db.repo.runs` binds only the root name `app`,
-   so `app.db.repo.runs._scrub` is a nested `ast.Attribute` chain that must be
-   walked back to its root `ast.Name` and reconstructed into the full dotted
-   module path (WR-05: this completely standard unaliased-dotted-import shape
-   was previously invisible to the scanner). EXCEPT when the bound target is
-   itself a package `__init__.py` (the declared facade-boundary exemption: a
-   package deliberately re-exporting a private name via its own `__init__.py`
-   is the facade pattern working as designed, not a violation of it).
+   app.db.repo import runs as repo_runs` — the codebase's dominant idiom). The
+   receiver may be a bare bound name OR a dotted attribute chain rooted at one:
+   `import app.db.repo.runs` binds only the root name `app`, so
+   `app.db.repo.runs._scrub` reaches the scanner as a NESTED `ast.Attribute`
+   chain that must be walked back to its root `ast.Name` and reconstructed into
+   the full dotted module path. EXCEPT when the bound target is itself a package
+   `__init__.py` (the declared facade-boundary exemption: a package deliberately
+   re-exporting a private name via its own `__init__.py` is the facade pattern
+   working as designed, not a violation of it).
 
-`tests/` is intentionally NOT scanned (D-14): tests routinely reach into a
-module's own internals for unit-testing purposes, which is same-module by
-construction and outside this guard's cross-module scope.
+Both receiver shapes and both binding forms are covered deliberately: each one
+this scanner fails to resolve is a silent hole, and a guard with a hole reads
+green while the coupling it exists to prevent goes on spreading.
 
-Both the scanner's helper functions and its two pytest entry points live in
-this one file: `test_no_cross_module_private_imports` runs the scanner against
-the LIVE repository tree (the permanent CI gate); `test_scanner_detects_synthetic_violation`
+`tests/` is intentionally NOT scanned: tests routinely reach into a module's own
+internals for unit-testing purposes, which is same-module by construction and
+outside this guard's cross-module scope.
+
+Both the scanner's helper functions and its two pytest entry points live in this
+one file. `test_no_cross_module_private_imports` runs the scanner against the LIVE
+repository tree (the permanent CI gate); `test_scanner_detects_synthetic_violation`
 proves the scanner's own detection logic against a constructed tmp_path fixture
-covering every violation shape and every legitimate-pattern exemption (the
-permanent replacement for a one-time manual scratch-file check).
+covering every violation shape and every legitimate-pattern exemption — without it,
+a scanner that detects nothing at all would still pass the live gate.
 """
 
 from __future__ import annotations
@@ -44,28 +47,26 @@ SCAN_ROOTS = ["app", "eval", "scripts"]
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# D-01/D-03 (13-01-SUMMARY.md): `app/db/repo/` is a package whose internal
-# plumbing module (`_shared.py`, holding `_conn_ctx`/`_nulltx`) is DELIBERATELY
-# imported directly by its sibling aggregate modules ("submodules import
-# siblings directly" — D-03), and whose own `__init__.py` facade DELIBERATELY
-# re-exports a full live attribute surface INCLUDING private names
-# (`_conn_ctx`, `_scrub`, `_TERMINAL_STATUSES`, `_ACCENT_CLASS_MAP`,
-# `_pad_references`, `_HEADER_MATCH_PREDICATE`, `_nulltx`) so that
-# `monkeypatch.setattr(repo, "_scrub", ...)`-style seams keep working
-# unchanged post-split (D-01). This is the ONE declared, documented exception
-# to BOUND-01's cross-module-private-import rule — narrowly scoped to this one
-# package, not a general "same top-level package is fine" carve-out (compare
-# `app.routes.runs` importing `app.routes.templating`'s private badge filters,
-# which IS a genuine violation this guard correctly flags despite also being
-# "same package").
+# `app/db/repo/` is a package whose internal plumbing module (`_shared.py`, holding
+# `_conn_ctx`/`_nulltx`) is DELIBERATELY imported directly by its sibling aggregate
+# modules, and whose own `__init__.py` facade DELIBERATELY re-exports a full live
+# attribute surface INCLUDING private names (`_conn_ctx`, `_scrub`,
+# `_TERMINAL_STATUSES`, `_ACCENT_CLASS_MAP`, `_pad_references`,
+# `_HEADER_MATCH_PREDICATE`, `_nulltx`) so that `monkeypatch.setattr(repo, "_scrub",
+# ...)`-style test seams keep working against the facade.
+#
+# This is the ONE declared exception to BOUND-01's cross-module-private-import rule,
+# and it is narrowly scoped to this single package — NOT a general "same top-level
+# package is fine" carve-out. `app.routes.runs` importing `app.routes.templating`'s
+# private badge filters is a genuine violation this guard correctly flags, even though
+# it is also "same package".
 _DECLARED_INTERNAL_PLUMBING_PACKAGE = "app.db.repo"
 
 
 def _in_declared_plumbing_package(own_module: str, target_module: str) -> bool:
-    """True when BOTH the importing file and the import target live inside the
-    one package (`app.db.repo`) whose internal-plumbing/facade-re-export
-    pattern is explicitly declared legitimate design (D-01/D-03), not an
-    accidental BOUND-01 violation.
+    """True when BOTH the importing file and the import target live inside the one
+    package (`app.db.repo`) whose internal-plumbing/facade-re-export pattern is
+    declared legitimate design rather than an accidental BOUND-01 violation.
     """
     prefix = _DECLARED_INTERNAL_PLUMBING_PACKAGE
     same_package = (own_module == prefix or own_module.startswith(prefix + ".")) and (
@@ -132,9 +133,9 @@ def _type_checking_only_nodes(tree: ast.AST) -> set[ast.AST]:
 
     A `TYPE_CHECKING`-guarded import is never executed at runtime — it exists
     solely so a static type checker can resolve an annotation string/forward
-    reference. This guard's purpose (T-13-13: catch a runtime private-name
-    coupling that could silently break a monkeypatch seam) does not apply to
-    code that never runs, so these nodes are exempted from the ImportFrom scan.
+    reference. This guard exists to catch RUNTIME private-name coupling that
+    could silently break a monkeypatch seam, which code that never runs cannot
+    do, so these nodes are exempted from the ImportFrom scan.
     """
     guarded: set[ast.AST] = set()
     for node in ast.walk(tree):
@@ -182,8 +183,10 @@ def _is_package_import_target(module_dotted: str, root_parents: list[pathlib.Pat
     `root_parents` entries are each the PARENT directory of a scan root (the
     directory a dotted module name is relative to), NOT the scan roots
     themselves — for `app.db.repo` the probe is `<root_parent>/app/db/repo/
-    __init__.py`. Passing the scan roots here (WR-01, Phase 13 review) probed
-    the never-existing `<root>/app/...` and made the facade exemption dead code.
+    __init__.py`. Passing the scan roots themselves would probe the never-existing
+    `<root>/app/...`, silently returning False for every package and turning the
+    facade exemption into dead code that false-positives the blessed
+    `import app.db.repo as repo_mod` pattern.
     """
     rel_path = pathlib.Path(*module_dotted.split("."))
     for root_parent in root_parents:
@@ -214,11 +217,11 @@ def _receiver_dotted_path(node: ast.expr) -> str | None:
     `app.db.repo.runs._scrub`), or None when any link in the chain is not a
     plain Name/Attribute (calls, subscripts, literals — not module paths).
 
-    WR-05 (Phase 13 review): `import app.pipeline.orchestrator` binds only the
-    ROOT name `app`, so `app.pipeline.orchestrator._x` reaches the scanner as
-    a NESTED `ast.Attribute` chain — a receiver shape the previous bare-`ast.Name`
-    check never resolved, letting this completely standard import form bypass
-    the gate entirely.
+    This walk is what makes the unaliased-dotted-import shape visible.
+    `import app.pipeline.orchestrator` binds only the ROOT name `app`, so
+    `app.pipeline.orchestrator._x` reaches the scanner as a NESTED `ast.Attribute`
+    chain. A receiver check that only handled a bare `ast.Name` would never resolve
+    it, letting this completely standard import form bypass the gate entirely.
     """
     parts: list[str] = []
     current = node
@@ -239,9 +242,10 @@ def _scan_attribute_violations(
     root_parents: list[pathlib.Path],
 ) -> list[str]:
     """Flag `module._private` where `module` is a name bound to a first-party
-    module under one of SCAN_ROOTS that is NOT itself a package (`__init__.py`)
-    — package imports are the declared facade-boundary exemption, and the
-    `app.db.repo`-internal plumbing accesses are the declared D-01/D-03 one.
+    module under one of SCAN_ROOTS that is NOT itself a package (`__init__.py`).
+
+    Package imports are the declared facade-boundary exemption, and the
+    `app.db.repo`-internal plumbing accesses are the other declared exemption.
     """
     violations: list[str] = []
     type_checking_nodes = _type_checking_only_nodes(tree)
@@ -250,13 +254,13 @@ def _scan_attribute_violations(
     # (module level and function bodies alike), for BOTH module-binding forms:
     #   * `ast.Import` — `import X` / `import X as Y`;
     #   * `ast.ImportFrom` — `from P import M [as Y]` where `P.M` resolves to a
-    #     first-party module file or package (WR-02, Phase 13 review: this is
-    #     the codebase's DOMINANT module-binding idiom — every production module
-    #     does `from app.db import repo` — and was previously invisible here,
-    #     letting a whole class of `bound_module._private` accesses escape the
-    #     gate). Relative forms resolve against the importing file's own module
-    #     name; TYPE_CHECKING-guarded imports never run at runtime and are
-    #     skipped, mirroring the ImportFrom scan's exemption.
+    #     first-party module file or package. This is the codebase's DOMINANT
+    #     module-binding idiom — every production module does `from app.db import
+    #     repo` — so a scanner that only handled `ast.Import` would let an entire
+    #     class of `bound_module._private` accesses escape the gate.
+    # Relative forms resolve against the importing file's own module name;
+    # TYPE_CHECKING-guarded imports never run at runtime and are skipped, mirroring
+    # the ImportFrom scan's exemption.
     bound_modules: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -264,14 +268,13 @@ def _scan_attribute_violations(
                 if alias.asname:
                     bound_modules[alias.asname] = alias.name
                 else:
-                    # WR-05: `import a.b.c` binds the local name `a` to the
-                    # ROOT package `a` (Python semantics) — `a.b.c` is only
-                    # reachable as an attribute CHAIN through that root. The
-                    # previous mapping (root name -> full dotted target) both
-                    # misattributed a bare `a._x` access to `a.b.c` and left
-                    # the dotted `a.b.c._x` receiver unresolvable. Bind root
-                    # to root; the dotted receiver walk below reconstructs the
-                    # full module path.
+                    # Python semantics: `import a.b.c` binds the local name `a` to the
+                    # ROOT package `a`; `a.b.c` is only reachable as an attribute CHAIN
+                    # through that root. Mapping the root name straight to the full
+                    # dotted target would both misattribute a bare `a._x` access to
+                    # `a.b.c` and leave the dotted `a.b.c._x` receiver unresolvable.
+                    # Bind root to root; the dotted receiver walk below reconstructs
+                    # the full module path.
                     root = alias.name.split(".")[0]
                     bound_modules[root] = root
         elif isinstance(node, ast.ImportFrom) and node not in type_checking_nodes:
@@ -291,8 +294,8 @@ def _scan_attribute_violations(
             continue
         if not _is_private(node.attr):
             continue
-        # WR-05: the receiver may be a bare bound name (`runs._scrub`) or a
-        # dotted chain rooted at one (`app.db.repo.runs._scrub` after a plain
+        # The receiver may be a bare bound name (`runs._scrub`) or a dotted chain
+        # rooted at one (`app.db.repo.runs._scrub` after a plain
         # `import app.db.repo.runs`). Walk the chain to its root `ast.Name`,
         # substitute the root's binding, and resolve the full dotted path the
         # same way aliased/ImportFrom bindings are resolved.
@@ -311,10 +314,10 @@ def _scan_attribute_violations(
             continue
         if target_module == own_module:
             continue
-        # D-01/D-03 declared exemption: `app.db.repo`-internal files reaching
-        # sibling plumbing (e.g. a submodule binding `_shared` and calling
-        # `_shared._conn_ctx`) is the package's documented internal design,
-        # mirroring the same exemption in the ImportFrom scan.
+        # Declared exemption: `app.db.repo`-internal files reaching sibling plumbing
+        # (e.g. a submodule binding `_shared` and calling `_shared._conn_ctx`) is the
+        # package's documented internal design, mirroring the same exemption in the
+        # ImportFrom scan.
         if _in_declared_plumbing_package(own_module, target_module):
             continue
         # Facade-boundary exemption: importing a PACKAGE (its __init__.py IS the
@@ -344,11 +347,10 @@ def scan_tree_for_violations(
             violations.extend(
                 _scan_import_from_violations(tree, py_file, own_module, own_is_package)
             )
-            # WR-01 (Phase 13 review): the attribute scan's package-exemption
-            # probe resolves dotted module names against root PARENTS — passing
-            # `scan_roots` here probed `<root>/app/...` (never exists) and made
-            # the facade exemption dead code, false-positiving the blessed
-            # `import app.db.repo as repo_mod` pattern.
+            # The attribute scan's package-exemption probe resolves dotted module
+            # names against root PARENTS, so `root_parent` is what must be passed
+            # here — passing `scan_roots` would probe `<root>/app/...`, which never
+            # exists, making the facade exemption dead code.
             violations.extend(
                 _scan_attribute_violations(
                     tree, py_file, own_module, own_is_package, [root_parent]
@@ -368,16 +370,18 @@ def test_no_cross_module_private_imports() -> None:
 
 
 def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
-    """Prove the scanner's own detection logic against synthetic fixtures BEFORE
-    trusting it as a permanent gate — covers every violation shape (absolute
-    ImportFrom, relative ImportFrom crossing a real package boundary,
-    attribute-access via `ast.Import`-bound, `ast.ImportFrom`-bound, AND
-    unaliased-dotted-import-bound modules — the WR-05 nested-`ast.Attribute`
-    receiver chain) and every legitimate-pattern exemption (same-module
-    reference, bare relative module import, a level-1 relative import inside a
-    package's own `__init__.py`, and the facade-boundary exemption for a
-    private attribute reached through an imported PACKAGE, in aliased,
-    ImportFrom, and dotted-chain receiver forms alike).
+    """Prove the scanner's own detection logic against synthetic fixtures.
+
+    The live gate above passes when the scanner finds nothing — including when the
+    scanner finds nothing because it is broken. This test is what makes that
+    distinguishable, so it must cover every violation shape (absolute ImportFrom,
+    relative ImportFrom crossing a real package boundary, and attribute access via
+    `ast.Import`-bound, `ast.ImportFrom`-bound, and unaliased-dotted-import-bound
+    modules — the nested-`ast.Attribute` receiver chain) AND every legitimate-pattern
+    exemption (same-module reference, bare relative module import, a level-1 relative
+    import inside a package's own `__init__.py`, and the facade-boundary exemption for
+    a private attribute reached through an imported PACKAGE, in aliased, ImportFrom,
+    and dotted-chain receiver forms alike).
     """
     pkgroot = tmp_path / "pkgroot"
     pkgroot.mkdir()
@@ -426,14 +430,13 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
 
     (pkgroot / "__init__.py").write_text("from . import module_a\n", encoding="utf-8")
 
-    # module_e.py: the facade-boundary exemption branch (WR-01, Phase 13
-    # review). `import pkgroot as pkg_facade` binds the PACKAGE (its
-    # `__init__.py` IS the declared facade), so `pkg_facade._private_thing`
-    # is exempt — in contrast to module_b's `import pkgroot.module_a as
-    # mod_a`, a plain SUBMODULE import whose private access IS flagged. This
-    # pins the exemption the live gate blesses for `import app.db.repo as
-    # repo_mod`, which shipped dead (probed the wrong path root) precisely
-    # because no fixture exercised it.
+    # module_e.py: the facade-boundary exemption branch. `import pkgroot as
+    # pkg_facade` binds the PACKAGE (its `__init__.py` IS the declared facade), so
+    # `pkg_facade._private_thing` is exempt — in contrast to module_b's
+    # `import pkgroot.module_a as mod_a`, a plain SUBMODULE import whose private
+    # access IS flagged. This pins the exemption the live gate blesses for
+    # `import app.db.repo as repo_mod`: with no fixture exercising it, the exemption
+    # branch could probe the wrong path root and be dead code without anything failing.
     (pkgroot / "module_e.py").write_text(
         "import pkgroot as pkg_facade\n"
         "\n"
@@ -443,14 +446,12 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
         encoding="utf-8",
     )
 
-    # module_f.py: the `ast.ImportFrom` module-binding forms (WR-02, Phase 13
-    # review — previously a scanner blind spot). `from pkgroot import module_a
-    # as bound_mod` binds a plain SUBMODULE object, so `bound_mod
-    # ._private_thing` MUST be flagged (this is the shape that let
-    # `from app.db import repo` bindings escape the gate entirely). `from
-    # pkgroot import sub` binds a PACKAGE, so `sub._sub_private` hits the
-    # facade-boundary exemption — proving the (WR-01-fixed) exemption also
-    # applies to ImportFrom-resolved targets.
+    # module_f.py: the `ast.ImportFrom` module-binding forms. `from pkgroot import
+    # module_a as bound_mod` binds a plain SUBMODULE object, so
+    # `bound_mod._private_thing` MUST be flagged — this is the shape that would let
+    # every `from app.db import repo` binding escape the gate. `from pkgroot import
+    # sub` binds a PACKAGE, so `sub._sub_private` hits the facade-boundary exemption,
+    # proving the exemption also applies to ImportFrom-resolved targets.
     (pkgroot / "module_f.py").write_text(
         "from pkgroot import module_a as bound_mod\n"
         "from pkgroot import sub\n"
@@ -465,15 +466,13 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
         encoding="utf-8",
     )
 
-    # module_g.py: the unaliased dotted-import shape (WR-05, Phase 13 review —
-    # previously a scanner blind spot). `import pkgroot.module_a` binds only
-    # the root name `pkgroot`, so `pkgroot.module_a._private_thing` is a
-    # nested `ast.Attribute` chain the old bare-`ast.Name` receiver check
-    # never resolved — it MUST be flagged. `pkgroot.sub` resolves to a PACKAGE
-    # (`sub/__init__.py`), so `pkgroot.sub._sub_private` hits the
-    # facade-boundary exemption — proving the exemption also applies to
-    # dotted-chain receivers (the `import app.db.repo` + `app.db.repo._conn_ctx`
-    # pattern the live facade blesses).
+    # module_g.py: the unaliased dotted-import shape. `import pkgroot.module_a` binds
+    # only the root name `pkgroot`, so `pkgroot.module_a._private_thing` arrives as a
+    # nested `ast.Attribute` chain that a bare-`ast.Name` receiver check would never
+    # resolve — it MUST be flagged. `pkgroot.sub` resolves to a PACKAGE
+    # (`sub/__init__.py`), so `pkgroot.sub._sub_private` hits the facade-boundary
+    # exemption, proving the exemption also applies to dotted-chain receivers (the
+    # `import app.db.repo` + `app.db.repo._conn_ctx` pattern the live facade blesses).
     (pkgroot / "module_g.py").write_text(
         "import pkgroot.module_a\n"
         "import pkgroot.sub\n"
@@ -534,14 +533,14 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
 
     # module_e.py: zero violations — the PACKAGE import (`import pkgroot as
     # pkg_facade`) hits the facade-boundary exemption even though the accessed
-    # attribute is private (WR-01: the exemption branch must actually fire).
+    # attribute is private. The exemption branch must actually fire, not merely exist.
     assert not any(
         v.startswith(module_e_file) for v in violations
     ), f"module_e.py (facade package import) should be exempt, got:\n{violation_text}"
 
-    # module_f.py: exactly ONE violation — the ImportFrom-bound SUBMODULE's
-    # private access is flagged (WR-02: the previously-invisible binding form),
-    # while the ImportFrom-bound PACKAGE's private access is facade-exempt.
+    # module_f.py: exactly ONE violation — the ImportFrom-bound SUBMODULE's private
+    # access is flagged, while the ImportFrom-bound PACKAGE's private access is
+    # facade-exempt.
     assert any(
         v.startswith(module_f_file)
         and "_private_thing" in v
@@ -553,10 +552,9 @@ def test_scanner_detects_synthetic_violation(tmp_path: pathlib.Path) -> None:
         v.startswith(module_f_file) and "_sub_private" in v for v in violations
     ), f"module_f.py's ImportFrom-bound PACKAGE access should be exempt, got:\n{violation_text}"
 
-    # module_g.py: exactly ONE violation — the unaliased dotted import's
-    # private access is flagged (WR-05: the previously-invisible nested
-    # `ast.Attribute` receiver chain), while the dotted-chain access landing
-    # on a PACKAGE is facade-exempt.
+    # module_g.py: exactly ONE violation — the unaliased dotted import's private
+    # access is flagged (the nested `ast.Attribute` receiver chain), while the
+    # dotted-chain access landing on a PACKAGE is facade-exempt.
     assert any(
         v.startswith(module_g_file)
         and "_private_thing" in v
