@@ -1,3 +1,12 @@
+# v3 — Production-Ready Codebase — Requirements (ARCHIVED)
+
+**Status:** Complete — 16/16 satisfied
+**Audit:** [v3-MILESTONE-AUDIT.md](../v3-MILESTONE-AUDIT.md) — PASSED
+**Verified:** three-source cross-reference (phase VERIFICATION.md + SUMMARY frontmatter +
+traceability table). Zero orphans; zero requirements claimed but not defined.
+
+---
+
 # Requirements — Milestone v3: Production-Ready Codebase
 
 **Defined:** 2026-07-08
@@ -81,3 +90,42 @@ Deferred to later milestones:
 | BOUND-01 | Phase 13 |
 | POLISH-01 | Phase 15 |
 | POLISH-02 | Phase 15 |
+
+---
+
+## Final Traceability
+
+| Requirement | Phase | Verification | Outcome |
+|-------------|-------|--------------|---------|
+| CI-01 | 12 | passed (12/12) | **satisfied** — ruff blocking on push |
+| CI-02 | 12 | passed | **satisfied** — full hermetic suite blocking |
+| CI-03 | 12 | passed | **satisfied** — committed ruff config in pyproject.toml |
+| STRUCT-01 | 13 | passed (5/5) | **satisfied** — main.py 1,857 → 16 lines, 5 APIRouters |
+| STRUCT-02 | 13 | passed | **satisfied** — repo.py → per-aggregate package + facade (63 names) |
+| STRUCT-03 | 13 | passed | **satisfied** — alias helpers carved out of orchestrator.py |
+| STRUCT-04 | 13 | passed | **satisfied** — behavior-neutral; suite green, import-path changes only |
+| BOUND-01 | 13 | passed | **satisfied** — `_private` imports promoted; AST guard proven able to fail |
+| TYPE-01 | 14 | passed (3/3) | **satisfied** — mypy strict clean over app/ |
+| TYPE-02 | 14 | passed | **satisfied** — clean over eval/, scripts/, tests/ (117 files total) |
+| TYPE-03 | 14 | passed | **satisfied** — blocking `Type check (mypy --strict)` CI job, red-proofed |
+| COMM-01 | 15 | passed (5/5) | **satisfied** — provenance stripped; CI guard pinned to a harvested family inventory |
+| COMM-02 | 15 | passed | **satisfied** — repo.py's 76-line function index replaced with module-purpose statements |
+| COMM-03 | 15 | passed | **satisfied** — docstrings state invariants, not phase history |
+| POLISH-01 | 15 | passed | **satisfied** — WR-01 threading proved (mutation-tested); WR-05 path traversal and the prompt-echo leak fixed test-first |
+| POLISH-02 | 15 | passed | **satisfied** — fixture-10 relabel; exposed a real eval-chart defect (exact.f1 0.96 → 1.00) |
+
+## Notes on requirements that changed shape
+
+- **POLISH-01** was scoped as "resolve or explicitly disposition the Phase 05 review warnings." It
+  grew: WR-01 turned out to be no bug at all (the epoch machinery already held), so it became a
+  permanent regression gate proved capable of failing by mutation testing. Two *new* security issues
+  surfaced while working in the area — a live path traversal and a prompt-echo leak — and were fixed
+  test-first with genuine RED evidence.
+- **POLISH-02** was filed as cosmetic ("no eval impact"). True of accuracy, false of the chart: the
+  mislabel was misreporting an entire category. Fixing it moved `exact.f1` 0.96 → 1.00 and
+  `typo.f1` 1.00 → 0.90 (n=2, now honestly carrying the intentional miss). Overall F1 (0.9889) and
+  the confusion matrix (`false_process = 0`) unchanged — relabeling rebuckets, it does not rescore.
+- **COMM-01** was the hardest to actually satisfy. Stripping the comments was easy; making the
+  removal *stick* was not. The guard shipped green four times while blind to a ticket family or an
+  entire directory. Final form asserts the pattern table against the real inventory harvested from
+  git history, and pins the no-false-positive half so it can never fail CI on live requirement IDs.

@@ -12,24 +12,58 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 ## Current State
 
-**v3 — Production-Ready Codebase — Phase 13 (Module Structure & Boundaries) complete 2026-07-10.** The three god-files are gone: `app/db/repo.py` (1,734 lines) → `app/db/repo/` package (5 per-aggregate modules + `_shared.py` behind a full-attribute facade), `app/pipeline/orchestrator.py` (1,843 → 1,029 lines) with `alias_learning.py`/`clarification.py`/`delivery.py` carved out via module-object imports, `app/main.py` (1,857 → 16 lines) → `app/routes/` (5 APIRouter modules + `pipeline_glue.py` + `templating.py`). All moves AST-verified verbatim, zero behavior change (615 passed / 50 skipped at every wave gate). BOUND-01 private cross-module imports promoted to public names and enforced by a new AST-walking CI guard (`tests/test_bound01_private_imports.py`) — guard blind spots found in review (WR-01/WR-02) were fixed and live-probe-verified before phase close (STRUCT-01..04, BOUND-01 validated in Phase 13). Next: Phase 14 (full mypy) over the newly-split modules.
+**v3 — Production-Ready Codebase — SHIPPED 2026-07-13.** The codebase now reads as production-quality
+without a line of money behavior changed. 4 phases (12–15), 16/16 requirements, 227 commits, audit PASSED.
 
-**Prior: Phase 12 (CI Quality Gates) complete 2026-07-09.** Every push now runs `ruff check` + the full hermetic suite via GitHub Actions (`ci.yml`, two jobs, all branches), backed by a committed ruff config (E/F/I/B/UP/SIM @ 100 chars, py312) and a repo brought to zero lint violations with zero blanket ignores (416 fixed, incl. 46 structural nested-`with` collapses). Gates proven live: lint-red, test-red, and master-green runs captured in 12-VERIFICATION.md. Next: Phase 13 (god-file splits) under CI protection.
+- **Enforced CI** — `ci.yml` runs `ruff check`, the full hermetic suite, and `mypy --strict` as three
+  blocking jobs. The real-Postgres concurrency proofs now gate **pull requests**, not just post-merge
+  master — they are the only tests in the repo that touch a real database, and before v3 they had never
+  run in CI at all.
+- **Right-sized modules** — `main.py` 1,857 → 16 lines (5 APIRouters + glue); `repo.py` 1,765 → a
+  per-aggregate `app/db/repo/` package behind a stable facade; `orchestrator.py` 1,843 → 1,029. Cross-module
+  `_private` imports promoted to public names, enforced by an AST guard proven able to fail.
+- **Fully type-clean** — `mypy --strict` over **117 files** (app + eval + scripts + tests), blocking in CI.
+- **Constraint-documenting comments** — ticket-ID/provenance archaeology stripped repo-wide and replaced with
+  comments that name the failure they prevent, enforced by a CI guard pinned against the real ticket-family
+  inventory harvested from git history.
 
-**v2 — Production Hardening — SHIPPED 2026-07-07.** Builds on the v1.0 MVP (all 7 v1 phases, live on Render + Supabase + Resend since 2026-06-25). v2's 6 phases (7, 7.5, 8, 9, 10, 11) took the working pipeline and made its money-logic and data layer genuinely production-grade — correct under real, messy, concurrent load, not just the demo path. Every phase closed concrete audit findings by file:line.
+**Three real defects surfaced by phases scoped as "hygiene":** the eval chart was misreporting exact-match
+extraction as failing at 0.96 when it never had (a mislabeled fixture); a path traversal that actually
+rendered a file from outside `eval/fixtures/` onto the eval page; and an LLM retry prompt echoing the model's
+own output back to the provider. All three fixed test-first.
+
+**Money-path safety, verified not asserted:** AST-diffed against the pre-milestone base with docstrings
+stripped and string constants blanked — all **194** numeric/Decimal literals in `tax_tables_2026.py` are
+identical, as are those in `federal_withholding.py` and `calculate.py`. `decide.py` still contains no scoring
+concept. The deterministic-decisioning thesis survived three phases of refactoring intact.
 
 - **Live:** https://payroll-agent.onrender.com (FastAPI on Render free + Supabase Postgres + Resend email)
 - **Demo:** https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4
 - **Code:** https://github.com/pjnhek/payroll_agent
-- **Scale (cumulative):** ~35,600 LOC Python across 84 files; 634 commits total. v2 alone: 11 days, 264 commits, 183 files changed (+41,189 / −645).
+- **Suite:** 628 passed / 52 skipped · ruff clean · mypy --strict clean (117 files) · all 4 CI workflows green
 
-**What v2 delivered (three rings + a follow-up ring):**
-- **Money-correctness:** zero-hours silent-$0 gate (MONEY-01), Unicode-NFC name normalization (MONEY-02), field-regression clarification "did you forget the OT?" carrying the original value forward (MONEY-03).
-- **Data integrity:** atomic multi-write transactions (no half-written run on crash — DATA-01), webhook-dedup race fix (Resend redelivery → no duplicate run, even parallel — DATA-02), stuck-run recovery (DATA-03).
-- **Operability + evidence:** PII-safe `error_detail` (OPS2-01), hot-path indexes + explicit column lists (OPS2-02), and a real-Postgres concurrency-proof test wired into CI (OPS2-03).
-- **Clarification round machine & alias learning (Phase 11):** round-aware idempotency ends the silent park at `awaiting_reply`, a 3-round cap escalates to `needs_operator`, multi-round context accumulates correctly, and the alias-learning write side binds on client confirmation so the system provably stops re-asking (CLAR2-01…07).
+<details>
+<summary>Prior milestones (v1.0, v2)</summary>
 
-Deferred (see `backlog.md` + STATE.md Deferred Items): real-email A5 threading verification, paystub YTD columns, eval-chart restyle, frontend progressive enhancement, Phase 05 code-review warnings — all non-blocking post-demo polish.
+**v2 — Production Hardening — SHIPPED 2026-07-07.** Took the working v1.0 pipeline and made its money-logic
+and data layer genuinely production-grade — correct under real, messy, concurrent load, not just the demo path.
+6 phases (7, 7.5, 8, 9, 10, 11), 16 requirements, scope discovered via an adversarial audit.
+
+- **Money-correctness:** zero-hours silent-$0 gate (MONEY-01), Unicode-NFC name normalization (MONEY-02),
+  field-regression clarification carrying the original value forward (MONEY-03).
+- **Data integrity:** atomic multi-write transactions (DATA-01), webhook-dedup race fix (DATA-02), stuck-run
+  recovery (DATA-03).
+- **Operability + evidence:** PII-safe `error_detail` (OPS2-01), hot-path indexes (OPS2-02), a real-Postgres
+  concurrency-proof test in CI (OPS2-03).
+- **Clarification round machine & alias learning:** round-aware idempotency, 3-round cap escalating to
+  `needs_operator`, multi-round context accumulation, and alias-learning that binds on client confirmation so
+  the system provably stops re-asking (CLAR2-01…07).
+
+**v1.0 — MVP — SHIPPED 2026-06-25.** The full email-driven pipeline: ingest & threading, deterministic
+extraction/reconciliation/decide, penny-accurate Pub 15-T calc, one-gate HITL + PDF delivery, the 4-page
+dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
+
+</details>
 
 ## Requirements
 
@@ -53,25 +87,25 @@ Deferred (see `backlog.md` + STATE.md Deferred Items): real-email A5 threading v
 
 - **Phase 11 (Clarification Round Machine & Alias Learning), 2026-07-07:** The multi-round clarification state machine is correct and unstrandable, and the alias-learning loop actually learns. **CLAR2-01:** `_clarify`'s idempotency guard re-keyed from purpose-only to `(purpose, round)` via `get_outbound_for_round`, so a genuinely-new round-2+ question always sends (no run silently parks at `awaiting_reply` with no email out) while a true re-trigger stays suppressed. **CLAR2-02:** a 3-round cap escalates to a first-class `needs_operator` status/badge with an operator resolve+resume surface (server-side roster validation) or reject. **CLAR2-03/05:** `resume_pipeline` writes the consumed marker at its own CAS claim and `_combined_context_email` accumulates ORIGINAL + all consumed replies in round order behind a code-owned "questions we asked" anchor — the known-edge fixture flips from documenting a silent-mispay to asserting it closed (Round-1 "30, not 40" pays 30). **CLAR2-04:** the unreachable count-diff alias bind is replaced with deterministic bind-on-confirmation against a persisted `{suggested, bound}` candidate shape, requiring same-record evidence (`_bind_evidence_for_token`) so the misname guard's never-learn-from-inference intent survives; a full-loop hermetic test drives REAL name resolution and proves the system stops asking. **CLAR2-06/07:** a redelivered/stranded unconsumed reply re-drives the CAS-gated resume (no permanently-dropped replies), and a per-run `reply_epoch` counter + retrigger context-wipe ensure no provenance badge outlives its data — without ever mutating the append-only `email_messages` audit log. Cross-AI review (Codex + internal) of the initially-passing phase found 5 CONFIRMED critical money/security bugs; all 5 + a warning were fixed via gap plans 11-06/07/09/10 and re-verified (exploits traced dead in merged source). Verified 9/9; full suite 596 passing, 0 regressions. CLAR2-01…CLAR2-07.
 
-## Current Milestone: v3 Production-Ready Codebase
+## Current Milestone
 
-**Goal:** Make the entire existing codebase read as production-quality — surface and substance — for the hiring-manager/recruiter audience: enforced CI quality gates, right-sized modules, full type-checking, and comments that document constraints instead of process history.
+_None — v3 shipped 2026-07-13._
 
-**Target features (ordered — splits land before the comment pass):**
-- CI quality gates: `ci.yml` running `ruff check` + the full test suite on every push; committed ruff config
-- God-file splits: `app/main.py` → APIRouter modules (webhook / runs+HITL / dashboard / demo / health); `app/db/repo.py` → per-aggregate modules; alias-learning helpers carved out of `app/pipeline/orchestrator.py`
-- Full mypy adoption across the entire codebase (before + forward), wired into CI
-- Comment archaeology pass: strip ticket-ID/provenance comments, keep the constraints they document; replace `repo.py`'s hand-maintained function-index docstring
-- Module boundaries: promote cross-module `_private` imports to public names
-- Deferred-polish triage: Phase 05 review warnings (260623-01) + fixture-10 category label (260623-05) in scope; frontend enhancement / paystub YTD / eval-chart restyle stay deferred
-
-**Key constraints:** every refactor is behavior-neutral, guarded by the 613-test suite; schema-parity backlog (versioned migrations, hard deploy gate) is a separate future milestone.
+**Next milestone goals (candidates, not yet scoped):** see `backlog.md` and STATE.md Deferred Items.
+The standing candidates are the schema-parity backlog (versioned/ordered migrations + a hard deploy gate
+blocking on drift), the three deferred polish todos (frontend progressive enhancement, paystub YTD columns,
+eval-chart restyle), and tax-completeness features that were explicitly out of scope for hardening
+(Additional Medicare surtax, per-employee YTD Medicare ledger). Start with `/gsd-new-milestone`.
 
 ### Active
 
-See REQUIREMENTS.md for the scoped v3 requirements (defined at milestone start, 2026-07-08).
+None — no active milestone. `REQUIREMENTS.md` is deleted at milestone close and a fresh one is created by
+`/gsd-new-milestone`.
 
-Prior milestones: the full v1.0 email-driven pipeline — ingest & threading, deterministic extraction/reconciliation/decide, penny-accurate Pub 15-T calc, one-gate HITL + PDF delivery, the 4-page dashboard, the eval proof, and Render/Supabase/Resend hosting — shipped and was validated at the **v1.0 milestone** (2026-06-25; archived in `milestones/v1.0-REQUIREMENTS.md`). **v2 Production Hardening** (all 16 requirements: MONEY-01/02/03, OPS2-01/02/03, DATA-01/02/03, CLAR2-01…07) shipped and is validated above (2026-07-07).
+Prior milestones: **v1.0** (email-driven pipeline, archived in `milestones/v1.0-REQUIREMENTS.md`),
+**v2 Production Hardening** (16 reqs: MONEY/OPS2/DATA/CLAR2, `milestones/v2-REQUIREMENTS.md`), and
+**v3 Production-Ready Codebase** (16 reqs: CI/STRUCT/TYPE/COMM/POLISH/BOUND,
+`milestones/v3-REQUIREMENTS.md`) — all shipped and validated.
 
 ### Out of Scope
 

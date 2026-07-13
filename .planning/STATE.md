@@ -4,10 +4,10 @@ milestone: v3
 milestone_name: — Production-Ready Codebase
 current_phase: 15
 status: ready
-stopped_at: v3 milestone complete — all 4 phases shipped
+stopped_at: v3 SHIPPED — archived and tagged
 last_updated: "2026-07-13T21:27:29.153Z"
 last_activity: 2026-07-13
-last_activity_desc: Phase 15 complete
+last_activity_desc: "v3 milestone complete — archived, tagged, pushed"
 progress:
   total_phases: 4
   completed_phases: 4
@@ -24,14 +24,14 @@ current_phase_name: comment-hygiene-deferred-polish-triage
 See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v3 makes the codebase read as production-quality: enforced CI, right-sized modules, full type-checking, constraint-documenting comments.**
-**Current focus:** v3 milestone COMPLETE. Next: /gsd-complete-milestone (archive + tag v3).
+**Current focus:** v3 SHIPPED (archived + tagged 2026-07-13). No active milestone — start the next with `/gsd-new-milestone`.
 
 ## Current Position
 
 Phase: 15 — Comment Hygiene & Deferred-Polish Triage (COMPLETE)
 Plan: 11/11 complete
 Status: v3 milestone COMPLETE — all 4 phases (12, 13, 14, 15) shipped
-Last activity: 2026-07-13 — Phase 15 complete
+Last activity: 2026-07-13 — v3 archived and tagged
 
 ## Performance Metrics
 
@@ -188,25 +188,22 @@ _None open._ All v1/v2 research flags and checkpoints were resolved as their pha
 
 ## Deferred Items
 
-Items acknowledged and deferred at milestone close. All benign — intentional
-post-demo polish deferrals + already-passed UATs + one stale pointer; none block a milestone.
-The v2 milestone audit (`milestones/v2-MILESTONE-AUDIT.md`) independently dispositioned each
-as non-blocking tech debt.
+Acknowledged and deferred at the **v3** milestone close (2026-07-13). All benign; the v3 milestone
+audit independently dispositioned each as non-blocking. Phase 15 CLOSED the two that mattered
+(260623-01 Phase-05 review warnings, 260623-05 fixture-10 label — the latter turned out to be a real
+eval-chart defect, not cosmetics).
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| quick_task | 260621-11x-fix-order-dependent-test-test-no-db-conn | done (stale pointer) | v1.0 / v2 |
-| todo | Phase 05 code-review: deferred Warnings + Info | **resolved (Phase 15)** | v1.0 / v2 |
-| todo | Frontend progressive enhancement (no build step) — post-demo polish | deferred | v1.0 / v2 |
-| todo | Paystub YTD columns | deferred | v1.0 / v2 |
-| todo | Eval chart restyle (away from matplotlib look) | deferred | v1.0 / v2 |
-| todo | Fixture 10 category-label vs expected-clarification note | **resolved (Phase 15)** | v1.0 / v2 |
+| quick_task | 260621-11x-fix-order-dependent-test-test-no-db-conn | done (stale pointer — work shipped, tracking file never closed) | v1.0 / v2 / v3 |
+| todo | Frontend progressive enhancement (no build step) — post-demo polish | deferred | v1.0 / v2 / v3 |
+| todo | Paystub YTD columns | deferred | v1.0 / v2 / v3 |
+| todo | Eval chart restyle (away from matplotlib look) | deferred | v1.0 / v2 / v3 |
+| validation | Phase 12 has no VALIDATION.md; Phase 15's is an unfilled draft template | deferred (Nyquist process artifact, not code debt) | v3 |
 | uat | Phase 03 HUMAN-UAT | passed (no open scenarios) | v1.0 |
 | uat | Phase 05 HUMAN-UAT | passed (no open scenarios) | v1.0 |
 
-*These 6 open artifacts (1 quick task + 5 todos) were re-acknowledged and carried forward at the
-v2 close (2026-07-07). The 2 UAT "gaps" are scanner false positives — both passed with zero
-pending scenarios.*
+*The 2 UAT "gaps" are scanner false positives — both passed with zero pending scenarios.*
 
 ## Session Continuity
 
