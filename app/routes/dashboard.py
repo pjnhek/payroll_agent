@@ -19,6 +19,14 @@ logger = logging.getLogger("payroll_agent.webhook")
 
 router = APIRouter()
 
+# The eval view's two on-disk inputs. Module-level (not function-local) so tests can
+# redirect them with monkeypatch.setattr — the same seam eval/run_eval.py's FIXTURE_DIR /
+# SUMMARY_PATH constants provide. They stay RELATIVE: a Path built at import time stores
+# the relative string and resolves against the cwd at I/O time, so this is behaviour-
+# identical to building them inside the request handler (the container sets WORKDIR=/app).
+EVAL_SUMMARY_PATH = Path("eval/summary.json")
+EVAL_FIXTURES_DIR = Path("eval/fixtures")
+
 
 # ---------------------------------------------------------------------------
 # GET / — recruiter landing page (self-serve demo, Path-1 in-app composer)
@@ -109,11 +117,11 @@ def eval_view(request: Request) -> Response:
     NOT store body_text — the body lives in the fixture files. Rendering '—' does
     NOT satisfy DASH-04; each fixture's raw body is shown in the drill-in table.
     """
-    summary_path = Path("eval/summary.json")
+    summary_path = EVAL_SUMMARY_PATH
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
 
     if summary is not None and "per_fixture" in summary:
-        fixtures_dir = Path("eval/fixtures")
+        fixtures_dir = EVAL_FIXTURES_DIR
         for fixture in summary["per_fixture"]:
             fixture_file = fixtures_dir / fixture["fixture_path"]
             if fixture_file.exists():
