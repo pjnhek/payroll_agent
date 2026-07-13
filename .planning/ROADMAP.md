@@ -137,19 +137,19 @@ Plans:
   4. Todo 260623-01 (Phase 05 review warnings) is resolved or explicitly dispositioned — WR-01 threading-after-retrigger is verified, and WR-02's Phase-8 pool-singleton fix is confirmed and the todo closed.
   5. Todo 260623-05 (fixture 10's `fixture_category` label) is corrected, and the eval chart's per-category grouping is verified unaffected by the fix.
 
-**Plans**: 11 plans
+**Plans**: 9/11 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 15-01-PLAN.md — POLISH-01 WR-01, test-first: hermetic crash→retrigger→send threading test (route/pipeline/gateway scope) + a real-Postgres proof of the (run_id, purpose, round, epoch) ON CONFLICT arbiter, wired into the concurrency-proof CI job so it actually executes
-- [ ] 15-11-PLAN.md — POLISH-01 WR-05 + INFO-02, test-first: hoist the eval data paths to module constants (no chdir — the Jinja searchpath is relative) + path-containment fix in eval_view; scrub ValidationError input values from the LLM retry prompt
-- [ ] 15-02-PLAN.md — Sweep eval/ + scripts/ comments; POLISH-02 fixture-10 relabel to "typo" with atomic hermetic regeneration (summary.json + chart.svg) and todo 260623-05 closure
-- [ ] 15-03-PLAN.md — Sweep app/pipeline orchestrator.py, clarification.py, delivery.py (heaviest ticket-comment files, D-02 depth)
-- [ ] 15-04-PLAN.md — Sweep the money-core (calculate/tax tables/withholding/decide/validate), remaining pipeline stages, and app/models/
-- [ ] 15-05-PLAN.md — COMM-02 real module-purpose docstrings across the split DB repo/ package + sweep seed/bootstrap/supabase + schema.sql comments (parity-safe)
-- [ ] 15-06-PLAN.md — D-06 test renames (functions + 2 file renames, collect-count-neutral) + sweep the eight rename-affected test files
-- [ ] 15-07-PLAN.md — Sweep tests group B: conftest.py + calculation/persistence/alias test cluster (12 files)
-- [ ] 15-08-PLAN.md — Sweep tests group C: gateway/threading/validation/guard/integration cluster (14 files)
+- [x] 15-01-PLAN.md — POLISH-01 WR-01, test-first: hermetic crash→retrigger→send threading test (route/pipeline/gateway scope) + a real-Postgres proof of the (run_id, purpose, round, epoch) ON CONFLICT arbiter, wired into the concurrency-proof CI job so it actually executes
+- [x] 15-11-PLAN.md — POLISH-01 WR-05 + INFO-02, test-first: hoist the eval data paths to module constants (no chdir — the Jinja searchpath is relative) + path-containment fix in eval_view; scrub ValidationError input values from the LLM retry prompt
+- [x] 15-02-PLAN.md — Sweep eval/ + scripts/ comments; POLISH-02 fixture-10 relabel to "typo" with atomic hermetic regeneration (summary.json + chart.svg) and todo 260623-05 closure
+- [x] 15-03-PLAN.md — Sweep app/pipeline orchestrator.py, clarification.py, delivery.py (heaviest ticket-comment files, D-02 depth)
+- [x] 15-04-PLAN.md — Sweep the money-core (calculate/tax tables/withholding/decide/validate), remaining pipeline stages, and app/models/
+- [x] 15-05-PLAN.md — COMM-02 real module-purpose docstrings across the split DB repo/ package + sweep seed/bootstrap/supabase + schema.sql comments (parity-safe)
+- [x] 15-06-PLAN.md — D-06 test renames (functions + 2 file renames, collect-count-neutral) + sweep the eight rename-affected test files
+- [x] 15-07-PLAN.md — Sweep tests group B: conftest.py + calculation/persistence/alias test cluster (12 files)
+- [x] 15-08-PLAN.md — Sweep tests group C: gateway/threading/validation/guard/integration cluster (14 files)
 
 **Wave 2** *(blocked on 15-11)*
 
@@ -189,4 +189,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
-| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 0/TBD | Not started | - |
+| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 9/11 | In Progress|  |
