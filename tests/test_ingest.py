@@ -158,8 +158,8 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     from app.db import repo as _repo
     from app.main import app
 
-    # WARNING-1 remediation: enable unsigned fixture POSTs in dev mode so canonical
-    # dict payloads reach the route logic (prod default would return 400 without svix headers).
+    # Enable unsigned fixture POSTs in dev mode so canonical dict payloads reach the
+    # route logic; the prod default returns 400 without svix headers.
     get_settings.cache_clear()
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")

@@ -57,9 +57,11 @@ class Settings(BaseSettings):
     webhook_signing_secret: str = ""    # WEBHOOK_SIGNING_SECRET env var
     resend_from_addr: str = "onboarding@resend.dev"  # shared free-tier sender (no verified domain)
 
-    # BLOCKER-2: False by default (production safe). Setting ALLOW_UNSIGNED_FIXTURES=true
-    # enables the dev-mode bypass that skips webhook signature verification when the
-    # signing secret is absent. MUST NOT be set in render.yaml value: entries.
+    # False by default, which is the production-safe value. Setting
+    # ALLOW_UNSIGNED_FIXTURES=true enables the dev-mode bypass that skips webhook signature
+    # verification when the signing secret is absent — i.e. it lets ANY unsigned POST drive
+    # the pipeline. MUST NOT appear in render.yaml `value:` entries; a committed `true` here
+    # would ship an unauthenticated webhook to production.
     allow_unsigned_fixtures: bool = False
 
     # REPLY-TO TOPOLOGY (P6): free-tier FROM=onboarding@resend.dev cannot be replied to;

@@ -498,7 +498,7 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
     assert cd.count('"') == 2, (
         f"filename must remain a single well-formed quoted-string; got {cd!r}"
     )
-    # REVIEW-3: the whole header must be latin-1 encodable (Starlette encodes it that way);
+    # The whole header must be latin-1 encodable (Starlette encodes it that way);
     # this is the property the re.ASCII flag guarantees. A non-encodable value 500s before
     # we ever get here, but assert it explicitly so the intent is clear.
     cd.encode("latin-1")

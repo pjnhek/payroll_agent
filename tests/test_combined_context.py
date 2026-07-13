@@ -28,7 +28,7 @@ WHAT THIS MODULE PROVES:
      resume_pipeline's own mark_reply_consumed call (Task 1) is what makes a
      SECOND resume's load_consumed_replies return the first reply -- this
      test does NOT pre-seed consumed_round by hand, so it fails if that seam
-     is ever removed (the BLOCKER-3 assertion from the plan).
+     is ever removed.
 """
 from __future__ import annotations
 
@@ -395,10 +395,10 @@ def test_reask_backstop_sends_new_clarification_when_asked_field_stays_absent(
 
 
 # ---------------------------------------------------------------------------
-# 7: Consumed-marker-drives-accumulation — REAL rows, not seeded fakes. This
-# is the BLOCKER-3 assertion: do NOT pre-seed consumed_round by hand. Let
-# Task 1's mark_reply_consumed call set it, so this test fails if that seam
-# is ever removed.
+# 7: Consumed-marker-drives-accumulation — REAL rows, not seeded fakes.
+# Do NOT pre-seed consumed_round by hand: let the real mark_reply_consumed call
+# set it, so this test fails if that seam is ever removed. Seeding it by hand
+# would make the test pass even with the marker logic deleted.
 # ---------------------------------------------------------------------------
 
 

@@ -26,7 +26,7 @@ def _fixture() -> dict[str, Any]:
 @pytest.fixture
 def client(fake_repo, monkeypatch):
     """TestClient with ALLOW_UNSIGNED_FIXTURES=true so canonical dict POSTs
-    succeed in mocked tests (WARNING-1 remediation — 06-04 Task 2/3)."""
+    succeed in mocked tests. The prod default rejects them for lack of svix headers."""
     from app.config import get_settings
     from app.main import app
 

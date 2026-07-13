@@ -352,7 +352,8 @@ def send_outbound(
         "OUTBOUND_SEND synthetic_id=%s provider_id=%s", message_id, provider_id
     )
 
-    # Flip the reserved row to 'sent'. WHERE key is the SYNTHETIC message_id (BLOCKER-3).
+    # Flip the reserved row to 'sent'. The WHERE key must be the SYNTHETIC message_id we
+    # reserved the row under — not the provider's id, which the row does not carry yet.
     repo.update_email_message_sent(message_id, conn=conn)
 
     return message_id

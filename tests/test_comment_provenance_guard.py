@@ -106,9 +106,21 @@ BLOCKED_PATTERNS: tuple[tuple[str, str, str], ...] = (
         # by it, and it is NOT: "IN-" requires the hyphen immediately after "IN", so
         # INFO-02 slips through a table that lists only IN). This phase's own prompt-echo
         # finding was filed as INFO-02 — the family is real.
+        #
+        # The review-round prefix is R[0-9]+, NOT a hardcoded R2. Three cross-AI review
+        # rounds have run against this project (R2-*, R3-* — 25 uses of R3 alone), and a
+        # fourth would have slipped a table that only knew R2. Generalise the round number
+        # rather than wait to be bitten by R4.
+        #
+        # This alternation is the complete set of families this project has actually used;
+        # `test_every_historical_ticket_family_is_covered` below pins it against the real
+        # inventory so a new family cannot be invented without failing a test. Requirement
+        # IDs (BOUND, CI, COMM, POLISH, STRUCT, TYPE — the live REQUIREMENTS.md families)
+        # are deliberately absent: those are traceability that must SURVIVE the sweep.
         "review-ticket",
-        r"\b(?:WR|CR|CX|GAP|R2|NEW|INFO|IN|OPS[0-9]*)-[0-9]",
-        "a review or gap ticket ID (WR-01, CR-02, CX-03, GAP-2, R2-1, INFO-02, IN-08, OPS2-01)",
+        r"\b(?:WR|CR|CX|GAP|NEW|INFO|IN|BLOCKER|REVIEW|CHANGE|R[0-9]+|OPS[0-9]*)-[0-9]",
+        "a review or gap ticket ID (WR-01, CR-02, CX-03, GAP-2, R3-1, INFO-02, IN-08, "
+        "BLOCKER-2, REVIEW-2, CHANGE-5, OPS2-01)",
     ),
     (
         "fix-ticket",
@@ -136,9 +148,12 @@ BLOCKED_PATTERNS: tuple[tuple[str, str, str], ...] = (
         "a threat-model or task ID (T-8-07, T-15-01)",
     ),
     (
+        # WARNING belongs here, with the other severities, not in the ticket table.
+        # R[0-9]+ (not R[0-9]) for the same reason as review-ticket above: R10-HIGH must
+        # match, and a hardcoded single digit would silently stop at round 9.
         "severity-label",
-        r"\b(?:HIGH|MEDIUM|LOW)-[0-9]|\bR[0-9]-(?:HIGH|MEDIUM|LOW)\b",
-        "a review-finding severity label (LOW-6, HIGH-2, R2-MEDIUM)",
+        r"\b(?:HIGH|MEDIUM|LOW|WARNING)-[0-9]|\bR[0-9]+-(?:HIGH|MEDIUM|LOW)\b",
+        "a review-finding severity label (LOW-6, HIGH-2, WARNING-1, R2-MEDIUM)",
     ),
     (
         "reviewer-name",
@@ -344,6 +359,71 @@ def test_scanner_flags_every_blocked_shape_and_passes_legitimate_prose(
     )
     hits = scan_files_for_ticket_provenance([legit])
     assert not hits, "legitimate prose was flagged:\n" + "\n".join(hits)
+
+
+# Every ticket-ID family this project has ACTUALLY used, harvested from the full commit
+# history and the planning archive:
+#
+#   git log --format=%B \
+#     | grep -ohE '\b[A-Z][A-Z0-9]{1,8}-[0-9]+\b' | sed -E 's/-[0-9]+$//' | sort -u
+#
+# This inventory exists because the vocabulary was wrong three times in a row. Round 1 of
+# the cross-AI review found `render.yaml` unscanned; round 2 found the `IN-NN` family
+# missing; round 3 found `R3-NN` missing (the table hardcoded `R2`) along with BLOCKER,
+# REVIEW, CHANGE, and WARNING. Each time the fix was to bolt on one more prefix and each
+# time the next round found another. Enumerating the real inventory and asserting against
+# it is the structural fix: a family cannot now be forgotten without failing a test.
+_HISTORICAL_TICKET_FAMILIES = (
+    "WR-01", "CR-02", "CX-03", "GAP-2", "FIX-5", "IN-08", "INFO-02", "NEW-1",
+    "R2-1", "R3-3", "BLOCKER-2", "REVIEW-2", "CHANGE-5", "OPS2-01", "OPS-01",
+    "HIGH-1", "MEDIUM-7", "LOW-6", "WARNING-1",
+)
+
+# The LIVE requirement families (the current REQUIREMENTS.md). These are traceability, not
+# rot: they point at a document that still exists, so they MUST survive the sweep. The gate
+# firing on any of these would fail CI on the very thing it is meant to protect.
+_LIVE_REQUIREMENT_FAMILIES = (
+    "BOUND-01", "FOUND-04", "COMM-01", "POLISH-02", "STRUCT-03", "TYPE-01", "CI-02",
+)
+
+
+def test_every_historical_ticket_family_is_covered() -> None:
+    """The pattern table must cover every ticket family this project has ever used.
+
+    Three review rounds each found a family the table had missed, because the table was
+    grown by anecdote — someone noticed a shape and added it. This asserts it against the
+    real inventory instead, so the failure mode ("we forgot a family") is now a red test
+    rather than a silent hole a reviewer has to stumble on.
+    """
+    uncovered = [
+        family
+        for family in _HISTORICAL_TICKET_FAMILIES
+        if not any(re.search(pattern, f"# {family}: a note") for _, pattern, _ in BLOCKED_PATTERNS)
+    ]
+    assert not uncovered, (
+        "these ticket families are real (they appear in this project's commit history) but "
+        f"no pattern in BLOCKED_PATTERNS matches them, so the guard is blind to them: {uncovered}"
+    )
+
+
+def test_live_requirement_ids_are_never_flagged() -> None:
+    """The guard must not fire on the requirement IDs it is supposed to preserve.
+
+    This is the other half of the contract and the easier one to break while widening the
+    table: `D-[0-9]` without a word boundary matches inside BOUND-01 and FOUND-04, and an
+    `OPS[0-9]*` pattern that is too greedy would eat a live OPS requirement. A guard that
+    fails CI on legitimate traceability is worse than no guard, because the fix is to delete
+    the traceability.
+    """
+    false_positives = [
+        req
+        for req in _LIVE_REQUIREMENT_FAMILIES
+        if any(re.search(pattern, f"# {req}: a note") for _, pattern, _ in BLOCKED_PATTERNS)
+    ]
+    assert not false_positives, (
+        "these are LIVE requirement IDs that must survive the sweep, but the guard flags "
+        f"them as provenance rot: {false_positives}"
+    )
 
 
 def test_editorial_only_shapes_are_not_guard_enforced(tmp_path: pathlib.Path) -> None:
