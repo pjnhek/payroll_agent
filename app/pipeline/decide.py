@@ -8,9 +8,10 @@ dashboard, and the eval.
 Invariants (each one is what keeps this stage from guessing with money):
   - NO model call. There is no model-proposed action to diverge from, so a prompt-injected
     or hallucinated extraction can never reach a money-moving decision.
-  - NO confidence number, NO score, NO threshold. A name either resolves against the
-    roster in code or it does not. A confidence cutoff would necessarily pay somebody on
-    a guess at the margin.
+  - NO score, NO probability, NO cutoff. A name either resolves against the roster in
+    code or it does not. Grading a match on a number and paying anything above a cutoff
+    would, by construction, pay somebody on a guess at the margin. (A source-level guard
+    test enforces that this module never acquires such a number.)
   - Collisions ALWAYS clarify. Picking a winner between two names that map to one employee
     would be a guess with money; the run stops and asks the client instead.
   - The gate FAILS CLOSED. Every rule below only ever ADDS a reason to clarify, so any path

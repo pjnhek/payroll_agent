@@ -1,11 +1,20 @@
-"""Alias-learning rule set (STRUCT-03, D-10): normalize/capture/write the
-human-confirmation learning loop's WRITE side.
+"""The WRITE side of the human-confirmation learning loop: persisting a nickname.
 
-Carved out of orchestrator.py (Phase 13 Plan 02) — this is the single home for:
-normalize_candidate (D-11-14 legacy-shape tolerance), bind_evidence_for_token
-(GAP-4/CR-4 same-record evidence tie), write_aliases_if_safe (the write-side
-collision-guarded persist), and safe_to_learn_alias (D-01b write-side collision
-guard, relocated verbatim from reconcile_names.py).
+When the system asks "is 'Dave' your David Reyes?" and the client confirms, this module
+is what makes the system stop asking next week. It is the only place an alias is ever
+written to employees.known_aliases.
+
+Invariants — every one of them exists to stop the system learning a WRONG name, which
+would silently misroute a future employee's pay with no human in the loop:
+  - Learn only on CONFIRMATION. A token is written only if a reply actually resolved the
+    suggested employee (bind_evidence_for_token), never merely because the token stopped
+    appearing.
+  - SAME-RECORD evidence. The confirming reply and the resolution must come from one
+    reconciliation record, not two independently-satisfied whole-run facts.
+  - COLLISION-GUARDED write. safe_to_learn_alias simulates the post-write roster and
+    refuses any token that would then be ambiguous.
+  - NEVER strand a sent run. Callers wrap this in try/except: an alias-learning failure
+    must never fail a payroll that was already delivered.
 """
 from __future__ import annotations
 
@@ -23,24 +32,23 @@ logger = logging.getLogger("payroll_agent.orchestrator")
 
 
 def normalize_candidate(value: object) -> dict[str, Any]:
-    """Normalize an alias_candidates VALUE to the D-11-14 nested shape.
+    """Normalize an alias_candidates VALUE to the nested {"suggested", "bound"} shape.
 
-    {token: VALUE} historically stored VALUE as either None (never resolved) or
-    a bare employee_id string (the OLD NEW-2 pre-vs-post-diff bind wrote this
-    flat shape directly). D-11-14 replaces that with a richer per-token record
-    {"suggested": id|None, "bound": id|None} so one column owns the full
-    capture -> suggest -> bind lifecycle. Every site that READS an
-    alias_candidates value (the bind check in resume_pipeline AND
-    write_aliases_if_safe) must go through this helper so a legacy flat row
-    from before this plan never raises AttributeError (Pitfall #6) — dict.get
-    on a bare string/None would blow up without this normalization.
+    alias_candidates is a JSONB {token: VALUE} column. VALUE now carries a per-token
+    record — {"suggested": id|None, "bound": id|None} — so one column owns the whole
+    capture -> suggest -> bind lifecycle. Older rows stored VALUE as either None or a
+    bare employee_id string.
 
-    - None            -> {"suggested": None, "bound": None}   (never resolved)
-    - a str            -> {"suggested": None, "bound": value}  (OLD flat-bound
-                          shape — the pre-vs-post diff bind wrote the resolved
-                          id directly as the value; treat it as already-bound
-                          so a live legacy row keeps behaving as "learned")
-    - a dict            -> returned AS-IS (already the nested shape; idempotent)
+    EVERY site that reads an alias_candidates value must go through this helper. Calling
+    dict.get() on a bare string or None raises AttributeError, so a single legacy row
+    left in the database would crash the read path outright.
+
+    - None   -> {"suggested": None, "bound": None}   (captured, never resolved)
+    - a str  -> {"suggested": None, "bound": value}  (legacy flat shape: the value WAS the
+                resolved employee id, so treat it as already bound and keep behaving as
+                "learned" — demoting it would make the system re-ask a question the client
+                already answered)
+    - a dict -> returned AS-IS (already the nested shape; the helper is idempotent)
     """
     if value is None:
         return {"suggested": None, "bound": None}
@@ -56,29 +64,28 @@ def bind_evidence_for_token(
     suggested_full_name: str | None,
     post_reconciliation: list[object],
 ) -> bool:
-    """GAP-4/CR-4 fix: tie the bind decision to a SINGLE reconciliation record.
+    """Decide whether the client's reply actually CONFIRMED this token -> employee alias.
 
-    The old bind-on-confirmation (D-11-15/NEW-2) computed two facts INDEPENDENTLY
-    over the WHOLE run's post-resume reconciliation: (a) the suggested employee id
-    newly appears as resolved SOMEWHERE, and (b) the token is gone from unresolved
-    SOMEWHERE. Both facts can be satisfied by two completely UNRELATED
-    reconciliation entries — e.g. "No, Dave didn't work this period; David worked
-    5 hours separately" makes "David" (a new, separate submitted_name) resolve to
-    the suggested id, while "Dave" simply vanishes (dropped, not resolved) — and
-    the old logic bound Dave -> David with no actual confirmation.
+    The evidence must all come from ONE reconciliation record. A bind requires a single
+    entry whose normalized submitted_name equals EITHER the token's own normalized text OR
+    the suggested employee's normalized canonical full_name (a legitimate confirming reply
+    restates one or the other), AND that SAME entry is resolved=True with
+    matched_employee_id == suggested_id.
 
-    The fix: a bind requires ONE reconciliation entry whose submitted_name,
-    normalized, equals EITHER the token's own normalized text OR the suggested
-    employee's own normalized canonical full_name (a legitimate confirming reply
-    restates that name), AND that SAME entry is resolved=True with
-    matched_employee_id == suggested_id. This is the SAME-RECORD tie: the
-    evidence must all come from one record, never two independently-satisfied
-    whole-run facts.
+    Why the same-record tie is load-bearing: deriving the bind from two whole-run facts —
+    "the suggested employee resolved SOMEWHERE" and "the token disappeared from unresolved
+    SOMEWHERE" — lets two completely UNRELATED entries satisfy it. Consider the reply "No,
+    Dave didn't work this period; David worked 5 hours separately." 'David' is a new,
+    separate submitted_name that resolves to the suggested id, while 'Dave' simply vanishes
+    (dropped, never confirmed). Two-fact logic would permanently learn Dave -> David from a
+    reply that explicitly DENIED the match — and every future payroll would silently route
+    Dave's hours to David.
 
-    suggested_full_name may be None (the suggested employee could not be
-    resolved from the roster at capture time, or is not found now) — the match
-    set then only contains the token's own text, which is fail-closed (never
-    fail-open): a missing full_name can only narrow what matches, never widen it.
+    suggested_full_name may be None (the suggested employee was not resolvable from the
+    roster at capture time, or is not found now). The match set then contains only the
+    token's own text. That is fail-CLOSED by construction: a missing full_name can only
+    narrow what matches, never widen it, so a lost name means "don't learn", never
+    "learn something wrong".
     """
     match_names = {normalize_name(token)}
     if suggested_full_name is not None:
@@ -104,24 +111,28 @@ def safe_to_learn_alias(
     target_employee: Employee,
     roster: Roster,
 ) -> bool:
-    """Return True only if token uniquely resolves to target_employee on the full roster
-    AFTER the alias is appended (D-01b write-side collision guard).
+    """Write-side collision guard: True only if token uniquely resolves to target_employee
+    on the FULL roster once the alias has been appended.
 
-    Uses deterministic_match on a synthetic roster to simulate the post-write state.
-    If deterministic_match returns None (ambiguous or no match) or resolves to a
-    DIFFERENT employee, return False — do NOT learn (log and skip).
+    Learning an ambiguous alias is worse than learning nothing: it bakes a permanent
+    collision into the roster, so every future run carrying that token gates to
+    clarification (or, if the ambiguity were ever resolved by guessing, pays the wrong
+    person). This guard simulates the post-write world before committing to it.
 
-    The synthetic roster appends the token to the target employee's known_aliases only.
-    This correctly detects:
-    - Tokens already carried by 2+ employees (e.g. "D. Reyes" shared by David and
-      Daniel Reyes): the synthetic roster still has 2 candidates → None → False.
-    - Tokens that would introduce a NEW collision (token matches another employee's
-      exact name or alias): synthetic roster has 2 candidates → None → False.
-    - Unambiguous tokens: only target_employee carries the alias post-append → True.
-    - Idempotent re-adds that are still unambiguous: True (safe to call twice).
+    It builds a synthetic roster with the token appended to target_employee's
+    known_aliases and re-runs deterministic_match against it. None (ambiguous or no
+    match), or a match to a DIFFERENT employee, means do NOT learn — log and skip.
+    This catches:
+    - Tokens already carried by 2+ employees ("D. Reyes" shared by David and Daniel
+      Reyes): the synthetic roster still has 2 candidates -> None -> False.
+    - Tokens that would introduce a NEW collision (the token matches another employee's
+      exact name or alias): 2 candidates -> None -> False.
+    - Unambiguous tokens: only target_employee carries the alias post-append -> True.
+    - Idempotent re-adds that remain unambiguous -> True (safe to call twice).
 
-    CRITICAL: Do NOT mutate the actual roster objects. The synthetic roster is a
-    temporary computation object only (uses Pydantic v2 model_copy, never in-place).
+    CRITICAL: never mutate the real roster objects. The synthetic roster is a throwaway
+    computation object (Pydantic model_copy, never in-place) — mutating the caller's
+    roster here would corrupt the resolution facts the live run is still deciding on.
     """
     synthetic_employees: list[Employee] = []
     for emp in roster.employees:
@@ -145,27 +156,27 @@ def write_aliases_if_safe(
 ) -> None:
     """Write any unambiguous, non-colliding alias candidates to employees.known_aliases.
 
-    Called in delivery.deliver BEFORE set_status(SENT) (D-13b ordering — PATTERNS.md
-    line 611). Must be wrapped in try/except at the call site: any internal exception
-    is logged and swallowed so an alias-learning failure NEVER strands or fails a
-    successfully-sent run (D-13b defensive isolation).
+    Called from delivery.deliver BEFORE set_status(SENT). The call site MUST wrap this in
+    try/except: any exception in here is logged and swallowed, because an alias-learning
+    failure must NEVER strand or fail a payroll run that was otherwise sent successfully.
+    Learning a nickname is a convenience; delivering payroll is the product.
 
-    For each token → candidate in alias_candidates (D-11-14 nested shape,
-    normalized via normalize_candidate for legacy-flat-row tolerance,
-    Pitfall #6):
-    - Skip if cand["bound"] is None (never confirmed — no reply resolved the
-      SUGGESTED employee; D-11-15 bind-on-confirmation never fired for this
-      token).
-    - Call safe_to_learn_alias (D-01b collision guard) — skip if False.
-    - Call update_known_alias (D-01 idempotent JSONB append).
-    - BATCH-SAFE: refresh current_roster after each accepted alias write so the NEXT
-      iteration validates against the updated roster (MEDIUM finding — prevents multiple
-      candidates in one approval batch from interacting unsafely).
+    For each token -> candidate in alias_candidates (read through normalize_candidate so a
+    legacy flat row cannot crash the loop):
+    - Skip if cand["bound"] is None — the client never confirmed this token, so there is
+      nothing to learn. This is the guard that keeps a merely-abandoned token from being
+      recorded as an accepted alias.
+    - Run safe_to_learn_alias (collision guard) — skip if False.
+    - Call update_known_alias (an idempotent JSONB append).
+    - Refresh current_roster after EACH accepted write, so the next candidate in the same
+      batch is validated against the roster as it now stands. Validating a whole batch
+      against the stale pre-batch roster would let two candidates that individually look
+      safe combine into a collision that the guard never sees.
 
-    conn: optional caller-supplied connection (D-9-04 series) so this call's writes
-    join the caller's enclosing transaction (e.g. delivery.deliver's finalize block)
-    rather than auto-committing independently. When None (default), each internal
-    repo call opens/commits its own pooled connection, exactly as before this plan.
+    conn: an optional caller-supplied connection, so these writes join the caller's
+    enclosing transaction (e.g. delivery.deliver's finalize block) instead of
+    auto-committing independently. When None, each repo call opens and commits its own
+    pooled connection.
     """
     import uuid as _uuid
     run_data = repo.load_run(run_id, conn=conn)
@@ -180,8 +191,8 @@ def write_aliases_if_safe(
         cand = normalize_candidate(value)
         employee_id_str = cand.get("bound")
         if employee_id_str is None:
-            # Never confirmed (no reply resolved the SUGGESTED employee — D-11-15
-            # bind-on-confirmation never fired for this token).
+            # Never confirmed: no reply ever resolved the suggested employee, so the
+            # bind-on-confirmation check never fired for this token. Nothing to learn.
             logger.info(
                 "alias write skipped for %r: no bound employee_id (never confirmed)",
                 token,
@@ -211,7 +222,7 @@ def write_aliases_if_safe(
 
         if not safe_to_learn_alias(token, target_employee, current_roster):
             logger.info(
-                "alias write skipped for %r → %s: collision guard fired (D-01b)",
+                "alias write skipped for %r → %s: collision guard fired",
                 token,
                 employee_id,
             )
@@ -220,8 +231,10 @@ def write_aliases_if_safe(
         written = repo.update_known_alias(employee_id, token, conn=conn)
         if written:
             logger.info("alias learned: %r → %s", token, employee_id)
-            # BATCH-SAFE: refresh the roster after each accepted write so the next
-            # iteration validates against the updated roster state (MEDIUM finding).
+            # Refresh the roster after each accepted write so the next candidate in this
+            # batch is checked against the roster as it NOW stands. Reusing the stale
+            # pre-batch roster would let two candidates that are each individually safe
+            # combine into a collision the guard never sees.
             current_roster = repo.load_roster_for_business(run["business_id"], conn=conn)
         else:
             logger.info(

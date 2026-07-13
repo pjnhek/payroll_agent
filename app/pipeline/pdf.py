@@ -1,15 +1,17 @@
-"""On-demand per-employee paystub PDF generator (HITL-03, D-11).
+"""On-demand per-employee paystub PDF generator.
 
-A PURE function: PaystubLineItem + employee metadata in, PDF bytes out.
-No DB, no model, no connection. The orchestrator/route layer owns the
-StreamingResponse wrapping and any gateway attachment assembly.
+A PURE function: PaystubLineItem + employee metadata in, PDF bytes out. No DB, no model,
+no connection. The orchestrator/route layer owns the StreamingResponse wrapping and any
+gateway attachment assembly.
 
 reportlab SimpleDocTemplate → Table / Paragraph / Spacer → BytesIO.getvalue() → bytes.
-Nothing is written to disk (HITL-03: Render ephemeral FS constraint).
+Every paystub is generated IN MEMORY on demand and nothing is written to disk: the
+deployment filesystem is ephemeral, so a file written here would silently vanish on the
+next restart.
 
-Layout: professional QuickBooks-style pay stub — navy header band, employee
-block, earnings table, deductions table, net-pay summary band, demo footer.
-NO YTD columns (deferred to v2). NO check / MICR line. NO fabricated fields.
+Layout: a QuickBooks-style pay stub — navy header band, employee block, earnings table,
+deductions table, net-pay summary band, footer. NO YTD columns. NO check / MICR line.
+NO fabricated fields: a paystub only ever shows numbers the calc actually produced.
 """
 from __future__ import annotations
 
@@ -25,15 +27,16 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from app.models.contracts import PaystubLineItem
 
 # ---------------------------------------------------------------------------
-# Palette — aligned with dashboard UI-SPEC (#111827 / #6B7280 / #E5E7EB)
+# Palette — the same color roles the dashboard uses, so a paystub and the run page it
+# was generated from read as one product.
 # ---------------------------------------------------------------------------
 
 _C_NAVY = colors.HexColor("#1E3A5F")        # header/net-pay band background
 _C_NAVY_LIGHT = colors.HexColor("#F0F4F8")  # very light tint for alternate rows
 _C_WHITE = colors.white
-_C_TEXT_PRI = colors.HexColor("#111827")    # UI-SPEC text primary
-_C_TEXT_SEC = colors.HexColor("#6B7280")    # UI-SPEC text secondary
-_C_BORDER = colors.HexColor("#E5E7EB")      # UI-SPEC border/separator
+_C_TEXT_PRI = colors.HexColor("#111827")    # text primary
+_C_TEXT_SEC = colors.HexColor("#6B7280")    # text secondary
+_C_BORDER = colors.HexColor("#E5E7EB")      # border/separator
 _C_BAND_TEXT = colors.HexColor("#F9FAFB")   # text on dark navy bands
 
 # ---------------------------------------------------------------------------
@@ -455,7 +458,7 @@ def generate_paystub_pdf(
     filing_status: str | None = None,
     hourly_rate: Decimal | None = None,
 ) -> bytes:
-    """Pure: data in -> PDF bytes out. No DB, no filesystem write (HITL-03).
+    """Pure: data in -> PDF bytes out. No DB, no filesystem write (the FS is ephemeral).
 
     Returns raw PDF bytes. The caller wraps in StreamingResponse or passes
     as attachment bytes to gateway.send_outbound.
@@ -467,7 +470,9 @@ def generate_paystub_pdf(
       3. Earnings table — non-zero hour buckets or single Salary row if all-zero.
          When hourly_rate is provided, a Rate column is shown (base rate for Regular
          and most buckets; 1.5× for Overtime). Salaried employees (hourly_rate=None)
-         never show a Rate column — nothing is fabricated (UAT #1).
+         never show a Rate column — a salaried employee has no hourly rate, and inventing
+         one (e.g. annual/2080) would print a number on a paystub that no calculation
+         actually used. Nothing on this document is fabricated.
          Per-bucket dollar splits are NOT shown (not available on PaystubLineItem);
          hours are shown per row; dollar total on TOTAL GROSS row = gross_pay.
       4. Deductions table — Federal, SS, Medicare, State (DASH-02: omit if None/zero),
