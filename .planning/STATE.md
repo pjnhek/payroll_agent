@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 Phase: 15 — Comment Hygiene & Deferred-Polish Triage
 Plan: 0/11 complete (3 waves)
 Status: Ready to execute
-Last activity: 2026-07-13 — Phase 15 replanned per cross-AI review round 2: 11 plans in 3 waves (15-01 split into 15-01 + 15-11), checker passed first iteration
+Last activity: 2026-07-13 — Phase 15 plans closed out through cross-AI review round 3 (Codex verdict: READY). 11 plans in 3 waves; round-3 findings folded into 15-01 (whole-row arbiter compare + CI skip-guard), checker passed first iteration
 
 ## Performance Metrics
 
