@@ -205,9 +205,9 @@ def test_eval_view_refuses_fixture_path_traversal(
     a file outside that directory. The escape must fall into the missing-file placeholder
     while a legitimate fixture inside the directory still renders its body.
 
-    The route's two data paths are redirected via their module constants (never
-    monkeypatch.chdir: the Jinja searchpath is relative, so moving the cwd would make
-    eval.html unresolvable and the route would fail for the wrong reason).
+    The route's two data paths are redirected via their module constants rather than by
+    moving the process working directory: the Jinja searchpath is relative, so a cwd change
+    would make eval.html unresolvable and the route would fail for the wrong reason.
     """
     from app.routes import dashboard
 

@@ -121,10 +121,14 @@ def eval_view(request: Request) -> Response:
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
 
     if summary is not None and "per_fixture" in summary:
-        fixtures_dir = EVAL_FIXTURES_DIR
+        fixtures_root = EVAL_FIXTURES_DIR.resolve()
         for fixture in summary["per_fixture"]:
-            fixture_file = fixtures_dir / fixture["fixture_path"]
-            if fixture_file.exists():
+            # fixture_path is data, not code: a relative-parent path would otherwise read a
+            # file outside the fixtures directory and render it here. Resolve the join and
+            # refuse anything that escapes the fixtures root — a refusal is indistinguishable
+            # from a missing file, so it reuses the same placeholder and adds no error path.
+            fixture_file = (EVAL_FIXTURES_DIR / fixture["fixture_path"]).resolve()
+            if fixture_file.is_relative_to(fixtures_root) and fixture_file.exists():
                 fixture_data = json.loads(fixture_file.read_text())
                 fixture["raw_body"] = fixture_data.get("body_text", "")
             else:
