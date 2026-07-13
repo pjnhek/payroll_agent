@@ -3,7 +3,8 @@
 #
 # KEEP: app/, eval/chart.svg, eval/summary.json, eval/fixtures/, fixtures/
 #       app/templates/, app/static/, pyproject.toml, uv.lock
-# The eval chart and demo fixtures must be baked into the image (D-21).
+# The eval chart and demo fixtures must be baked into the image — Render's filesystem is
+# ephemeral, so anything not in the image is simply absent at runtime.
 
 # Python environment (builder stage creates a fresh one inside the image)
 .venv/

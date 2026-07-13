@@ -1,8 +1,8 @@
 [project]
 name = "payroll-agent"
 version = "0.1.0"
-# IN-09: pinned to 3.12.x to match CLAUDE.md's python:3.12-slim runtime target
-# and avoid the 3.13/3.14 wheel-availability edge cases for native deps.
+# Pinned to 3.12.x to match the python:3.12-slim runtime target and to avoid the
+# 3.13/3.14 wheel-availability edge cases for native deps.
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi==0.138.0",
@@ -44,7 +44,7 @@ markers = [
 ]
 
 [tool.ruff]
-# D-02: 100 is the measured tradeoff — 160 lines exceed 100 vs 1,297 that exceed the 88 default.
+# 100 is the measured tradeoff — 160 lines exceed 100 vs 1,297 that exceed the 88 default.
 line-length = 100
 # Explicit pin matching .python-version / the python:3.12-slim Docker target (CLAUDE.md),
 # even though ruff can infer this from requires-python — keeps the target version legible
@@ -52,14 +52,14 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-# D-01: curated production ruleset — pycodestyle errors, pyflakes, isort import-sorting,
+# Curated production ruleset — pycodestyle errors, pyflakes, isort import-sorting,
 # flake8-bugbear, pyupgrade, flake8-simplify. Not the bare defaults.
-# D-03: no ignore list and no per-file-ignores table — every violation gets fixed or an
+# No ignore list and no per-file-ignores table: every violation gets fixed, or gets an
 # individually-justified inline `# noqa: <CODE> — <reason>`.
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
-# D-01: runtime code is checked with mypy's complete strict bundle.
-# D-06: keep the checked scope in committed config so local and CI bare commands match.
+# Runtime code is checked with mypy's complete strict bundle. The checked scope lives in
+# committed config so a bare local command and a bare CI command cover identical ground.
 [tool.mypy]
 python_version = "3.12"
 strict = true
@@ -69,13 +69,14 @@ explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"
-check_untyped_defs = true          # D-02: check every test body; relax annotation requirements only.
+check_untyped_defs = true          # Check every test body; relax annotation requirements only.
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 module = "reportlab.*"
-# D-03/D-04: reportlab ships no py.typed marker; future untyped dependencies use this
-# scoped override-plus-justification pattern rather than a global ignore_missing_imports.
+# reportlab ships no py.typed marker. Future untyped dependencies use this scoped
+# override-plus-justification pattern rather than a global ignore_missing_imports, so
+# that a missing stub is always a named, deliberate exception instead of a blanket hole.
 ignore_missing_imports = true

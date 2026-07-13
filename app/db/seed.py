@@ -351,9 +351,9 @@ def seed(dry_run: bool = False) -> SeedResult:
         #    ON CONFLICT updates every mutable field + updated_at.
         # ----------------------------------------------------------------
         for emp in _EMPLOYEES:
-            # psycopg adapts Pydantic-native Decimal/list/bool values directly
-            # (IN-08): no model_dump is called here. Decimal -> numeric,
-            # list[str] -> TEXT[] (including the empty-list case), bool -> boolean.
+            # psycopg adapts Pydantic-native Decimal/list/bool values directly, so no
+            # model_dump is called here. Decimal -> numeric, list[str] -> TEXT[]
+            # (including the empty-list case), bool -> boolean.
             conn.execute(
                 """
                     INSERT INTO employees (

@@ -284,11 +284,11 @@ def test_bracket_upper_ties_to_next_lower() -> None:
 
 
 def test_money_helpers_agree() -> None:
-    """IN-02 (review round 2): the two intentionally-duplicated _money() helpers must agree.
+    """The two intentionally-duplicated _money() helpers must agree.
 
-    _money() is deliberately copied into federal_withholding.py (for independent
-    importability — documented round-1 decision). The risk of duplication is drift: both
-    copies must use the identical rounding mode (ROUND_HALF_UP). This locks them together
+    _money() is deliberately copied into federal_withholding.py so that module stays
+    independently importable. The risk of duplication is drift: both copies must use the
+    identical rounding mode (ROUND_HALF_UP). This locks them together
     so a future edit to one (e.g. switching to ROUND_HALF_EVEN) is caught immediately.
     """
     from app.pipeline.calculate import _money as money_calc

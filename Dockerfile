@@ -1,12 +1,14 @@
-# Multi-stage uv-in-image Dockerfile (D-19, Astral official pattern).
+# Multi-stage uv-in-image Dockerfile, following Astral's official pattern.
 # Verified against astral-sh/uv-docker-example/multistage.Dockerfile, 2026-06-23.
 #
-# HIGH-1 FIX: Runtime CMD uses .venv/bin/uvicorn directly — NOT `uv run`.
-# The `uv` binary is NOT copied into the runtime stage (uv is a build tool only).
-# Shell form required so ${PORT:-10000} expands at container start (Pitfall 3).
+# Runtime CMD must use .venv/bin/uvicorn directly — NOT `uv run`. The `uv` binary is a
+# build tool and is deliberately NOT copied into the runtime stage, so `uv run` there
+# fails with command-not-found.
+# CMD must be shell form: Docker's exec form does not expand ${PORT:-10000}, and Render
+# injects $PORT at container start.
 #
-# WORKDIR=/app is REQUIRED in both stages — the app uses relative paths for
-# app/templates, app/static, and eval/chart.svg (Pitfall 2, D-21).
+# WORKDIR=/app is REQUIRED in both stages — the app resolves app/templates, app/static,
+# and eval/chart.svg as relative paths, so a different WORKDIR breaks them at runtime.
 
 # ── Builder stage ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS builder
@@ -42,18 +44,18 @@ FROM python:3.12-slim AS runtime
 # WORKDIR=/app required — uvicorn launched from here so relative paths resolve:
 #   app/templates  → Jinja2Templates(directory="app/templates")
 #   app/static     → StaticFiles(directory="app/static")
-#   eval/chart.svg → Path("eval/chart.svg") in FileResponse route (D-21)
+#   eval/chart.svg → Path("eval/chart.svg") in FileResponse route
 WORKDIR /app
 
 # Copy the entire built app (source + venv) from the builder stage.
 # The uv binary is NOT copied — it is a build tool only and is not needed at runtime.
-# CMD uses .venv/bin/uvicorn directly (HIGH-1 fix: no `uv run` at runtime).
+# CMD therefore invokes .venv/bin/uvicorn directly rather than `uv run`.
 COPY --from=builder /app /app
 
 # Add the venv to PATH so uvicorn and all installed executables are found.
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Shell form required — Docker exec form does NOT expand ${PORT:-10000} (Pitfall 3).
-# .venv/bin/uvicorn is used directly (HIGH-1 fix: uv binary not present in runtime stage).
+# Shell form required — Docker's exec form does NOT expand ${PORT:-10000}.
+# .venv/bin/uvicorn is invoked directly; the uv binary is not present in the runtime stage.
 # Render injects $PORT (default 10000). Bind to 0.0.0.0 — 127.0.0.1 causes 502.
 CMD ["/bin/sh", "-c", ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]

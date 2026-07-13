@@ -45,11 +45,11 @@ jobs:
       - name: Install deps (all groups)
         run: uv sync
       - name: Apply schema to ephemeral Postgres
-        # Non-destructive pre-flight (WR-04): no --reset. The seeded_db
-        # fixture (tests/conftest.py) already owns reset behind its
-        # ALLOW_DB_RESET two-factor guard; bootstrap() without --reset uses
-        # CREATE TABLE IF NOT EXISTS, so on this empty ephemeral container it
-        # is a clean idempotent create, not a redundant/unguarded drop.
+        # Non-destructive pre-flight — deliberately no --reset. The seeded_db fixture
+        # (tests/conftest.py) is the SOLE owner of reset, behind its ALLOW_DB_RESET
+        # two-factor guard. bootstrap() without --reset uses CREATE TABLE IF NOT EXISTS,
+        # so on this empty ephemeral container it is a clean idempotent create. Adding
+        # --reset here would put an unguarded drop outside that two-factor guard.
         run: uv run python -m app.db.bootstrap
       - name: Run the real-Postgres invariant proofs
         # This is the ONLY job in the repo with a real database, so it is the only
@@ -62,7 +62,7 @@ jobs:
         #    forever, in every CI job, while looking perfectly healthy.
         #
         #    What the two proofs cover:
-        #      - test_concurrency_proof.py: the Phase 9 invariants hold under genuine
+        #      - test_concurrency_proof.py: the atomicity invariants hold under genuine
         #        parallelism (no double-approval, no lost update, no duplicate run,
         #        no half-written state).
         #      - test_email_epoch_arbiter_integration.py: the outbound upsert's

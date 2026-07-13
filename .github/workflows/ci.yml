@@ -1,6 +1,6 @@
 name: ci
 
-# Least-privilege token: lint/test only need to read the repo contents (WR-01).
+# Least-privilege token: lint/test only ever need to read the repo contents.
 permissions:
   contents: read
 

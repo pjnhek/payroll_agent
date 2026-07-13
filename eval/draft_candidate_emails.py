@@ -6,7 +6,7 @@ fixtures are the source of truth; this script just provides phrasing variety.
 Delete or ignore after the fixture corpus is built.
 """
 # Imports are lazy (inside __main__) so this module can be imported without
-# DATABASE_URL set, consistent with the other eval scripts (IN-03).
+# DATABASE_URL set, consistent with the other eval scripts.
 from openai.types.chat import ChatCompletionMessageParam
 
 

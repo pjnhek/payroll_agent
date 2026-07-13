@@ -3,21 +3,21 @@ name: keepalive
 # Keep the Render free web service warm and Supabase free project un-paused.
 #
 # Two triggers:
-#   schedule: 2x/week cron (avoids :00 high-load window per RESEARCH.md §8)
-#   workflow_dispatch: REQUIRED — allows manual re-enable after the 60-day
-#     auto-disable on portfolio repos with no pushes (RESEARCH Pitfall 6).
-#     Without workflow_dispatch the user must go into repo settings to re-enable;
-#     with it, a single click re-fires the workflow from the Actions tab.
+#   schedule: 2x/week cron, off the :00 high-load window.
+#   workflow_dispatch: REQUIRED — GitHub auto-disables scheduled workflows after 60 days
+#     with no pushes, which is the normal state of a portfolio repo. Without
+#     workflow_dispatch, re-enabling means a trip into repo settings; with it, one click
+#     from the Actions tab re-fires the workflow.
 #
-# MEDIUM-7 fix (OPS-03): curl uses -f flag (fail-on-non-2xx). A failed ping
-# exits non-zero so the workflow run shows RED — OPS-03 is observable on real
-# outages. No swallow pattern is used in the curl step.
+# curl uses -f (fail on non-2xx) so a failed ping exits non-zero and the run shows RED.
+# Swallowing the failure would make the keep-alive silently useless during a real outage —
+# the workflow would stay green while the service was down.
 
 on:
   schedule:
     # 10:17 UTC Monday and Thursday — avoids the :00 high-load window
     - cron: "17 10 * * 1,4"
-  workflow_dispatch:    # manual re-enable after 60-day auto-disable (Pitfall 6)
+  workflow_dispatch:    # manual re-enable after GitHub's 60-day auto-disable
 
 jobs:
   ping:
@@ -37,10 +37,12 @@ jobs:
           RENDER_URL: ${{ secrets.RENDER_URL }}
 
       - name: Ping Render health/ready (wakes service + touches Supabase via SELECT)
-        # /health/ready runs SELECT 1 FROM businesses LIMIT 1 — one ping keeps both
-        # Render warm (inbound HTTP) and Supabase un-paused (real DB query, D-16/D-20).
+        # /health/ready runs SELECT 1 FROM businesses LIMIT 1, so one ping keeps both
+        # Render warm (only inbound HTTP wakes it) and Supabase un-paused (only a real
+        # query counts). Hitting a static endpoint would wake Render but let the free
+        # Postgres project pause anyway.
         # --max-time 90: Render cold start can take up to 60s; give headroom.
-        # -f: exit non-zero on HTTP 4xx/5xx (OPS-03 requirement, MEDIUM-7 fix).
+        # -f: exit non-zero on HTTP 4xx/5xx, so an outage turns the run RED.
         run: curl -f --max-time 90 "$RENDER_URL/health/ready"
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}

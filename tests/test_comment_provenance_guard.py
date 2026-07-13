@@ -47,6 +47,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # The swept surface: every file whose text a maintainer reads. Globs rather than a
 # recursive `.py` walk, because the rot reached the DDL comments, the Jinja templates,
 # the stylesheet, and the eval fixture notes as well as the Python.
+#
+# The build/CI/config surface is in scope for the same reason the Python is: a maintainer
+# reads `pyproject.toml` to learn why line-length is 100, and reads a workflow to learn why
+# a job exists. A ticket ID there rots exactly as fast, and points at a document that has
+# been archived. Excluding it is what let 17 references survive the phase-15 sweep.
+#
+# NOT in scope, deliberately: CLAUDE.md, AGENTS.md, README.md, docs/**. Narrating the
+# project's history is the PURPOSE of those documents, not rot in them.
 SCAN_GLOBS = (
     "app/**/*.py",
     "app/db/schema.sql",
@@ -56,6 +64,11 @@ SCAN_GLOBS = (
     "eval/fixtures/*.md",
     "scripts/*.py",
     "tests/**/*.py",
+    ".github/workflows/*.yml",
+    "Dockerfile",
+    "pyproject.toml",
+    ".dockerignore",
+    ".env.example",
 )
 
 # This file is the ONE file that must contain the forbidden shapes: its pattern table
@@ -88,8 +101,8 @@ BLOCKED_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "review-ticket",
-        r"\b(?:WR|CR|CX|GAP|R2|NEW|OPS[0-9]*)-[0-9]",
-        "a review or gap ticket ID (WR-01, CR-02, CX-03, GAP-2, R2-1, OPS2-01)",
+        r"\b(?:WR|CR|CX|GAP|R2|NEW|IN|OPS[0-9]*)-[0-9]",
+        "a review or gap ticket ID (WR-01, CR-02, CX-03, GAP-2, R2-1, IN-08, OPS2-01)",
     ),
     (
         "fix-ticket",
