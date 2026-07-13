@@ -93,7 +93,7 @@ def test_clean_run_reaches_awaiting_approval(fake_repo, mock_llm):
     assert run["extracted_data"] is not None
     assert run["decision"] is not None
     assert run["decision"]["final_action"] == "process"
-    # NULL reconciliation on a clean run is a FAILURE (D-A3-05).
+    # NULL reconciliation on a clean run is a FAILURE.
     assert run["reconciliation"] is not None
     assert len(run["reconciliation"]) == 2
     # Line items were computed and replaced for the run.
@@ -121,7 +121,7 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
     run_pipeline(run_id)
 
     run = fake_repo.load_run(run_id)
-    assert run["status"] == "error", "a stage raise must route to ERROR (D-A1-03)"
+    assert run["status"] == "error", "a stage raise must route to ERROR"
     assert run["error_reason"], "the failure reason must be persisted"
 
 
@@ -222,7 +222,7 @@ def test_unresolved_name_gates_to_clarify(fake_repo, mock_llm):
     assert run["status"] == "awaiting_reply", (
         "orchestrator must follow final_action (gated → draft+send → awaiting_reply)"
     )
-    # Reconciliation is persisted even on the clarify branch (D-A3-05).
+    # Reconciliation is persisted even on the clarify branch.
     assert run["reconciliation"] is not None
     # The clarification was stub-sent and its Message-ID anchored on the outbound row.
     assert fake_repo.get_outbound_message_id(run_id) is not None

@@ -28,7 +28,7 @@ from typing import Any
 from app.models.roster import Employee
 
 # ---------------------------------------------------------------------------
-# SeedResult — structured return type (Finding #10)
+# SeedResult — structured return type.
 # dry_run=True and live path both return this so callers can inspect the data.
 # ---------------------------------------------------------------------------
 
@@ -307,14 +307,14 @@ def seed(dry_run: bool = False) -> SeedResult:
     result = SeedResult(businesses=list(_BUSINESSES), employees=list(_EMPLOYEES))
 
     if dry_run:
-        # Return structured result without any DB interaction (Finding #10)
+        # Return the structured result without any DB interaction.
         return result
 
     # Live path — requires DATABASE_URL to be set in the environment
     from app.db.supabase import get_connection
 
-    # All writes in a SINGLE explicit transaction (Finding #10 — atomic; no
-    # orphaned rows on partial failure)
+    # All writes go in a SINGLE explicit transaction: the seed must be atomic, or a
+    # partial failure leaves orphaned businesses with no employees.
     with get_connection() as conn, conn.transaction():
         # ----------------------------------------------------------------
         # 1. Upsert businesses on the PRIMARY KEY id.

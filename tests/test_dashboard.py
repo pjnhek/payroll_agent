@@ -85,7 +85,7 @@ def test_load_all_runs_employee_count_uses_jsonb_typeof_guard(fake_conn):
 
 
 def test_load_all_runs_tolerates_non_array_employee_count_value(fake_conn):
-    """Review fix #2 — hermetic proxy: since FakeConnection replays scripted rows
+    """Hermetic proxy: since FakeConnection replays scripted rows
     rather than executing real SQL, this proves the PYTHON-SIDE return path
     tolerates the employee_count value the new jsonb_typeof-guarded SQL guarantees
     for a corrupt/legacy non-array `employees` value (0), without raising."""

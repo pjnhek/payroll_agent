@@ -156,7 +156,7 @@ def test_create_run_record_only_default_false(fake_conn):
 
 
 def test_create_run_record_only_true(fake_conn):
-    """create_run with record_only=True: column in INSERT and True in params (LOW-6)."""
+    """create_run with record_only=True: column in INSERT and True in params."""
     from app.db.repo import create_run
 
     fake_conn.script_fetchone((str(uuid.uuid4()),))
@@ -856,7 +856,7 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
 
 
 def test_compose_sets_record_only_via_create_run(monkeypatch):
-    """POST /demo/compose passes record_only=True directly to create_run (LOW-6)."""
+    """POST /demo/compose passes record_only=True directly to create_run."""
     import app.db.repo as repo_mod
 
     create_run_calls: list[Any] = []
@@ -913,7 +913,8 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
 
     assert create_run_calls, "create_run must be called"
     assert create_run_calls[0].get("record_only") is True, (
-        "create_run must be called with record_only=True (LOW-6)"
+        "create_run must be called with record_only=True — a demo-composed run must "
+        "never be delivered to the client"
     )
 
 

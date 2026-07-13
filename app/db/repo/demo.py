@@ -89,7 +89,7 @@ def set_record_only(
     """Set record_only = TRUE on a run.
 
     Ad-hoc repair helper. In normal operation, create_run(record_only=True) is used
-    directly (LOW-6 — no separate UPDATE needed at compose time).
+    directly, so no separate UPDATE is needed at compose time.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(

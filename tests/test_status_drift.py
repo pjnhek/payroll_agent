@@ -69,7 +69,7 @@ def _extract_check_in_values(sql: str, column: str) -> set[str]:
 def _extract_do_block_status_values(sql: str) -> set[str]:
     """Parse the value set out of the payroll_runs_status_check DO-block re-add.
 
-    Review fix (codex MEDIUM #5): `_extract_check_in_values` uses `re.search`,
+    `_extract_check_in_values` uses `re.search`,
     which only ever finds the FIRST `CHECK (status IN (...))` match in the whole
     file — the INLINE CREATE TABLE CHECK. It structurally cannot see the DO-block's
     re-add value list below it. This is a SEPARATE, dedicated parser: it locates
@@ -171,7 +171,7 @@ class TestEnumCheckDrift:
     def test_do_block_status_check_matches_enum(self) -> None:
         """The DO-block's payroll_runs_status_check re-add list matches RunStatus.
 
-        Review fix (codex MEDIUM #5): independent of `_extract_check_in_values`
+        Independent of `_extract_check_in_values`
         (which only ever sees the FIRST CHECK match, i.e. the inline CREATE TABLE
         CHECK). This test uses the dedicated `_extract_do_block_status_values`
         parser so a stale value in EITHER the inline CHECK or the DO-block re-add
