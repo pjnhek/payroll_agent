@@ -1,11 +1,10 @@
-"""Unit tests for bootstrap._safe_db_url — pure, no DB connection (WR-05).
+"""Unit tests for bootstrap._safe_db_url — pure, no DB connection.
 
 The redaction helper must:
 - strip the password when present (the original behavior, kept),
 - return a reconstructed URL for ALL parseable cases, including valid
-  password-less URLs (the WR-05 fix — these used to fall through to
-  '<unparseable url>' and mislead an operator during connection
-  troubleshooting),
+  password-less URLs (falling through to '<unparseable url>' here would mislead
+  an operator during connection troubleshooting),
 - reserve '<unparseable url>' for genuinely unparseable / scheme-less input.
 """
 

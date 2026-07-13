@@ -40,7 +40,7 @@ def client(fake_repo, monkeypatch):
 def _script_clean_run(mock_llm) -> None:
     """Enqueue ONLY the extraction payload for the all-deterministic happy path
     (Maria Chen + James Okafor both resolve exactly). reconcile and decide are pure
-    deterministic code with no LLM call (D-21-01), so no decision response is
+    deterministic code with no LLM call, so no decision response is
     scripted — the gate runs on the resolution facts."""
     extraction = json.dumps(
         {
@@ -94,12 +94,12 @@ def test_unknown_sender_no_run(client, fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# DATA-02 (D-9-09) — the duplicate-response body reports the existing run_id
+# DATA-02 — the duplicate-response body reports the existing run_id
 # ---------------------------------------------------------------------------
 
 
 def test_duplicate_delivery_reports_existing_run_id(client, fake_repo, mock_llm):
-    """The loser attaches to the existing run: report, never create (D-9-09)."""
+    """The loser attaches to the existing run: report, never create."""
     _script_clean_run(mock_llm)
     payload = _fixture()
 
@@ -112,14 +112,14 @@ def test_duplicate_delivery_reports_existing_run_id(client, fake_repo, mock_llm)
     assert r2.status_code == 200
     assert r2.json()["status"] == "duplicate"
     assert r2.json()["run_id"] == run_id, (
-        "duplicate response must report the EXISTING run's id (D-9-09) — the "
+        "duplicate response must report the EXISTING run's id — the "
         "loser attaches to the winner's run instead of creating a second one"
     )
     assert len(fake_repo.runs) == 1
 
 
 # ---------------------------------------------------------------------------
-# Codex HIGH-1 regression guard — a header-bearing reply NEVER spuriously
+# Regression guard — a header-bearing reply NEVER spuriously
 # creates a second run under the restructured transactional ingest (09-03)
 # ---------------------------------------------------------------------------
 
@@ -132,7 +132,7 @@ def test_reply_never_creates_second_run(client, fake_repo, mock_llm):
     tests/test_resume_pipeline.py's _seed_run/_set_run_awaiting_reply helpers),
     then POSTs a reply carrying matching In-Reply-To/References headers. The
     restructured ingest transaction must classify this as a reply-resume
-    candidate BEFORE create_run is ever reachable — proving Codex HIGH-1 is closed.
+    candidate BEFORE create_run is ever reachable.
     """
     from app.models.status import RunStatus
 
@@ -184,11 +184,11 @@ def test_reply_never_creates_second_run(client, fake_repo, mock_llm):
     assert body["run_id"] == str(run_id)
 
     # EXACTLY ONE run total — the reply must NEVER spuriously create a second
-    # run (Codex HIGH-1, closed by classifying reply-vs-new-run INSIDE the
+    # run (closed by classifying reply-vs-new-run INSIDE the
     # ingest transaction, strictly before create_run is reachable).
     assert len(fake_repo.runs) == 1, (
         "a header-bearing reply must NEVER create a second run — the reply-"
-        "classification-before-create_run ordering must hold (Codex HIGH-1)"
+        "classification-before-create_run ordering must hold"
     )
 
 
@@ -199,7 +199,7 @@ def test_reply_never_creates_second_run(client, fake_repo, mock_llm):
 
 def test_late_reply_no_new_run_no_background_task(client, fake_repo, mock_llm, monkeypatch):
     """A header match to a run NOT in awaiting_reply is a late reply: no new run,
-    no background task scheduled (FIX 10, Codex HIGH-1 regression guard)."""
+    no background task scheduled (late-reply regression guard)."""
     from app.models.status import RunStatus
 
     coastal_email = "payroll@coastalcleaning.example"
@@ -263,13 +263,13 @@ def test_late_reply_no_new_run_no_background_task(client, fake_repo, mock_llm, m
 
 
 # ---------------------------------------------------------------------------
-# WR-03 (phase-9 review) — real reply/late-reply rows are LINKED to their run
+# Real reply/late-reply rows are LINKED to their run
 # inside the ingest transaction, so the run-detail thread view shows them
 # ---------------------------------------------------------------------------
 
 
 def test_reply_and_late_reply_rows_linked_to_run(client, fake_repo, mock_llm, monkeypatch):
-    """The ingest transaction back-fills run_id on classified reply rows (WR-03).
+    """The ingest transaction back-fills run_id on classified reply rows.
 
     Before the fix, every real inbound reply row kept run_id=NULL forever (only
     the simulate-reply demo path passed run_id), so real client replies were
@@ -324,7 +324,7 @@ def test_reply_and_late_reply_rows_linked_to_run(client, fake_repo, mock_llm, mo
     assert r.json()["status"] == "resumed"
     assert str(fake_repo.emails[reply_mid].get("run_id")) == str(run_id), (
         "a reply_candidate row must be back-filled with its run_id inside the "
-        "ingest transaction (WR-03) — otherwise real replies never appear in "
+        "ingest transaction — otherwise real replies never appear in "
         "the run-detail thread view"
     )
 
@@ -349,7 +349,7 @@ def test_reply_and_late_reply_rows_linked_to_run(client, fake_repo, mock_llm, mo
     assert r.json()["status"] == "late_reply"
     assert str(fake_repo.emails[late_mid].get("run_id")) == str(run_id), (
         "a late_reply row must be back-filled with its run_id inside the "
-        "ingest transaction (WR-03) — join-based audits must see it"
+        "ingest transaction — join-based audits must see it"
     )
 
 

@@ -1,4 +1,4 @@
-"""Orchestrator state-machine tests (INGEST-04, D-A1-03; FIX A, FIX B, FIX 7).
+"""Orchestrator state-machine tests (INGEST-04).
 
 In-memory mocked-LLM assertions (always run, DB-free via fake_repo): the clean run
 drives received → ... → awaiting_approval, persists Extracted + Decision +
@@ -6,7 +6,7 @@ reconciliation then advances via set_status SEPARATELY; a stage raise routes
 through record_run_error; the orchestrator branches on final_action only; extract
 is called with the code-owned run_id.
 
-The reconcile + decide stages are PURE deterministic code (D-21-01) — they take no
+The reconcile + decide stages are PURE deterministic code — they take no
 llm and make no model call — so the only LLM-scripted calls in these flows are the
 extract stage and (on the clarify branch) the free-text clarification draft. The
 FIFO mock_llm script therefore carries ONE extract response (+ one draft string on a
@@ -122,16 +122,16 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == "error", "a stage raise must route to ERROR (D-A1-03)"
-    assert run["error_reason"], "the failure reason must be persisted (FIX 7)"
+    assert run["error_reason"], "the failure reason must be persisted"
 
 
 # ---------------------------------------------------------------------------
-# R2-2 — behavioral argument-flow spy test for the HIGH #1 roster-scope fix.
+# Behavioral argument-flow spy test for the roster-scope guarantee.
 #
 # The plan's own acceptance criteria already grep-prove the call-site TEXT says
 # `roster=roster`. This test instead proves the ACTUAL RUNTIME VALUE
 # record_run_error receives is a real, populated Roster — per this project's
-# Phase 7.5 lesson (grep/prose checks on a money-adjacent data path are not
+# A grep/prose check on a money-adjacent data path is not
 # sufficient; trace argument flow against live execution).
 # ---------------------------------------------------------------------------
 
@@ -200,7 +200,7 @@ def test_unresolved_name_gates_to_clarify(fake_repo, mock_llm):
     unresolved, decide (pure code) sets final_action='request_clarification', and the
     orchestrator follows final_action into the draft+send clarify branch (→
     awaiting_reply). The FIFO script carries the extract response then the free-text
-    clarification draft — reconcile + decide make NO LLM call (D-21-01)."""
+    clarification draft — reconcile + decide make NO LLM call."""
     mock_llm.script = [
         json.dumps(
             {
@@ -229,14 +229,14 @@ def test_unresolved_name_gates_to_clarify(fake_repo, mock_llm):
 
 
 def test_process_run_missing_roster_employee_raises():
-    """WR-01 — a process run whose resolved match points at an employee_id NOT in the
+    """A process run whose resolved match points at an employee_id NOT in the
     loaded roster is an INVARIANT VIOLATION; _compute_line_items must raise, never
     silently drop the employee and ship a short payroll.
 
     The deterministic resolver can only ever resolve a name to an employee that IS in
     the loaded roster, so this invariant can no longer be reached through the normal
     gate path (the old layer-2 LLM could route a name to an arbitrary id; it is gone,
-    D-21-05). The defensive guard still exists for a stale persisted reconciliation /
+    the roster). The defensive guard still exists for a stale persisted reconciliation /
     wrong-business roster, so it is exercised directly: hand _compute_line_items a
     resolved NameMatchResult whose matched_employee_id is absent from the roster and
     assert it raises with an integrity message.
@@ -286,7 +286,7 @@ def test_orchestrator_source_never_reads_model_action():
 
 
 def test_extract_called_with_run_id(fake_repo, mock_llm):
-    """FIX A: the orchestrator passes the run's run_id into extract → the persisted
+    """The orchestrator passes the run's run_id into extract → the persisted
     Extracted.run_id matches the run."""
     _clean_script(mock_llm)
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
@@ -295,5 +295,5 @@ def test_extract_called_with_run_id(fake_repo, mock_llm):
 
     run = fake_repo.load_run(run_id)
     assert run["extracted_data"]["run_id"] == str(run_id), (
-        "Extracted.run_id must be the code-owned run id (FIX A)"
+        "Extracted.run_id must be the code-owned run id, never model output"
     )

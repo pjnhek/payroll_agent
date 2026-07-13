@@ -17,7 +17,7 @@ def test_expected_schema_columns_include_create_and_alter():
     exp = expected_schema()
     # CREATE-body column
     assert "status" in exp.tables["payroll_runs"]
-    # Phase 11 columns (present in BOTH create + alter)
+    # Clarification-round columns (present in BOTH create + alter)
     assert "clarification_round" in exp.tables["payroll_runs"]
     assert "reply_epoch" in exp.tables["payroll_runs"]
     assert {"round", "consumed_round", "epoch"} <= exp.tables["email_messages"]

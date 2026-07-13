@@ -1,4 +1,4 @@
-"""Tests for generate_paystub_pdf (HITL-03, D-11).
+"""Tests for generate_paystub_pdf (HITL-03).
 
 PURE function contract: PaystubLineItem + employee metadata in, PDF bytes out.
 No DB, no filesystem, no connection.
@@ -10,7 +10,7 @@ Coverage:
   - DASH-02 guards: state_withholding None and pretax_401k zero both omit cleanly
   - Optional params: business_name and filing_status accepted without error
   - Deductions reconciliation: _sum_deductions helper is consistent with table rows
-  - UAT #1: hourly_rate threaded in — Rate column renders; salaried path unaffected
+  - hourly_rate threaded in — the Rate column renders; the salaried path is unaffected
 """
 from __future__ import annotations
 
@@ -349,12 +349,12 @@ def test_no_pay_period_at_all_renders():
 
 
 # ---------------------------------------------------------------------------
-# UAT #1: hourly_rate keyword param — Rate column on earnings table
+# hourly_rate keyword param — Rate column on the earnings table
 # ---------------------------------------------------------------------------
 
 
 def test_hourly_rate_does_not_error():
-    """Passing hourly_rate renders without error and returns valid PDF (UAT #1)."""
+    """Passing hourly_rate renders without error and returns a valid PDF."""
     item = _minimal_item()
     result = generate_paystub_pdf(
         item,

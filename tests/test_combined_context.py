@@ -1,4 +1,4 @@
-"""Combined-context accumulation tests (CLAR2-03/05, D-11-10/11/12/13).
+"""Combined-context accumulation tests for the multi-round clarification path.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
 tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
@@ -12,18 +12,18 @@ skip marker of any kind. Do not merge this file into test_resume_pipeline.py.
 WHAT THIS MODULE PROVES:
   1. _combined_context_email's "QUESTIONS WE ASKED:" anchor is code-owned,
      positioned after ORIGINAL and before the replies, string-for-string
-     testable (D-11-10).
+     testable.
   2. An empty asked_summary_lines emits NO anchor header at all.
   3. prior_replies accumulate in round order under distinct round-numbered
-     delimiters, with the current reply labelled distinctly (D-11-12).
+     delimiters, with the current reply labelled distinctly.
   4. The function is pure: no DB I/O, and the passed-in reply object's
      body_text is never mutated (model_copy, not mutation).
   5. _render_asked_summary derives its lines ONLY from persisted decision
      facts (unresolved_names + clarified_fields 'asked' entries) -- there is
-     no LLM-draft parameter, so this is pinned by construction (D-11-10).
+     no LLM-draft parameter, so this is pinned by construction.
   6. The deterministic re-ask backstop: an asked field that stays absent
      after extraction re-gates to a NEW clarification round that actually
-     SENDS -- never a silent park, never a guessed paystub (Pitfall #9).
+     SENDS -- never a silent park, never a guessed paystub.
   7. The consumed-marker-drives-accumulation assertion against REAL rows:
      resume_pipeline's own mark_reply_consumed call (Task 1) is what makes a
      SECOND resume's load_consumed_replies return the first reply -- this
@@ -81,7 +81,7 @@ def _mk_reply(body_text: str, message_id: str | None = None) -> InboundEmail:
 def test_anchor_present_after_original_before_replies():
     """A non-empty asked_summary_lines renders a "QUESTIONS WE ASKED:" section
     containing each line verbatim, positioned AFTER original and BEFORE the
-    replies (D-11-10)."""
+    replies."""
     reply = _mk_reply("current reply body")
     result = _combined_context_email(
         reply,
@@ -113,8 +113,8 @@ def test_no_anchor_when_asked_summary_lines_empty():
 
 def test_accumulation_orders_prior_replies_before_current():
     """prior_replies=[r1, r2] + current r3 accumulate in order under distinct
-    round-numbered delimiters; the current reply is labelled distinctly
-    (D-11-12 — CX-01 closure)."""
+    round-numbered delimiters, with the current reply labelled distinctly from
+    the prior ones."""
     reply = _mk_reply("r3 body")
     result = _combined_context_email(
         reply,
@@ -155,7 +155,7 @@ def test_combined_context_email_is_pure_no_mutation():
 
 # ---------------------------------------------------------------------------
 # 5: _render_asked_summary sources ONLY persisted decision facts — no draft
-# parameter exists, pinning D-11-10 by construction.
+# parameter exists, pinning the no-LLM rule by construction.
 # ---------------------------------------------------------------------------
 
 
@@ -312,7 +312,7 @@ def _set_run_awaiting_reply(fake_repo, run_id: uuid.UUID) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6: The deterministic re-ask backstop (D-11-11's enforcement mechanism).
+# 6: The deterministic re-ask backstop — the real enforcement mechanism.
 # An asked field that stays absent from the reply must re-gate to a NEW
 # clarification that actually SENDS -- not a silent guess, not a silent park.
 # ---------------------------------------------------------------------------
@@ -324,7 +324,7 @@ def test_reask_backstop_sends_new_clarification_when_asked_field_stays_absent(
     """Drive resume where the reply is SILENT on the asked field (mock_llm
     returns the field absent). Assert the run re-gates to a NEW clarification
     that SENDS (gateway called, round advances) -- never a silent park and
-    never a guessed paystub (Pitfall #9 backstop). This test asserts the
+    never a guessed paystub. This test asserts the
     deterministic SEND, never any LLM attribution behavior."""
     run_id = _seed_run(
         fake_repo, body="Maria Chen worked 40 regular hours, 2 overtime"
@@ -386,7 +386,7 @@ def test_reask_backstop_sends_new_clarification_when_asked_field_stays_absent(
     assert sent_after_r2 > sent_before_r2, (
         "the round-2 re-ask must actually SEND a new clarification email "
         "(gateway/outbound row count increases) -- this is the deterministic "
-        "backstop D-11-11 relies on, not any LLM attribution behavior"
+        "deterministic backstop, not any LLM attribution behavior"
     )
     assert clarified_r2.get(CHEN_ID_STR, {}).get("hours_overtime") == "carried_forward", (
         "silence on the asked field classifies as carried_forward (backfilled "
