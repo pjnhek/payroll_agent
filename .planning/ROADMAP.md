@@ -137,7 +137,7 @@ Plans:
   4. Todo 260623-01 (Phase 05 review warnings) is resolved or explicitly dispositioned — WR-01 threading-after-retrigger is verified, and WR-02's Phase-8 pool-singleton fix is confirmed and the todo closed.
   5. Todo 260623-05 (fixture 10's `fixture_category` label) is corrected, and the eval chart's per-category grouping is verified unaffected by the fix.
 
-**Plans**: 9/11 plans executed
+**Plans**: 10/11 plans executed
 Plans:
 **Wave 1**
 
@@ -153,7 +153,7 @@ Plans:
 
 **Wave 2** *(blocked on 15-11)*
 
-- [ ] 15-09-PLAN.md — Sweep app/routes/, llm/, email/, config, template + CSS (incl. the user-visible demo caption) + the sixteen remaining test files
+- [x] 15-09-PLAN.md — Sweep app/routes/, llm/, email/, config, template + CSS (incl. the user-visible demo caption) + the sixteen remaining test files
 
 **Wave 3** *(blocked on all prior plans)*
 
@@ -189,4 +189,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
-| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 9/11 | In Progress|  |
+| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 10/11 | In Progress|  |
