@@ -1,15 +1,20 @@
-"""Tests for compose_email field-regression copy (Phase 7.5 Plan 02).
+"""Tests for the field-regression copy in compose_email.
 
-N5 fix: field-regression lines in _template_body emitted UNCONDITIONALLY
-(before the unresolved/missing fallback gate).
+The invariants locked here all protect ONE thing: the client must always be
+asked the actual question. A field-regression clarification that ships without
+its question is an email the client cannot act on, so the run strands.
 
-D-7.5-09 wording lock: 'Reply with the {field_name} hours for {submitted_name},
-or 'none' to confirm zero.' — deterministic regardless of LLM draft path.
-
-Finding 4 fix: deterministic D-7.5-09 wording is APPENDED after any LLM draft
-body in compose_clarification — not only in _template_body fallback.
-
-rsplit last-dot split: 'M. Chen.hours_overtime' -> ('M. Chen', 'hours_overtime').
+- Field-regression lines are emitted UNCONDITIONALLY in _template_body, before
+  the unresolved/missing fallback gate — not nested inside it.
+- The wording is deterministic and pinned: "Reply with the {field_name} hours
+  for {submitted_name}, or 'none' to confirm zero." The 'none' phrasing is what
+  lets the client express an explicit zero rather than going silent, which is the
+  distinction the carry-forward logic depends on.
+- That deterministic line is APPENDED after any LLM draft body in
+  compose_clarification, not only in the _template_body fallback — otherwise a
+  non-empty LLM draft silently replaces the question.
+- The submitted name is split on the LAST dot:
+  'M. Chen.hours_overtime' -> ('M. Chen', 'hours_overtime'), not ('M', ...).
 """
 from __future__ import annotations
 
@@ -56,15 +61,16 @@ class _DraftLLM:
 
 
 # ---------------------------------------------------------------------------
-# N5 fix: field-regression lines emitted unconditionally (before fallback gate)
+# Field-regression lines are emitted unconditionally (before the fallback gate)
 # ---------------------------------------------------------------------------
 
 
 def test_field_regression_line_present_when_other_clarification_coexists():
-    """N5 fix: field-regression line appears even when unresolved_names also exists.
+    """The field-regression line appears even when unresolved_names also exists.
 
     The field-regression block must fire BEFORE the unresolved/missing fallback gate,
-    not inside the 'if not unresolved and not missing' branch.
+    not inside the 'if not unresolved and not missing' branch — otherwise a run with
+    both problems asks about the name and silently drops the hours question.
     """
     decision = _decision(
         gate_reasons=[
@@ -79,7 +85,7 @@ def test_field_regression_line_present_when_other_clarification_coexists():
 
     assert "Bob Smith" in body, "unresolved name must appear"
     assert "hours_overtime" in body, (
-        "N5: field-regression line must appear even with unresolved names"
+        "the field-regression line must appear even alongside unresolved names"
     )
 
 
@@ -107,7 +113,12 @@ def test_field_regression_line_dotted_submitted_name():
 
 
 def test_field_regression_line_exact_wording_in_template_path():
-    """D-7.5-09 wording lock: exact phrasing in _template_body path (LLM returns empty)."""
+    """The exact wording is pinned in the _template_body path (LLM returns empty).
+
+    The phrasing is deliberate: "or 'none' to confirm zero" is what gives the client
+    a way to state an explicit removal instead of just going silent — the very
+    distinction the carry-forward logic reads.
+    """
     decision = _decision(
         gate_reasons=["field regression: Alice Johnson.hours_overtime"],
     )
@@ -118,15 +129,16 @@ def test_field_regression_line_exact_wording_in_template_path():
     assert (
         "Reply with the hours_overtime hours for Alice Johnson, or 'none' to confirm zero."
         in body
-    ), "D-7.5-09 wording lock: exact question must appear in the template path"
+    ), "the exact pinned question must appear in the template path"
 
 
 def test_field_regression_wording_present_even_when_llm_draft_nonempty():
-    """Finding 4 fix: deterministic D-7.5-09 line is APPENDED after any LLM draft body.
+    """The deterministic question is APPENDED after any LLM draft body.
 
-    When the LLM returns non-empty content, compose_clarification previously returned
-    the draft directly — the field-regression question was silently omitted.
-    This fix ensures the wording always appears on the real (LLM-draft) path.
+    If compose_clarification returned the LLM draft directly, the field-regression
+    question would be silently omitted whenever the model produced any content at
+    all — the common case. The deterministic line must survive the real (LLM-draft)
+    path, not just the template fallback.
     """
     decision = _decision(
         gate_reasons=["field regression: Alice.hours_overtime"],
@@ -139,9 +151,9 @@ def test_field_regression_wording_present_even_when_llm_draft_nonempty():
     # The LLM draft was returned — verify it is present
     assert "please check your submission" in body, "LLM draft content must be present"
 
-    # The D-7.5-09 deterministic line must ALSO be present (Finding 4 fix)
+    # The deterministic question line must ALSO be present
     assert "Reply with the hours_overtime hours for Alice, or 'none' to confirm zero." in body, (
-        "Finding 4: deterministic D-7.5-09 wording must appear even when LLM draft is non-empty"
+        "the deterministic question must appear even when the LLM draft is non-empty"
     )
 
 

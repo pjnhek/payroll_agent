@@ -1,33 +1,37 @@
-"""Retrigger epoch mechanism — GAP-2 (CR-2) + GAP-3 (CR-3) regression tests.
+"""The retrigger epoch mechanism: no email row outlives the run state that made it.
 
-Closes 11-REVIEW.md GAP-2/GAP-3 (Plan 11-06): `clear_reply_context` clears
-`payroll_runs` round-machine state but never touched `email_messages`, so a
-retrigger's stale pre-retrigger round-0 `sent` outbound row silently suppressed
-the fresh send (WR-05 reintroduced, GAP-2), and a stale `consumed_round`-stamped
-reply was re-injected into extraction (mispay, GAP-3).
+The problem this solves: `clear_reply_context` resets the `payroll_runs`
+round-machine state on a retrigger, but `email_messages` is an append-only audit
+log and must never be deleted or mutated. Without a way to scope the log to the
+current attempt, two stale rows survive the reset and corrupt the fresh run:
+
+  - a stale pre-retrigger round-0 `sent` outbound row makes the round-aware
+    idempotency guard believe the question was already asked, so the fresh
+    clarification is silently never sent and the run parks forever; and
+  - a stale `consumed_round`-stamped reply is re-injected into the extraction
+    context, so the retriggered run is computed against an answer to a question
+    it never asked — a mispay.
+
+The mechanism: a per-run `reply_epoch` counter, bumped once by
+`clear_reply_context` on every retrigger. `email_messages.epoch` is stamped at
+write/link time from the owning run's CURRENT reply_epoch. The three round-machine
+readers (`get_outbound_for_round`, `load_consumed_replies`,
+`find_stranded_unconsumed_replies`) scope to the run's CURRENT epoch, so a stale
+pre-retrigger row (epoch 0) is invisible to a post-retrigger run (epoch 1) while
+still physically existing in the audit log.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
-tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
-gated on `os.environ.get("DATABASE_URL")` being unset (the project's own
-documented convention — see test_multiround_context_edge.py's docstring for
-the verified detail). This module is genuinely hermetic (fake_repo + mock_llm
-only, no live DB/LLM) and must run unconditionally offline, so it carries NO
-module-level conditional-skip marker of any kind.
+tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker gated
+on `os.environ.get("DATABASE_URL")` being unset. This module is genuinely hermetic
+(fake_repo + mock_llm only, no live DB/LLM) and must run unconditionally offline,
+so it carries NO module-level conditional-skip marker of any kind.
 
-Fix: a per-run `reply_epoch` counter, bumped once by `clear_reply_context`
-on every retrigger. `email_messages.epoch` is stamped at write/link time from
-the owning run's CURRENT reply_epoch. The three round-machine readers
-(`get_outbound_for_round`, `load_consumed_replies`, `find_stranded_unconsumed_replies`)
-scope to the run's CURRENT epoch, so a stale pre-retrigger row (epoch 0) is
-invisible to a post-retrigger run (epoch 1) without ever deleting or mutating
-the append-only audit log.
-
-Money-path discipline (Phase 7.5 lesson / this plan's own verification
-requirement): these tests do NOT mock `clear_reply_context`, `_clarify`,
-`get_outbound_for_round`, `resume_pipeline`, or `mark_reply_consumed` — they
-drive the real seam and assert PERSISTED STATE/BEHAVIOR (a new outbound row
-exists and the gateway was actually called; load_consumed_replies returns
-empty while the row still physically exists), never a log string.
+Money-path discipline: these tests do NOT mock `clear_reply_context`, `_clarify`,
+`get_outbound_for_round`, `resume_pipeline`, or `mark_reply_consumed` — they drive
+the real seam and assert PERSISTED STATE/BEHAVIOR (a new outbound row exists and
+the gateway was actually called; load_consumed_replies returns empty while the row
+still physically exists), never a log string. A test that mocks the seam it is
+meant to prove cannot catch a mispay.
 """
 from __future__ import annotations
 
@@ -91,8 +95,8 @@ def _bare_extracted(run_id: uuid.UUID) -> Extracted:
 
 
 # ===========================================================================
-# GAP-2 (CR-2): retrigger must not let a stale pre-retrigger round-0 'sent'
-# row suppress the retriggered run's fresh round-0 clarification send.
+# A stale pre-retrigger round-0 'sent' row must not suppress the retriggered
+# run's fresh round-0 clarification send.
 # ===========================================================================
 
 
@@ -101,12 +105,14 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
 ):
     """A run already sent its round-0 clarification (still 'sent' in
     email_messages, pre-retrigger). The operator retriggers: repo.clear_reply_context
-    is called for REAL (bumps reply_epoch 0 -> 1). _clarify is then driven for
-    REAL with current_round=0 (post-clear, the retriggered run's own fresh
-    round 0). Without the epoch fix, get_outbound_for_round would find the
-    STALE epoch-0 round-0 sent row and suppress the send (GAP-2/WR-05
-    reintroduced). With the fix, the guard is epoch-scoped and the stale row
-    belongs to a DIFFERENT epoch — the send must actually happen.
+    is called for REAL (bumping reply_epoch 0 -> 1). _clarify is then driven for
+    REAL with current_round=0 (post-clear — the retriggered run's own fresh round 0).
+
+    Without epoch scoping, get_outbound_for_round finds the STALE epoch-0 round-0
+    'sent' row, concludes the question was already asked, and suppresses the send —
+    so the retriggered run parks at awaiting_reply with no email ever leaving the
+    system. Epoch-scoping the guard makes that stale row belong to a DIFFERENT
+    epoch, so the send actually happens.
     """
     import app.email.gateway as gateway_mod
 
@@ -143,8 +149,8 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
     # 0 here — this run never sent a round-1+) AND bumps reply_epoch 0 -> 1.
     fake_repo.clear_reply_context(run_id)
     assert fake_repo.runs[str(run_id)].get("reply_epoch") == 1, (
-        "clear_reply_context must bump reply_epoch on every call (the GAP-2/"
-        "GAP-3 fix's core mechanism)"
+        "clear_reply_context must bump reply_epoch on every call — that bump is "
+        "the whole mechanism that makes pre-retrigger email rows invisible"
     )
 
     send_calls: list[dict[str, Any]] = []
@@ -162,10 +168,10 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
     _clarify(run_id, email, decision, roster, extracted, llm=None, purpose="clarification")
 
     assert len(send_calls) == 1, (
-        "GAP-2: the retriggered run's fresh round-0 clarification must "
-        "actually send even though a stale pre-retrigger round-0 'sent' row "
-        "still exists in email_messages — the epoch scope must make that "
-        "stale row invisible to the guard"
+        "the retriggered run's fresh round-0 clarification must actually send "
+        "even though a stale pre-retrigger round-0 'sent' row still exists in "
+        "email_messages — the epoch scope must make that stale row invisible to "
+        "the idempotency guard"
     )
     assert send_calls[0]["round"] == 0
 
@@ -200,20 +206,21 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
 
 
 # ===========================================================================
-# GAP-3 (CR-3): retrigger must not re-accumulate a reply that was consumed
-# in a prior (pre-retrigger) epoch into the retriggered run's extraction
-# context — even though the row itself is never deleted (append-only).
+# A retrigger must not re-accumulate a reply that was consumed in a prior
+# (pre-retrigger) epoch into the retriggered run's extraction context — even
+# though the row itself is never deleted (the audit log is append-only).
 # ===========================================================================
 
 
 def test_retrigger_forgets_consumed_reply_from_prior_epoch(fake_repo, mock_llm):
     """Drive a REAL resume_pipeline call so a reply is genuinely consumed
     (mark_reply_consumed fires for real, not hand-seeded consumed_round).
-    Then retrigger (clear_reply_context for real, bumps epoch). Assert
-    load_consumed_replies now returns EMPTY for the run — the epoch-0
-    consumed reply must not surface in epoch 1's accumulation — even though
-    the row still physically exists in email_messages (proving append-only:
-    nothing was deleted).
+    Then retrigger (clear_reply_context for real, bumping the epoch). Assert
+    load_consumed_replies now returns EMPTY for the run — the epoch-0 consumed
+    reply must not surface in epoch 1's accumulation, or the retriggered run is
+    computed against an answer to a question it never asked (a mispay) — even
+    though the row still physically exists in email_messages, proving the audit
+    log stayed append-only and nothing was deleted.
     """
     import json
 
@@ -315,13 +322,13 @@ def test_retrigger_forgets_consumed_reply_from_prior_epoch(fake_repo, mock_llm):
         "clear_reply_context must bump reply_epoch on retrigger"
     )
 
-    # GAP-3 fix: the epoch-0 consumed reply must NOT surface in the
-    # post-retrigger (epoch-1) accumulation.
+    # The epoch-0 consumed reply must NOT surface in the post-retrigger
+    # (epoch-1) accumulation.
     consumed_post_retrigger = fake_repo.load_consumed_replies(run_id)
     assert consumed_post_retrigger == [], (
-        "GAP-3: a retrigger must forget a pre-retrigger epoch's consumed "
-        "reply -- load_consumed_replies must return EMPTY immediately after "
-        "the epoch bump, even though the row is never deleted"
+        "a retrigger must forget a pre-retrigger epoch's consumed reply -- "
+        "load_consumed_replies must return EMPTY immediately after the epoch "
+        "bump, even though the row is never deleted"
     )
 
     # Append-only invariant: the row STILL physically exists in the raw
