@@ -118,6 +118,26 @@ def _is_deepseek(model: str) -> bool:
     return "deepseek" in model.lower()
 
 
+def _scrubbed_validation_summary(exc: ValidationError | ValueError) -> str:
+    """Describe a validation failure WITHOUT echoing the model's own output.
+
+    A ValidationError stringifies with the offending input embedded
+    (`input_value='...'`), and the retry prompt goes back out to the provider — so
+    interpolating it verbatim would return untrusted model output to a third party.
+    `include_input=False` keeps the actionable half (where it failed, what the schema
+    wanted: `msg` is pydantic's generic description, e.g. "Input should be a valid
+    number") and drops the value itself. The empty-content ValueError carries no model
+    output, so it passes through as-is.
+    """
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    parts = [
+        f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['type']} — {err['msg']}"
+        for err in exc.errors(include_url=False, include_input=False)
+    ]
+    return "; ".join(parts) if parts else "output did not match the schema"
+
+
 def call_structured[T: BaseModel](
     tier: Tier,
     messages: list[ChatCompletionMessageParam],
@@ -182,7 +202,8 @@ def call_structured[T: BaseModel](
                 {
                     "role": "user",
                     "content": (
-                        f"Your last output failed validation: {exc}. "
+                        "Your last output failed validation: "
+                        f"{_scrubbed_validation_summary(exc)}. "
                         "Return ONLY valid JSON matching the schema."
                     ),
                 }
