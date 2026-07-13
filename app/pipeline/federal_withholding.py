@@ -1,13 +1,13 @@
 """IRS Pub 15-T 2026 Worksheet 1A federal withholding engine.
 
 A PURE function: typed values in, Decimal out.  NO DB, NO network, NO side effects.
-Importable directly by the eval (Phase 4) with zero I/O dependencies.
+The eval harness imports it directly, so it must stay free of I/O dependencies.
 
-Rounding convention: Option A (RESEARCH.md Mandatory Deliverable 2) — carry full cents
-via _money() (ROUND_HALF_UP) at each intermediate step, never round to whole dollars
-mid-calculation.  The final per-period withholding is in cents.  This is IRS-compliant
-(cents are legal; whole-dollar rounding is optional per Pub 15-T page 9) and avoids
-introducing a rounding boundary that cross-check calculators may or may not match.
+Rounding convention: carry full cents via _money() (ROUND_HALF_UP) at each intermediate
+step; never round to whole dollars mid-calculation.  The final per-period withholding is
+in cents.  This is IRS-compliant (cents are legal; whole-dollar rounding is optional per
+Pub 15-T page 9) and avoids introducing a rounding boundary that cross-check calculators
+may or may not match — the golden tests are pinned to this convention.
 
 Source: https://www.irs.gov/pub/irs-pdf/p15t.pdf (2026 edition, Worksheet 1A, page 10)
 Transcription date: 2026-06-22
@@ -25,20 +25,21 @@ from app.pipeline.tax_tables_2026 import (
     BracketRow,
 )
 
-# Local copy of _money() — NOT imported from calculate.py.
-# Keeping this module independently importable by the eval without pulling in
-# calculate.py's uuid/datetime imports. (PATTERNS.md §"_money() helper pattern")
+# Local copy of _money() — deliberately NOT imported from calculate.py, so this module
+# stays independently importable by the eval without pulling in calculate.py's uuid /
+# datetime / model imports. Both copies MUST use the same rounding mode; if they ever
+# diverge, withholding and net pay would round differently and reconciliation would drift.
 _CENTS = Decimal("0.01")
 
 
 def _money(value: Decimal) -> Decimal:
     """Round a Decimal to cents using ROUND_HALF_UP (round half AWAY from zero).
 
-    WR-06: this is standard payroll rounding, NOT banker's rounding. Banker's rounding
-    is ROUND_HALF_EVEN (round half to the nearest even cent); ROUND_HALF_UP always
-    rounds a halfway value up in magnitude. The behavior is deliberately UNCHANGED
-    here — ROUND_HALF_UP is the defensible payroll convention and every calc/FICA test
-    is pinned to it.
+    This is standard payroll rounding, NOT banker's rounding. Banker's rounding is
+    ROUND_HALF_EVEN (round half to the nearest even cent); ROUND_HALF_UP always rounds a
+    halfway value up in magnitude. Every calc/FICA golden test is pinned to ROUND_HALF_UP,
+    and it must match calculate._money() exactly — switching modes here would shift
+    withheld cents and break the reconciliation identity.
     """
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
 
@@ -53,23 +54,22 @@ def _find_bracket(annual_wage: Decimal, brackets: list[BracketRow]) -> BracketRo
     for row in reversed(brackets):
         if annual_wage >= row.lower:
             return row
-    # IN-03 (review round 2): unreachable for all shipped tables — every first row has
-    # lower == 0 and line_1i floors at 0, so annual_wage >= 0 == brackets[0].lower always
-    # matches on the reverse scan. The first-bracket-lower-is-zero tests pin that invariant.
-    # If a future table set a non-zero first lower, this would return the wrong (zero-rate)
-    # row for sub-threshold wages — keep the first row at lower == 0.
+    # Unreachable for all shipped tables: every first row has lower == 0 and line_1i floors
+    # at 0, so annual_wage >= brackets[0].lower always matches on the reverse scan. The
+    # first-bracket-lower-is-zero tests pin that invariant. If a future table set a non-zero
+    # first lower, this fallback would silently return the zero-rate row for sub-threshold
+    # wages (withholding $0 from someone who owes tax) — keep the first row at lower == 0.
     return brackets[0]
 
 
 # ---------------------------------------------------------------------------
-# Defense-in-depth filing-status guard (review Fix 5 / STRIDE T-03-03)
+# Defense-in-depth filing-status guard.
 #
-# Employee.filing_status is already constrained by Literal["single",
-# "married_jointly", "married_separately"] — "head_of_household" is NOT a valid
-# Literal value in the current model. However, this guard provides defense-in-depth
-# for any future extension, eval fixture, or code that constructs an Employee with
-# a different Literal definition. It converts a potential silent mis-withholding
-# (wrong table lookup) into an immediate loud ValueError.
+# Employee.filing_status is already constrained by Literal["single", "married_jointly",
+# "married_separately"] — "head_of_household" is NOT a valid Literal value today. This
+# guard exists for any future extension, eval fixture, or caller that constructs an
+# Employee against a widened Literal: it turns a silent mis-withholding (a wrong or
+# missing table lookup) into an immediate, loud ValueError.
 # ---------------------------------------------------------------------------
 _SUPPORTED_FILING_STATUSES = frozenset({"single", "married_jointly", "married_separately"})
 
@@ -94,14 +94,15 @@ def federal_withholding_2026(
         guard — see _SUPPORTED_FILING_STATUSES above).
 
     Rounding:
-        Option A: _money() (ROUND_HALF_UP to cents) applied at each intermediate step.
-        No whole-dollar rounding mid-calculation. Per RESEARCH.md Mandatory Deliverable 2.
+        _money() (ROUND_HALF_UP to cents) applied at each intermediate step.
+        No whole-dollar rounding mid-calculation.
 
     Source: IRS Pub 15-T (2026) Worksheet 1A, page 10.
             https://www.irs.gov/pub/irs-pdf/p15t.pdf, retrieved 2026-06-22.
     """
     # ------------------------------------------------------------------
-    # Guard: reject unsupported filing statuses immediately (review Fix 5)
+    # Guard: reject unsupported filing statuses immediately rather than
+    # falling through to a wrong table.
     # ------------------------------------------------------------------
     if employee.filing_status not in _SUPPORTED_FILING_STATUSES:
         raise ValueError(
@@ -151,9 +152,10 @@ def federal_withholding_2026(
 
     # ------------------------------------------------------------------
     # Step 4 — Figure the final amount to withhold
-    # step_4c_extra_per_period is NOT modeled: Employee has no such field, and
-    # no seeded employee carries extra per-period withholding (RESEARCH.md A5).
-    # When needed, add employee.step_4c_extra_per_period and uncomment the line below.
+    # W-4 Step 4c (extra per-period withholding) is NOT modeled: Employee has no such
+    # field and no seeded employee requests extra withholding. To support it, add
+    # employee.step_4c_extra_per_period and use the line below — omitting it once the
+    # field exists would silently under-withhold anyone who asked for extra.
     # line_4b = _money(line_3c + employee.step_4c_extra_per_period)
     # ------------------------------------------------------------------
     line_4b = line_3c  # step_4c = $0 for all seeded employees

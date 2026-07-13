@@ -1,17 +1,23 @@
-"""2026 Federal Tax Constants for Payroll Engine.
+"""2026 federal tax constants — the payroll engine's only source of tax numbers.
+
+Every bracket row, Step-1 amount, and FICA rate here is transcribed VERBATIM from the
+authoritative source PDFs. Nothing in this module is derived, remembered, or rounded by
+hand: a mistranscribed row produces internally-consistent but wrong withholding that the
+reconciliation backstop cannot detect.
 
 Sources:
   IRS Publication 15-T (2026): https://www.irs.gov/pub/irs-pdf/p15t.pdf
   SSA Contribution and Benefit Base: https://www.ssa.gov/oact/cola/cbb.html
 Retrieved: 2026-06-22
 
-OBBBA note: The 2026 edition of Pub 15-T incorporates P.L. 119-21 (OBBBA) changes
-(permanent extension of individual tax rates, increased standard deduction, no personal
-exemptions). ONLY the standard percentage method is implemented here; the OBBBA
-qualified-tips and qualified-overtime deductions are disclaimed and NOT modeled.
+The 2026 edition of Pub 15-T incorporates P.L. 119-21 (OBBBA) changes (permanent
+extension of individual tax rates, increased standard deduction, no personal exemptions).
+ONLY the standard percentage method is implemented here; the OBBBA qualified-tips and
+qualified-overtime deductions are disclaimed and NOT modeled.
 
-Year-keying: this module IS the 2026 data. A future 2027 update would live in
-tax_tables_2027.py — adding 2027 constants never requires editing this file.
+Year-keying is the update contract: this module IS the 2026 data. A 2027 update lands in
+tax_tables_2027.py — new-year constants must never be edited into this file, so a prior
+year's paystub can always be recomputed exactly.
 """
 from __future__ import annotations
 
@@ -71,10 +77,11 @@ _SINGLE_STANDARD: list[BracketRow] = [
 
 _HOH_STANDARD: list[BracketRow] = [
     # Head of Household — out of scope (no seeded HoH employees). Listed for completeness.
-    # IN-01 (review round 2): UNTESTED — these rows are never reached (filing_status Literal
-    # excludes HoH; federal_withholding_2026 raises ValueError before any HoH lookup) and are
-    # NOT cross-checked against IRS golden/wage-bracket values. Independently verify against
-    # the live PDF before enabling any HoH withholding path.
+    # UNTESTED: these rows are never reached (the filing_status Literal excludes HoH and
+    # federal_withholding_2026 raises ValueError before any HoH lookup), so they are NOT
+    # cross-checked against IRS golden values. Independently verify every row against the
+    # live PDF before enabling any HoH withholding path — shipping them unverified would
+    # withhold from untested tables.
     BracketRow(Decimal("0"),       Decimal("15550"),  Decimal("0.00"),      Decimal("0.00")),
     BracketRow(Decimal("15550"),   Decimal("33250"),  Decimal("0.00"),      Decimal("0.10")),
     BracketRow(Decimal("33250"),   Decimal("83000"),  Decimal("1770.00"),   Decimal("0.12")),
@@ -90,7 +97,9 @@ STANDARD_BRACKETS: dict[str, list[BracketRow]] = {
     "single": _SINGLE_STANDARD,
     # Per IRS Pub 15-T, "Single or Married Filing Separately" share ONE table.
     # married_separately aliases the single list — same object, not a copy.
-    # (Pitfall #4: using the MFJ table for MFS would halve withholding.)
+    # Do NOT point married_separately at the MFJ table: the MFJ brackets are roughly twice
+    # as wide, so an MFS employee would be withheld at roughly HALF the correct amount and
+    # owe the difference at filing.
     "married_separately": _SINGLE_STANDARD,
     # out of scope — no seeded HoH employees; the engine rejects "head_of_household"
     "head_of_household": _HOH_STANDARD,
@@ -101,8 +110,9 @@ STANDARD_BRACKETS: dict[str, list[BracketRow]] = {
 # Source: IRS Pub 15-T (2026) page 12.
 # IMPORTANT: These rows are transcribed VERBATIM from the printed Step-2-checkbox
 # schedule. They are NOT arithmetically derived by halving the standard schedule.
-# The IRS rounds each row independently when printing, so halving standard rows
-# produces incorrect values for some rows (review Fix 7a).
+# The IRS rounds each row independently when printing, so "simplifying" this table into
+# `standard_row / 2` produces incorrect values on several rows and would mis-withhold
+# every two-earner employee who checked the Step 2 box.
 # ---------------------------------------------------------------------------
 
 _MFJ_STEP2: list[BracketRow] = [
@@ -131,8 +141,8 @@ _SINGLE_STEP2: list[BracketRow] = [
 
 _HOH_STEP2: list[BracketRow] = [
     # Head of Household Step-2 — out of scope. Listed for completeness.
-    # IN-01 (review round 2): UNTESTED — unreachable (HoH rejected before lookup) and not
-    # cross-checked against IRS golden values. Verify against the live PDF before enabling.
+    # UNTESTED: unreachable (HoH is rejected before lookup) and not cross-checked against
+    # IRS golden values. Verify against the live PDF before enabling.
     BracketRow(Decimal("0"),       Decimal("12075"),  Decimal("0.00"),      Decimal("0.00")),
     BracketRow(Decimal("12075"),   Decimal("20925"),  Decimal("0.00"),      Decimal("0.10")),
     BracketRow(Decimal("20925"),   Decimal("45800"),  Decimal("885.00"),    Decimal("0.12")),
@@ -162,10 +172,10 @@ STEP2_BRACKETS: dict[str, list[BracketRow]] = {
 # IMPORTANT — These are the Worksheet 1A WITHHOLDING-PROXY amounts as written
 # on Pub 15-T page 10, line 1g. They are deliberately NOT the 2026 standard-
 # deduction figures ($32,200 MFJ / $16,100 Single). The line-1g amounts are the
-# pre-TCJA proxy baked into the withholding tables. Replacing these with the 2026
-# standard deductions would over-deduct the annualized wage and systematically
-# under-withhold every employee. (See RESEARCH.md Deliverable 5, Finding 7 /
-# Pitfall 2.)
+# pre-TCJA proxy baked into the withholding tables. Substituting the real 2026 standard
+# deductions here would over-deduct the annualized wage and systematically UNDER-WITHHOLD
+# every employee — a silent tax bill for every person on the payroll. They look like
+# "stale" numbers and are not; leave them alone.
 # ---------------------------------------------------------------------------
 
 STEP1_STANDARD: dict[str, Decimal] = {
@@ -180,7 +190,8 @@ STEP1_STANDARD: dict[str, Decimal] = {
 # Source: SSA Contribution and Benefit Base — https://www.ssa.gov/oact/cola/cbb.html
 #         IRS Topic 751 — https://www.irs.gov/taxtopics/tc751
 # (cbb.html returns 403 to non-browser fetch — cited here for audit, NOT scraped at runtime)
-# Migrated from calculate.py per Decision D-02 (one year-keyed module holds all constants).
+# All year-keyed constants live in this one module: a stale wage base or rate copied into a
+# second location is how a silently-wrong paystub gets shipped.
 # ---------------------------------------------------------------------------
 
 SS_RATE: Decimal = Decimal("0.062")          # Social Security employee rate: 6.2%

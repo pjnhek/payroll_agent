@@ -1,23 +1,22 @@
-"""Stage 3 — deterministic field validation (LLM-06; review FIX 1).
+"""Deterministic field validation — the issues that make a run clarify instead of pay.
 
-A PURE function: typed values in, list[ValidationIssue] out, NO model, NO DB, NO
-connection. It mirrors the issue-collection style of roster.py's
-@model_validator (_require_compensation_field): inspect fields, accumulate
+A PURE function: typed values in, list[ValidationIssue] out. NO model, NO DB, NO
+connection. It mirrors roster.py's @model_validator style: inspect fields, accumulate
 problems, return them rather than raising.
 
-It emits issue_type="missing" for an absent REQUIRED hours field and cross-field
-sanity issues. "Required" is pay-type aware: an HOURLY employee with no hours at
-all is missing data the calc needs; a SALARIED employee computes from
-annual_salary and legitimately reports no hours — so the roster is passed in (a
-pure value, no DB) to decide what is required. The matched employee is found via
-the reconciliation results (Layer 1 in this plan).
+It emits issue_type="missing" for an absent REQUIRED hours field. "Required" is PAY-TYPE
+AWARE, and that distinction is money-relevant in both directions: an HOURLY employee with
+no hours at all is missing the data the calc needs (paying them would compute $0 gross),
+while a SALARIED employee legitimately reports no hours (their gross comes from
+annual_salary, so flagging them would stall every salaried run). The roster is therefore
+passed in as a pure value (no DB) so the rule can ask what each employee actually is; the
+matched employee is found via the reconciliation results.
 
-FIX 1 — what validate does NOT do: it does NOT (and structurally CANNOT) emit
-`non_numeric` or `out_of_bounds` for the ge=0 case. A non-numeric/negative hours
-value fails at the EXTRACTION parse boundary (ExtractedEmployee is Decimal|None +
-ge=0 + extra="forbid"), routed through the client's one reflective retry → ERROR.
-By the time a typed Extracted exists, every present hours value is already a
-valid non-negative Decimal — so the typed path can never reach `non_numeric`.
+What validate does NOT do: it does not (and structurally cannot) emit `non_numeric` or
+`out_of_bounds`. A non-numeric or negative hours value fails earlier, at the EXTRACTION
+parse boundary (ExtractedEmployee is Decimal|None + ge=0 + extra="forbid"), and is routed
+through the client's one reflective retry. By the time a typed Extracted exists, every
+present hours value is already a valid non-negative Decimal.
 """
 from __future__ import annotations
 
@@ -37,11 +36,13 @@ HOURS_FIELDS = (
 
 
 def is_paid(v: Decimal | None) -> bool:
-    """True iff value is present AND strictly positive (D-09 shared predicate).
+    """True iff value is present AND strictly positive.
 
-    Decimal('0') is treated the same as None — both count as absent for the
-    zero-hours gate. Phase 7.5 detect_field_regression will use this same
-    predicate as its second call site.
+    Decimal('0') is treated the same as None — both count as "not paid". This is the ONE
+    shared predicate for "were these hours actually paid?", used by both the missing-hours
+    rule and detect_field_regression. Keeping it shared is what stops the two rules from
+    disagreeing about whether an explicit zero counts, which would let a dropped hours
+    line slip through one check while the other flags it.
     """
     return v is not None and v > 0
 
@@ -85,24 +86,26 @@ def detect_field_regression(
     prior_matches: list[NameMatchResult] | None,
     current_matches: list[NameMatchResult],
 ) -> list[RawFieldDrop]:
-    """Detect field regressions between the original and resumed extraction (D-7.5-10).
+    """Detect hours that were present in the original email but vanished from the reply.
 
-    PUBLIC function — designed to be imported and called directly by orchestrator.py
-    in Plan 03. It is NOT called internally by validate().
+    A client answering a clarification often re-types the whole roster and silently drops
+    a line they already sent. Backfill would then quietly restore the old value with no
+    trace — so detection MUST run on the RAW resumed extraction, BEFORE backfill. This is
+    that detection step; the orchestrator calls it and hands the resulting drops to
+    validate() via the raw_field_drops= kwarg. validate() is the consumer, not the
+    detector — do not move detection into it, or it will run post-backfill and see nothing.
 
-    D-7.5-10 THREE-PHASE ORDERING:
-      This function is step 1 (DETECT). The orchestrator calls it on the RAW resumed
-      extraction BEFORE backfill. validate() then receives the pre-computed drops via
-      raw_field_drops= kwarg (step 3).
+    PUBLIC function: the orchestrator imports and calls it directly. It is NOT called
+    internally by validate().
 
-    R3-3 FIX (employee-id-keyed diff): reduces BOTH Extracted to
-    {employee_id: ExtractedEmployee} maps using the match results BEFORE diffing.
-    'M. Chen' in original and 'Maria Chen' in resumed, both resolving to the same
-    employee_id, land in the same diff slot and produce a RawFieldDrop.
+    The diff is keyed by EMPLOYEE ID, not by submitted name: both Extracted objects are
+    reduced to {employee_id: ExtractedEmployee} using the match results before comparing.
+    Otherwise 'M. Chen' in the original and 'Maria Chen' in the reply — the same person —
+    would look like two different people and the drop would go unnoticed.
 
-    Returns [] immediately when prior_matches is None (honest documented no-op).
-    Production (Plan 03) always threads prior_matches from the pre-resume
-    reconciliation; this branch never fires on the real resume path.
+    Returns [] immediately when prior_matches is None (an honest, documented no-op).
+    Production always threads prior_matches from the pre-resume reconciliation, so this
+    branch never fires on the real resume path.
     """
     # Honest no-op: production always threads prior_matches from pre-resume reconciliation.
     if prior_matches is None:
@@ -118,7 +121,7 @@ def detect_field_regression(
     for emp in original.employees:
         emp_id = name_to_id_prior.get(emp.submitted_name)
         if emp_id is not None:
-            id_to_orig[emp_id] = emp  # last-wins (D-12)
+            id_to_orig[emp_id] = emp  # last entry wins if one employee appears twice
 
     # Build id_to_resumed: {employee_id: ExtractedEmployee} from resumed + current_matches.
     name_to_id_current: dict[str, UUID] = {
@@ -130,9 +133,10 @@ def detect_field_regression(
     for emp in resumed.employees:
         emp_id = name_to_id_current.get(emp.submitted_name)
         if emp_id is not None:
-            id_to_resumed[emp_id] = emp  # last-wins (D-12)
+            id_to_resumed[emp_id] = emp  # last entry wins if one employee appears twice
 
-    # Diff: iterate employees present in BOTH maps (sorted for determinism, D-27).
+    # Diff the employees present in BOTH maps. Sorted so the issue order is deterministic
+    # (the reasons are client-facing copy; unstable ordering would churn the email text).
     drops: list[RawFieldDrop] = []
     common_ids = sorted(set(id_to_orig) & set(id_to_resumed), key=str)
     for emp_id in common_ids:
@@ -140,17 +144,20 @@ def detect_field_regression(
         resumed_emp = id_to_resumed[emp_id]
         current_name = resumed_emp.submitted_name  # name the client used in the reply
 
-        for field in HOURS_FIELDS:  # reuse module-level constant (DRY, D-09)
+        for field in HOURS_FIELDS:
             original_val = getattr(orig_emp, field)
             resumed_val = getattr(resumed_emp, field)
-            # is_paid: present AND strictly positive (D-09 shared predicate, D-25)
+            # A regression is "was paid, now isn't" — is_paid() treats an explicit 0 the
+            # same as absent, so zeroing out a line is caught, not just deleting it.
             if is_paid(original_val) and not is_paid(resumed_val):
                 drops.append(
                     RawFieldDrop(
                         submitted_name=current_name,
                         field=field,
                         original_value=original_val,
-                        resumed_value=resumed_val,  # None=absent, Decimal('0')=explicit zero (D-26)
+                        # None means the line is gone; Decimal('0') means explicitly zeroed.
+                        # Both are regressions; the distinction is preserved for the copy.
+                        resumed_value=resumed_val,
                     )
                 )
 
@@ -167,32 +174,30 @@ def validate(
     resolved_drops: set[tuple[str, str]] | None = None,
     raw_field_drops: list[RawFieldDrop] | None = None,
 ) -> list[ValidationIssue]:
-    """Emit field-validation issues for one run (LLM-06).
+    """Emit field-validation issues for one run.
 
     Rules (deterministic, no model):
-    - field_regression: pre-computed RawFieldDrop records passed via raw_field_drops=
-      kwarg (D-7.5-10). Detection runs in the orchestrator via detect_field_regression()
-      BEFORE backfill; validate() receives pre-computed drops and promotes them to
-      ValidationIssues. NOT self-detecting.
-    - missing: an HOURLY employee with no hours of any kind (all five None). A
-      salaried employee with no hours is fine (calc uses annual_salary). An
-      unresolved name's pay_type is unknown, so no missing-hours issue is raised
-      for it here — the gate already blocks it on the unknown match.
+    - field_regression: pre-computed RawFieldDrop records arrive via the raw_field_drops=
+      kwarg. Detection runs in the orchestrator (detect_field_regression) on the RAW
+      resumed extraction BEFORE backfill; validate() only promotes those drops to
+      ValidationIssues. It is deliberately NOT self-detecting — by the time validate()
+      runs, backfill has already restored the dropped values and there is nothing to see.
+    - missing: an HOURLY employee with no hours of any kind. A salaried employee with no
+      hours is fine (the calc uses annual_salary). An unresolved name has an unknown
+      pay_type, so no missing-hours issue is raised for it here — the decision gate
+      already blocks the run on the unresolved match.
 
-    # prior= is kept for signature compatibility (Plan 01 threaded it). Detection runs
-    # in the orchestrator via detect_field_regression(); pre-computed drops arrive via
-    # raw_field_drops= (D-7.5-10).
+    prior= is kept for signature compatibility; detection lives in the orchestrator.
     """
     issues: list[ValidationIssue] = []
 
-    # D-7.5-10: promote pre-computed field regression drops to ValidationIssues.
-    # Detection runs in the orchestrator (detect_field_regression on RAW extracted,
-    # BEFORE backfill). This function is a consumer, NOT the detector.
+    # Promote pre-computed field-regression drops to ValidationIssues. This function is
+    # the consumer, NOT the detector (see the docstring: detection must precede backfill).
     if raw_field_drops is not None and len(raw_field_drops) > 0:
-        # TYPE CONTRACT: set[tuple[str, str]] keyed by (employee_id_str, field).
+        # Keyed by (employee_id_str, field) — see the suppression check below.
         _resolved_drops: set[tuple[str, str]] = resolved_drops or set()
 
-        # Build name→id map for N8 suppression check.
+        # name -> employee id, for the already-confirmed-drop suppression check.
         name_to_id_current: dict[str, UUID] = {
             m.submitted_name: m.matched_employee_id
             for m in matches
@@ -204,12 +209,15 @@ def validate(
             if current_emp_id is None:
                 continue  # submitted_name not resolved in current run — skip
 
-            # N8 suppression check (KEY TYPE FIX): str(current_emp_id) to match
-            # the (employee_id_str, field) set built by Plan 03 Step E2.
-            # DO NOT use (current_emp_id, raw_drop.field) — UUID vs str never matches.
-            # DO NOT use (raw_drop.submitted_name, field) — not stable across restated names.
+            # Suppress drops the client has already confirmed are intentional, so the
+            # system stops re-asking the same question every round.
+            # The key MUST be (str(employee_id), field):
+            #   - a raw UUID key never compares equal to the stored str key, so every drop
+            #     would be re-flagged forever and the run could never leave clarification;
+            #   - a submitted_name key is not stable across a restated/corrected name, so
+            #     a confirmed drop would resurface the moment the client re-types the name.
             if (str(current_emp_id), raw_drop.field) in _resolved_drops:
-                continue  # confirmed_dropped per D-15 — suppress re-flag
+                continue  # already confirmed dropped by the client — do not re-flag
 
             resumed_display = (
                 "absent" if raw_drop.resumed_value is None else str(raw_drop.resumed_value)
@@ -244,19 +252,27 @@ def validate(
                 )
             )
 
-    # D-05: Over-40-no-OT guard.
-    # weekly (ppy=52): regular > 40 with no/zero OT → ambiguous (40+OT or straight time?)
-    # biweekly (ppy=26): regular > 80 with no/zero OT → partial detection; honestly labeled
-    # ppy in (24, 12): period boundaries cross workweeks — no flag (D-05 documented limitation)
-    # Explicit hours_overtime=0 is treated same as absent per D-05 recommended decision:
-    # a client who submits 0 OT for >40 regular hours is in the same ambiguous situation.
+    # Over-40-no-OT guard. calculate() pays overtime ONLY when the client reports it
+    # explicitly, so a client who lumps overtime into hours_regular would be silently
+    # UNDERPAID (their OT hours paid at straight time). This rule refuses to guess which
+    # reading is right and asks the client instead.
+    #   weekly (ppy=52):   regular > 40 with no/zero OT → ambiguous (40 + OT, or straight time?)
+    #   biweekly (ppy=26): regular > 80 with no/zero OT → >80 across two weeks guarantees OT in
+    #                      at least one of them. Partial detection only — 45 + 35 across the two
+    #                      weeks is 80 total yet still has 5 OT hours, and we cannot see the
+    #                      per-week split. The message says so honestly rather than implying
+    #                      the check is complete.
+    #   ppy 24 / 12:       semi-monthly and monthly period boundaries cross workweeks, so no
+    #                      hours total implies overtime. No flag — a documented blind spot.
+    # An explicit hours_overtime=0 is treated the same as absent: a client who reports 0 OT
+    # alongside >40 regular hours is in exactly the same ambiguous situation as one who
+    # omitted the field.
     for emp in extracted.employees:
         ppy = _employee_pay_periods_per_year(emp.submitted_name, matches, roster)
         if ppy is None:
-            continue  # unresolved employee: gate already blocks it, no flag here
+            continue  # unresolved employee: the decision gate already blocks it, no flag here
         ot = emp.hours_overtime
-        # D-05/D-09: absent or zero == "no paid OT" (shared predicate)
-        ot_missing = not is_paid(ot)
+        ot_missing = not is_paid(ot)  # absent or zero both mean "no paid OT"
         if ppy == 52 and emp.hours_regular is not None and emp.hours_regular > 40 and ot_missing:
             issues.append(
                 ValidationIssue(
@@ -283,6 +299,6 @@ def validate(
                     ),
                 )
             )
-        # ppy in (24, 12): period boundaries cross workweeks — no flag (D-05 documented limitation)
+        # ppy 24 / 12: period boundaries cross workweeks — no flag (documented blind spot above)
 
     return issues
