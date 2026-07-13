@@ -18,34 +18,37 @@ from app.models.status import RunStatus
 logger = logging.getLogger("payroll_agent.repo")
 
 # Explicit column list for reading a run (only what callers need; no SELECT *).
-# CR-02 fix: updated_at is included so load_run() returns it as a tz-aware
-# datetime (the column is TIMESTAMPTZ — psycopg returns tz-aware datetimes).
-# Without it, the retrigger handler's stale-run check always evaluated to False
-# (run.get("updated_at") was always None) and the stale-state recovery branch
-# for RECEIVED/EXTRACTING/COMPUTED/SENT was permanently disabled.
-# OPS2-01: error_detail is included alongside error_reason for the same reason
-# CR-02 added updated_at — a column missing from this constant is invisible to
-# every load_run caller (including the run_detail dashboard route) regardless
-# of what record_run_error already wrote into the actual DB row.
-# CR-01 (phase-8 review): alias_candidates is included because two orchestrator
-# paths read it from load_run() — resume_pipeline's STEP A pre-candidate binding
-# and _write_aliases_if_safe at the approval gate. Without it, both paths saw {}
-# on a real dict_row and the alias-learning WRITE side was a silent no-op on a
-# live DB (masked by InMemoryRepo.load_run returning the full in-memory dict).
+#
+# INVARIANT: a column missing from this constant is INVISIBLE to every load_run
+# caller — no matter what is actually written into the DB row. The read silently
+# yields None (or {} on a dict_row), and the feature that depends on it becomes a
+# no-op that no test using an in-memory repo can catch. Three columns are here
+# because they were once missing and the omission disabled live behavior:
+#
+# - updated_at (TIMESTAMPTZ, so psycopg hands back a tz-aware datetime): the
+#   retrigger handler's stale-run check read None and always evaluated False,
+#   disabling stale-state recovery for RECEIVED/EXTRACTING/COMPUTED/SENT.
+# - error_detail: written by record_run_error, but unreadable by the run_detail
+#   dashboard route that exists to display it.
+# - alias_candidates: read by resume_pipeline's pre-candidate binding and by
+#   _write_aliases_if_safe at the approval gate, so its absence made the entire
+#   alias-learning WRITE side a silent no-op on a live DB.
+#
+# Add the column here whenever you add a load_run consumer for it.
 RUN_COLS = (
     "id, business_id, source_email_id, status, extracted_data, decision,"
     " reconciliation, error_reason, error_detail, alias_candidates,"
     " pay_period_start, pay_period_end, updated_at"
 )
 
-# Terminal run statuses (WR-04): once a run reaches one of these, an error must NOT
-# overwrite it. SENT/RECONCILED/REJECTED are finalized human/operator outcomes
-# (clobbering them destroys the approval audit trail); ERROR is already terminal.
-# NOTE: APPROVED is intentionally NOT in this set (D-13b critical finding): an
-# approved run that fails delivery must be recoverable — record_run_error must be
-# able to advance it to ERROR so the operator can retrigger. A human re-approves
-# after the delivery failure is fixed; the audit trail is preserved via ERROR +
-# error_reason. Adding APPROVED here would silently swallow delivery failures.
+# Terminal run statuses: once a run reaches one of these, an error must NOT
+# overwrite it. SENT/RECONCILED/REJECTED are finalized human/operator outcomes —
+# clobbering them destroys the approval audit trail; ERROR is already terminal.
+# APPROVED is intentionally NOT in this set: an approved run that fails delivery
+# must stay recoverable, so record_run_error must be able to advance it to ERROR
+# and let the operator retrigger. The audit trail survives via ERROR +
+# error_reason, and a human re-approves once the delivery failure is fixed. Adding
+# APPROVED here would silently swallow every delivery failure.
 _TERMINAL_STATUSES = frozenset(
     {
         RunStatus.SENT.value,
@@ -72,7 +75,8 @@ def insert_inbound_email(
 
     `body_text` is the ALREADY-CLEANED body (the webhook applies clean_body()
     BEFORE calling this); it is persisted verbatim so the inbound row is the
-    cleaned-body source of truth (FIX C). Returns (email_id, inserted) where
+    single cleaned-body source of truth and nothing downstream re-cleans it.
+    Returns (email_id, inserted) where
     `inserted` is False on a duplicate (ON CONFLICT (message_id) DO NOTHING),
     so the webhook can decide whether to create a second run.
     """
@@ -107,30 +111,31 @@ def link_email_to_run(
     run_id: uuid.UUID,
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Back-fill run_id on an inbound email row after ingest classification (WR-03).
+    """Back-fill run_id on an inbound email row after ingest classification.
 
-    The ingest transaction inserts every inbound row with run_id=NULL (for a
-    first inbound the run does not exist yet). When classification then resolves
-    the row to an EXISTING run (reply_candidate / late_reply), this links the row
-    so real client replies appear in load_thread_messages' run-detail thread view
-    and in join-based audits — matching the simulate-reply demo path, which passes
-    run_id at insert time (main.py demo affordance).
+    The ingest transaction inserts every inbound row with run_id=NULL (on a first
+    inbound the run does not exist yet). When classification then resolves the row
+    to an EXISTING run (reply_candidate / late_reply), this links it, so real
+    client replies appear in load_thread_messages' run-detail thread view and in
+    join-based audits — matching the simulate-reply demo path, which already passes
+    run_id at insert time.
 
-    Safety (phase-9 review WR-03, traced against every email_messages consumer):
-    - uq_email_run_purpose UNIQUE (run_id, purpose): inbound rows keep
-      purpose=NULL, and Postgres never treats (run_id, NULL) rows as conflicting.
-    - Every routing/idempotency query keyed on email_messages.run_id filters
+    Why back-filling run_id on an INBOUND row is safe (traced against every
+    email_messages consumer):
+    - The uq_email_run_purpose UNIQUE (run_id, purpose) constraint cannot fire:
+      inbound rows keep purpose=NULL, and Postgres never treats (run_id, NULL)
+      rows as conflicting.
+    - Every routing/idempotency query keyed on email_messages.run_id also filters
       direction='outbound' (find_awaiting_reply_for_header, find_any_run_for_header,
       get_outbound_message_id, get_outbound_references_chain, load_outbound_emails),
       so linking inbound rows cannot affect reply routing or send idempotency.
     - find_run_by_message_id joins via payroll_runs.source_email_id, not run_id.
 
-    GAP-2/GAP-3 (11-06): also stamps epoch = the target run's CURRENT
-    reply_epoch (a correlated subquery, no extra round trip). This is the
-    only stamping point that can never race a retrigger — the row either
-    links before or after the epoch bump, either way it is correctly scoped
-    to whichever epoch was current at link time. Never re-read or mutated
-    afterward (a row's epoch is a permanent, point-in-time fact).
+    Also stamps epoch = the target run's CURRENT reply_epoch (a correlated subquery,
+    no extra round trip). This is the one stamping point that cannot race a
+    retrigger: the row links either before or after the epoch bump, and either way
+    it is correctly scoped to whichever epoch was current at link time. A row's
+    epoch is a permanent point-in-time fact — never re-read or mutated afterward.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -146,13 +151,12 @@ def find_business_by_sender(
 ) -> uuid.UUID | None:
     """Return the business_id whose contact_email matches from_addr, else None.
 
-    An unknown sender returns None so the webhook stops without guessing
-    (INGEST-03 access-control seam; T-02-12).
+    This is the access-control seam: an unknown sender returns None so the webhook
+    stops rather than guessing which business an unrecognized email belongs to.
 
-    Additive fallback: if no contact_email match, check demo_sender_bindings for
-    operator-email → business mapping (HIGH-2 fix; never mutates businesses table).
-    This allows Path-2 real-email inbound to route via the operator's Gmail binding
-    without changing any seed contact_email value.
+    Additive fallback: with no contact_email match, check demo_sender_bindings for
+    an operator-email → business mapping. This lets real-email inbound route via
+    the operator's own mailbox binding without mutating any seeded contact_email.
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -174,14 +178,13 @@ def find_run_by_message_id(
 ) -> uuid.UUID | None:
     """Resolve the existing run for an RFC message_id (webhook dedup-loser lookup).
 
-    Keyed on `message_id: str`, deliberately NOT `email_id: uuid.UUID` — checker
-    BLOCKER 1 fix. `insert_inbound_email` returns `(None, False)` on `ON CONFLICT
-    (message_id) DO NOTHING`, so the webhook's dedup-loser branch never has an
-    email_id to pass; `message_id` (the RFC header, already parsed by
-    gateway.parse_inbound before the dedup insert runs) is the only key the loser
-    possesses. Joins email_messages (uq_message_id UNIQUE, schema.sql:218) to
-    payroll_runs via the deferred FK payroll_runs.source_email_id ->
-    email_messages.id (schema.sql:312-326).
+    Keyed on `message_id: str`, deliberately NOT `email_id: uuid.UUID`.
+    `insert_inbound_email` returns `(None, False)` on `ON CONFLICT (message_id) DO
+    NOTHING`, so the webhook's dedup-loser branch never HAS an email_id to pass;
+    the RFC `message_id` (already parsed by gateway.parse_inbound before the dedup
+    insert runs) is the only key the loser possesses. Joins email_messages (unique
+    on message_id) to payroll_runs via the deferred FK
+    payroll_runs.source_email_id -> email_messages.id.
 
     Read-only single-lookup (mirrors find_business_by_sender's shape) — no
     c.transaction(), since nothing is written. Returns None if no run's source
@@ -205,9 +208,9 @@ def load_business_name(
 ) -> str | None:
     """Return the display name for a business, or None if not found.
 
-    Used by _deliver (CR-03 fix) to enrich the run dict with business_name
-    before composing the confirmation email. Kept as a thin targeted helper
-    so load_run stays lean (no JOIN for every caller).
+    Used by _deliver to enrich the run dict with business_name before composing
+    the confirmation email. Kept as a thin targeted helper so load_run stays lean
+    (no JOIN imposed on every caller).
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -228,12 +231,10 @@ def create_run(
 ) -> uuid.UUID:
     """Open a payroll_runs row (status defaults to 'received'); return its id.
 
-    record_only=True: compose-created (in-app demo) runs that should skip the real
-    Resend provider call. The orchestrator reads this flag at each send_outbound call
-    site (_clarify and _deliver) via get_record_only_flag(). LOW-6: passing
-    record_only=True directly to create_run is cleaner than create-then-set_record_only.
-    Existing callers supply no record_only arg and get the False default — no behavior
-    change for live runs.
+    record_only=True marks compose-created (in-app demo) runs that must skip the
+    real email-provider call. The orchestrator reads this flag at each
+    send_outbound call site (_clarify and _deliver) via get_record_only_flag().
+    Live callers omit the argument and get the False default.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
@@ -276,8 +277,9 @@ def load_source_email(
     """Return the run's ORIGINAL CLEANED inbound body, unchanged.
 
     The body was cleaned at ingest (insert_inbound_email persists the cleaned
-    text), so it is read straight from email_messages.body_text with NO
-    re-cleaning on read (FIX C; the Plan 04 resume re-extraction context).
+    text), so it is read straight from email_messages.body_text with NO re-cleaning
+    on read — cleaning twice could diverge from what the pipeline actually
+    extracted from, and this body is the resume path's re-extraction context.
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -293,8 +295,9 @@ def load_source_email(
 
 
 # Explicit column list for rebuilding an InboundEmail from the source email row
-# (no SELECT * — InboundEmail is extra="forbid"). The stored body_text is already
-# cleaned (FIX C), so the rebuilt InboundEmail carries the cleaned body unchanged.
+# (no SELECT * — InboundEmail is extra="forbid", so a stray column raises). The
+# stored body_text is already cleaned, so the rebuilt InboundEmail carries the
+# cleaned body unchanged.
 # Every column is qualified with the `em.` alias: load_inbound_email JOINs
 # payroll_runs (which also has `id`, `created_at`), so a bare `id` is ambiguous
 # (psycopg AmbiguousColumn). `em.id` still returns a result column named `id`, so
@@ -311,7 +314,7 @@ def load_inbound_email(
     """Rebuild the run's source InboundEmail (cleaned body) for the extract stage.
 
     Returns an InboundEmail or None if the run has no linked source email. The
-    body_text is the cleaned body persisted at ingest — NOT re-cleaned (FIX C).
+    body_text is the cleaned body persisted at ingest — never re-cleaned on read.
     """
     from app.models.contracts import InboundEmail
 
@@ -326,20 +329,22 @@ def load_inbound_email(
     return InboundEmail(**row) if row else None
 
 
-# two writers: set_status (unguarded forward transitions inside an owned path)
-# and claim_status (atomic guarded claim at every contended gate). (D-12)
+# payroll_runs.status is the state machine, so writes to it are deliberately
+# rationed to two writers: set_status (unguarded forward transitions inside a path
+# that already owns the run) and claim_status (atomic guarded claim at every
+# CONTENDED gate). sweep_stranded_runs is a sanctioned third, using the same CAS
+# idiom as claim_status. Anything else writing this column is a bug.
 def set_status(
     run_id: uuid.UUID,
     status: RunStatus,
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Unguarded status writer — one of two writers on payroll_runs.status (D-12).
+    """Unguarded status writer — the uncontended half of the two-writer rule.
 
-    two writers: set_status (unguarded forward transitions inside an owned path)
-    and claim_status (atomic guarded claim at every contended gate).
-    Writes the enum .value (never a string literal). record_run_error is the one
-    documented caller that also writes a data column; every other uncontended
-    status transition in the system routes through here.
+    Use only where the caller already owns the run and no other actor can be
+    transitioning it; use claim_status at any gate two actors can reach at once.
+    Writes the enum .value, never a string literal. record_run_error is the one
+    caller that also writes a data column alongside the status.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -354,17 +359,18 @@ def claim_status(
     new: RunStatus,
     conn: psycopg.Connection | None = None,
 ) -> bool:
-    """Atomic compare-and-swap on payroll_runs.status (D-12, FOUND-04).
+    """Atomic compare-and-swap on payroll_runs.status — the guarded half of the
+    two-writer rule, and the primitive behind every contended gate (approve,
+    reject, resume, retrigger).
 
-    two writers: set_status (unguarded forward transitions inside an owned path)
-    and claim_status (atomic guarded claim at every contended gate).
+    Returns True if the claim succeeded (the run was in `expected` and is now
+    `new`). Returns False if it was NOT in `expected` — the caller logs a
+    late/duplicate and drops cleanly WITHOUT re-running the work.
 
-    Returns True if the claim succeeded (run was in `expected` and is now `new`).
-    Returns False if the run was NOT in `expected` — caller logs a late/duplicate
-    and drops cleanly (does not re-run the work).
-
-    The SQL uses WHERE id = %s AND status = %s RETURNING id so only one concurrent
-    caller gets a row back; the other gets None and drops cleanly (T-05-01).
+    `WHERE id = %s AND status = %s RETURNING id` in a single statement is what
+    makes this safe: exactly one of two concurrent callers gets a row back. A
+    read-then-write would leave a TOCTOU window in which both callers see
+    `expected` and both proceed — double-approving a payroll.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
@@ -375,12 +381,13 @@ def claim_status(
     return row is not None
 
 
-# Stranded-run scope (D-9-12): EXACTLY these three in-flight statuses are eligible
-# for the recovery sweep. A run parked in awaiting_reply/awaiting_approval/approved
-# is waiting on a HUMAN (client reply or operator approval) — that is normal, not
-# stranded — so those statuses must NEVER appear here. This list is pinned by an
-# explicit unit test (Task 2) asserting both the presence of these three values and
-# the absence of the three parked statuses.
+# Stranded-run scope: EXACTLY these three in-flight statuses are eligible for the
+# recovery sweep. A run parked in awaiting_reply/awaiting_approval/approved is
+# waiting on a HUMAN (client reply or operator approval) — that is normal, not
+# stranded — so those statuses must NEVER appear here; sweeping them would error
+# out payrolls that are simply waiting their turn. An explicit unit test pins the
+# list, asserting both the presence of these three and the absence of the three
+# parked statuses.
 _STRANDED_SCOPE_STATUSES: list[str] = ["received", "extracting", "computed"]
 
 
@@ -388,27 +395,26 @@ def sweep_stranded_runs(
     threshold_seconds: int,
     conn: psycopg.Connection | None = None,
 ) -> list[uuid.UUID]:
-    """Recover runs stranded mid-flight by a dead background task (D-9-10/11/12).
+    """Recover runs stranded mid-flight by a dead background task.
 
-    SANCTIONED THIRD status writer (alongside set_status/claim_status) — same
-    single-statement CAS-UPDATE-WHERE-RETURNING idiom as claim_status, so there
-    is no read-then-write TOCTOU window (T-09-01).
+    The SANCTIONED third status writer (alongside set_status/claim_status), using
+    the same single-statement CAS-UPDATE-WHERE-RETURNING idiom as claim_status, so
+    there is no read-then-write TOCTOU window.
 
-    Scope is hardcoded to EXACTLY {received, extracting, computed} — a run
-    sitting in awaiting_reply/awaiting_approval/approved is waiting on a human,
-    not stranded, and must never be swept (D-9-12, T-09-02). The scope list is
-    NOT caller-supplied; widening it requires editing this function's own body,
-    which the Task 2 scope-pin unit test immediately fails.
+    Scope is hardcoded to EXACTLY {received, extracting, computed}: a run sitting
+    in awaiting_reply/awaiting_approval/approved is waiting on a human, not
+    stranded, and must never be swept. The scope list is NOT caller-supplied —
+    widening it means editing this function's own body, which the scope-pin unit
+    test immediately fails.
 
-    error_detail is built via SQL CONCATENATION of a static prefix with the
-    run's OWN pre-update `status` column value (`%s || status`) — NOT a Python
-    literal string containing an unresolved "{status}" placeholder (Codex LOW,
-    closed). Postgres evaluates every SET expression against the row's OLD
-    values, so `%s || status` on the right-hand side correctly captures the
-    PRE-update status even though the same statement's SET clause also
-    overwrites `status` to 'error' — this is standard SQL UPDATE semantics
-    (the SET list is evaluated once per row against the values as they were
-    BEFORE this UPDATE statement runs), not a per-row iteration order effect.
+    error_detail is built by SQL CONCATENATION of a static prefix with the run's
+    OWN `status` column (`%s || status`), NOT by Python string formatting. Postgres
+    evaluates every SET expression against the row's OLD values, so `%s || status`
+    captures the PRE-update status even though the same statement's SET clause
+    overwrites status to 'error'. That is ordinary SQL UPDATE semantics (the SET
+    list is evaluated once per row against the pre-statement values), not a
+    row-order effect — which is why the recorded detail names the stage the run
+    actually died in.
 
     Returns the list of run ids that were swept (possibly empty).
     """
@@ -431,15 +437,16 @@ def sweep_stranded_runs(
 
 
 # ---------------------------------------------------------------------------
-# PII scrub helpers (OPS2-01, D-8-01/D-8-01b/D-8-02) — offset-safe, per-candidate
-# compiled regex, mark-aware-lookaround-anchored, longest-name-first, fail-open.
+# PII scrub helpers — offset-safe, per-candidate compiled regex, mark-aware
+# lookaround-anchored, longest-name-first, fail-open.
 #
-# Design (closes codex R2-1 offset-drift + R2-3 boundary-over-redaction + R3-1
-# stray-combining-mark, see 08-02-PLAN.md): each candidate name/alias gets ONE
-# compiled re.Pattern built directly from the ORIGINAL (non-normalized) string —
-# never from a normalized copy of the message. Every match span the regex engine
-# reports is therefore already a valid offset into the original message; there is
-# no normalize-then-slice-original translation step, so no offset can drift.
+# CORE RULE: the MESSAGE is never normalized; only the CANDIDATE pattern is. Each
+# candidate name/alias compiles to ONE re.Pattern matched directly against the
+# ORIGINAL message string. Every span the regex engine reports is therefore already
+# a valid offset into that original string. Normalizing the message first would
+# force a normalize-then-slice-the-original translation step, and any length change
+# from that normalization drifts the offsets — redacting the wrong characters and
+# leaving real names exposed.
 # ---------------------------------------------------------------------------
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -452,17 +459,15 @@ _REDACTED = "[REDACTED]"
 # a map with only the first two alternatives lets a fully unaccented rendering
 # (e.g. "Ana Nunez" for stored "Ana Núñez") leak unredacted.
 #
-# WR-02 (phase-8 review): generated ONCE AT IMPORT TIME from
-# unicodedata.decomposition over the Latin-1 Supplement, replacing the previous
-# hand-transcribed 7-entry table (acute vowels + n-tilde + c-cedilla only) whose
-# own justification applied equally to the umlaut/grave/circumflex letters it
-# omitted — for stored "Björn Müller", the common ASCII-ified rendering
-# "Bjorn Muller" leaked entirely. Import-time generation is still STATIC and
-# still offset-safe: nothing is computed at match time, and only the CANDIDATE
-# pattern is affected — the message is never normalized (the offset-unsafe
-# approach R2-1 rejects). Letters with no canonical base+mark decomposition
-# (like o-stroke, ae, thorn, eth, sharp-s) are intentionally absent and fall
-# through to literal escaping, exactly as before.
+# The map is generated ONCE AT IMPORT TIME from unicodedata.decomposition over the
+# whole Latin-1 Supplement, deliberately NOT hand-transcribed: a hand-written table
+# covers whichever letters its author happened to think of and silently leaks the
+# rest (a table of acute vowels + n-tilde + c-cedilla leaves stored "Björn Müller"
+# fully exposed under the common ASCII-ified rendering "Bjorn Muller"). Import-time
+# generation is still STATIC and still offset-safe: nothing is computed at match
+# time, and only the CANDIDATE pattern is affected — the message is never
+# normalized. Letters with no canonical base+mark decomposition (o-stroke, ae,
+# thorn, eth, sharp-s) have no entry and fall through to literal escaping.
 def _build_accent_class_map() -> dict[str, str]:
     mapping: dict[str, str] = {}
     for codepoint in range(0x00C0, 0x0100):  # Latin-1 Supplement letters
@@ -490,25 +495,23 @@ def _compile_name_pattern(name: str) -> re.Pattern[str]:
     r"""Build ONE compiled, mark-aware-lookaround-anchored pattern for `name`.
 
     Matches the precomposed form, an NFD-decomposed occurrence, AND a bare-
-    unaccented occurrence of `name` -- all directly against the ORIGINAL
-    message string (no normalize-then-slice step, so no offset drift, R2-1).
+    unaccented occurrence of `name` -- all directly against the ORIGINAL message
+    string, with no normalize-then-slice step, so no offset can drift.
     Anchored with lookarounds -- (?<![\w\u0300-\u036f]) / (?![\w\u0300-\u036f])
-    -- instead of bare \b...\b (R3-1): these reject BOTH a following word
-    character AND a following combining mark, so a candidate ending in an
-    accented character can't match only its bare-base alternative while
-    stranding an NFD trailing combining mark next to [REDACTED]. Strictly
-    stronger than \b for plain ASCII, so "Tom" still never matches inside
-    "Tomorrow" (R2-3).
+    -- rather than a bare \b...\b: these reject BOTH a following word character
+    AND a following combining mark, so a candidate ending in an accented character
+    cannot match only its bare-base alternative and strand an orphaned NFD
+    combining mark next to [REDACTED]. They are strictly stronger than \b on plain
+    ASCII, so "Tom" still never matches inside "Tomorrow" -- no over-redaction.
 
-    WR-01 (phase-8 review): the CANDIDATE is NFC-normalized first. The
-    _ACCENT_CLASS_MAP is keyed by precomposed characters, so an NFD-stored
-    candidate (e.g. an alias learned from an NFD-encoded client email) would
-    otherwise bypass the map entirely — 'e' + combining acute escapes as two
-    literal chars and the pattern matches ONLY the NFD rendering, letting the
-    NFC and bare-unaccented renderings of the name leak unredacted. Normalizing
-    the candidate is offset-safe: only the PATTERN side changes; the message is
-    never normalized (the R2-1 offset-drift rationale forbids normalizing the
-    message, not the candidate).
+    The CANDIDATE is NFC-normalized first. _ACCENT_CLASS_MAP is keyed by
+    precomposed characters, so an NFD-stored candidate (e.g. an alias learned from
+    an NFD-encoded client email) would otherwise bypass the map entirely: 'e' +
+    combining acute escapes as two literal chars, and the pattern then matches ONLY
+    the NFD rendering, letting the NFC and bare-unaccented renderings of that name
+    leak unredacted. Normalizing the candidate is offset-safe because only the
+    PATTERN side changes -- the offset-drift rule forbids normalizing the MESSAGE,
+    not the candidate.
     """
     name = unicodedata.normalize("NFC", name)
     fragments: list[str] = []
@@ -523,11 +526,14 @@ def _compile_name_pattern(name: str) -> re.Pattern[str]:
 def _scrub(message: str, roster: Roster | None = None) -> str:
     """Redact email addresses and (if `roster` given) roster names/aliases.
 
-    Never queries the DB or calls any repo/load function — `roster` is only
-    ever the in-memory object the caller already has (D-8-01b, non-negotiable).
-    Candidates are applied longest-first so a short alias contained inside a
-    longer name/alias (e.g. alias "Dave" inside full_name "Dave Reyes") never
-    independently matches and fragments an already-redacted span (R2-1).
+    NON-NEGOTIABLE: never queries the DB and never calls any repo/load function.
+    `roster` is only ever the in-memory object the caller already has. This runs on
+    the error path, where a DB call could itself fail and take the error handler
+    down with it.
+
+    Candidates are applied longest-first so a short alias contained inside a longer
+    name/alias (e.g. alias "Dave" inside full_name "Dave Reyes") never independently
+    matches and fragments an already-redacted span.
     """
     message = _EMAIL_RE.sub(_REDACTED, message)
     if roster is None:
@@ -551,9 +557,12 @@ def _scrub(message: str, roster: Roster | None = None) -> str:
 def _build_error_detail(
     stage: str, exc: Exception, roster: Roster | None = None
 ) -> str | None:
-    """Scrub-then-compose-then-truncate. Fails open: any internal exception
-    returns None so diagnostics never blocks the error path it exists to
-    observe (D-8-01b, T-8-02).
+    """Scrub-then-compose-then-truncate.
+
+    Fails open: any internal exception returns None, so diagnostics can never block
+    the error path it exists to observe. Scrubbing happens BEFORE truncation —
+    truncating first could cut a name mid-token and leave a fragment the redaction
+    regex no longer matches.
     """
     try:
         scrubbed = _scrub(str(exc), roster=roster)
@@ -573,40 +582,38 @@ def record_run_error(
 ) -> None:
     """Write payroll_runs.error_reason AND advance the run to ERROR.
 
-    The single documented exception to "set_status is the only status writer":
-    it writes the error_reason data column itself, then routes its ERROR
-    transition THROUGH set_status (FIX B) — so there is still exactly one
-    status-write path and no second writer can corrupt the state machine.
+    The single sanctioned exception to the two-writer rule: it writes the
+    error_reason data column itself, then routes its ERROR transition THROUGH
+    set_status — so there is still exactly one status-write path.
 
-    WR-04: this must NOT clobber a run that is already TERMINAL. A late/duplicate
-    reply (cf. CR-02) that resumes a run which then hits an exception would otherwise
-    flip an approved/sent/reconciled/rejected run to ERROR, destroying the run's real
-    state and the approval audit trail. (No-op on terminal includes a run already in
-    ERROR — re-stamping it is pointless.)
+    TERMINAL GUARD: this must NOT clobber a run that is already terminal. A
+    late/duplicate reply that resumes a run which then raises would otherwise flip
+    an approved/sent/reconciled/rejected run to ERROR, destroying the run's real
+    state and the approval audit trail. A run already in ERROR is also a no-op —
+    re-stamping it is pointless.
 
-    WR-03 (phase-8 review): the guard is an atomic compare-and-swap folded into
-    the UPDATE's WHERE clause (`status <> ALL(terminal)` + RETURNING), the same
-    CAS idiom claim_status uses — NOT a separate SELECT-then-UPDATE. Under READ
-    COMMITTED a check-then-act pair lets a concurrent transaction commit a
-    terminal status (e.g. _deliver's set_status(SENT) racing a late resume's
-    error path) between the read and the write, and the unconditional UPDATE
-    would then clobber the terminal run to ERROR — the exact outcome this guard
-    exists to prevent. With the CAS, a run that is terminal (or missing) matches
-    no row, the claim fails, and set_status(ERROR) is never called.
+    The guard is an atomic compare-and-swap folded into the UPDATE's WHERE clause
+    (`status <> ALL(terminal)` + RETURNING), the same idiom as claim_status — NOT a
+    SELECT-then-UPDATE. Under READ COMMITTED, a check-then-act pair lets a
+    concurrent transaction commit a terminal status (e.g. _deliver's
+    set_status(SENT) racing a late resume's error path) between the read and the
+    write; the unconditional UPDATE would then clobber that terminal run to ERROR —
+    the exact outcome this guard exists to prevent. With the CAS, a terminal (or
+    missing) run matches no row, the claim fails, and set_status(ERROR) is never
+    called.
 
-    OPS2-01 (D-8-01/D-8-01b/D-8-02): the optional keyword-only `detail_exc`/`stage`/
-    `roster` params drive a scrubbed, stage-prefixed, 200-char-truncated
-    `error_detail` write alongside the existing `error_reason`. `conn` stays
-    positional-compatible (review fix #8) — the new params are keyword-only and
-    placed AFTER it so every existing call site is unaffected AT THE CALL SITE.
+    The keyword-only `detail_exc`/`stage`/`roster` params drive a scrubbed,
+    stage-prefixed, 200-char-truncated `error_detail` written alongside
+    `error_reason`. They sit AFTER `conn` and are keyword-only so `conn` stays
+    positional-compatible for existing call sites.
 
-    WR-05 (phase-8 review) — overwrite contract: `error_detail` is ALWAYS written.
-    When `detail_exc` or `stage` is omitted it is OVERWRITTEN WITH NULL, erasing
-    any previously-persisted detail for this run. This is deliberate: error_reason
-    and error_detail always describe the SAME (latest) error — preserving a stale
-    detail next to a fresh reason via COALESCE would mislead the operator reading
-    the error banner. Callers that want a diagnostic detail must pass BOTH
-    `detail_exc` and `stage` (all current production callers do).
+    OVERWRITE CONTRACT: `error_detail` is ALWAYS written. When `detail_exc` or
+    `stage` is omitted it is overwritten with NULL, erasing any previously-persisted
+    detail. This is deliberate — error_reason and error_detail must always describe
+    the SAME (latest) error. Preserving a stale detail beside a fresh reason (via
+    COALESCE) would show the operator a diagnostic from a different failure. Callers
+    that want a detail must pass BOTH `detail_exc` and `stage`; all production
+    callers do.
     """
     detail = (
         _build_error_detail(stage, detail_exc, roster=roster)
@@ -614,11 +621,11 @@ def record_run_error(
         else None
     )
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
-        # WR-03 CAS: the terminal-status predicate lives INSIDE the UPDATE's
-        # WHERE clause (claim_status idiom) so no concurrent transaction can
-        # commit a terminal status between a read and this write. The terminal
-        # set is parameterized from _TERMINAL_STATUSES (single source of
-        # truth) — `status <> ALL(%s)` is the NOT-IN form for an array param.
+        # The terminal-status predicate lives INSIDE the UPDATE's WHERE clause
+        # (the claim_status CAS idiom) so no concurrent transaction can commit a
+        # terminal status between a read and this write. The terminal set is
+        # parameterized from _TERMINAL_STATUSES (single source of truth) —
+        # `status <> ALL(%s)` is the NOT-IN form for an array parameter.
         row = c.execute(
             "UPDATE payroll_runs SET error_reason = %s, error_detail = %s,"
             " updated_at = now() WHERE id = %s AND status <> ALL(%s)"
@@ -628,7 +635,7 @@ def record_run_error(
         if row is None:
             logger.info(
                 "record_run_error skipped: run %s is terminal or missing — not "
-                "clobbering to ERROR (WR-04 guard, WR-03 CAS). reason was: %s",
+                "clobbering to ERROR (terminal-status CAS guard). reason was: %s",
                 run_id,
                 reason,
             )

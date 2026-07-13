@@ -1,12 +1,17 @@
-"""DB repo package facade -- re-exports the full live attribute surface (public API
-plus get_connection, _conn_ctx, _nulltx, _TERMINAL_STATUSES, _ACCENT_CLASS_MAP,
-_pad_references, _scrub) so existing callers (`from app.db import repo`,
-`import app.db.repo as repo_mod`) and most test monkeypatch seams
-(`monkeypatch.setattr(repo, "fn", ...)`) keep working unchanged post-split.
-NOTE: a facade-level patch does NOT intercept an internal
-same-module call inside one of the aggregate modules (e.g. record_run_error's own
-call to set_status/_scrub inside runs.py) -- those two tests patch app.db.repo.runs
-directly; see tests/test_gateway.py and tests/test_persistence.py.
+"""DB repo package facade — the single import surface for the data layer.
+
+Re-exports the full live attribute set (the public API plus get_connection,
+_conn_ctx, _nulltx, _TERMINAL_STATUSES, _ACCENT_CLASS_MAP, _pad_references,
+_scrub), so callers say `from app.db import repo` and never reach into an
+aggregate module directly.
+
+SEAM CAVEAT (tests depend on this being accurate): patching an attribute on this
+facade — `monkeypatch.setattr(repo, "fn", ...)` — rebinds only the facade's own
+name. It does NOT intercept a call made from one aggregate module to another name
+in that SAME module: record_run_error's internal calls to set_status/_scrub, for
+example, resolve against runs.py's module globals, which the facade patch never
+touched. To stub those, patch app.db.repo.runs directly. See tests/test_gateway.py
+and tests/test_persistence.py, which rely on exactly this distinction.
 """
 
 from app.db.repo._shared import _conn_ctx, _nulltx

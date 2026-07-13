@@ -31,42 +31,40 @@ def insert_email_message(
 ) -> uuid.UUID:
     """Append an email_messages row (the append-only audit log). Returns its id.
 
-    When purpose is non-NULL (outbound rows with a purpose value), the INSERT
-    upserts on the uq_email_run_purpose_round constraint (run_id, purpose, round)
-    (D-11-01: widened from the old 2-column uq_email_run_purpose in the SAME plan
-    step as this arbiter change — Pitfall #1, the constraint and the ON CONFLICT
-    clause must never drift apart). This turns a retry WITHIN a round over a
-    prior 'reserved' or 'failed' row into an advancement to 'sent' rather than a
-    unique-constraint crash (NEW-1 D-13c sharpening); a NEW round is a NEW row
-    (D-11-01: no upsert-replace of prior-round history).
+    INVARIANT — the ON CONFLICT arbiter and the DB unique constraint must never
+    drift apart. The outbound path below arbitrates on
+    (run_id, purpose, round, epoch); the schema's uq_email_run_purpose_round_epoch
+    declares exactly those four columns. If either side is widened or narrowed
+    without the other, this INSERT either crashes on a constraint it does not
+    name or silently mutates a row it should have inserted beside. Change both,
+    in the same step, or neither.
 
-    `round` defaults to 0, so every existing caller (none of which passes it yet
-    in this plan) is behavior-identical: a round-0 row upserts exactly like the
-    old (run_id, purpose) arbiter did, because round=0 is now baked into both
-    the row and the constraint.
+    Why each column is in the arbiter:
 
-    Inbound rows (purpose=NULL) are unaffected: Postgres treats NULLs as distinct
-    in UNIQUE constraints, so inbound rows never conflict.
+    - purpose is non-NULL only on outbound rows, so the upsert applies only to
+      them. Inbound rows carry purpose=NULL and Postgres treats NULLs as
+      DISTINCT in UNIQUE constraints, so inbound rows never conflict and take
+      the plain-INSERT branch.
+    - round makes a NEW clarification round a NEW row rather than an
+      upsert-replace of prior-round history. A retry WITHIN a round over a
+      'reserved' (pre-send intent, pre-crash) or 'failed' row instead advances
+      that row's send_state to 'sent' — the crash-safe proof-of-send path —
+      rather than dying on a unique-constraint violation.
+    - epoch is stamped from the run's CURRENT reply_epoch via a correlated
+      subquery at write time (read once, never re-read or mutated afterward).
+      It is NOT optional: a retrigger resets clarification_round to 0, so the
+      retriggered run's fresh round-0 send carries the SAME
+      (run_id, purpose, round) tuple as the stale pre-retrigger round-0 row.
+      Arbitrating on the narrower 3-column key would silently UPSERT (mutate)
+      that historical row instead of inserting a new one — corrupting the
+      append-only audit log on every retrigger, and destroying the evidence of
+      what was actually sent to the client. With epoch in the arbiter the two
+      rows are distinct conflict targets: the retriggered send always INSERTs a
+      genuinely new row, while an in-round retry (same epoch) still upserts in
+      place.
 
-    GAP-2/GAP-3 (11-06): the OUTBOUND path (purpose is not None) also stamps
-    epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s) — a single
-    correlated subquery against the run being written to, in the INSERT
-    column list/values. This reads the CURRENT run epoch at write time (never
-    re-read/mutated afterward).
-
-    The ON CONFLICT arbiter is (run_id, purpose, round, epoch) — widened from
-    (run_id, purpose, round), matching the widened uq_email_run_purpose_round_epoch
-    constraint (GAP-2 fix). This is NOT optional: a retrigger resets
-    clarification_round to 0, so the retriggered run's fresh round-0 send has
-    the SAME (run_id, purpose, round) tuple as a stale pre-retrigger round-0
-    row. Arbiting on the narrower 3-column key would silently UPSERT (mutate)
-    that historical row instead of inserting a new one — corrupting the
-    append-only audit log on every retrigger. Epoch in the arbiter makes the
-    two rows distinct conflict targets, so the retriggered send always INSERTs
-    a genuinely new row; an in-round retry (same epoch) still correctly
-    upserts in place (Pitfall #1 preserved). Zero caller changes: run_id is
-    already a parameter every existing call site (gateway.send_outbound,
-    _clarify's record_only branch) passes.
+    `round` defaults to 0, so a caller that does not track rounds gets the
+    round-0 row that the constraint also bakes round=0 into.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         if purpose is not None:
@@ -74,7 +72,7 @@ def insert_email_message(
             # so a retry WITHIN a round AND epoch over a reserved/failed row advances
             # to the new send_state rather than crashing with a unique constraint
             # violation — while a NEW epoch's same-round send is a genuinely
-            # different conflict target and always inserts a new row (GAP-2 fix).
+            # different conflict target and always inserts a new row.
             row = c.execute(
                 """
                     INSERT INTO email_messages (
@@ -144,15 +142,15 @@ def get_outbound_message_id(
     purpose: str,
     conn: psycopg.Connection | None = None,
 ) -> str | None:
-    """Purpose-aware and send_state-filtered outbound Message-ID lookup (finding #1 + R2-HIGH).
+    """Purpose-aware, send_state-filtered outbound Message-ID lookup.
 
     Only a row with purpose=X AND send_state='sent' counts as proof-of-delivery.
-    A reserved (pre-send intent, pre-crash) or failed row does NOT match — preventing
-    the delivery guard from skipping a required send after a crash (R2-HIGH: D-13c
-    crash-safe proof-of-send, Codex finding #1 fix, CLAR-04).
+    A reserved (pre-send intent, pre-crash) or failed row does NOT match — otherwise
+    the delivery guard would read a crashed send as a completed one and skip a
+    required email.
 
-    Raises ValueError on an unrecognised purpose value (invalid-purpose guard prevents
-    accidental purpose-blind calls — T-05-09b).
+    Raises ValueError on an unrecognised purpose value: the guard exists so a caller
+    cannot accidentally make a purpose-blind lookup and match the wrong email.
     """
     if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
         raise ValueError(
@@ -179,24 +177,24 @@ def get_outbound_for_round(
     round: int,
     conn: psycopg.Connection | None = None,
 ) -> dict[str, Any] | None:
-    """Round-aware and send_state-filtered outbound row lookup (D-11-01/D-11-13).
+    """Round-aware, send_state-filtered outbound row lookup.
 
-    Same shape as get_outbound_message_id — the invalid-purpose guard (T-05-09b)
-    and the `send_state = 'sent'` proof-of-delivery filter are both preserved —
-    with an added `round` filter. Returns a dict (not just the message_id) so
-    callers can read the FOUND ROW's round back: the idempotent next round is
-    always derived from this row's round (`row["round"] + 1`), never a blind
-    `round + 1` on the caller's own counter (Pitfall #3 — crash-safety of the
-    round increment depends on re-deriving from what was actually sent).
+    Same shape as get_outbound_message_id — the invalid-purpose guard and the
+    `send_state = 'sent'` proof-of-delivery filter are both preserved — with an
+    added `round` filter. Returns a dict (not just the message_id) so callers can
+    read the FOUND ROW's round back: the idempotent next round must always be
+    derived from this row (`row["round"] + 1`), never from a blind `round + 1` on
+    the caller's own counter. Crash-safety of the round increment depends on
+    re-deriving it from what was actually sent.
+
+    Scoped to the run's CURRENT epoch via a correlated subquery on the same run_id
+    parameter (no extra function parameter). A stale pre-retrigger round-0 row
+    belongs to epoch 0 while a retriggered run sits at epoch 1, so this query
+    cannot see it — without the epoch filter the guard would read that stale row
+    as proof the new question was already asked and silently suppress the send.
 
     Raises ValueError on an unrecognised purpose value (same guard as
     get_outbound_message_id).
-
-    GAP-2 (11-06): also scoped to the run's CURRENT epoch via a correlated
-    subquery on the SAME run_id parameter (no new function parameter). This
-    is the actual GAP-2 fix — a stale pre-retrigger round-0 row belongs to
-    epoch 0, but a retriggered run is now at epoch 1, so this query literally
-    cannot see it anymore.
     """
     if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
         raise ValueError(
@@ -225,12 +223,13 @@ def mark_reply_consumed(
     round: int,
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Write-once marker: this inbound reply has been consumed at `round` (D-11-02).
+    """Write-once marker: this inbound reply has been consumed at `round`.
 
-    `consumed_round IS NULL` in the WHERE clause makes this write-once — a
-    second call (e.g. WR-04 redelivery re-scheduling the same message_id) is a
-    silent no-op rather than overwriting an already-consumed row. Restricted to
-    direction='inbound' so an outbound row can never be marked consumed.
+    `consumed_round IS NULL` in the WHERE clause makes this write-once — a second
+    call (e.g. a webhook redelivery re-scheduling the same message_id) is a silent
+    no-op rather than overwriting an already-consumed row with a later round.
+    Restricted to direction='inbound' so an outbound row can never be marked
+    consumed.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -243,18 +242,18 @@ def mark_reply_consumed(
 def load_consumed_replies(
     run_id: uuid.UUID, conn: psycopg.Connection | None = None
 ) -> list[dict[str, Any]]:
-    """Return all consumed inbound replies for a run, round-ordered (D-11-10/12/13).
+    """Return all consumed inbound replies for a run, round-ordered.
 
-    Copies load_thread_messages' dict_row multi-row shape. Filters to
-    direction='inbound' AND consumed_round IS NOT NULL, ordered by
-    consumed_round ASC so a later plan's accumulated-context builder can render
-    every consumed reply in the order it was actually processed (not insertion
-    order, which can differ under redelivery/retry).
+    Same dict_row multi-row shape as load_thread_messages. Filters to
+    direction='inbound' AND consumed_round IS NOT NULL, ordered by consumed_round
+    ASC so the accumulated-context builder renders every consumed reply in the
+    order it was actually processed (not insertion order, which can differ under
+    redelivery/retry).
 
-    GAP-3 (11-06): also scoped to the run's CURRENT epoch via a correlated
-    subquery. This is the actual GAP-3 fix — a stale consumed reply from a
-    pre-retrigger epoch is invisible to the post-retrigger accumulation, even
-    though the row is never deleted (append-only preserved).
+    Scoped to the run's CURRENT epoch via a correlated subquery: a consumed reply
+    from a pre-retrigger epoch is invisible to post-retrigger accumulation, so no
+    hours from a conversation that no longer exists can leak into the payroll the
+    operator approves. The row itself is never deleted — the log stays append-only.
     """
     sql = (
         "SELECT direction, purpose, subject, body_text, message_id,"
@@ -272,17 +271,16 @@ def load_consumed_replies(
 def get_inbound_by_message_id(
     message_id: str, conn: psycopg.Connection | None = None
 ) -> dict[str, Any] | None:
-    """Load the PERSISTED inbound row by its RFC message_id (D-11-13, Pitfall #11a).
+    """Load the PERSISTED inbound row by its RFC message_id.
 
-    WR-04 redelivery must resume from the row already written at first ingest
-    (cleaned body_text, run_id via WR-03 linking, consumed_round) — NEVER
-    rebuild an InboundEmail from a redelivered webhook request body, which
-    would re-clean/re-parse and could diverge from what was actually processed.
+    A redelivered webhook must resume from the row already written at first ingest
+    (cleaned body_text, its linked run_id, consumed_round) — NEVER rebuild an
+    InboundEmail from the redelivered request body, which would re-clean/re-parse
+    and could diverge from what was actually processed.
 
-    Plan 11-05: the column list is widened to the FULL InboundEmail field set
-    (id, in_reply_to, references_header, created_at added) so app.main's
-    `_row_to_inbound` helper can build a valid InboundEmail (extra="forbid")
-    directly from this row with no second lookup.
+    The column list is the FULL InboundEmail field set so `_row_to_inbound` can
+    build a valid InboundEmail (extra="forbid") from this row with no second
+    lookup.
     """
     with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(
@@ -294,14 +292,14 @@ def get_inbound_by_message_id(
         return cur.fetchone()
 
 
-# Round-cap escalation scope (D-11-05): EXACTLY this stale, unconsumed,
-# awaiting_reply combination is eligible for the WR-04 auto-resume sweep — a
-# deliberately DIFFERENT scope from _STRANDED_SCOPE_STATUSES (received/
-# extracting/computed) and from the retrigger stale_statuses list. A reply
-# sitting unconsumed against an awaiting_reply run past the staleness
-# threshold means the resume webhook never fired (dead background task or
-# missed redelivery), not a normal in-flight run — pinned by an explicit unit
-# test alongside the other two scope-pin tests (Pitfall #4 item 7).
+# Auto-resume sweep scope: EXACTLY this stale + unconsumed + awaiting_reply
+# combination is eligible. This is a deliberately DIFFERENT scope from
+# _STRANDED_SCOPE_STATUSES (received/extracting/computed) and from the retrigger
+# stale_statuses list — widening any of the three to match the others would sweep
+# healthy in-flight runs. A reply sitting unconsumed against an awaiting_reply run
+# past the staleness threshold means the resume webhook never fired (dead
+# background task or missed redelivery), not a normal in-flight run. An explicit
+# unit test pins this scope, as it does for the other two.
 _STRANDED_REPLY_SCOPE_STATUS = "awaiting_reply"
 
 
@@ -309,25 +307,23 @@ def find_stranded_unconsumed_replies(
     threshold_seconds: int,
     conn: psycopg.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    """Find stale unconsumed inbound replies against awaiting_reply runs (D-11-05).
+    """Find stale unconsumed inbound replies against awaiting_reply runs.
 
     Joins email_messages (direction='inbound', consumed_round IS NULL,
     run_id IS NOT NULL, created_at older than the staleness threshold) to
     payroll_runs (status = 'awaiting_reply'). Returns reply-row dicts with the
-    same fields as get_inbound_by_message_id plus run_id, so the D-11-05 sweep
-    hook (Plan 11-05) can re-schedule _resume_pipeline for each one — the CAS
-    claim inside resume_pipeline absorbs any double-schedule.
+    same fields as get_inbound_by_message_id plus run_id, so the sweep hook can
+    re-schedule resume_pipeline for each one — the CAS claim inside
+    resume_pipeline absorbs any double-schedule.
 
-    Plan 11-05: the column list is widened to the FULL InboundEmail field set
-    (id, in_reply_to, references_header added; created_at was already
-    selected) matching get_inbound_by_message_id's widening, so
-    `_row_to_inbound` builds a valid InboundEmail from either query's rows.
+    The column list matches get_inbound_by_message_id (the FULL InboundEmail field
+    set) so `_row_to_inbound` builds a valid InboundEmail from either query's rows.
 
-    GAP-2/GAP-3 (11-06): the JOIN condition also requires em.epoch = pr.reply_epoch
-    (a column comparison across the existing join, not a new subquery). This
-    closes a subtler epoch variant: a genuinely stale epoch-0 unconsumed reply
-    must never be auto-resumed against a run that has since been retriggered
-    into a NEW epoch-1 awaiting_reply state.
+    The JOIN also requires em.epoch = pr.reply_epoch (a column comparison across
+    the existing join, not a subquery). A genuinely stale epoch-0 unconsumed reply
+    must never be auto-resumed against a run that has since been retriggered into
+    a NEW epoch awaiting_reply state — that would feed the new conversation an
+    answer to a question nobody asked.
     """
     sql = (
         "SELECT em.id, em.run_id, em.message_id, em.in_reply_to,"
@@ -351,14 +347,12 @@ def update_email_message_sent(
 ) -> None:
     """Flip send_state to 'sent' for the outbound row keyed on SYNTHETIC message_id.
 
-    06-04 D-13c success path. HIGH-1 schema-verified SQL: email_messages has
-    send_state but NO provider_message_id and NO updated_at — the SET clause sets
-    ONLY send_state='sent'. WHERE key is the SYNTHETIC message_id minted by
-    send_outbound (BLOCKER-3: never the Resend provider id). Two %s placeholders:
-    the 'sent' state and the synthetic message_id.
+    The WHERE key is the SYNTHETIC message_id minted by send_outbound, NEVER the
+    email provider's own id — the provider id is not stored, so keying on it would
+    match nothing and leave the row stuck in 'reserved'.
 
-    Delegates to update_email_message_state for parameterized SQL discipline and
-    testability (tests can assert 'sent' appears in the params tuple).
+    Delegates to update_email_message_state so all send_state writes go through one
+    parameterized statement.
     """
     update_email_message_state(message_id, "sent", conn=conn)
 
@@ -370,10 +364,10 @@ def update_email_message_state(
 ) -> None:
     """Parameterized flip of send_state for the outbound row keyed on SYNTHETIC message_id.
 
-    06-04 HIGH-3 failed-state flip. HIGH-1 schema-verified SQL: email_messages has
-    send_state but NO updated_at in the SET clause (column does not exist). WHERE key
-    is the SYNTHETIC message_id minted by send_outbound (BLOCKER-3). Two %s placeholders:
-    the new state and the synthetic message_id.
+    The single send_state writer, used for both the 'sent' success flip and the
+    'failed' flip. email_messages has no updated_at column, so the SET clause
+    touches send_state only. The WHERE key is the SYNTHETIC message_id minted by
+    send_outbound, never the provider's id.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -387,10 +381,10 @@ def get_outbound_references_chain(
 ) -> str | None:
     """Return the references_header of the most-recent sent outbound row for this run.
 
-    06-04 D-14 durable threading DB-load helper. gateway.send_outbound calls this
-    BEFORE the reserved INSERT to load the prior accumulated References chain, then
-    appends the new in_reply_to token. Building from DB state (not ephemeral webhook
-    state) means the chain survives dropped/duplicated deliveries.
+    gateway.send_outbound calls this BEFORE the reserved INSERT to load the prior
+    accumulated References chain, then appends the new in_reply_to token. Building
+    the chain from DB state rather than from ephemeral webhook state is what makes
+    threading survive dropped or duplicated deliveries.
 
     Returns None if no sent outbound row exists for this run (first outbound send).
     """
@@ -410,7 +404,7 @@ def get_outbound_references_chain(
 def load_outbound_emails(
     run_id: uuid.UUID, conn: psycopg.Connection | None = None
 ) -> list[dict[str, Any]]:
-    """Read all outbound email rows for a run (UAT #1 — run detail sent-emails section).
+    """Read all outbound email rows for a run (run-detail sent-emails section).
 
     Returns rows with the fields needed for display: direction, purpose, subject,
     body_text, message_id, created_at. Ordered oldest-first so confirmation/
@@ -457,27 +451,29 @@ def load_thread_messages(
 def _pad_references(references_header: str | None) -> str:
     """Normalize a References header to a single-space-delimited, space-PADDED string.
 
-    WR-02: the header-chain match must compare WHOLE angle-bracketed Message-ID
-    tokens, not bare substrings. A References header is RFC-5322 whitespace-separated
-    `<id>` tokens; we collapse any run of whitespace (spaces/tabs/folded CRLF) to one
-    space and pad both ends with a space, so the SQL can match ` <id> ` as a
+    The header-chain match must compare WHOLE angle-bracketed Message-ID tokens,
+    not bare substrings. A References header is RFC-5322 whitespace-separated
+    `<id>` tokens; we collapse any run of whitespace (spaces/tabs/folded CRLF) to
+    one space and pad both ends with a space, so the SQL can match ` <id> ` as a
     whitespace-bounded token. This stops a stored Message-ID that is a substring of
-    another (or of arbitrary attacker-supplied References text) from false-matching:
-    ` <a@x> ` cannot appear inside ` <a@xtra> `. Stored synthetic IDs are
-    `<uuid4@payroll-agent.local>` so they are angle-bracketed whole tokens. Returns
-    " " for an absent/empty header (matches nothing — never the empty-substring trap).
+    another (or of arbitrary attacker-supplied References text) from false-matching
+    and routing a reply onto the wrong run: ` <a@x> ` cannot appear inside
+    ` <a@xtra> `. Stored synthetic IDs are `<uuid4@payroll-agent.local>`, i.e.
+    angle-bracketed whole tokens. Returns " " for an absent/empty header, which
+    matches nothing — never the empty-substring trap, where "" would match every row.
     """
     if not references_header:
         return " "
     return " " + " ".join(references_header.split()) + " "
 
 
-# The shared, anchored header-chain predicate (WR-02). Both finders use the SAME
-# SQL so the resume lookup and the late-reply observability lookup match identically.
-# `em.message_id` already carries its surrounding `<...>`; padding the references
-# string with spaces (via _pad_references) and the pattern with ` `/` ` makes the
-# match a whitespace-bounded WHOLE-token comparison, not an unanchored substring.
-# Both placeholders stay NAMED — never interpolated (T-02-01).
+# The shared, anchored header-chain predicate. Both finders use the SAME SQL so the
+# resume lookup and the late-reply observability lookup can never diverge on which
+# run a reply belongs to. `em.message_id` already carries its surrounding `<...>`;
+# padding the references string with spaces (via _pad_references) and the pattern
+# with ` `/` ` makes this a whitespace-bounded WHOLE-token comparison, not an
+# unanchored substring match.
+# Both placeholders stay NAMED — never string-interpolated (SQL injection).
 _HEADER_MATCH_PREDICATE = (
     "( em.message_id = %(in_reply_to)s"
     " OR %(references)s LIKE '%% ' || em.message_id || ' %%' )"
@@ -494,7 +490,7 @@ def find_awaiting_reply_for_header(
 
     Scans the stored outbound Message-ID against the reply's In-Reply-To AND the
     full References chain. The `references` match is a NAMED placeholder, never
-    interpolated (T-02-01), and is anchored on whole tokens (WR-02).
+    string-interpolated, and is anchored on whole tokens.
     """
     sql = (
         "SELECT pr.id FROM payroll_runs pr"
@@ -520,11 +516,10 @@ def find_any_run_for_header(
     references_header: str | None,
     conn: psycopg.Connection | None = None,
 ) -> uuid.UUID | None:
-    """The SAME header match across ANY status (late-reply observability, FIX 10).
+    """The SAME header match as find_awaiting_reply_for_header, across ANY status.
 
-    A header match to an already-sent/reconciled run is observable as a late
-    reply rather than silently dropped. Named placeholders only; whole-token
-    anchored (WR-02).
+    A header match to an already-sent/reconciled run is observable as a late reply
+    rather than silently dropped. Named placeholders only; whole-token anchored.
     """
     sql = (
         "SELECT pr.id FROM payroll_runs pr"
