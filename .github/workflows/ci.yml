@@ -8,8 +8,12 @@ permissions:
 # real-Postgres proofs (concurrency-proof.yml triggers on pull_request) while lint, tests,
 # and mypy never ran at all — the worst of both worlds.
 #
-# push is scoped to master rather than left unrestricted so a same-repo PR does not run the
-# whole suite twice (once for the branch push, once for the PR).
+# ACCEPTED TRADEOFF: push is scoped to master rather than left unrestricted, so a same-repo
+# PR runs the suite once (for the PR) instead of twice (branch push + PR). The cost is that
+# a feature-branch push with no PR open gets no CI. That is deliberate — every path that can
+# reach master is still gated (direct master push, or PR), and this repo's actual workflow is
+# committing to master. If branch-before-PR feedback is ever wanted, drop the `branches:`
+# filter and accept the duplicate runs.
 on:
   pull_request:
   push:

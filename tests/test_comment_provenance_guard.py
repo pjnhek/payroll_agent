@@ -101,9 +101,14 @@ BLOCKED_PATTERNS: tuple[tuple[str, str, str], ...] = (
         "a design-decision citation (D-04, D-11-01, D-7.5-08, D-A3-05)",
     ),
     (
+        # INFO must precede IN in the alternation for readability (the regex engine
+        # backtracks and would match either way, but "IN" first reads like INFO is covered
+        # by it, and it is NOT: "IN-" requires the hyphen immediately after "IN", so
+        # INFO-02 slips through a table that lists only IN). This phase's own prompt-echo
+        # finding was filed as INFO-02 — the family is real.
         "review-ticket",
-        r"\b(?:WR|CR|CX|GAP|R2|NEW|IN|OPS[0-9]*)-[0-9]",
-        "a review or gap ticket ID (WR-01, CR-02, CX-03, GAP-2, R2-1, IN-08, OPS2-01)",
+        r"\b(?:WR|CR|CX|GAP|R2|NEW|INFO|IN|OPS[0-9]*)-[0-9]",
+        "a review or gap ticket ID (WR-01, CR-02, CX-03, GAP-2, R2-1, INFO-02, IN-08, OPS2-01)",
     ),
     (
         "fix-ticket",

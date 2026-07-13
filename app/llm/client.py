@@ -125,30 +125,75 @@ def _is_deepseek(model: str) -> bool:
 _EMPTY_CONTENT = "empty content from model"
 
 
-def _scrubbed_validation_summary(exc: ValidationError | ValueError) -> str:
+def _schema_field_names(model: type[BaseModel]) -> frozenset[str]:
+    """Every field name reachable from `model`, including through nested models.
+
+    This is the allowlist of `loc` components that are safe to echo back — they come from
+    OUR schema, not from the model's response. Walks nested BaseModels via __pydantic_core_schema__
+    is overkill; the annotations are enough because every nested type in this codebase is a
+    plain BaseModel, a list of one, or an optional of one.
+    """
+    names: set[str] = set()
+    stack: list[type[BaseModel]] = [model]
+    seen: set[type[BaseModel]] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for field_name, field in current.model_fields.items():
+            names.add(field_name)
+            # Pull any nested BaseModel out of the annotation (T, list[T], T | None, ...).
+            for arg in (field.annotation, *getattr(field.annotation, "__args__", ())):
+                inner = getattr(arg, "__args__", (arg,))
+                for candidate in inner:
+                    if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                        stack.append(candidate)
+    return frozenset(names)
+
+
+def _scrubbed_validation_summary(
+    exc: ValidationError | ValueError,
+    response_model: type[BaseModel] | None = None,
+) -> str:
     """Describe a validation failure WITHOUT echoing the model's own output.
 
-    A ValidationError stringifies with the offending input embedded
-    (`input_value='...'`), and the retry prompt goes back out to the provider — so
-    interpolating it verbatim would return untrusted model output to a third party.
-    `include_input=False` keeps the actionable half (where it failed, what the schema
-    wanted: `msg` is pydantic's generic description, e.g. "Input should be a valid
-    number") and drops the value itself.
+    The retry prompt goes back out to the provider, so every character of this summary is
+    text we are choosing to send to a third party. A ValidationError is derived from
+    untrusted model output and leaks it through TWO channels, not one:
 
-    The non-ValidationError branch is an ALLOWLIST, not a passthrough. The only ValueError
-    that reaches the retry today is _EMPTY_CONTENT below — a local literal with no model
+    1. `input` — the offending value itself. Dropped by `include_input=False`.
+
+    2. `loc` — the path to the failure. USUALLY safe (our own field names), but NOT always:
+       under `extra="forbid"`, a model that invents a field produces an `extra_forbidden`
+       error whose final `loc` component IS THE NAME THE MODEL CHOSE. A model returning
+       `{"employees": [{"SECRET": 1}]}` yields `loc=("employees", 0, "SECRET")`, and joining
+       that verbatim pipes model-authored text straight back to the provider. Closing (1)
+       and leaving (2) open is a fix in name only.
+
+    So `loc` is allowlisted against the response model's real field names. Integers (list
+    indices) pass — they are positions, not text. Anything else is replaced with `<field>`,
+    which still tells the model *where* the problem is without repeating what it said.
+
+    The non-ValidationError branch is likewise an ALLOWLIST, not a passthrough. The only
+    ValueError reaching the retry today is _EMPTY_CONTENT — a local literal with no model
     output in it — and echoing it back is genuinely useful, because "you returned nothing"
-    is what lets the model self-correct. But a bare str(exc) here is a standing invitation
-    for some future adapter to raise a ValueError built from the model's response and
-    silently reopen the leak. So: the known-safe message passes through verbatim, and
-    anything else collapses to a constant that cannot carry untrusted text.
+    is what lets the model self-correct. A bare str(exc) here would be a standing invitation
+    for a future adapter to raise a ValueError built from the model's response.
+
+    `err["msg"]` is pydantic's own generic description ("Field required", "Extra inputs are
+    not permitted") and carries no input once include_input=False, so it passes through.
     """
     if not isinstance(exc, ValidationError):
         return _EMPTY_CONTENT if str(exc) == _EMPTY_CONTENT else "output did not match the schema"
-    parts = [
-        f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['type']} — {err['msg']}"
-        for err in exc.errors(include_url=False, include_input=False)
-    ]
+
+    allowed = _schema_field_names(response_model) if response_model is not None else frozenset()
+    parts = []
+    for err in exc.errors(include_url=False, include_input=False):
+        loc = ".".join(
+            str(p) if isinstance(p, int) or str(p) in allowed else "<field>" for p in err["loc"]
+        )
+        parts.append(f"{loc or '(root)'}: {err['type']} — {err['msg']}")
     return "; ".join(parts) if parts else "output did not match the schema"
 
 
@@ -218,7 +263,7 @@ def call_structured[T: BaseModel](
                     "role": "user",
                     "content": (
                         "Your last output failed validation: "
-                        f"{_scrubbed_validation_summary(exc)}. "
+                        f"{_scrubbed_validation_summary(exc, response_model)}. "
                         "Return ONLY valid JSON matching the schema."
                     ),
                 }

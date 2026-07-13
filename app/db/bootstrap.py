@@ -21,18 +21,27 @@ Security:
 Destructiveness — read before running this against a live database:
     --reset is opt-in and drops EVERY table in _DROP_ORDER. That is the destructive path.
 
-    The default path is NOT drop-free. It always issues two narrowly-scoped DROPs, and
-    they are deliberate migrations, not cleanup:
-      - DROP TABLE IF EXISTS name_matches CASCADE
-      - ALTER TABLE paystub_line_items DROP COLUMN IF EXISTS match_confidence
-    Both retire schema that the deterministic-decisioning redesign removed. They must run
-    outside --reset because CREATE TABLE IF NOT EXISTS can add a table but can never
-    REMOVE one that already exists on a live database — so re-applying schema.sql alone
-    would leave the dead table and column in place forever. IF EXISTS makes both a no-op
-    once they are gone.
+    The default path is NOT drop-free. It drops in two distinct ways:
+
+    1. PERMANENT removals, issued directly by this module on every apply:
+         - DROP TABLE IF EXISTS name_matches CASCADE
+         - ALTER TABLE paystub_line_items DROP COLUMN IF EXISTS match_confidence
+       Both retire schema that the deterministic-decisioning redesign removed. They must
+       run outside --reset because CREATE TABLE IF NOT EXISTS can add a table but can
+       never REMOVE one that already exists on a live database — so re-applying schema.sql
+       alone would leave the dead table and column in place forever. IF EXISTS makes both
+       a no-op once they are gone.
+
+    2. TRANSIENT drops, issued by schema.sql itself, which this path also applies:
+       four DROP CONSTRAINT statements (the payroll_runs status CHECK, the email_messages
+       purpose CHECK, and the two superseded uq_email_* unique constraints). Each is an
+       idempotent DROP-and-RE-ADD inside a single atomic block, so the constraint is never
+       absent at rest — but a DROP CONSTRAINT does execute. Do not read "no permanent
+       removals" as "no DROP runs".
 
     The practical consequence: running this with no flags against a live database WILL
-    drop name_matches and match_confidence if they are still present. Nothing else.
+    permanently remove name_matches and match_confidence if they are still present, and
+    WILL churn the four constraints above. It removes no other table, column, or row.
 """
 
 import pathlib
