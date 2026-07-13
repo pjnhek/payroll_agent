@@ -1,24 +1,27 @@
-"""Clarify→reply→resume threading tests (CLAR-02, CLAR-03, EMAIL-01) — slice (c).
+"""Clarify→reply→resume threading tests (CLAR-02, CLAR-03, EMAIL-01).
 
-Slice (c) is the LAST and trickiest sub-piece (D-A5-01): re-entrancy. A reply
-POSTed to the SAME inbound webhook routes to its paused run via the RFC
-In-Reply-To/References header chain, the reply sender is re-asserted against the
-matched run's business (so a spoofed reply cannot bypass INGEST-03), and the run
-re-enters the pipeline at extraction idempotently AND losslessly over
-(original cleaned inbound body + reply body), so a partial reply never loses the
-original hours.
+Re-entrancy is the hard part of the clarification loop. A reply POSTed to the SAME
+inbound webhook must route back to its paused run via the RFC In-Reply-To/References
+header chain, its sender must be re-asserted against the matched run's business, and
+the run must re-enter the pipeline at extraction idempotently AND losslessly over
+(original cleaned inbound body + reply body).
 
-The five invariants under test (RESEARCH §Pattern 6 + review FIXes):
-  - header-chain match restricted to awaiting_reply (find_awaiting_reply_for_header);
-  - reply sender re-validated against the matched run's business (FIX 5);
-  - partial reply preserves original hours (re-extract over original+reply, FIX 4/C);
-  - resume stamps the code-owned run_id into extract (FIX A);
-  - a late reply (header match to a non-awaiting_reply run) is found via
-    find_any_run_for_header and logged, NOT resumed (FIX 10).
+The five invariants under test:
+  - the header-chain match is restricted to awaiting_reply runs
+    (find_awaiting_reply_for_header) — only a paused run can be resumed;
+  - the reply sender is re-validated against the matched run's business, so guessing an
+    outbound Message-ID does not let an outsider drive someone else's payroll;
+  - a partial reply preserves the original hours: resume re-extracts over
+    (original + reply), so an answer-only reply cannot silently zero out the hours;
+  - resume stamps the code-owned run_id into extract, so the rebuilt Extracted always
+    belongs to the run being resumed rather than to whatever the model echoed back;
+  - a late reply (header match to a run that already advanced) is found via
+    find_any_run_for_header and logged, never resumed — resuming would clobber an
+    already-approved payroll.
 
-All LLM calls are mocked; the FULL pipeline runs offline via the conftest
-in-memory fake_repo + the class-level FIFO mock_llm script. DB round-trips that
-need a live database go behind @pytest.mark.integration + the two-factor guard.
+All LLM calls are mocked; the FULL pipeline runs offline via the conftest in-memory
+fake_repo + the FIFO mock_llm script. DB round-trips that need a live database go
+behind @pytest.mark.integration + the two-factor guard.
 """
 from __future__ import annotations
 
@@ -43,15 +46,19 @@ _GATE_BLOCK_FIXTURE = (
 _CLARIFY_REPLY_FIXTURE = (
     pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "clarify_reply.json"
 )
-# The documented placeholder token in clarify_reply.json that the test substitutes
-# with the actual sent clarification Message-ID at runtime (PATTERNS §fixtures).
+# The placeholder token in clarify_reply.json that the test substitutes with the
+# actual sent clarification Message-ID at runtime — the Message-ID is generated per
+# run, so it cannot be committed into the fixture.
 _CLARIFICATION_PLACEHOLDER = "__CLARIFICATION_MESSAGE_ID__"
 
 
 @pytest.fixture
 def client(fake_repo, monkeypatch):
-    """TestClient with ALLOW_UNSIGNED_FIXTURES=true so canonical dict POSTs
-    succeed in mocked tests (WARNING-1 remediation — 06-04 Task 2/3)."""
+    """TestClient with ALLOW_UNSIGNED_FIXTURES=true so canonical dict POSTs succeed.
+
+    Without the flag the webhook rejects unsigned payloads with 400 — correct in
+    production, but it would block every mocked test from reaching the pipeline.
+    """
     from app.config import get_settings
     from app.main import app
 
@@ -70,9 +77,10 @@ def client(fake_repo, monkeypatch):
 def _script_gate_block_to_reply(mock_llm) -> None:
     """Drive the David Reyez fixture to awaiting_reply.
 
-    reconcile + decide are PURE deterministic code (D-21-01) — no LLM calls — so the
-    FIFO script carries ONLY the extract response and the free-text clarification
-    draft. The extracted "David Reyez" is a TYPO of the seeded "David Reyes" (which
+    reconcile + decide are PURE deterministic code — no LLM calls — so the FIFO script
+    carries ONLY the extract response and the free-text clarification draft. If a
+    script entry is ever needed for either stage, that stage has gained an LLM call it
+    must not have. The extracted "David Reyez" is a TYPO of the seeded "David Reyes" (which
     has no known_alias for the misspelling), so the deterministic resolver leaves it
     unresolved → decide gates to request_clarification → the draft+send branch runs.
     """
@@ -183,14 +191,17 @@ def test_header_chain_match_via_references(client, fake_repo, mock_llm):
 
 
 def test_references_like_is_parameterized():
-    """The references LIKE is a NAMED placeholder, never an f-string (T-04-01)."""
+    """The references LIKE is a NAMED placeholder, never an f-string.
+
+    The References header is attacker-controllable text arriving from the public inbox;
+    interpolating it into SQL would be a direct injection path.
+    """
     import inspect
 
     import app.db.repo.emails as emails_mod
 
     # The header-chain references LIKE SQL (find_awaiting_reply_for_header /
-    # find_any_run_for_header) lives in emails.py post-split, not the facade
-    # (which has no SQL at all).
+    # find_any_run_for_header) lives in emails.py, not the facade (which has no SQL).
     src = inspect.getsource(emails_mod)
     assert "%(references)s" in src, "references must be a named placeholder"
     # No Message-ID value interpolated into the LIKE via f-string.
@@ -198,10 +209,14 @@ def test_references_like_is_parameterized():
 
 
 def test_pad_references_anchors_whole_tokens():
-    """WR-02 — the References match is anchored on whole whitespace-bounded tokens,
-    so a stored Message-ID that is a SUBSTRING of another References token does NOT
-    false-match. _pad_references normalizes whitespace and pads both ends, and the
-    SQL pattern (' <id> ') requires the stored id to be a complete token."""
+    """The References match is anchored on whole whitespace-bounded tokens.
+
+    A stored Message-ID that appears only as a SUBSTRING of another References token
+    must NOT false-match — a false match here would route a stranger's reply into
+    someone else's paused payroll run. _pad_references normalizes whitespace and pads
+    both ends, and the SQL pattern (' <id> ') requires the stored id to be a complete
+    token.
+    """
     from app.db.repo import _pad_references
 
     mid = "<abc@payroll-agent.local>"
@@ -210,11 +225,11 @@ def test_pad_references_anchors_whole_tokens():
     assert f" {mid} " in padded_real, "a whole-token id must be matchable"
 
     # ... but a SUPERSTRING token that merely CONTAINS the id as a substring must NOT
-    # produce the ' <id> ' whitespace-bounded sequence (the old substring LIKE would
-    # have false-matched here).
+    # produce the ' <id> ' whitespace-bounded sequence. A plain substring LIKE would
+    # false-match here.
     padded_superstring = _pad_references(f"<other@x.example> X{mid} <tail@x.example>")
     assert f" {mid} " not in padded_superstring, (
-        "a stored id must NOT match when it is only a substring of another token (WR-02)"
+        "a stored id must NOT match when it is only a substring of another token"
     )
 
     # Folded/tabbed whitespace is normalized to single spaces, and an empty header
@@ -225,13 +240,18 @@ def test_pad_references_anchors_whole_tokens():
 
 
 # ---------------------------------------------------------------------------
-# test_reply_sender_revalidated — FIX 5: a spoofed reply cannot bypass INGEST-03
+# Reply-sender revalidation — a spoofed reply cannot bypass INGEST-03
 # ---------------------------------------------------------------------------
 
 
 def test_reply_sender_revalidated_mismatch_not_resumed(client, fake_repo, mock_llm):
     """A reply that header-matches an awaiting_reply run BUT whose from_addr does NOT
-    match the run's business contact_email is logged and NOT resumed (FIX 5)."""
+    match the run's business contact_email is logged and NOT resumed.
+
+    The In-Reply-To header is caller-supplied, so header matching alone is not
+    authentication: without this re-check, anyone who guessed an outbound Message-ID
+    could answer another business's clarification and steer its payroll.
+    """
     run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
 
     _script_resume_resolved(mock_llm)
@@ -251,7 +271,11 @@ def test_reply_sender_revalidated_mismatch_not_resumed(client, fake_repo, mock_l
 
 
 def test_reply_sender_match_resumes(client, fake_repo, mock_llm):
-    """A reply whose from_addr DOES match the run's business resumes normally (FIX 5)."""
+    """A reply whose from_addr DOES match the run's business resumes normally.
+
+    The companion to the spoof test: the sender re-check must not be so strict that it
+    blocks the legitimate client from ever answering.
+    """
     run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
 
     _script_resume_resolved(mock_llm)
@@ -266,18 +290,19 @@ def test_reply_sender_match_resumes(client, fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# test_partial_reply_preserves_hours — FIX 4 + FIX C
+# Partial replies must not lose the original hours
 # ---------------------------------------------------------------------------
 
 
 def test_partial_reply_preserves_hours():
-    """A reply with ONLY the answer (no hours) resumes over (original cleaned body +
-    reply body); the original employees'/hours are retained, not lost (FIX 4 + FIX C).
+    """A reply with ONLY the answer (no hours) still keeps the original hours.
 
-    Asserted at the orchestrator level: resume re-extracts over the COMBINED context,
-    so the model still sees the original body (with the hours) and the corrected name
-    from the reply. The mock returns the FULL re-extraction (original hours + fixed
-    name) precisely because the combined body is fed to it.
+    Clients answer clarifications tersely ("It's David Reyes.") without restating the
+    numbers. If resume re-extracted over the reply body alone, the employee's hours
+    would vanish and the run would pay $0 — so resume must re-extract over the COMBINED
+    context (original cleaned body + reply body). Asserted at the orchestrator level:
+    the extract spy records the body it was handed, and it must contain both the
+    original hours and the reply's correction.
     """
     from app.pipeline import orchestrator
 
@@ -316,12 +341,12 @@ def test_partial_reply_preserves_hours():
             "load_run", "load_source_email", "load_roster_for_business",
             "set_status", "claim_status", "record_run_error", "persist_extracted",
             "persist_decision", "persist_reconciliation", "replace_line_items",
-            # 07.5-03: new MONEY-03 repo helpers (snapshot + clarified_fields)
+            # The field-regression helpers (pre-clarify snapshot + clarified_fields).
             "load_pre_clarify_extracted", "load_clarified_fields",
             "set_pre_clarify_extracted", "set_clarified_fields",
-            # Phase 11 (D-11-02): resume_pipeline now writes the consumed marker
-            # right after the CAS claim — this test's mini-store must intercept
-            # both calls or they fall through to the real (DB-backed) repo.
+            # resume_pipeline writes the consumed-reply marker right after its CAS
+            # claim, so the mini-store must intercept these too — otherwise they fall
+            # through to the real DB-backed repo and the test needs a live database.
             "get_clarification_round", "mark_reply_consumed", "load_consumed_replies",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
@@ -353,21 +378,26 @@ def test_partial_reply_preserves_hours():
     # AND the reply body (the corrected name) — so partial replies don't lose hours.
     assert "38 regular hours" in captured["body"], "original hours must be in context"
     assert "David Reyes" in captured["body"], "the reply correction must be in context"
-    assert captured["run_id"] == run_id, "resume must pass the code-owned run_id (FIX A)"
+    assert captured["run_id"] == run_id, (
+        "resume must pass the code-owned run_id into extract, so the rebuilt Extracted "
+        "is bound to the run being resumed rather than to anything the model returned"
+    )
 
 
 # ---------------------------------------------------------------------------
-# test_resume_precondition — CR-02: a resume on a non-awaiting_reply run is a no-op
+# A resume on a non-awaiting_reply run is a no-op
 # ---------------------------------------------------------------------------
 
 
 def test_resume_on_non_awaiting_reply_run_does_not_mutate():
-    """CR-02 — resume_pipeline must re-assert the run is still awaiting_reply BEFORE
-    mutating. A late/duplicate reply that lands after the run advanced (approved /
-    computed / sent / etc.) must be DROPPED: no EXTRACTING flip, no gate re-run, no
-    line-item replacement, and crucially NOT routed to ERROR (a late reply is not a
-    failure). This protects a human-approved run from being clobbered on a status
-    race between the webhook check and the BackgroundTask.
+    """resume_pipeline must re-assert the run is still awaiting_reply BEFORE mutating.
+
+    A late or duplicate reply that lands after the run advanced (approved / computed /
+    sent / …) must be DROPPED: no EXTRACTING flip, no gate re-run, no line-item
+    replacement, and crucially NOT routed to ERROR — a late reply is not a failure.
+    Without the re-check, a status race between the webhook's check and the
+    BackgroundTask could re-extract over an already-approved payroll and replace the
+    numbers a human already signed off on.
     """
     from app.pipeline import orchestrator
 
@@ -392,12 +422,12 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
             "load_run", "load_source_email", "load_roster_for_business",
             "set_status", "claim_status", "record_run_error", "persist_extracted",
             "persist_decision", "persist_reconciliation", "replace_line_items",
-            # 07.5-03: new MONEY-03 repo helpers (snapshot + clarified_fields)
+            # The field-regression helpers (pre-clarify snapshot + clarified_fields).
             "load_pre_clarify_extracted", "load_clarified_fields",
             "set_pre_clarify_extracted", "set_clarified_fields",
-            # Phase 11 (D-11-02): claim_status returns False here (non-awaiting_reply
-            # precondition), so mark_reply_consumed/get_clarification_round are never
-            # reached — patched anyway for consistency/defense-in-depth.
+            # claim_status returns False here (the run is no longer awaiting_reply), so
+            # these are never reached — patched anyway so that if the short-circuit ever
+            # regresses, the test fails on its assertions rather than on a live-DB call.
             "get_clarification_round", "mark_reply_consumed", "load_consumed_replies",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
@@ -422,7 +452,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
     run = store.runs[str(run_id)]
     # The run was NOT touched: still approved (no EXTRACTING / awaiting_approval flip).
     assert run["status"] == "approved", (
-        "a resume on a non-awaiting_reply run must NOT mutate its status (CR-02)"
+        "a resume on a non-awaiting_reply run must NOT mutate its status"
     )
     # And it was NOT clobbered to ERROR — a late reply is dropped, not an error.
     assert run["error_reason"] is None, "a late/duplicate reply must NOT route to ERROR"
@@ -434,7 +464,7 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
 
 
 def _fake_extracted_unused(run_id: uuid.UUID):
-    """An Extracted only used to prove extract() was NOT called (CR-02 short-circuit)."""
+    """An Extracted used only to prove extract() was NOT called on the short-circuit."""
     from decimal import Decimal
 
     from app.models.contracts import Extracted, ExtractedEmployee
@@ -447,13 +477,13 @@ def _fake_extracted_unused(run_id: uuid.UUID):
 
 
 # ---------------------------------------------------------------------------
-# test_resume_stamps_run_id — FIX A
+# resume stamps the code-owned run_id into extract
 # ---------------------------------------------------------------------------
 
 
 def test_resume_stamps_run_id():
-    """resume passes the run's code-owned run_id into extract so the rebuilt
-    Extracted.run_id == the resumed run (FIX A)."""
+    """resume passes the run's code-owned run_id into extract, so the rebuilt
+    Extracted.run_id always equals the resumed run and never a model-supplied value."""
     import inspect
 
     from app.pipeline import orchestrator
@@ -495,13 +525,17 @@ def test_idempotent_resume(client, fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# test_late_reply_logged_not_resumed — FIX 10
+# A late reply is observed, never resumed
 # ---------------------------------------------------------------------------
 
 
 def test_late_reply_logged_not_resumed(client, fake_repo, mock_llm):
     """A header match to a run NOT in awaiting_reply (e.g. sent/reconciled) is found
-    via find_any_run_for_header and logged as a late reply, NOT resumed (FIX 10)."""
+    via find_any_run_for_header and logged as a late reply, never resumed.
+
+    The any-status lookup exists purely for observability: it lets a late reply be
+    attributed to its run without giving it the power to restart one.
+    """
     run_id, msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
 
     # Move the run OUT of awaiting_reply (simulate it already resolved / sent).
@@ -521,7 +555,7 @@ def test_late_reply_logged_not_resumed(client, fake_repo, mock_llm):
 
     # The late reply did NOT resume — the run stays at sent (only awaiting_reply resumes).
     assert fake_repo.load_run(run_id)["status"] == "sent", (
-        "a header match to a non-awaiting_reply run must NOT resume (FIX 10)"
+        "a header match to a non-awaiting_reply run must NOT resume"
     )
     # The response surfaces the late-reply observation (not a fresh accepted run).
     assert r.json().get("status") == "late_reply"
@@ -529,7 +563,11 @@ def test_late_reply_logged_not_resumed(client, fake_repo, mock_llm):
 
 def test_webhook_uses_both_header_lookups():
     """The webhook calls find_awaiting_reply_for_header for resume AND
-    find_any_run_for_header for late-reply observability (FIX 10)."""
+    find_any_run_for_header for late-reply observability.
+
+    Collapsing the two lookups into one would either resume runs that must not be
+    resumed, or make late replies vanish without a trace.
+    """
     import inspect
 
     import app.routes.webhook as webhook_mod
@@ -540,14 +578,14 @@ def test_webhook_uses_both_header_lookups():
 
 
 # ---------------------------------------------------------------------------
-# Task 2 — the reply fixture completes the clarify→reply→resume loop (EMAIL-01)
+# The committed reply fixture completes the clarify→reply→resume loop (EMAIL-01)
 # ---------------------------------------------------------------------------
 
 
 def test_clarify_reply_fixture_validates_as_inbound_email():
     """The committed reply fixture validates as a canonical InboundEmail, carries an
-    in_reply_to slot, and its from_addr equals the gate-block run's business contact
-    (so it passes the FIX-5 sender revalidation)."""
+    in_reply_to slot, and its from_addr equals the gate-block run's business contact —
+    so it survives the sender revalidation rather than being dropped as a spoof."""
     from app.db.seed import seed
 
     payload = json.loads(_CLARIFY_REPLY_FIXTURE.read_text())
@@ -559,23 +597,28 @@ def test_clarify_reply_fixture_validates_as_inbound_email():
     seeded_emails = {b["contact_email"] for b in seed(dry_run=True).businesses}
     assert email.from_addr in seeded_emails
     assert email.from_addr == _METRO_DELI_CONTACT, (
-        "from_addr must equal the gate-block run's business (FIX-5 revalidation)"
+        "from_addr must equal the gate-block run's business, or the sender revalidation "
+        "drops the reply and the loop never resumes"
     )
-    # Answer-only: the reply corrects the name but does NOT restate the hours
-    # (so the resume exercises the FIX-4 partial-reply-preserves-hours path).
+    # Answer-only: the reply corrects the name but does NOT restate the hours, so the
+    # resume exercises the partial-reply-preserves-hours path rather than a lucky
+    # re-statement of the numbers.
     assert "David Reyes" in email.body_text
     assert "38" not in email.body_text, "the reply must NOT restate hours (partial reply)"
 
 
 def test_clarify_reply_fixture_completes_full_loop(client, fake_repo, mock_llm):
-    """The full clarify→reply→resume loop with ZERO real email (EMAIL-01, CLAR-03):
+    """The full clarify→reply→resume loop with ZERO real email (EMAIL-01, CLAR-03).
 
-    gate-block fixture → awaiting_reply → read back the clarification Message-ID via
-    the FIX-3 email_messages anchor → substitute it into the reply payload → ASSERT
-    the substitution took (the placeholder is gone) BEFORE the POST so a broken
-    substitution fails LOUDLY here instead of silently routing to the no-match branch
-    (WARNING 8) → POST the reply → the run resumes at extraction over (original
-    cleaned body + reply body) and advances, retaining the original hours.
+    gate-block fixture → awaiting_reply → read back the clarification Message-ID from
+    its email_messages anchor → substitute it into the reply payload → ASSERT the
+    substitution took (the placeholder is gone) BEFORE the POST → POST the reply → the
+    run resumes at extraction over (original cleaned body + reply body) and advances,
+    retaining the original hours.
+
+    The pre-POST substitution assertion is load-bearing: a broken substitution would
+    still return 200, but via the no-header-match branch — the test would pass while
+    proving nothing about resume.
     """
     # 1. Drive the gate-block fixture to awaiting_reply.
     run_id, clarification_msg_id = _drive_to_awaiting_reply(client, fake_repo, mock_llm)
@@ -586,9 +629,9 @@ def test_clarify_reply_fixture_completes_full_loop(client, fake_repo, mock_llm):
     substituted = raw.replace(_CLARIFICATION_PLACEHOLDER, clarification_msg_id)
     reply_payload = json.loads(substituted)
 
-    # 3. ASSERT the substitution took BEFORE the POST (WARNING 8 — fail loudly, not
-    #    via the no-match branch). The reply's in_reply_to now equals the captured
-    #    clarification Message-ID and the placeholder token is gone.
+    # 3. ASSERT the substitution took BEFORE the POST — fail loudly here rather than
+    #    silently falling through the no-match branch. The reply's in_reply_to now
+    #    equals the captured clarification Message-ID and the placeholder token is gone.
     assert _CLARIFICATION_PLACEHOLDER not in json.dumps(reply_payload), (
         "the placeholder must be fully substituted before POSTing"
     )
@@ -704,7 +747,11 @@ class _MiniStore:
         self.runs[str(run_id)]["status"] = RunStatus(status).value
 
     def claim_status(self, run_id, expected, new, conn=None):
-        """Atomic CAS for _MiniStore (mirrors repo.claim_status, D-12/FOUND-04)."""
+        """Compare-and-set the run's status, mirroring repo.claim_status (FOUND-04).
+
+        Returns False when the run is not in the expected status — that False is the
+        short-circuit the late-reply test depends on.
+        """
         from app.models.status import RunStatus
 
         run = self.runs.get(str(run_id))
@@ -718,9 +765,10 @@ class _MiniStore:
     def record_run_error(
         self, run_id, reason, conn=None, *, detail_exc=None, stage=None, roster=None
     ):
-        # OPS2-01: accept the new keyword-only extras without erroring — mirrors
-        # the real repo.record_run_error's conn-positional-then-keyword-only shape
-        # (tests/conftest.py's InMemoryRepo mirrors the same shape, review fix #8).
+        # Mirrors the real repo.record_run_error's conn-positional-then-keyword-only
+        # shape (as does tests/conftest.py's InMemoryRepo): the keyword-only extras must
+        # be accepted without erroring, or a caller that passes them blows up in the
+        # double instead of exercising the error path under test.
         self.runs[str(run_id)]["error_reason"] = reason
 
     def persist_extracted(self, run_id, extracted, conn=None):
@@ -738,29 +786,29 @@ class _MiniStore:
         pass
 
     def load_pre_clarify_extracted(self, run_id, conn=None):
-        """D-19 MONEY-03: return pre-clarify snapshot (always None in this mini-store)."""
+        """No pre-clarify snapshot exists here — field regression is not under test."""
         return None
 
     def load_clarified_fields(self, run_id, conn=None):
-        """D-13 MONEY-03: return clarified fields (always {} in this mini-store)."""
+        """No fields have been clarified here — field regression is not under test."""
         return {}
 
     def set_pre_clarify_extracted(self, run_id, extracted, conn=None):
-        """D-19 MONEY-03: no-op in mini-store."""
+        """No-op: this mini-store does not exercise the snapshot write."""
         return True
 
     def set_clarified_fields(self, run_id, clarified, conn=None):
-        """D-13 MONEY-03: no-op in mini-store."""
+        """No-op: this mini-store does not exercise the clarified-fields write."""
         pass
 
     def get_clarification_round(self, run_id, conn=None):
-        """D-11-01: always round 0 in this mini-store (no round machine under test here)."""
+        """Always round 0 — the multi-round machine is not under test here."""
         return 0
 
     def mark_reply_consumed(self, message_id, round, conn=None):
-        """D-11-02: no-op in mini-store — this test does not exercise accumulation."""
+        """No-op: this test does not exercise multi-round context accumulation."""
         pass
 
     def load_consumed_replies(self, run_id, conn=None):
-        """D-11-10/12/13: no prior consumed replies in this mini-store (single-round test)."""
+        """No prior consumed replies — this is a single-round test."""
         return []

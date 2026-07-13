@@ -1,8 +1,15 @@
-"""Field-validation stage tests (LLM-06; review FIX 1). Pure, DB-free, no model.
+"""Field-validation stage tests (LLM-06). Pure, DB-free, no model.
 
-validate() emits issue_type="missing" for an absent required hours field and does
-NOT (structurally cannot) emit `non_numeric` over a typed Extracted — non-numeric
-values fail at the extraction parse boundary, not here (FIX 1).
+validate() is one of the four pure judgment stages: it emits issue_type="missing" for
+an absent required hours field, and structurally CANNOT emit `non_numeric` over a typed
+Extracted — a non-numeric value already failed at the extraction parse boundary, so any
+non_numeric issue here would mean the type contract had been bypassed.
+
+Two rule families are covered:
+  - the paid-hours gate: an hourly employee with no PAID hours must gate to
+    clarification rather than ship a $0 paystub (MONEY-01);
+  - the over-40-no-overtime guard: hours above the weekly/biweekly threshold with no
+    overtime field is an ambiguity the system must ask about, not guess at.
 """
 from __future__ import annotations
 
@@ -72,8 +79,12 @@ def test_present_hours_produce_no_missing(roster_from_seed):
 
 
 def test_validate_never_emits_non_numeric(roster_from_seed):
-    """FIX 1: over a TYPED Extracted, validate() can never produce a non_numeric
-    issue — a non-numeric value already failed at the extraction parse boundary."""
+    """Over a TYPED Extracted, validate() can never produce a non_numeric issue.
+
+    Decimal fields cannot hold a non-numeric value — one would have failed at the
+    extraction parse boundary. A non_numeric issue emitted here would mean validate is
+    re-parsing strings it should never see.
+    """
     maria = next(e for e in roster_from_seed.employees if e.full_name == "Maria Chen")
     extracted = _extracted(
         [ExtractedEmployee(submitted_name="Maria Chen", hours_regular=Decimal("40"))]
@@ -81,22 +92,27 @@ def test_validate_never_emits_non_numeric(roster_from_seed):
     matches = [_match("Maria Chen", maria.id)]
     issues = validate(extracted, roster_from_seed, matches)
     assert all(i.issue_type != "non_numeric" for i in issues), (
-        "validate() must never classify non_numeric (it's an extraction-stage "
-        "parse failure, FIX 1)"
+        "validate() must never classify non_numeric — that is an extraction-stage "
+        "parse failure, caught before this stage runs"
     )
 
 
 # ---------------------------------------------------------------------------
-# D-05: Over-40-no-OT guard — Wave 0 RED stubs
+# The over-threshold-no-overtime guard.
 #
-# These tests WILL FAIL RED until Wave 1 Plan 03 adds the _employee_pay_periods_per_year
-# helper and the OT rule loop to validate.py. That is the expected Wave 0 outcome.
+# The system cannot distinguish "40 regular + 5 overtime" from "45 straight time", and
+# guessing costs real money (overtime is paid at 1.5x). So above-threshold hours with
+# no overtime field must gate to clarification instead of being silently paid straight.
 #
-# Rule summary (D-05):
+# Rule:
 #   - weekly (pay_periods_per_year=52): regular > 40 AND no OT → flag
 #   - biweekly (pay_periods_per_year=26): regular > 80 AND no OT → flag (partial)
-#   - semi-monthly / monthly (ppy 24/12): no flag (period crosses workweeks — limitation)
-#   - explicit hours_overtime=0 is treated same as None (recommended decision)
+#   - semi-monthly / monthly (ppy 24/12): no flag — these periods cross workweek
+#     boundaries, so the hours total alone cannot prove any single week exceeded 40.
+#     A documented limitation, not an oversight.
+#   - explicit hours_overtime=0 is treated the same as absent: a client reporting
+#     "0 OT" alongside 45 regular hours is in exactly the same ambiguous position as
+#     one who omitted the field.
 # ---------------------------------------------------------------------------
 
 
@@ -149,9 +165,9 @@ def _make_biweekly_hourly_employee(name: str = "Biweekly Worker") -> Employee:
 def _make_semimonthly_salary_employee(name: str = "Semimonthly Worker") -> Employee:
     """Build a minimal semi-monthly (pay_periods_per_year=24) salaried Employee inline.
 
-    Semi-monthly used for the documented-limitation test (no OT flag, ppy=24).
-    Salary employee used because the OT rule does not apply to salaried staff anyway
-    — this makes the no-flag case doubly-clean for the documented-limitation test.
+    Semi-monthly (ppy=24) is the pay frequency the overtime rule deliberately skips.
+    A salaried employee is used because the overtime rule does not apply to salaried
+    staff either — which makes the expected no-flag outcome doubly unambiguous.
     """
     from app.models.roster import Employee
 
@@ -182,14 +198,11 @@ def _one_employee_roster(emp: Employee) -> Roster:
 
 
 def test_ot_rule_weekly_flagged():
-    """D-05: weekly (pay_periods_per_year=52) hourly employee with hours_regular=45
-    and hours_overtime=None → validate() emits at least one ValidationIssue whose
-    message contains 'overtime'.
+    """A weekly hourly employee with hours_regular=45 and no overtime field is flagged.
 
-    45 regular hours > 40 with no OT field is a data integrity question — the system
-    cannot distinguish '40 regular + 5 OT' from '45 straight time'.
-
-    Will fail RED until Wave 1 adds the OT rule to validate.py.
+    45 regular hours with no overtime field is ambiguous: the system cannot tell
+    '40 regular + 5 OT' from '45 straight time'. Paying it straight underpays the
+    employee by the half-time premium on 5 hours, so it must be asked about.
     """
     emp = _make_weekly_hourly_employee("Maria Weekly")
     roster = _one_employee_roster(emp)
@@ -201,19 +214,17 @@ def test_ot_rule_weekly_flagged():
     issues = validate(extracted, roster, matches)
 
     assert any("overtime" in i.message.lower() for i in issues), (
-        "D-05: a weekly hourly employee with hours_regular=45 and no overtime field "
-        "must emit a ValidationIssue mentioning 'overtime' (Wave 1 impl target)"
+        "a weekly hourly employee with hours_regular=45 and no overtime field must emit "
+        "a ValidationIssue mentioning 'overtime' — paying it straight underpays"
     )
 
 
 def test_ot_rule_biweekly_flagged():
-    """D-05: biweekly (pay_periods_per_year=26) hourly employee with hours_regular=85
-    and hours_overtime=None → validate() emits a ValidationIssue.
+    """A biweekly hourly employee with hours_regular=85 and no overtime field is flagged.
 
-    85 regular hours over 2 weeks guarantees OT in at least one week (>80 threshold
-    — partial detection for biweekly periods per D-05).
-
-    Will fail RED until Wave 1 adds the OT rule to validate.py.
+    85 regular hours across 2 weeks means at least one week necessarily exceeded 40, so
+    overtime is owed somewhere in the period even though the split is unknown. Detection
+    is partial by construction: only the >80 total is provable from the total alone.
     """
     emp = _make_biweekly_hourly_employee("Sandra Biweekly")
     roster = _one_employee_roster(emp)
@@ -225,18 +236,17 @@ def test_ot_rule_biweekly_flagged():
     issues = validate(extracted, roster, matches)
 
     assert any("overtime" in i.message.lower() for i in issues), (
-        "D-05: a biweekly hourly employee with hours_regular=85 (>80) and no overtime "
-        "field must emit a ValidationIssue mentioning 'overtime' (Wave 1 impl target)"
+        "a biweekly hourly employee with hours_regular=85 (>80) and no overtime field "
+        "must emit a ValidationIssue mentioning 'overtime'"
     )
 
 
 def test_ot_rule_biweekly_not_flagged_below_threshold():
-    """D-05: biweekly employee with hours_regular=78 (below 80 threshold) and no OT
-    → validate() emits NO OT-related issue.
+    """A biweekly employee with hours_regular=78 and no overtime emits NO overtime issue.
 
-    78 hours over 2 weeks is below the 80-hour biweekly threshold, so no flag.
-
-    Will fail RED until Wave 1 adds the OT rule to validate.py (the threshold check).
+    78 hours across 2 weeks is below the 80-hour biweekly threshold, so no week is
+    provably over 40 and there is nothing to ask about. Applying the weekly threshold of
+    40 here would flag every ordinary biweekly run and bury the operator in noise.
     """
     emp = _make_biweekly_hourly_employee("Sandra Below Threshold")
     roster = _one_employee_roster(emp)
@@ -248,21 +258,18 @@ def test_ot_rule_biweekly_not_flagged_below_threshold():
     issues = validate(extracted, roster, matches)
 
     assert not any("overtime" in i.message.lower() for i in issues), (
-        "D-05: a biweekly employee with hours_regular=78 (below 80 threshold) must "
-        "NOT emit an OT ValidationIssue (Wave 1 impl target — threshold is 80 for "
-        "biweekly, not 40)"
+        "a biweekly employee with hours_regular=78 (below the 80-hour threshold) must "
+        "NOT emit an overtime ValidationIssue — the biweekly threshold is 80, not 40"
     )
 
 
 def test_ot_rule_no_flag_semimonthly():
-    """D-05 documented limitation: a semi-monthly (pay_periods_per_year=24) employee
-    with hours_regular=100 and no OT → validate() emits NO OT-related flag.
+    """A semi-monthly employee with hours_regular=100 and no overtime is NOT flagged.
 
-    Semi-monthly pay periods cross workweek boundaries in non-trivial ways; detecting
-    OT reliably requires knowing the exact period start/end relative to workweeks.
-    D-05 explicitly documents this as a limitation: ppy in (24, 12) → no OT flag.
-
-    Will fail RED until Wave 1 adds the OT rule loop (which skips ppy=24).
+    This is a deliberate limitation. Semi-monthly and monthly periods cross workweek
+    boundaries, so a high period total does not prove any single week exceeded 40 —
+    reliable detection would need the period's start/end aligned to workweeks. Flagging
+    on the total anyway would clarify on runs that are perfectly fine.
     """
     emp = _make_semimonthly_salary_employee("Chris Semimonthly")
     roster = _one_employee_roster(emp)
@@ -274,21 +281,19 @@ def test_ot_rule_no_flag_semimonthly():
     issues = validate(extracted, roster, matches)
 
     assert not any("overtime" in i.message.lower() for i in issues), (
-        "D-05 documented limitation: a semi-monthly employee (ppy=24) with high "
-        "hours_regular must NOT emit an OT flag — period crosses workweek boundaries "
-        "(Wave 1 impl target — ppy 24/12 is explicitly excluded from OT detection)"
+        "a semi-monthly employee (ppy=24) with high hours_regular must NOT emit an "
+        "overtime flag — the period crosses workweek boundaries, so ppy 24 and 12 are "
+        "excluded from overtime detection by design"
     )
 
 
 def test_ot_rule_explicit_zero_flagged():
-    """D-05 edge: a weekly hourly employee with hours_regular=45 AND hours_overtime=0
-    (explicit zero, not None) → validate() DOES emit a ValidationIssue.
+    """hours_regular=45 with an EXPLICIT hours_overtime=0 is still flagged.
 
-    Per D-05 recommended decision: treat explicit 0 same as absent (ot_missing = True
-    when hours_overtime is None OR hours_overtime == 0). A client who submits '0 OT'
-    for 45 regular hours is in the same ambiguous situation as a client who omits OT.
-
-    Will fail RED until Wave 1 adds the OT rule (with the explicit-zero case).
+    Explicit zero is treated the same as absent (ot_missing when hours_overtime is None
+    OR == 0). A client reporting '0 OT' against 45 regular hours is in exactly the same
+    ambiguous position as one who omitted the field — and honoring the zero would pay
+    all 45 hours at straight time, underpaying the overtime premium.
     """
     emp = _make_weekly_hourly_employee("Maria ExplicitZero")
     roster = _one_employee_roster(emp)
@@ -297,7 +302,7 @@ def test_ot_rule_explicit_zero_flagged():
             ExtractedEmployee(
                 submitted_name=emp.full_name,
                 hours_regular=Decimal("45"),
-                hours_overtime=Decimal("0"),  # explicit zero — same as absent per D-05
+                hours_overtime=Decimal("0"),  # explicit zero — treated the same as absent
             )
         ]
     )
@@ -306,29 +311,32 @@ def test_ot_rule_explicit_zero_flagged():
     issues = validate(extracted, roster, matches)
 
     assert any("overtime" in i.message.lower() for i in issues), (
-        "D-05 edge: weekly employee with hours_regular=45 AND hours_overtime=0 must "
-        "STILL emit a ValidationIssue — explicit zero treated same as absent per D-05 "
-        "recommended decision (Wave 1 impl target)"
+        "a weekly employee with hours_regular=45 AND an explicit hours_overtime=0 must "
+        "STILL emit a ValidationIssue — an explicit zero is as ambiguous as an absent "
+        "field, and honoring it would pay all 45 hours at straight time"
     )
 
 
 # ---------------------------------------------------------------------------
-# MONEY-01 RED tests (Wave 1 — D-01/D-02/D-03/D-09/D-25)
+# The paid-hours gate (MONEY-01).
 #
-# These tests FAIL RED until Plan 07-02 replaces the `is not None` predicate
-# in any_hours with the shared `_is_paid` predicate (D-09).
-# test_partial_week_not_gated and test_salaried_not_gated_regression_guard
-# are expected to PASS already (D-03 regression guards).
+# The presence test for hours must be "is this field PAID?" (not None AND > 0), not
+# merely "is this field present?" (is not None). Under an is-not-None predicate an
+# hourly employee submitted with an explicit hours_regular=0 looks like they reported
+# hours, no missing issue is emitted, and a $0 paystub ships silently — a failure the
+# run's reconciliation check cannot catch, because $0 reconciles perfectly.
+#
+# The two "not gated" tests below are the counterweight: the gate must fire on the
+# silent-$0 case WITHOUT firing on a genuine partial week or on salaried staff.
 # ---------------------------------------------------------------------------
 
 
 def test_zero_hours_hourly_gates(roster_from_seed):
-    """MONEY-01 RED (D-01/D-02): hourly employee with hours_regular=Decimal('0')
-    and all other four hours fields absent (None) must produce a missing issue.
+    """An hourly employee with hours_regular=0 and no other paid hours must gate.
 
-    RED because current any_hours predicate is `is not None` — Decimal('0') is not
-    None so any_hours=True, the employee is skipped, no issue is emitted, and a $0
-    paystub ships silently. Plan 07-02 fixes this with the _is_paid predicate (D-09).
+    Decimal('0') is not None, so an is-not-None presence check would treat this employee
+    as having reported hours, emit no issue, and ship a $0 paystub without ever asking
+    the client. Zero paid hours is a question, not an answer.
     """
     maria = next(e for e in roster_from_seed.employees if e.full_name == "Maria Chen")
     # hours_regular=0, all other hours fields absent (None)
@@ -340,24 +348,20 @@ def test_zero_hours_hourly_gates(roster_from_seed):
     issues = validate(extracted, roster_from_seed, matches)
 
     assert issues, (
-        "MONEY-01: hourly employee with hours_regular=Decimal('0') and all other hours "
-        "absent must produce a missing issue (D-01/D-02 — current is-not-None bug)"
+        "an hourly employee with hours_regular=Decimal('0') and all other hours absent "
+        "must produce a missing issue — otherwise a $0 paystub ships silently"
     )
     assert any(i.issue_type == "missing" for i in issues), (
-        "MONEY-01: the emitted issue must be issue_type='missing'"
+        "the emitted issue must be issue_type='missing'"
     )
 
 
 def test_partial_week_not_gated(roster_from_seed):
-    """MONEY-01 D-03 regression guard: hourly employee with hours_regular=Decimal('0')
-    AND hours_holiday=Decimal('8') must NOT produce a missing issue.
+    """hours_regular=0 alongside hours_holiday=8 must NOT gate.
 
-    D-03: a genuine partial week (hours_holiday=8 > 0) still processes — the holiday
-    hours are paid, so the zero-hours gate must NOT fire. This guard must stay GREEN
-    before AND after the MONEY-01 fix.
-
-    May already be GREEN (hours_holiday=8 is not None → any_hours=True → no issue).
-    Written explicitly as a D-03 regression guard so it stays green after Plan 07-02.
+    A genuine partial week is fully payable: the holiday hours ARE paid, so the
+    zero-hours gate must not fire. A gate that keyed on hours_regular alone would send
+    a pointless clarification email on every holiday week.
     """
     maria = next(e for e in roster_from_seed.employees if e.full_name == "Maria Chen")
     extracted = _extracted(
@@ -373,57 +377,53 @@ def test_partial_week_not_gated(roster_from_seed):
 
     issues = validate(extracted, roster_from_seed, matches)
 
-    # No missing issue — hours_holiday=8 is a paid field so the employee has work
+    # No missing issue — hours_holiday=8 is a paid field, so the employee did work.
     missing_issues = [i for i in issues if i.issue_type == "missing" and "hours_regular" in i.field]
     assert not missing_issues, (
-        "D-03: partial week (hours_regular=0 but hours_holiday=8) must NOT gate to "
+        "a partial week (hours_regular=0 but hours_holiday=8) must NOT gate to "
         "clarification — the holiday hours are paid and the run should process"
     )
 
 
 def test_predicate_consistency(roster_from_seed):
-    """MONEY-01 RED (D-25): hours_overtime=Decimal('0') must be treated identically
-    to hours_overtime=None when ALL other hours fields are also absent/zero.
+    """hours_overtime=Decimal('0') must gate identically to hours_overtime=None.
 
-    Both represent 'no paid overtime'. The shared _is_paid predicate (D-09) treats
-    both as absent. Currently the `is not None` predicate treats Decimal('0') as
-    present, so the employee with hours_overtime=0 (all others None) produces no
-    missing issue while the None variant does.
-
-    RED because current predicate lets hours_overtime=Decimal('0') pass as present.
-    Plan 07-02 fixes this with the _is_paid shared predicate.
+    Both mean 'no paid overtime', so the paid-hours predicate must not distinguish them.
+    An is-not-None check does: it counts Decimal('0') as present, so an employee with
+    hours_overtime=0 and every other field None slips through the gate while the
+    all-None variant is correctly caught. Same money, two different outcomes.
     """
     maria = next(e for e in roster_from_seed.employees if e.full_name == "Maria Chen")
 
-    # Case 1: all hours None — current code already emits a missing issue
+    # Case 1: all hours None — the baseline the zero case must match.
     extracted_none = _extracted(
         [ExtractedEmployee(submitted_name="Maria Chen")]  # all hours None
     )
     matches = [_match("Maria Chen", maria.id)]
     issues_none = validate(extracted_none, roster_from_seed, matches)
 
-    # Case 2: hours_overtime=Decimal('0'), all others None — currently no issue (bug)
+    # Case 2: hours_overtime=Decimal('0'), all others None — semantically identical.
     extracted_zero = _extracted(
         [ExtractedEmployee(submitted_name="Maria Chen", hours_overtime=Decimal("0"))]
     )
     issues_zero = validate(extracted_zero, roster_from_seed, matches)
 
-    # Both should produce a missing issue (D-25 predicate consistency)
+    # Both must produce a missing issue: the predicate cannot distinguish them.
     assert any(i.issue_type == "missing" for i in issues_none), (
-        "D-25: all-None hours must produce a missing issue (baseline)"
+        "all-None hours must produce a missing issue (the baseline)"
     )
     assert any(i.issue_type == "missing" for i in issues_zero), (
-        "D-25 RED: hours_overtime=Decimal('0') with all other hours absent must gate "
-        "identically to all-None — current is-not-None bug lets it through silently"
+        "hours_overtime=Decimal('0') with all other hours absent must gate identically "
+        "to all-None — an is-not-None predicate lets it through silently"
     )
 
 
 def test_salaried_not_gated_regression_guard(roster_from_seed):
-    """MONEY-01 regression guard: a SALARIED employee with hours_regular=Decimal('0')
-    and all other hours absent must NOT produce a missing issue.
+    """A SALARIED employee with zero hours must NOT gate.
 
-    Salaried employees compute from annual_salary; the zero-hours gate must NEVER apply
-    to them. This guard must stay GREEN before AND after the MONEY-01 fix (Plan 07-02).
+    Salaried pay computes from annual_salary and does not read the hours fields at all,
+    so the paid-hours gate must never apply to them. Applying it would block every
+    salary-only run behind a clarification the client cannot meaningfully answer.
     """
     james = next(e for e in roster_from_seed.employees if e.full_name == "James Okafor")
     extracted = _extracted(
@@ -435,6 +435,6 @@ def test_salaried_not_gated_regression_guard(roster_from_seed):
 
     missing_issues = [i for i in issues if i.issue_type == "missing"]
     assert not missing_issues, (
-        "MONEY-01 regression guard: salaried employees must never be gated on zero hours "
-        "— they compute from annual_salary (D-03 salaried exception)"
+        "salaried employees must never be gated on zero hours — their pay comes from "
+        "annual_salary, so the hours fields carry no money for them"
     )
