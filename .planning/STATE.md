@@ -5,10 +5,10 @@ milestone_name: — Production-Ready Codebase
 current_phase: 15
 current_phase_name: Comment Hygiene & Deferred-Polish Triage
 status: ready
-stopped_at: Phase 15 planned (10 plans, 3 waves)
-last_updated: "2026-07-11T02:23:33.368Z"
-last_activity: 2026-07-10
-last_activity_desc: "Completed quick task 260710-iw0: recruiter-first README rewrite and claim audit"
+stopped_at: Phase 15 planned (11 plans, 3 waves)
+last_updated: "2026-07-13T00:00:00.000Z"
+last_activity: 2026-07-13
+last_activity_desc: "Phase 15 replanned per cross-AI review round 2 (--reviews): 11 plans, checker passed"
 progress:
   total_phases: 4
   completed_phases: 3
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 ## Current Position
 
 Phase: 15 — Comment Hygiene & Deferred-Polish Triage
-Plan: 0/10 complete (3 waves)
+Plan: 0/11 complete (3 waves)
 Status: Ready to execute
-Last activity: 2026-07-11 — Phase 15 planned: 10 plans in 3 waves, checker passed after 1 revision
+Last activity: 2026-07-13 — Phase 15 replanned per cross-AI review round 2: 11 plans in 3 waves (15-01 split into 15-01 + 15-11), checker passed first iteration
 
 ## Performance Metrics
 
