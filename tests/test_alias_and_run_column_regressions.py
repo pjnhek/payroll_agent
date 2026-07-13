@@ -1,22 +1,30 @@
-"""Regression tests for CR-01, CR-02, CR-03 (Phase 5 critical findings).
+"""Regression tests for the repo layer's real SQL, column list, and delivery enrichment.
 
-All three bugs shipped because the mocked InMemoryRepo never exercised the real
-SQL / real column list / real confirmation-subject enrichment.  These tests
+Each bug guarded here shipped because the mocked InMemoryRepo never exercised the
+real SQL / real column list / real confirmation-subject enrichment.  These tests
 close that blind spot by asserting against the real code paths.
 
-CR-01 — update_known_alias must use TEXT[] array operators, not JSONB ops.
-    The schema declares employees.known_aliases as TEXT[] (schema.sql line 32).
-    The old SQL used to_jsonb / jsonb_agg / jsonb_array_elements_text / @>,
-    which PostgreSQL rejects with a type error on every call.
+Invariants locked here:
 
-CR-02 — RUN_COLS must include updated_at.
+update_known_alias must use TEXT[] array operators, not JSONB ops.
+    The schema declares employees.known_aliases as TEXT[], so JSONB functions
+    (to_jsonb / jsonb_agg / jsonb_array_elements_text / @>) are rejected by
+    PostgreSQL with a type error on every call.
+
+RUN_COLS must include updated_at.
     Without it, load_run() never returns updated_at; the retrigger handler's
     stale-run guard always evaluates to False; stale-state recovery is dead.
 
-CR-03 — _deliver must enrich the run dict with business_name + pay_period_label.
+RUN_COLS must include alias_candidates.
+    Without it, the alias-learning WRITE side is a silent no-op against a real DB.
+
+_deliver must enrich the run dict with business_name + pay_period_label.
     confirmation_subject() reads run["business_name"] / run["pay_period_label"].
-    Neither was in the load_run() dict, so every confirmation subject read
-    "Payroll Confirmation — Payroll Run — ".
+    Neither is in the load_run() dict, so without the enrichment every
+    confirmation subject reads "Payroll Confirmation — Payroll Run — ".
+
+Retrigger must clear ALL reply-round context.
+    Otherwise a stale provenance badge can outlive the data that produced it.
 """
 from __future__ import annotations
 
@@ -35,7 +43,7 @@ from app.pipeline.compose_email import confirmation_subject
 
 @pytest.fixture
 def client(fake_repo):
-    """TestClient for the CLAR2-07 retrigger regression tests (mirrors
+    """TestClient for the retrigger regression tests (mirrors
     tests/test_hitl.py's client fixture)."""
     from app.main import app
 
@@ -43,17 +51,16 @@ def client(fake_repo):
 
 
 # ---------------------------------------------------------------------------
-# CR-01 regression: update_known_alias SQL uses TEXT[] ops, NOT JSONB ops
+# update_known_alias SQL uses TEXT[] ops, NOT JSONB ops
 # ---------------------------------------------------------------------------
 
 
-def test_cr01_update_known_alias_sql_uses_text_array_ops(fake_conn):
-    """CR-01: update_known_alias must issue TEXT[]-compatible SQL.
+def test_update_known_alias_sql_uses_text_array_ops(fake_conn):
+    """update_known_alias must issue TEXT[]-compatible SQL.
 
-    employees.known_aliases is TEXT[] (schema.sql line 32).  The old
-    implementation used JSONB functions (to_jsonb, jsonb_agg,
-    jsonb_array_elements_text, @>) which PostgreSQL rejects against a
-    TEXT[] column.
+    employees.known_aliases is declared TEXT[] in the schema.  JSONB functions
+    (to_jsonb, jsonb_agg, jsonb_array_elements_text, @>) are rejected by
+    PostgreSQL against a TEXT[] column.
 
     This test captures the executed SQL via FakeConnection and asserts:
     - The SQL contains TEXT[]-native operators (ANY or unnest).
@@ -77,46 +84,44 @@ def test_cr01_update_known_alias_sql_uses_text_array_ops(fake_conn):
 
     # Must NOT use JSONB-specific functions/operators
     assert "TO_JSONB" not in executed_sql, (
-        "update_known_alias must NOT use to_jsonb() — known_aliases is TEXT[], "
-        "not JSONB (CR-01)"
+        "update_known_alias must NOT use to_jsonb() — known_aliases is TEXT[], not JSONB"
     )
     assert "JSONB_AGG" not in executed_sql, (
-        "update_known_alias must NOT use jsonb_agg() — known_aliases is TEXT[], "
-        "not JSONB (CR-01)"
+        "update_known_alias must NOT use jsonb_agg() — known_aliases is TEXT[], not JSONB"
     )
     assert "JSONB_ARRAY_ELEMENTS_TEXT" not in executed_sql, (
         "update_known_alias must NOT use jsonb_array_elements_text() — "
-        "known_aliases is TEXT[], not JSONB (CR-01)"
+        "known_aliases is TEXT[], not JSONB"
     )
 
     # The idempotency WHERE clause must NOT use the JSONB containment operator @>
-    # against known_aliases (that was the specific PostgreSQL type error).
+    # against known_aliases (that is the specific PostgreSQL type error).
     # Note: @> could still appear in unrelated SQL elsewhere; we check
     # that the WHERE NOT clause uses ANY instead.
     assert "NOT (%S = ANY(" in executed_sql or "NOT (%s = ANY(" in fake_conn.all_sql(), (
         "update_known_alias idempotency guard must use NOT (%s = ANY(known_aliases)), "
-        "not the JSONB containment operator @> (CR-01)"
+        "not the JSONB containment operator @>"
     )
 
 
-def test_cr01_update_known_alias_returns_false_when_alias_absent(fake_conn):
-    """CR-01 behavior: returns False when no row returned (alias absent or id missing).
+def test_update_known_alias_returns_false_when_alias_absent(fake_conn):
+    """Returns False when no row is returned (alias absent or id missing).
 
     FakeConnection returns None from fetchone → the UPDATE RETURNING yields no row
-    → update_known_alias returns False. This verifies the return value semantics
-    are preserved after the TEXT[] fix (True = appended, False = already present).
+    → update_known_alias returns False. This pins the return-value semantics that
+    the TEXT[] implementation must preserve (True = appended, False = already present).
     """
     emp_id = uuid.uuid4()
     # No scripted fetchone → fetchone() returns None → returns False
     result = update_known_alias(emp_id, "New Alias", conn=fake_conn)
     assert result is False, (
         "update_known_alias must return False when RETURNING yields no row "
-        "(alias already present or employee not found) — CR-01"
+        "(alias already present or employee not found)"
     )
 
 
-def test_cr01_update_known_alias_returns_true_when_row_returned(fake_conn):
-    """CR-01 behavior: returns True when RETURNING yields a row (alias was appended).
+def test_update_known_alias_returns_true_when_row_returned(fake_conn):
+    """Returns True when RETURNING yields a row (the alias was appended).
 
     Scripts FakeConnection to return a row from fetchone, simulating the UPDATE
     succeeding and RETURNING the employee id.
@@ -128,17 +133,17 @@ def test_cr01_update_known_alias_returns_true_when_row_returned(fake_conn):
 
     assert result is True, (
         "update_known_alias must return True when RETURNING yields a row "
-        "(alias was appended) — CR-01"
+        "(alias was appended)"
     )
 
 
 # ---------------------------------------------------------------------------
-# CR-02 regression: RUN_COLS must include updated_at
+# RUN_COLS must include updated_at
 # ---------------------------------------------------------------------------
 
 
-def test_cr02_run_cols_contains_updated_at():
-    """CR-02: RUN_COLS must include 'updated_at'.
+def test_run_cols_contains_updated_at():
+    """RUN_COLS must include 'updated_at'.
 
     Without this column, load_run() never returns updated_at, so the retrigger
     handler's stale-run guard always evaluates to False and stale-state recovery
@@ -150,17 +155,17 @@ def test_cr02_run_cols_contains_updated_at():
     assert "updated_at" in RUN_COLS, (
         "RUN_COLS must contain 'updated_at' so load_run() returns it as a "
         "tz-aware datetime and the retrigger stale-run guard can function. "
-        "CR-02: without it, run.get('updated_at') is always None and stale is "
-        "always False, permanently disabling stale-state recovery."
+        "Without it, run.get('updated_at') is always None and stale is always "
+        "False, permanently disabling stale-state recovery."
     )
 
 
-def test_cr02_load_run_select_includes_updated_at(fake_conn):
-    """CR-02: load_run() SELECT must include updated_at in the column list.
+def test_load_run_select_includes_updated_at(fake_conn):
+    """load_run() SELECT must include updated_at in the column list.
 
     Scripts FakeConnection to return a stub row and asserts the executed SQL
-    contains 'updated_at' — this would have caught the original omission at the
-    SQL level, not just the Python constant level.
+    contains 'updated_at' — catching an omission at the SQL level, not just at
+    the Python constant level.
     """
     run_id = uuid.uuid4()
 
@@ -173,43 +178,43 @@ def test_cr02_load_run_select_includes_updated_at(fake_conn):
     executed_sql = fake_conn.all_sql()
     assert "updated_at" in executed_sql, (
         "load_run() SQL must include 'updated_at' in the SELECT column list — "
-        "CR-02: the retrigger stale-run guard depends on it"
+        "the retrigger stale-run guard depends on it"
     )
 
 
 # ---------------------------------------------------------------------------
-# Phase-8 review CR-01 regression: RUN_COLS must include alias_candidates
+# RUN_COLS must include alias_candidates
 # ---------------------------------------------------------------------------
 
 
-def test_cr01_run_cols_contains_alias_candidates():
-    """Phase-8 review CR-01: RUN_COLS must include 'alias_candidates'.
+def test_run_cols_contains_alias_candidates():
+    """RUN_COLS must include 'alias_candidates'.
 
     Two orchestrator paths read alias_candidates from load_run():
-    1. resume_pipeline STEP A — pre-vs-post candidate diff that binds a pending
-       clarify-time token to the newly-resolved employee, and
-    2. _write_aliases_if_safe — the approval-gate write to employees.known_aliases.
+    1. resume_pipeline's candidate diff, which binds a pending clarify-time token
+       to the newly-resolved employee, and
+    2. write_aliases_if_safe — the approval-gate write to employees.known_aliases.
 
     Without the column in RUN_COLS both paths get {} on a real dict_row, so the
     human-confirmation alias-learning WRITE side is a silent no-op against a live
-    DB. Hermetic tests never caught it because InMemoryRepo.load_run returns the
-    full in-memory run dict INCLUDING alias_candidates — the exact fixture-vs-
-    reality gap that also produced the live-gate dateless-email bug.
+    DB. Hermetic tests cannot catch this because InMemoryRepo.load_run returns the
+    full in-memory run dict INCLUDING alias_candidates — the fixture-vs-reality
+    gap this test exists to close.
     """
     assert "alias_candidates" in RUN_COLS, (
         "RUN_COLS must contain 'alias_candidates' so load_run() returns it and "
         "the alias-learning loop (resume binding + approval-gate write) works "
-        "against a real database — phase-8 review CR-01."
+        "against a real database."
     )
 
 
-def test_cr01_alias_candidates_roundtrips_through_real_load_run(fake_conn):
-    """Phase-8 review CR-01: a scripted DB row with alias_candidates set flows
-    through the REAL RUN_COLS-based load_run SQL and comes back on the run dict.
+def test_alias_candidates_roundtrips_through_real_load_run(fake_conn):
+    """A scripted DB row with alias_candidates set flows through the REAL
+    RUN_COLS-based load_run SQL and comes back on the run dict.
 
-    Mirrors test_run_detail_renders_error_detail_end_to_end's pattern: assert on
-    the actual SQL text AND the round-tripped value — NOT on an InMemoryRepo fake
-    (a fake returning full dicts is exactly what masked the original bug).
+    Asserts on the actual SQL text AND the round-tripped value — NOT on an
+    InMemoryRepo fake (a fake returning full dicts is exactly what masks this
+    class of bug).
     """
     run_id = uuid.uuid4()
     scripted_row = {
@@ -234,29 +239,28 @@ def test_cr01_alias_candidates_roundtrips_through_real_load_run(fake_conn):
 
     # The actual SELECT column list (not just the Python constant) carries it.
     assert "alias_candidates" in fake_conn.all_sql(), (
-        "load_run() SQL must include 'alias_candidates' in the SELECT column "
-        "list — phase-8 review CR-01"
+        "load_run() SQL must include 'alias_candidates' in the SELECT column list"
     )
     # And the value the orchestrator reads (run_data.get('alias_candidates'))
     # is the persisted candidate map, not a silent {}.
     assert (run.get("alias_candidates") or {}) == {"Bobby": None}, (
         "load_run() must surface the persisted alias_candidates map to its "
-        "callers (resume binding + _write_aliases_if_safe) — CR-01"
+        "callers (resume binding + write_aliases_if_safe)"
     )
 
 
 # ---------------------------------------------------------------------------
-# CR-03 regression: confirmation_subject uses real business_name + pay_period
+# confirmation_subject uses the real business_name + pay_period
 # ---------------------------------------------------------------------------
 
 
-def test_cr03_confirmation_subject_with_real_business_name():
-    """CR-03: confirmation_subject must render the real business name.
+def test_confirmation_subject_with_real_business_name():
+    """confirmation_subject must render the real business name.
 
-    confirmation_subject(run) reads run.get("business_name", "Payroll Run").
-    After the CR-03 fix, _deliver enriches the run dict before calling it.
-    This test exercises confirmation_subject directly with an enriched run dict
-    and asserts the output contains the real business name, not the fallback.
+    confirmation_subject(run) reads run.get("business_name", "Payroll Run"), so
+    _deliver must enrich the run dict before calling it. This test exercises
+    confirmation_subject directly with an enriched run dict and asserts the
+    output contains the real business name, not the fallback.
     """
     run = {
         "business_name": "Coastal Cleaning Co.",
@@ -266,7 +270,7 @@ def test_cr03_confirmation_subject_with_real_business_name():
 
     assert "Coastal Cleaning Co." in subject, (
         f"confirmation_subject must include the real business name; got: {subject!r}. "
-        "CR-03: _deliver must enrich run dict with business_name before calling "
+        "_deliver must enrich the run dict with business_name before calling "
         "confirmation_subject."
     )
     assert "Payroll Run" not in subject, (
@@ -275,8 +279,8 @@ def test_cr03_confirmation_subject_with_real_business_name():
     )
 
 
-def test_cr03_confirmation_subject_with_pay_period():
-    """CR-03: confirmation_subject must include the pay period label."""
+def test_confirmation_subject_with_pay_period():
+    """confirmation_subject must include the pay period label."""
     run = {
         "business_name": "Metro Deli Group",
         "pay_period_label": "2026-06-01 to 2026-06-07",
@@ -285,16 +289,16 @@ def test_cr03_confirmation_subject_with_pay_period():
 
     assert "2026-06-01 to 2026-06-07" in subject, (
         f"confirmation_subject must include the pay_period_label; got: {subject!r}. "
-        "CR-03: _deliver must format pay_period_start/end into pay_period_label."
+        "_deliver must format pay_period_start/end into pay_period_label."
     )
 
 
-def test_cr03_confirmation_subject_fallback_when_empty_dict():
-    """CR-03: the fallback values must fire when keys are absent (not raise).
+def test_confirmation_subject_fallback_when_empty_dict():
+    """The fallback values must fire when keys are absent (not raise).
 
-    This verifies the pre-fix behavior (fallback "Payroll Run" / empty period)
-    so we know exactly what the failure mode was and confirm the function itself
-    does not raise on a partial dict.
+    Pins the degraded-but-safe behaviour (fallback "Payroll Run" / empty period)
+    so the failure mode is explicit and the function provably does not raise on a
+    partial dict.
     """
     subject = confirmation_subject({})
     assert subject == "Payroll Confirmation — Payroll Run — ", (
@@ -302,15 +306,15 @@ def test_cr03_confirmation_subject_fallback_when_empty_dict():
     )
 
 
-def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
-    """CR-03: _deliver must enrich the run dict with business_name from the DB.
+def test_deliver_enriches_run_dict_with_business_name(monkeypatch):
+    """_deliver must enrich the run dict with business_name from the DB.
 
     Uses monkeypatching to stub repo.load_business_name and captures the subject
     line passed to gateway.send_outbound to verify it contains the real name.
 
-    This is the end-to-end test of the CR-03 fix path: load_run() dict has only
-    business_id → _deliver calls load_business_name → enriches dict → subject
-    contains the real business name.
+    This is the end-to-end exercise of the enrichment path: the load_run() dict
+    has only business_id → _deliver calls load_business_name → enriches the dict
+    → the subject contains the real business name.
     """
     import app.db.repo as repo
     import app.email.gateway as gw
@@ -333,7 +337,7 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
         "source_email_id": None,
         "updated_at": datetime.now(UTC),
         # Intentionally NO business_name or pay_period_label — these must be
-        # computed by _deliver (CR-03 fix).
+        # computed by _deliver.
     }
 
     # Track the subject passed to send_outbound.
@@ -370,15 +374,15 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     monkeypatch.setattr(repo, "load_inbound_email", _fake_load_inbound_email)
     monkeypatch.setattr(repo, "set_status", _fake_set_status)
     monkeypatch.setattr(gw, "send_outbound", _fake_send_outbound)
-    # 06-08: _deliver now checks the record_only flag; stub to False (live path)
+    # _deliver checks the record_only flag; stub to False (live path)
     monkeypatch.setattr(repo, "get_record_only_flag", lambda *a, **kw: False, raising=False)
 
-    # Also stub _write_aliases_if_safe (called inside _deliver before SENT).
+    # Also stub write_aliases_if_safe (called inside _deliver before SENT).
     from app.pipeline import alias_learning
     monkeypatch.setattr(
         alias_learning, "write_aliases_if_safe", lambda *a, **kw: None, raising=False
     )
-    # 09-02: _deliver's finalize sequence now opens its own transaction.
+    # _deliver's finalize sequence opens its own transaction.
     from tests.conftest import patch_get_connection
     patch_get_connection(monkeypatch, repo)
 
@@ -390,8 +394,8 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     subject = captured_subjects[0]
     assert "Coastal Cleaning Co." in subject, (
         f"_deliver must enrich run with real business_name before composing confirmation; "
-        f"got subject: {subject!r}. CR-03: load_run() returns business_id only; "
-        f"_deliver must call load_business_name to resolve the display name."
+        f"got subject: {subject!r}. load_run() returns business_id only; _deliver must "
+        f"call load_business_name to resolve the display name."
     )
     assert "Payroll Run" not in subject, (
         f"_deliver must NOT fall back to 'Payroll Run' when business_name is loaded; "
@@ -403,11 +407,11 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     )
 
 
-def test_cr03_load_business_name_sql_uses_businesses_table(fake_conn):
-    """CR-03: load_business_name must query the businesses table by id.
+def test_load_business_name_sql_uses_businesses_table(fake_conn):
+    """load_business_name must query the businesses table by id.
 
     Verifies the SQL shape (parameterized — business_id in params, not f-string)
-    so the fix is robust against SQL injection and matches the project's
+    so the lookup is robust against SQL injection and matches the project's
     parameterized-SQL discipline.
     """
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -419,7 +423,7 @@ def test_cr03_load_business_name_sql_uses_businesses_table(fake_conn):
 
     executed_sql = fake_conn.all_sql().upper()
     assert "BUSINESSES" in executed_sql, (
-        "load_business_name must query the businesses table (CR-03)"
+        "load_business_name must query the businesses table"
     )
     # The business_id must be passed as a parameter, not embedded in the SQL.
     assert any(
@@ -432,17 +436,16 @@ def test_cr03_load_business_name_sql_uses_businesses_table(fake_conn):
 
 
 # ---------------------------------------------------------------------------
-# CLAR2-07 regression (Plan 11-05, D-11-04/WR-06): retrigger clears ALL reply
-# context after the winning claim, before _run_pipeline is scheduled — so a
-# stale provenance badge (is_round_2 = bool(clarified)) cannot outlive the
-# data that produced it.
+# Retrigger clears ALL reply context after the winning claim, before the
+# pipeline re-run is scheduled — so a stale provenance badge
+# (is_round_2 = bool(clarified)) cannot outlive the data that produced it.
 # ---------------------------------------------------------------------------
 
 
 def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
     """Seed a claimable ERROR run carrying non-empty reply-round context —
     clarified_fields, a pre_clarify_extracted snapshot, clarification_round > 0,
-    and alias_candidates set — the exact state WR-06 must wipe on retrigger."""
+    and alias_candidates set — the exact state retrigger must wipe."""
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id: uuid.UUID = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.ERROR)
@@ -458,10 +461,10 @@ def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
     return run_id
 
 
-def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
-    """CLAR2-07: retrigger clears clarified_fields, pre_clarify_extracted,
+def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
+    """Retrigger clears clarified_fields, pre_clarify_extracted,
     clarification_round, AND alias_candidates after the winning claim — and
-    still dispatches the re-run (D-11-04, WR-06)."""
+    still dispatches the re-run."""
     import app.routes.pipeline_glue as app_main
 
     dispatched: list[uuid.UUID] = []
@@ -486,17 +489,17 @@ def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypat
         f"retrigger must clear alias_candidates; got {run.get('alias_candidates')!r}"
     )
     assert dispatched == [run_id], (
-        "retrigger must still dispatch _run_pipeline for the claimed run after "
-        f"clearing reply context; got {dispatched}"
+        "retrigger must still dispatch the pipeline re-run for the claimed run "
+        f"after clearing reply context; got {dispatched}"
     )
 
 
-def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
+def test_retrigger_clears_context_on_stale_inflight_claim(
     client, fake_repo, monkeypatch
 ):
-    """CLAR2-07: the SAME clear must fire on the stale-in-flight CAS branch
-    (not just the ERROR/APPROVED core CAS) — both winning branches converge on
-    one clear_reply_context call before _run_pipeline is scheduled."""
+    """The SAME clear must fire on the stale-in-flight CAS branch (not just the
+    ERROR/APPROVED core CAS) — both winning branches converge on one
+    clear_reply_context call before the pipeline re-run is scheduled."""
     from datetime import datetime, timedelta
 
     import app.routes.pipeline_glue as app_main
@@ -525,16 +528,16 @@ def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
     assert run_after.get("clarification_round") == 0
     assert run_after.get("alias_candidates") is None
     assert dispatched == [run_id], (
-        "the stale in-flight retrigger branch must also dispatch _run_pipeline "
-        f"after clearing reply context; got {dispatched}"
+        "the stale in-flight retrigger branch must also dispatch the pipeline "
+        f"re-run after clearing reply context; got {dispatched}"
     )
 
 
-def test_clar207_stale_provenance_cannot_reproduce_after_retrigger(client, fake_repo, monkeypatch):
-    """CLAR2-07: after retrigger wipes clarified_fields, `is_round_2 =
-    bool(clarified)` for the re-run must see an EMPTY clarified_fields — the
-    persisted/derived state a fresh run would see — not the pre-retrigger
-    provenance. Asserted on the persisted column (not a rendered label)."""
+def test_stale_provenance_cannot_reproduce_after_retrigger(client, fake_repo, monkeypatch):
+    """After retrigger wipes clarified_fields, `is_round_2 = bool(clarified)` for
+    the re-run must see an EMPTY clarified_fields — the persisted/derived state a
+    fresh run would see — not the pre-retrigger provenance. Asserted on the
+    persisted column (not a rendered label)."""
     import app.routes.pipeline_glue as app_main
 
     monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: None)

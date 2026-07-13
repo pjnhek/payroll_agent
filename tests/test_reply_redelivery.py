@@ -1,30 +1,33 @@
-"""WR-04 redelivery + D-11-05 stranded auto-resume tests (CLAR2-06, Plan 11-05).
+"""Reply redelivery + stranded auto-resume: no reply is ever permanently dropped.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
 tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
-gated on `os.environ.get("DATABASE_URL")` being unset (see
-tests/test_multiround_context_edge.py's docstring for the verified detail).
-That marker silently skips the ENTIRE module offline. This module is genuinely
-hermetic (fake_repo + a monkeypatched _resume_pipeline spy only, no live DB/
-LLM) and must run unconditionally offline, so it carries NO module-level
-conditional-skip marker of any kind.
+gated on `os.environ.get("DATABASE_URL")` being unset. That marker silently skips
+the ENTIRE module offline. This module is genuinely hermetic (fake_repo + a
+monkeypatched resume spy only, no live DB/LLM) and must run unconditionally
+offline, so it carries NO module-level conditional-skip marker of any kind.
 
 WHAT THIS MODULE PROVES (assert REAL re-schedule facts, never a log string):
   1. unconsumed redelivery reschedules: a redelivered webhook whose persisted
      reply row is still unconsumed AND whose run is still awaiting_reply
-     re-schedules _resume_pipeline with the run_id and a _row_to_inbound-built
-     reply whose body_text equals the PERSISTED (already-cleaned) body — never
-     re-cleaned from the redelivered request (D-11-03, Pitfall #11a).
+     re-schedules the resume with the run_id and a reply whose body_text equals
+     the PERSISTED (already-cleaned) body — never re-cleaned from the redelivered
+     request, which would double-strip the quoted section.
   2. consumed redelivery no-ops: the same seed, but consumed_round is already
      set — NO re-schedule; the duplicate JSONResponse is still returned.
-  3. redelivery to a non-awaiting_reply run no-ops: reply row unconsumed but
-     the run already advanced (e.g. reconciled) — NO re-schedule.
-  4. runs-list stranded auto-resume: GET /runs re-schedules _resume_pipeline
-     for a stale unconsumed reply against an awaiting_reply run; a FRESH
-     unconsumed reply (not past the stale threshold) is NOT scheduled (D-11-05).
-  5. needs_operator excluded (D-11-06): a needs_operator run with a stale
-     unconsumed reply is NEVER re-scheduled by the runs-list load — the query
-     scope structurally excludes it.
+  3. redelivery to a non-awaiting_reply run no-ops: the reply row is unconsumed
+     but the run already advanced (e.g. reconciled) — NO re-schedule.
+  4. runs-list stranded auto-resume: GET /runs re-schedules the resume for a
+     STALE unconsumed reply against an awaiting_reply run; a FRESH unconsumed
+     reply (not past the stale threshold) is NOT scheduled, so a reply still in
+     flight is never raced.
+  5. needs_operator excluded: a needs_operator run with a stale unconsumed reply
+     is NEVER re-scheduled by the runs-list load — the query scope structurally
+     excludes it, because needs_operator exits only via /resolve or reject.
+  6. a sender-mismatched reply is never resumed by EITHER seam (redelivery or the
+     stranded sweep). A reply linked by the RFC header chain but sent from an
+     address that does not belong to the run's business must stay unconsumed
+     forever: resuming it would let an outsider drive another business's payroll.
 """
 from __future__ import annotations
 
@@ -86,15 +89,14 @@ def _seed_awaiting_reply_run_with_reply(
     """Seed a run + a persisted, LINKED inbound reply row against it.
 
     Mirrors the real webhook's insert_inbound_email + link_email_to_run
-    sequence (WR-03) — the exact shape get_inbound_by_message_id/
+    sequence — the exact shape get_inbound_by_message_id /
     find_stranded_unconsumed_replies read at runtime. Returns (run_id, row).
 
-    `reply_from_addr` (GAP-5/CR-5): override for the LINKED REPLY row's
-    from_addr only — the run's owning business is still seeded via
-    COASTAL_EMAIL/COASTAL_BIZ_ID. Defaults to COASTAL_EMAIL (sender-matching,
-    the pre-existing behavior every pre-Plan-11-10 test in this file relies
-    on) so this override is purely additive — no existing call site changes
-    shape or behavior.
+    `reply_from_addr` overrides the LINKED REPLY row's from_addr only — the run's
+    owning business is still seeded via COASTAL_EMAIL/COASTAL_BIZ_ID, which is
+    what lets a caller construct a sender-MISMATCHED reply. It defaults to
+    COASTAL_EMAIL (sender-matching), so callers that omit it get the ordinary
+    same-sender reply.
     """
     src_eid, _ = fake_repo.insert_inbound_email(
         message_id=f"<{uuid.uuid4()}@test.example>",
@@ -127,7 +129,7 @@ def _seed_awaiting_reply_run_with_reply(
 
 
 # ---------------------------------------------------------------------------
-# 1. unconsumed redelivery reschedules (D-11-03)
+# 1. unconsumed redelivery reschedules
 # ---------------------------------------------------------------------------
 
 
@@ -172,7 +174,7 @@ def test_unconsumed_redelivery_reschedules(client, fake_repo, resume_spy):
     assert scheduled_inbound.body_text == row["body_text"], (
         "the scheduled reply's body_text must equal the PERSISTED (already-"
         "cleaned) body, never a re-cleaned copy of the redelivered request "
-        f"body (Pitfall #11a); got {scheduled_inbound.body_text!r}"
+        f"body; got {scheduled_inbound.body_text!r}"
     )
     assert (
         scheduled_inbound.body_text
@@ -181,7 +183,7 @@ def test_unconsumed_redelivery_reschedules(client, fake_repo, resume_spy):
 
 
 # ---------------------------------------------------------------------------
-# 2. consumed redelivery no-ops (D-11-03)
+# 2. consumed redelivery no-ops
 # ---------------------------------------------------------------------------
 
 
@@ -251,13 +253,14 @@ def test_redelivery_to_non_awaiting_reply_run_no_ops(client, fake_repo, resume_s
 
 
 # ---------------------------------------------------------------------------
-# 4. runs-list stranded auto-resume (D-11-05)
+# 4. runs-list stranded auto-resume
 # ---------------------------------------------------------------------------
 
 
 def test_runs_list_reschedules_stale_unconsumed_reply(client, fake_repo, resume_spy):
-    """GET /runs re-schedules _resume_pipeline for a stale unconsumed reply
-    against an awaiting_reply run (D-11-05)."""
+    """GET /runs re-schedules the resume for a stale unconsumed reply against an
+    awaiting_reply run — the sweep that stops a dropped reply from stranding the
+    run forever."""
     from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     message_id = f"<stranded-{uuid.uuid4()}@metrodeli.example>"
@@ -287,7 +290,8 @@ def test_runs_list_does_not_reschedule_fresh_unconsumed_reply(
     client, fake_repo, resume_spy
 ):
     """A FRESH unconsumed reply (not past the stale threshold) must NOT be
-    re-scheduled — only genuinely stranded replies qualify (D-11-05)."""
+    re-scheduled — only genuinely stranded replies qualify. A reply still in
+    flight would otherwise be raced by the sweep."""
     message_id = f"<fresh-{uuid.uuid4()}@metrodeli.example>"
     _run_id, _row = _seed_awaiting_reply_run_with_reply(
         fake_repo,
@@ -306,14 +310,15 @@ def test_runs_list_does_not_reschedule_fresh_unconsumed_reply(
 
 
 # ---------------------------------------------------------------------------
-# 5. needs_operator excluded (D-11-06)
+# 5. needs_operator excluded
 # ---------------------------------------------------------------------------
 
 
 def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resume_spy):
     """A needs_operator run with a stale unconsumed reply must NEVER be
-    re-scheduled by the runs-list load — the query scope structurally
-    excludes it (D-11-06: needs_operator exits only via /resolve or reject)."""
+    re-scheduled by the runs-list load — the query scope structurally excludes it.
+    needs_operator is a human-escape terminal: it exits only via /resolve or
+    reject, so an auto-resume would drive the run past the operator."""
     from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     message_id = f"<needs-operator-{uuid.uuid4()}@metrodeli.example>"
@@ -333,26 +338,26 @@ def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resum
 
     assert resume_spy == [], (
         "a needs_operator run must NEVER be auto-resumed by the runs-list "
-        f"load (D-11-06); got {len(resume_spy)} unexpected re-schedule(s)"
+        f"load; got {len(resume_spy)} unexpected re-schedule(s)"
     )
 
 
 # ---------------------------------------------------------------------------
-# 6. GAP-5/CR-5: a FIX-5-failed linked reply is NEVER re-resumed by either seam
+# 6. A sender-mismatched linked reply is NEVER resumed by either seam
 # ---------------------------------------------------------------------------
 
 SPOOFED_FROM_ADDR = "attacker@evil.example"
 
 
-def test_redelivery_never_resumes_fix5_failed_reply(client, fake_repo, resume_spy):
-    """GAP-5/CR-5 regression: a reply linked to a run via the RFC header chain,
-    whose from_addr does NOT match the run's business (i.e. it already failed
-    FIX-5 sender revalidation on first delivery and was left linked+unconsumed),
-    must NEVER be re-resumed by a subsequent redelivery of the same message_id.
+def test_redelivery_never_resumes_sender_mismatched_reply(client, fake_repo, resume_spy):
+    """A reply linked to a run via the RFC header chain, but whose from_addr does
+    NOT belong to the run's business, must NEVER be resumed by a subsequent
+    redelivery of the same message_id.
 
-    MUST FAIL before the fix (the WR-04 branch only checked consumed_round/
-    status, never the sender) and MUST PASS after (_reply_sender_ok re-asserted
-    before the redelivery dispatch)."""
+    Such a reply failed sender revalidation on first delivery and was left linked
+    but unconsumed. The redelivery path must re-assert the sender check, not just
+    consumed_round/status: checking only those would let an outsider who can guess
+    or observe a message_id drive another business's payroll on the retry."""
     message_id = f"<redeliver-spoofed-{uuid.uuid4()}@metrodeli.example>"
     run_id, _row = _seed_awaiting_reply_run_with_reply(
         fake_repo,
@@ -378,20 +383,20 @@ def test_redelivery_never_resumes_fix5_failed_reply(client, fake_repo, resume_sp
     assert r.json()["status"] == "duplicate"
 
     assert resume_spy == [], (
-        "a reply that already failed FIX-5 sender revalidation must NEVER be "
-        f"resumed via redelivery (GAP-5/CR-5); got {len(resume_spy)} unexpected "
-        "re-schedule(s)"
+        "a reply that failed sender revalidation must NEVER be resumed via "
+        f"redelivery; got {len(resume_spy)} unexpected re-schedule(s)"
     )
     assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
 
 
-def test_stranded_sweep_never_resumes_fix5_failed_reply(client, fake_repo, resume_spy):
-    """GAP-5/CR-5 regression: the SAME mismatched-sender, unconsumed,
-    awaiting_reply, STALE reply must NEVER be auto-resumed by the D-11-05
-    stranded-reply sweep on a GET /runs dashboard load either.
+def test_stranded_sweep_never_resumes_sender_mismatched_reply(client, fake_repo, resume_spy):
+    """The SAME mismatched-sender, unconsumed, awaiting_reply, STALE reply must
+    never be auto-resumed by the stranded-reply sweep on a GET /runs dashboard
+    load either.
 
-    MUST FAIL before the fix (the sweep loop only checked consumed_round/
-    run_id/status, never the sender) and MUST PASS after."""
+    The sweep is the second seam into the resume path, so it needs the same sender
+    check as the redelivery seam: filtering on consumed_round/run_id/status alone
+    would resume a spoofed reply as soon as it went stale."""
     from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     message_id = f"<stranded-spoofed-{uuid.uuid4()}@metrodeli.example>"
@@ -410,8 +415,7 @@ def test_stranded_sweep_never_resumes_fix5_failed_reply(client, fake_repo, resum
     assert r.status_code == 200
 
     assert resume_spy == [], (
-        "a reply that already failed FIX-5 sender revalidation must NEVER be "
-        f"auto-resumed by the stranded-reply sweep (GAP-5/CR-5); got "
-        f"{len(resume_spy)} unexpected re-schedule(s)"
+        "a reply that failed sender revalidation must NEVER be auto-resumed by "
+        f"the stranded-reply sweep; got {len(resume_spy)} unexpected re-schedule(s)"
     )
     assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"

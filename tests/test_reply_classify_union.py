@@ -1,27 +1,30 @@
-"""Regression test for CR-01 (BLOCKER — restated-name overpay) and WR-01.
+"""Overpay guards for the Round-2 classify lookup and the backfill skip set.
 
 Test level: unit — exercises the classify lookup logic and backfill_extracted
 directly with no DB, no LLM, and no full pipeline integration. The orchestrator's
 Round-2 classify block is tested by constructing the exact objects it operates on
-and asserting that:
+and asserting two invariants:
 
-  CR-01: a restated name ("Maria Chen" in reply vs "M. Chen" in snapshot) is
-         resolved to the correct employee_id via the UNION lookup and the asked
-         field is classified as "confirmed_dropped" (not left "asked").
+  Restated name: a name the client restates differently in the reply ("Maria Chen"
+      in reply vs "M. Chen" in the snapshot) must still resolve to the correct
+      employee_id via the UNION lookup, so the asked field is classified as
+      "confirmed_dropped" instead of being left "asked". Left "asked", the field
+      is not in backfill_skip and the snapshot's positive value is restored over
+      the client's explicit zero — an OVERPAY.
 
-  WR-01: when an asked employee is genuinely absent from the raw reply even after
-         the union lookup, (emp_id_str, field) lands in backfill_skip so
-         backfill_extracted does NOT restore the snapshot's positive value.
+  Unresolvable asked field: when an asked employee is genuinely absent from the
+      raw reply even after the union lookup, (emp_id_str, field) must land in
+      backfill_skip so backfill_extracted does NOT restore the snapshot's positive
+      value. The worst case must be an under-fill that re-clarifies, never a
+      silent overpay.
 
-The CR-01 fix is in `name_to_id_for_classify` construction: the union of
-current_matches_for_classify + prior_matches covers restated names.
+The union lookup lives in `name_to_id_for_classify` construction: the union of
+current_matches_for_classify + prior_matches covers restated names. The
+unresolvable case is staged in `_unresolvable_asked` and absorbed into
+backfill_skip.
 
-The WR-01 fix is the _unresolvable_asked staging set absorbed into backfill_skip
-in STEP 2, ensuring the worst case is an under-fill that re-clarifies, not
-a silent overpay.
-
-See also: tests/test_detect_field_regression.py (SC2/R3-3 — same restated-name
-problem in detect_field_regression, already fixed by R3-3).
+See also: tests/test_detect_field_regression.py — the same restated-name problem
+in detect_field_regression.
 """
 from __future__ import annotations
 
@@ -94,19 +97,19 @@ def _extracted(submitted_name: str, hours_overtime: Decimal | None) -> Extracted
 
 
 # ---------------------------------------------------------------------------
-# CR-01 regression: restated name + zeroed field → confirmed_dropped, no overpay
+# Restated name + zeroed field → confirmed_dropped, no overpay
 # ---------------------------------------------------------------------------
 
 
-def test_cr01_restated_name_classify_resolves_to_correct_employee():
-    """CR-01: 'Maria Chen' in reply restates 'M. Chen' from snapshot.
+def test_restated_name_classify_resolves_to_correct_employee():
+    """'Maria Chen' in the reply restates 'M. Chen' from the snapshot.
 
     The union lookup (current_matches_for_classify + prior_matches) must resolve
     'Maria Chen' to the same employee_id as 'M. Chen', so the asked field can
     be classified from the raw reply value.
 
-    This is the unit-level exercise of the classify lookup construction fix in
-    orchestrator.py's Round-2 block (Step E5 / STEP 1).
+    This is the unit-level exercise of the classify lookup construction in
+    orchestrator.py's Round-2 block.
     """
     chen_id = uuid.uuid4()
 
@@ -121,7 +124,7 @@ def test_cr01_restated_name_classify_resolves_to_correct_employee():
     # raw_extracted: reply submitted "Maria Chen" with OT explicitly zeroed.
     raw_extracted = _extracted("Maria Chen", hours_overtime=Decimal("0"))
 
-    # Reproduce the CR-01-fixed classify lookup:
+    # Reproduce the classify lookup:
     # UNION of current matches (reconcile raw reply names) + prior_matches.
     raw_submitted = [e.submitted_name for e in raw_extracted.employees]
     current_matches_for_classify = reconcile_names(raw_submitted, roster)
@@ -136,29 +139,29 @@ def test_cr01_restated_name_classify_resolves_to_correct_employee():
     # Both the restated name ("Maria Chen") AND the prior name ("M. Chen")
     # must resolve to the same employee_id.
     assert name_to_id_for_classify.get("Maria Chen") == str(chen_id), (
-        "CR-01: 'Maria Chen' (current name) must resolve to chen_id in the union lookup"
+        "'Maria Chen' (current name) must resolve to chen_id in the union lookup"
     )
     assert name_to_id_for_classify.get("M. Chen") == str(chen_id), (
-        "CR-01: 'M. Chen' (prior name) must also be in the union lookup as fallback"
+        "'M. Chen' (prior name) must also be in the union lookup as fallback"
     )
 
 
-def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
-    """CR-01 full scenario: restated name + OT explicitly zeroed → confirmed_dropped.
+def test_restated_name_zeroed_field_classified_as_confirmed_dropped():
+    """Full scenario: restated name + OT explicitly zeroed → confirmed_dropped.
 
     Setup:
     - Snapshot: "M. Chen" with OT=Decimal('2').
     - Reply: "Maria Chen" with OT=Decimal('0') (explicit zero).
     - clarified state: {chen_id_str: {"hours_overtime": "asked"}}.
 
-    Pre-fix behaviour (bug):
-      "Maria Chen" absent from prior-only name_to_id_for_classify → raw_emp=None
+    Without the union lookup (OVERPAY):
+      "Maria Chen" absent from a prior-only name_to_id_for_classify → raw_emp=None
       → field stays "asked" → not in backfill_skip → backfill restores OT=2 → OVERPAY.
 
-    Post-fix behaviour (asserted here):
+    With the union lookup (asserted here):
       "Maria Chen" in union lookup → raw_emp resolved → OT=Decimal('0') →
       classified as "confirmed_dropped" → in backfill_skip → backfill skips →
-      final extracted OT=None (not re-backfilled).
+      the client's explicit zero survives (not re-backfilled).
     """
     chen_id = uuid.uuid4()
     chen_id_str = str(chen_id)
@@ -176,7 +179,7 @@ def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
     # Raw reply: "Maria Chen" with OT=Decimal('0') — client explicitly zeroed.
     raw_extracted = _extracted("Maria Chen", hours_overtime=Decimal("0"))
 
-    # Current matches from the fixed union lookup.
+    # Current matches from the union lookup.
     raw_submitted = [e.submitted_name for e in raw_extracted.employees]
     current_matches_for_classify = reconcile_names(raw_submitted, roster)
 
@@ -186,7 +189,7 @@ def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
         if m.resolved and m.matched_employee_id is not None
     }
 
-    # Simulate the classify loop (orchestrator STEP 1).
+    # Simulate the orchestrator's classify loop.
     raw_name_to_emp = {emp.submitted_name: emp for emp in raw_extracted.employees}
     clarified: dict[str, dict[str, str]] = {chen_id_str: {"hours_overtime": "asked"}}
     newly_classified: set[tuple[str, str]] = set()
@@ -216,17 +219,18 @@ def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
                 clarified[emp_id_str][field] = "carried_forward"
             newly_classified.add((emp_id_str, field))
 
-    # CR-01 assertion: the field must be classified as confirmed_dropped, NOT "asked".
+    # The field must be classified as confirmed_dropped, NOT left "asked".
     outcome = clarified[chen_id_str]["hours_overtime"]
     assert outcome == "confirmed_dropped", (
-        f"CR-01: OT=Decimal('0') for restated name must classify as 'confirmed_dropped', "
+        f"OT=Decimal('0') for a restated name must classify as 'confirmed_dropped', "
         f"got {outcome!r}"
     )
     assert (chen_id_str, "hours_overtime") in newly_classified, (
-        "CR-01: (chen_id_str, 'hours_overtime') must be in newly_classified"
+        "(chen_id_str, 'hours_overtime') must be in newly_classified"
     )
 
-    # Build backfill_skip as orchestrator STEP 2 does (including WR-01 absorption).
+    # Build backfill_skip as the orchestrator does, including the absorption of
+    # the unresolvable-asked staging set.
     _resolved_by_name: set[tuple[str, str]] = set()  # no prior terminals in this scenario
     backfill_skip: set[tuple[str, str]] = set(_resolved_by_name)
     for e_id, fld in newly_classified:
@@ -237,7 +241,7 @@ def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
 
     # Confirmed_dropped must be in backfill_skip (the overpay guard).
     assert (chen_id_str, "hours_overtime") in backfill_skip, (
-        "CR-01: confirmed_dropped field must be in backfill_skip to prevent snapshot-restore"
+        "a confirmed_dropped field must be in backfill_skip to prevent snapshot-restore"
     )
 
     # Now verify backfill_extracted honours backfill_skip (no re-backfill).
@@ -255,29 +259,29 @@ def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
     # The final extracted OT must NOT be 2 (no snapshot restore = no overpay).
     final_emp = final.employees[0]
     assert final_emp.hours_overtime != Decimal("2"), (
-        "CR-01: confirmed_dropped OT must NOT be re-backfilled from snapshot (would be OVERPAY)"
+        "a confirmed_dropped OT must NOT be re-backfilled from the snapshot (would be OVERPAY)"
     )
     # Specifically it should remain as the raw reply value (Decimal('0')).
     # _is_paid(Decimal('0')) is False — but the backfill_skip guard must fire FIRST,
     # so the explicit zero (not the snapshot's 2) is preserved.
     assert final_emp.hours_overtime == Decimal("0"), (
-        "CR-01: explicit zero from the raw reply must be preserved, not replaced by snapshot OT=2"
+        "the explicit zero from the raw reply must be preserved, not replaced by snapshot OT=2"
     )
 
 
 # ---------------------------------------------------------------------------
-# WR-01 regression: unresolvable asked employee → backfill_skip, not overpay
+# Unresolvable asked employee → backfill_skip, not overpay
 # ---------------------------------------------------------------------------
 
 
-def test_wr01_unresolvable_asked_field_added_to_backfill_skip():
-    """WR-01: if an asked employee is absent from the raw reply even after the union
+def test_unresolvable_asked_field_added_to_backfill_skip():
+    """If an asked employee is absent from the raw reply even after the union
     lookup, (emp_id_str, field) is staged in _unresolvable_asked and absorbed into
-    backfill_skip in STEP 2. The snapshot's positive value is NOT restored.
+    backfill_skip. The snapshot's positive value is NOT restored.
 
-    This is defense-in-depth for the same root cause as CR-01: the unresolvable
-    case is now rare (CR-01 union lookup covers restated names), but when it does
-    fire, the outcome must be conservative (no overpay).
+    This is defense-in-depth against the same root cause as the restated-name
+    case: the unresolvable case is rare (the union lookup covers restated names),
+    but when it does fire, the outcome must be conservative (no overpay).
     """
     alice_id = uuid.uuid4()
     alice_id_str = str(alice_id)
@@ -332,15 +336,15 @@ def test_wr01_unresolvable_asked_field_added_to_backfill_skip():
                 continue
             # classify... (not reached because Alice is absent)
 
-    # WR-01 assertion: the unresolvable field must be staged.
+    # The unresolvable field must be staged.
     assert (alice_id_str, "hours_overtime") in _unresolvable_asked, (
-        "WR-01: asked field for absent employee must be in _unresolvable_asked"
+        "an asked field for an absent employee must be in _unresolvable_asked"
     )
     assert (alice_id_str, "hours_overtime") not in newly_classified, (
-        "WR-01: absent employee must NOT appear in newly_classified"
+        "an absent employee must NOT appear in newly_classified"
     )
 
-    # STEP 2: build backfill_skip and absorb _unresolvable_asked.
+    # Build backfill_skip and absorb _unresolvable_asked.
     _resolved_by_name: set[tuple[str, str]] = set()
     backfill_skip: set[tuple[str, str]] = set(_resolved_by_name)
     for e_id, fld in newly_classified:
@@ -350,7 +354,7 @@ def test_wr01_unresolvable_asked_field_added_to_backfill_skip():
     backfill_skip.update(_unresolvable_asked)
 
     assert (alice_id_str, "hours_overtime") in backfill_skip, (
-        "WR-01: unresolvable asked field must be in backfill_skip after STEP 2 absorption"
+        "an unresolvable asked field must be in backfill_skip after absorption"
     )
 
     # Verify backfill_extracted respects the skip: Alice's OT=3 must NOT be restored.
@@ -370,24 +374,22 @@ def test_wr01_unresolvable_asked_field_added_to_backfill_skip():
 
     final_emp = final.employees[0]
     assert final_emp.hours_overtime is None or final_emp.hours_overtime != Decimal("3"), (
-        "WR-01: unresolvable asked field must NOT be re-backfilled from snapshot (no overpay)"
+        "an unresolvable asked field must NOT be re-backfilled from the snapshot (no overpay)"
     )
 
 
 # ---------------------------------------------------------------------------
-# IN-03 regression: _field_regression_lines guards against malformed gate_reason
+# _field_regression_lines guards against a malformed gate_reason
 # ---------------------------------------------------------------------------
 
 
-def test_in03_field_regression_lines_skips_malformed_reason():
-    """IN-03: _field_regression_lines must not crash on a gate_reason with no '.'.
+def test_field_regression_lines_skips_malformed_reason():
+    """_field_regression_lines must not crash on a gate_reason with no '.'.
 
     A gate_reason without '.' in the qualified part (after the prefix) is
-    malformed. Before the fix, `qualified.rsplit('.', 1)` without a length
-    check would have unpacked correctly (rsplit returns the original string
-    in a 1-element list) but the 2-element unpack would raise ValueError.
-
-    After the fix: `if len(parts) != 2: continue` — skip silently.
+    malformed. `qualified.rsplit('.', 1)` returns a 1-element list for such a
+    string, so an unguarded 2-element unpack raises ValueError. The length check
+    (`if len(parts) != 2: continue`) skips it silently instead.
     """
     from app.pipeline.compose_email import _field_regression_lines
 
@@ -398,12 +400,12 @@ def test_in03_field_regression_lines_skips_malformed_reason():
     ]
     result = _field_regression_lines(malformed_reasons)
     assert result == [], (
-        "IN-03: malformed gate_reason (no '.') must produce no lines, not raise ValueError"
+        "a malformed gate_reason (no '.') must produce no lines, not raise ValueError"
     )
 
 
-def test_in03_field_regression_lines_normal_case_still_works():
-    """IN-03 guard must not regress the normal (correctly-dotted) case."""
+def test_field_regression_lines_normal_case_still_works():
+    """The malformed-reason guard must not regress the normal (correctly-dotted) case."""
     from app.pipeline.compose_email import _field_regression_lines
 
     reasons = [

@@ -1,4 +1,8 @@
-"""SC1 fault-injection tests proving DATA-01 atomicity (Phase 9, D-9-04..D-9-08).
+"""Fault-injection tests proving the pipeline's multi-write atomicity.
+
+The invariant: a crash mid-sequence must leave a run wholly un-advanced, never
+half-written (paystubs replaced but status stale, or an email sent with the
+status not advanced).
 
 Two groups:
 
@@ -160,14 +164,14 @@ def _live_snapshot_extracted(
 
 
 # ===========================================================================
-# Task 1 — _run_stages process branch (D-9-04)
+# _run_stages process branch
 # ===========================================================================
 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_process_branch_crash_leaves_run_unadvanced(seeded_db, monkeypatch):
-    """SC1: a crash injected mid-persist-sequence leaves the run wholly un-advanced.
+    """A crash injected mid-persist-sequence leaves the run wholly un-advanced.
 
     Forces repo.replace_line_items to raise on its FIRST call inside the real
     _run_stages process-branch invocation. Asserts the run's status is unchanged
@@ -217,31 +221,34 @@ def test_process_branch_crash_leaves_run_unadvanced(seeded_db, monkeypatch):
     post_run = cast(dict[str, Any], repo.load_run(run_id))
     assert post_run is not None
     assert post_run["status"] == pre_status, (
-        "SC1: run status must be UNCHANGED after a crash mid-persist-sequence — "
+        "run status must be UNCHANGED after a crash mid-persist-sequence — "
         f"expected {pre_status!r}, got {post_run['status']!r}"
     )
     assert post_run["extracted_data"] is None, (
-        "SC1: persist_extracted's write must be rolled back too — not just the "
+        "persist_extracted's write must be rolled back too — not just the "
         "later replace_line_items call that raised"
     )
     assert post_run["decision"] is None, (
-        "SC1: persist_decision's write must be rolled back too"
+        "persist_decision's write must be rolled back too"
     )
     assert post_run["reconciliation"] is None, (
-        "SC1: persist_reconciliation's write must be rolled back too"
+        "persist_reconciliation's write must be rolled back too"
     )
 
 
 def test_run_stages_process_branch_call_order_and_status_last():
     """Offline (FakeConnection): pin the exact call order + status-advance-last
-    inside _run_stages' process-branch transaction (D-9-02/D-9-04), and confirm
-    the request_clarification branch's clarification.clarify(...) call site is a
-    SIBLING statement outside the `with conn.transaction():` block (D-9-01), via
-    an AST/indentation check on the live source (checker's own technique).
+    inside _run_stages' process-branch transaction, and confirm the
+    request_clarification branch's clarification.clarify(...) call site is a
+    SIBLING statement outside the `with conn.transaction():` block, via an
+    AST/indentation check on the live source.
 
-    Phase 13 Plan 02: _run_stages stays in orchestrator.py, but clarify moved to
-    clarification.py -- the call is now a module-qualified ast.Attribute
-    (`clarification.clarify(...)`), not a bare ast.Name (`_clarify(...)`).
+    A transaction must never span an LLM/provider call: the network call would
+    hold the DB transaction open for its whole (retryable, timeout-bounded)
+    duration.
+
+    Note: clarify lives in clarification.py, so the call is a module-qualified
+    ast.Attribute (`clarification.clarify(...)`), not a bare ast.Name.
     """
     import ast
 
@@ -259,8 +266,8 @@ def test_run_stages_process_branch_call_order_and_status_last():
     )
 
     # Exactly one `with conn.transaction():` block inside _run_stages (comments
-    # mentioning the phrase, e.g. the D-9-01 sibling-statement note, must not
-    # be counted — only actual `with` statements via AST).
+    # mentioning the phrase must not be counted — only actual `with` statements,
+    # via the AST).
     tx_count = sum(
         1
         for node in ast.walk(func)
@@ -297,23 +304,22 @@ def test_run_stages_process_branch_call_order_and_status_last():
     for lineno, in_with in clarify_calls:
         assert in_with is False, (
             f"clarification.clarify(...) call at line {lineno} must be OUTSIDE any "
-            "'with' block (D-9-01 — no transaction may span an LLM/provider call)"
+            "'with' block — no transaction may span an LLM/provider call"
         )
 
 
 # ===========================================================================
-# Task 2 — _clarify's three exit paths (offline call-order pin)
+# _clarify's three exit paths (offline call-order pin)
 # ===========================================================================
 
 
 def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction(
     monkeypatch,
 ):
-    """Offline: _clarify's idempotency early-return path (PATH 1) calls
-    set_pre_clarify_extracted, THEN set_clarification_round (D-11-01 idempotent
-    round advance), THEN set_status(AWAITING_REPLY), all carrying conn=, inside
-    one transaction block (Test 3 of Task 2's behavior spec, extended for D-11-01
-    in Phase 11 Plan 02).
+    """Offline: _clarify's idempotency early-return path calls
+    set_pre_clarify_extracted, THEN set_clarification_round (the idempotent round
+    advance), THEN set_status(AWAITING_REPLY) — all carrying conn=, inside one
+    transaction block.
     """
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
@@ -374,10 +380,10 @@ def test_clarify_idempotency_path_writes_snapshot_then_status_in_one_transaction
         ("set_clarification_round", True),
         ("set_status", True),
     ], (
-        "PATH 1 (idempotency early-return): set_pre_clarify_extracted must run "
-        "BEFORE set_clarification_round (D-11-01 idempotent advance), which must "
-        "run BEFORE set_status(AWAITING_REPLY), all carrying conn= (one "
-        "transaction, status-advance-last, D-9-02/D-9-06); got: " + repr(ordering)
+        "idempotency early-return path: set_pre_clarify_extracted must run BEFORE "
+        "set_clarification_round (the idempotent round advance), which must run "
+        "BEFORE set_status(AWAITING_REPLY), all carrying conn= — one transaction, "
+        "status advanced last; got: " + repr(ordering)
     )
 
 
@@ -418,23 +424,21 @@ def _bare_decision() -> Decision:
 
 
 # ===========================================================================
-# Task 2 — _defer_field_regression_clarification (offline AST/order pin)
+# defer_field_regression_clarification (offline AST/order pin)
 # ===========================================================================
 
 
 def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
     monkeypatch,
 ):
-    """Offline (FakeConnection): defer_field_regression_clarification's Step 3
-    (set_clarified_fields) is the ONLY call inside its own `with
+    """Offline (FakeConnection): defer_field_regression_clarification's
+    set_clarified_fields is the ONLY call inside its own `with
     conn.transaction():` block, and that block closes (AST/indentation check)
-    before the Step 5 clarify(...) call — sibling statement, never nested.
+    before the later clarify(...) call — sibling statement, never nested, so no
+    transaction is held open across the LLM/provider send.
 
-    Phase 13 Plan 02: defer_field_regression_clarification moved entirely to
-    clarification.py (renamed from _defer_field_regression_clarification), and
-    clarify is now CO-LOCATED in the same module — so its internal call stays a
-    bare ast.Name check (same-module call), only the target function's own name
-    changed from "_clarify" to "clarify".
+    clarify is co-located in clarification.py, so its internal call site is a
+    bare ast.Name (same-module call).
     """
     import ast
 
@@ -497,15 +501,16 @@ def test_defer_field_regression_clarification_txn_closes_before_clarify_call(
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, monkeypatch):
-    """Checker BLOCKER round 2: drive resume_pipeline's Round-1 field-regression
-    path against a REAL DB; force the later _clarify call to raise AFTER
-    _defer_field_regression_clarification's Step 3 write would have committed.
-    Assert clarified_fields shows the 'asked' entry persisted (survives — it is
-    a separate, already-closed transaction). resume_pipeline's own D-A1-03
-    error-wrap boundary catches the forced failure and routes the run to ERROR
-    (it never re-raises) — this proves no partial finalize state leaked from
-    _clarify's own writes: the run lands in the diagnosable ERROR state, never
-    a state that looks like a successful AWAITING_REPLY send that never happened.
+    """Drive resume_pipeline's Round-1 field-regression path against a REAL DB;
+    force the later _clarify call to raise AFTER defer_field_regression_
+    clarification's set_clarified_fields write would have committed.
+
+    Assert clarified_fields shows the 'asked' entry persisted (it survives — it
+    is a separate, already-closed transaction). resume_pipeline's own error-wrap
+    boundary catches the forced failure and routes the run to ERROR (it never
+    re-raises) — proving no partial finalize state leaked from _clarify's own
+    writes: the run lands in the diagnosable ERROR state, never a state that
+    looks like a successful AWAITING_REPLY send that never happened.
     """
     from app.db import repo
     from app.pipeline.orchestrator import resume_pipeline
@@ -545,9 +550,9 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
 
     reply = _live_inbound("Maria Chen 40 regular hours")
 
-    # resume_pipeline's own D-A1-03 error-wrap boundary swallows the forced
-    # failure and routes the run to ERROR — it never re-raises (verified against
-    # live source, app/pipeline/orchestrator.py resume_pipeline's except clause).
+    # resume_pipeline's own error-wrap boundary swallows the forced failure and
+    # routes the run to ERROR — it never re-raises (see resume_pipeline's except
+    # clause in app/pipeline/orchestrator.py).
     resume_pipeline(run_id, reply)
 
     post_run = cast(dict[str, Any], repo.load_run(run_id))
@@ -559,20 +564,20 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
     )
     assert post_run["status"] == RunStatus.ERROR.value, (
         "the run must land in the diagnosable ERROR state via resume_pipeline's "
-        "D-A1-03 error-wrap boundary — never a state that implies a clarification "
+        "error-wrap boundary — never a state that implies a clarification "
         f"was sent when it wasn't; got status={post_run['status']!r}"
     )
 
 
 # ===========================================================================
-# Task 2 — _deliver's already-sent guard + main finalize transaction
+# _deliver's already-sent guard + main finalize transaction
 # ===========================================================================
 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatch):
-    """09-06 gap closure (WR-02): the Round-2 NON-deferred fall-through must persist
+    """The Round-2 NON-deferred fall-through must persist
     `clarified_fields`'s terminal outcomes in its OWN closed transaction strictly
     BEFORE `_run_stages` is called on that path — a crash inside `_run_stages`' own
     persist transaction must never leave `clarified_fields` stuck at 'asked'.
@@ -594,8 +599,8 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
           'asked' — the earlier write survived the later crash.
       (b) the run's status is NOT 'awaiting_approval' — _run_stages' own crashed
           transaction rolled back cleanly and never advanced the run that far;
-          resume_pipeline's D-A1-03 error-wrap boundary instead routes the run to
-          the diagnosable ERROR status (its own genuine, second set_status call).
+          resume_pipeline's error-wrap boundary instead routes the run to the
+          diagnosable ERROR status (its own genuine, second set_status call).
     """
     from app.db import repo
     from app.pipeline.orchestrator import resume_pipeline
@@ -630,7 +635,8 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
     monkeypatch.setattr("app.llm.client.OpenAI", LiveMockOpenAI)
     # Round-2 reply: classify extraction (reply-only) AND process extraction
     # (combined body) both need scripted responses — two extract() calls happen
-    # in the Round-2 non-deferred branch (CR-01 fix: reply-only + combined).
+    # in the Round-2 non-deferred branch (reply-only for classify, combined for
+    # process).
     LiveMockOpenAI.script = [
         _extraction_json(
             [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "3"}]
@@ -642,12 +648,12 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
     LiveMockOpenAI.calls = []
 
     # Inject the crash INSIDE _run_stages' own persist transaction (process branch) —
-    # set_status is the last write in that transaction (status-advance-last, D-9-02),
-    # so forcing it to raise on its FIRST call proves the whole _run_stages transaction
+    # set_status is the last write in that transaction (status advanced last), so
+    # forcing it to raise on its FIRST call proves the whole _run_stages transaction
     # (including persist_extracted/persist_decision/persist_reconciliation) rolls back.
-    # Only the FIRST call raises — resume_pipeline's own D-A1-03 error-wrap boundary
-    # calls record_run_error, which calls set_status(ERROR) a SECOND time; that call
-    # must succeed genuinely so the run lands in the diagnosable ERROR state instead of
+    # Only the FIRST call raises — resume_pipeline's own error-wrap boundary calls
+    # record_run_error, which calls set_status(ERROR) a SECOND time; that call must
+    # succeed genuinely so the run lands in the diagnosable ERROR state instead of
     # the exception propagating past resume_pipeline's own except clause.
     real_set_status = repo.set_status
     _calls = {"n": 0}
@@ -662,7 +668,7 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
 
     reply = _live_inbound("Maria Chen 40 regular 3 overtime")
 
-    # resume_pipeline's own D-A1-03 error-wrap boundary swallows the forced failure —
+    # resume_pipeline's own error-wrap boundary swallows the forced failure —
     # it never re-raises (routes the run to ERROR instead).
     resume_pipeline(run_id, reply)
     monkeypatch.undo()
@@ -671,18 +677,18 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
 
     clarified = real_repo.load_clarified_fields(run_id)
     assert clarified.get(chen_id_str, {}).get("hours_overtime") == "client_supplied", (
-        "the D-9-06 fix's set_clarified_fields commit must survive the later crash "
-        f"inside _run_stages' own transaction; got: {clarified!r}"
+        "the set_clarified_fields commit (its own closed transaction) must survive "
+        f"the later crash inside _run_stages' own transaction; got: {clarified!r}"
     )
 
     post_run = cast(dict[str, Any], real_repo.load_run(run_id))
     assert post_run["status"] != RunStatus.AWAITING_APPROVAL.value, (
-        "SC1: _run_stages' own crashed transaction must roll back cleanly and never "
+        "_run_stages' own crashed transaction must roll back cleanly and never "
         f"advance the run to AWAITING_APPROVAL; got status={post_run['status']!r}"
     )
     assert post_run["status"] == RunStatus.ERROR.value, (
         "the run must land in the diagnosable ERROR state via resume_pipeline's "
-        f"D-A1-03 error-wrap boundary; got status={post_run['status']!r}"
+        f"error-wrap boundary; got status={post_run['status']!r}"
     )
 
 
@@ -691,9 +697,12 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
     `set_clarified_fields` call is the ONLY such call before `_run_stages` returns
     on that path, is nested inside a `with conn.transaction():` block (its own
     closed transaction), and its `with` block closes strictly BEFORE the
-    `stage = _run_stages(...)` call in source order — pinning the D-9-06 fix so a
-    future refactor cannot silently move the write back to the buggy fall-through
-    position (after `_run_stages` returns).
+    `stage = _run_stages(...)` call in source order.
+
+    Persisting the classification BEFORE _run_stages is what makes it survive a
+    crash inside _run_stages' own transaction. A refactor that moved the write
+    back to the fall-through position (after `_run_stages` returns) would silently
+    lose it on every crash — this guard pins the order in source.
     """
     import ast
 
@@ -740,7 +749,7 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
         assert in_with is True, (
             f"set_clarified_fields call at line {lineno} must be INSIDE a "
             "'with conn.transaction():' block (its own closed transaction) — no bare "
-            "unwrapped call is permitted (D-9-06)"
+            "unwrapped call is permitted"
         )
 
     # No `set_clarified_fields` call may appear strictly AFTER the LAST `_run_stages`
@@ -751,17 +760,17 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
             f"set_clarified_fields call at line {lineno} appears AFTER the last "
             f"_run_stages(...) call (line {last_run_stages_line}) — the Round-2 "
             "non-deferred fall-through must persist clarified_fields BEFORE calling "
-            "_run_stages, not after (D-9-06 gap closure regression guard)"
+            "_run_stages, not after, or a crash inside _run_stages loses the write"
         )
 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monkeypatch):
-    """Pitfall 2 regression: force _write_aliases_if_safe to raise inside
-    _deliver's finalize block; assert the run STILL reaches RECONCILED — the
-    try/except isolation was NOT accidentally moved outside `with
-    conn.transaction():`.
+    """Force write_aliases_if_safe to raise inside _deliver's finalize block;
+    assert the run STILL reaches RECONCILED. The alias write is best-effort: it
+    must never be able to roll back a delivery whose email genuinely went out.
+    This pins the try/except isolation INSIDE `with conn.transaction():`.
     """
     from app.db import repo
     from app.pipeline.delivery import deliver as _deliver
@@ -793,9 +802,12 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
 def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     seeded_db, monkeypatch
 ):
-    """09-06 gap closure (WR-01): a GENUINE DB-level error inside the alias-write
-    path (not a monkeypatched Python `raise`) must NOT poison _deliver's finalize
-    transaction. Before the fix, update_known_alias runs under _nulltx() (a bare
+    """A GENUINE DB-level error inside the alias-write path (not a monkeypatched
+    Python `raise`) must NOT poison _deliver's finalize transaction. A Python
+    `raise` is caught by the try/except; a DB error is not — it puts psycopg's
+    connection itself into a failed state, which the try/except cannot undo.
+
+    Without a nested SAVEPOINT, update_known_alias runs under _nulltx() (a bare
     no-op) whenever a caller-supplied conn is present — a DB-level failure there
     (e.g. UndefinedColumn) leaves the connection in a failed-transaction state, and
     the very next statement (set_status(SENT)) raises psycopg.errors.InFailedSqlTransaction,
@@ -803,12 +815,12 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     email's status advance.
 
     Seeds a run at APPROVED with a resolvable alias_candidates entry (an
-    unambiguous, non-colliding token for Maria Chen) so _write_aliases_if_safe
+    unambiguous, non-colliding token for Maria Chen) so write_aliases_if_safe
     actually reaches repo.update_known_alias. Monkeypatches update_known_alias to
     execute a genuinely-invalid SQL statement against the shared conn (raising
     psycopg.errors.UndefinedColumn — a real DB-level failure). Asserts the run
-    still reaches 'reconciled' — the exact must-have the nested SAVEPOINT
-    (conn.transaction() around the alias-write call) is meant to guarantee.
+    still reaches 'reconciled' — exactly what the nested SAVEPOINT
+    (conn.transaction() around the alias-write call) guarantees.
     """
 
     from app.db import repo
@@ -820,10 +832,10 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     repo.set_status(run_id, RunStatus.APPROVED)
 
     # Seed an unambiguous, non-colliding alias candidate for Maria Chen so
-    # _write_aliases_if_safe actually reaches repo.update_known_alias.
+    # write_aliases_if_safe actually reaches repo.update_known_alias.
     # "Maria C." is not already one of Chen's known_aliases (["Maria", "M. Chen"])
     # and does not collide with any other employee's name/alias in the seeded
-    # Coastal roster — _safe_to_learn_alias's collision guard passes.
+    # Coastal roster — the collision guard passes.
     repo.set_alias_candidates(run_id, {"Maria C.": str(CHEN_ID)})
     run = cast(dict[str, Any], repo.load_run(run_id))
 
@@ -886,11 +898,15 @@ def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeyp
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
-def test_deliver_finalize_crash_preserves_wr04_payroll_roster_attribute(seeded_db, monkeypatch):
-    """Checker WARNING 1: a forced exception inside the NEW finalize `with
-    conn.transaction():` block still results in the raised exception carrying
-    `payroll_roster` — proving the finalize transaction is nested INSIDE the
-    existing WR-04 try/except, not outside or replacing it.
+def test_deliver_finalize_crash_preserves_payroll_roster_attribute(seeded_db, monkeypatch):
+    """A forced exception inside the finalize `with conn.transaction():` block
+    must still result in the raised exception carrying `payroll_roster` — the
+    attribute the error boundary reads to scrub roster names out of error_detail.
+
+    The finalize transaction must therefore be nested INSIDE the enclosing
+    try/except that attaches it, not wrapped around it or replacing it: otherwise
+    a finalize crash produces an exception with no roster attached, and the PII
+    scrubber has no names to redact.
     """
     from app.db import repo
     from app.pipeline.delivery import deliver as _deliver
@@ -902,7 +918,7 @@ def test_deliver_finalize_crash_preserves_wr04_payroll_roster_attribute(seeded_d
     run = cast(dict[str, Any], repo.load_run(run_id))
 
     def _boom_status(run_id_, status, conn=None):
-        raise RuntimeError("injected crash — WR-04 preservation check")
+        raise RuntimeError("injected crash — roster-preservation check")
 
     monkeypatch.setattr(repo, "set_status", _boom_status)
 
@@ -910,18 +926,20 @@ def test_deliver_finalize_crash_preserves_wr04_payroll_roster_attribute(seeded_d
         _deliver(run_id, run)
 
     assert hasattr(exc_info.value, "payroll_roster"), (
-        "a failure inside the new finalize transaction must still result in "
-        "exc.payroll_roster being attached (WR-04 preservation, checker WARNING 1)"
+        "a failure inside the finalize transaction must still result in "
+        "exc.payroll_roster being attached (the PII scrubber depends on it)"
     )
 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, monkeypatch):
-    """Codex HIGH-2 regression: calling _deliver a SECOND time over an
-    already-sent confirmation row (retry-over-sent path) must invoke
-    _write_aliases_if_safe exactly once during that second call, and the run
-    must reach status == 'reconciled' — closing the silent-alias-skip gap.
+    """Calling _deliver a SECOND time over an already-sent confirmation row
+    (the retry-over-sent path) must still invoke write_aliases_if_safe exactly
+    once during that second call, and the run must reach status == 'reconciled'.
+
+    Otherwise the already-sent guard short-circuits past the alias write and the
+    confirmed alias is silently never learned — the system keeps re-asking.
     """
     from app.db import repo
     from app.pipeline.delivery import deliver as _deliver

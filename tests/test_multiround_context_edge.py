@@ -1,52 +1,46 @@
-"""Regression guard — multi-round context preservation (CX-01 closed, D-11-12).
+"""Regression guard — multi-round context preservation.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
 tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
-gated on `os.environ.get("DATABASE_URL")` being unset (verified this session,
-tests/test_resume_pipeline.py:41-48). That marker silently skips the ENTIRE
-module — including any new test added to it — whenever DATABASE_URL is unset at
-collection time. This fixture must be genuinely hermetic (fake_repo + mock_llm
-only, no live DB/LLM) and run unconditionally offline, so it lives in a fresh
-module with NO module-level conditional-skip marker of any kind (09-REVIEWS.md
-Codex Round-2 NEW MEDIUM — "fixture would be skipped offline"). Do not
-"helpfully" merge this file back into test_resume_pipeline.py.
+gated on `os.environ.get("DATABASE_URL")` being unset. That marker silently skips
+the ENTIRE module — including any new test added to it — whenever DATABASE_URL is
+unset at collection time. This fixture must be genuinely hermetic (fake_repo +
+mock_llm only, no live DB/LLM) and run unconditionally offline, so it lives in a
+module with NO module-level conditional-skip marker of any kind. A guard that
+silently skips is not a guard. Do not "helpfully" merge this file back into
+test_resume_pipeline.py.
 
-WHAT THIS FIXTURE NOW PROVES (Phase 11 Plan 03 — CX-01 closure):
-This fixture used to assert CURRENT-but-undesired behavior: a genuine client
-correction stated in an intermediate (Round-1) clarification reply, and never
-restated in a later (Round-2) reply, was silently discarded by the combined-
-extraction resume path. Phase 11 Plan 03 closed that gap (D-11-12: accumulate
-ALL consumed reply bodies in round order, D-11-02: the consumed marker written
-at the resume CAS claim makes that accumulation observable at runtime). This
-assertion is now a REGRESSION GUARD: the multi-round correction is preserved
-and paid — if this test ever starts failing with hours_regular reverting to 40,
-the CX-01 closure has regressed.
+WHAT THIS FIXTURE PROVES:
+A genuine client correction stated in an intermediate (Round-1) clarification
+reply, and never restated in a later (Round-2) reply, must still be the value that
+gets PAID. If this test starts failing with hours_regular reverting to 40 (the
+stale ORIGINAL) instead of 30 (the client's Round-1 correction), the run is paying
+a number the client explicitly corrected — a mispay.
 
-Verified chain (09-REVIEWS.md Claude in-session HIGH finding; traced against live
-source this session; PRE-FIX steps 2-3 below are what Plan 03 changed):
-  1. `clean_body` strips quoted reply history at ingest (app/email/clean.py:35-60)
-     — thread quoting cannot preserve intermediate replies once the next arrives.
-     This remains true; it is why the round-ordered accumulation (step 3 below)
-     is the fix, not relying on quoted history.
-  2. `repo.load_source_email` (app/db/repo.py) still returns ONLY the ingest-time
-     ORIGINAL cleaned body — never updated by any reply. Unchanged by this plan.
-  3. `_combined_context_email` (app/pipeline/orchestrator.py) NOW builds the
-     resume extraction context as ORIGINAL body + a code-owned "QUESTIONS WE
-     ASKED" anchor + ALL consumed replies in round order + the current reply
-     (D-11-10/12/13) — an intermediate reply from an earlier round DOES
-     accumulate into every later round's context.
-  4. `detect_field_regression` (app/pipeline/validate.py) still only fires on a
-     paid->unpaid (dropped) transition — a paid->paid VALUE CHANGE (e.g. 40->30)
-     remains invisible to it by design. This is fine: the fix is accumulation,
-     not detection — the corrected value simply never disappears from context.
-  5. Round-2's classify-first logic (resume_pipeline, orchestrator.py) still only
-     reclassifies fields marked 'asked'; but because Round-1's reply text is now
-     present in the combined context (step 3), the Round-2 combined extraction
-     reads the CORRECTED value (30), not the stale ORIGINAL value (40).
+Why the correction is at risk of being lost — the chain, traced against live source:
+  1. `clean_body` strips quoted reply history at ingest (app/email/clean.py), so
+     thread quoting cannot preserve intermediate replies once the next one arrives.
+     This is why round-ordered accumulation (step 3) is the mechanism, rather than
+     relying on the client's quoted history.
+  2. `repo.load_source_email` (app/db/repo.py) returns ONLY the ingest-time
+     ORIGINAL cleaned body — it is never updated by any reply.
+  3. `_combined_context_email` (app/pipeline/orchestrator.py) therefore builds the
+     resume extraction context as: ORIGINAL body + a code-owned "QUESTIONS WE
+     ASKED" anchor + ALL consumed replies in round order + the current reply. An
+     intermediate reply from an earlier round DOES accumulate into every later
+     round's context. The consumed marker, written at the resume CAS claim, is what
+     makes that accumulation observable at runtime.
+  4. `detect_field_regression` (app/pipeline/validate.py) only fires on a
+     paid->unpaid (dropped) transition — a paid->paid VALUE CHANGE (40->30) is
+     invisible to it by design. That is fine, and it is exactly why accumulation
+     (not detection) is the mechanism: the corrected value simply never disappears
+     from the context in the first place.
+  5. Round-2's classify step only reclassifies fields marked 'asked'; but because
+     Round-1's reply text is present in the combined context (step 3), the Round-2
+     combined extraction reads the CORRECTED value (30), not the stale ORIGINAL (40).
 
-Disposition: (a) accumulate reply bodies — implemented per 09-CONTEXT.md's
-Deferred Ideas (dispositions (a)/(b)/(c)); (b) diff-against-last-persisted was
-explicitly rejected in favor of (a) (11-CONTEXT.md D-11-12).
+The alternative design — diffing against the last-persisted extraction — was
+considered and rejected in favour of accumulating the reply bodies.
 """
 from __future__ import annotations
 
@@ -64,7 +58,7 @@ from app.pipeline.orchestrator import resume_pipeline
 
 # ---------------------------------------------------------------------------
 # Stable identifiers (mirrors tests/test_resume_pipeline.py's seed.py constants —
-# Business 1 / Coastal Cleaning Co. / Maria Chen, D-11).
+# Business 1 / Coastal Cleaning Co. / Maria Chen).
 # ---------------------------------------------------------------------------
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -153,12 +147,13 @@ def _inbound_persisted(
 ) -> InboundEmail:
     """Build a reply InboundEmail AND persist its row in fake_repo, linked to
     run_id — mirrors what the real webhook does (insert_inbound_email +
-    link_email_to_run) BEFORE resume_pipeline is called. Required so
-    resume_pipeline's own mark_reply_consumed call (D-11-02, Task 1) has a REAL
-    row to mark consumed, and load_consumed_replies can genuinely return it for
-    a later round's accumulation (D-11-12) — using the bare _inbound() helper
-    above for a Round-1 reply would make the CX-01 regression guard pass for
-    the wrong reason (a hardcoded mock response, not real accumulation)."""
+    link_email_to_run) BEFORE resume_pipeline is called.
+
+    This is required, not incidental: resume_pipeline's own mark_reply_consumed
+    call needs a REAL row to mark consumed, so that load_consumed_replies can
+    genuinely return it for a later round's accumulation. Using the bare _inbound()
+    helper above for a Round-1 reply would make this regression guard pass for the
+    wrong reason — off a hardcoded mock response rather than real accumulation."""
     mid = f"<reply-{uuid.uuid4()}@test.example>"
     eid, _ = fake_repo.insert_inbound_email(
         message_id=mid,
@@ -220,33 +215,32 @@ def _set_run_awaiting_reply(fake_repo, run_id: uuid.UUID) -> None:
 
 
 def test_multi_round_context_preserves_round1_correction(fake_repo, mock_llm):
-    """Regression guard (CX-01 closed, D-11-12, Phase 11 Plan 03): the multi-round
-    correction is now preserved. This fixture lives in its own module (see module
-    docstring) because tests/test_resume_pipeline.py's module-level DATABASE_URL
-    skip guard would silently skip it offline.
+    """A correction stated in Round 1 and never restated must still be the value paid.
 
-    Scenario (hermetic -- fake_repo + mock_llm, no live DB/LLM; byte-identical to
-    the pre-fix scenario -- only the terminal assertion flips):
+    This fixture lives in its own module (see the module docstring) because
+    tests/test_resume_pipeline.py's module-level DATABASE_URL skip guard would
+    silently skip it offline.
+
+    Scenario (hermetic -- fake_repo + mock_llm, no live DB/LLM):
       Original email: Maria Chen worked 40 regular hours, 2 overtime.
       Round 1 reply: "Maria actually worked 30, not 40 -- no overtime this week."
-        -> extraction persists hours_regular=30 (a genuine paid->paid CORRECTION,
-           invisible to detect_field_regression by design) and hours_overtime=None
-           (a paid->unpaid DROP, which DOES trigger a field_regression
-           clarification -- on hours_overtime ONLY, not hours_regular).
+        -> extraction persists hours_regular=30 (a paid->paid CORRECTION, invisible
+           to detect_field_regression by design) and hours_overtime=None (a
+           paid->unpaid DROP, which DOES trigger a field_regression clarification --
+           on hours_overtime ONLY, not hours_regular).
       Round 2 reply: answers ONLY the overtime question ("no overtime, confirmed")
-        -- never restates the regular-hours correction.
-      Round 2's combined extraction NOW accumulates Round-1's reply text (via
-      _combined_context_email's round-ordered accumulation, D-11-12) alongside the
-      ORIGINAL body, so hours_regular reads the client's stated correction (30),
-      not the stale ORIGINAL value (40). The consumed marker written by
-      resume_pipeline's own claim (D-11-02, Task 1) is what makes Round-1's reply
-      a REAL row load_consumed_replies can return for Round 2.
+        -- it never restates the regular-hours correction.
+      Round 2's combined extraction accumulates Round-1's reply text (via
+      _combined_context_email's round-ordered accumulation) alongside the ORIGINAL
+      body, so hours_regular reads the client's stated correction (30), not the
+      stale ORIGINAL value (40). The consumed marker written by resume_pipeline's
+      own claim is what makes Round-1's reply a REAL row that
+      load_consumed_replies can return for Round 2.
 
-    Assertion: the FINAL persisted/paid hours_regular is 30 (the client's Round-1
-    correction, preserved into Round 2's accumulated context and paid) -- NOT 40
-    (the stale ORIGINAL value). This is the CX-01 closure: the client's Round-1
-    correction to 30 is preserved into Round 2 and paid, no longer silently
-    reverted to the original.
+    Assertion: the FINAL persisted/paid hours_regular is 30 -- the client's Round-1
+    correction, carried into Round 2's accumulated context and paid -- NOT 40. A 40
+    here means the pipeline silently reverted a correction the client explicitly
+    made and paid 10 hours the employee did not work.
     """
     # ---- Original email + Round-1 correction -------------------------------
     run_id = _seed_run(
@@ -297,9 +291,9 @@ def test_multi_round_context_preserves_round1_correction(fake_repo, mock_llm):
 
     # Confirm Round-1's genuine correction (30) was persisted going into Round 2.
     # persist_extracted overwrites run["extracted_data"] wholesale (InMemoryRepo
-    # mirrors repo.persist_extracted). The pre-clarify snapshot (D-19/D-28) is a
-    # SEPARATE, never-overwritten baseline, so we read the persisted extraction
-    # from the run row directly, not from load_pre_clarify_extracted.
+    # mirrors repo.persist_extracted). The pre-clarify snapshot is a SEPARATE,
+    # never-overwritten baseline, so we read the persisted extraction from the run
+    # row directly, not from load_pre_clarify_extracted.
     run_row_after_r1 = fake_repo.load_run(run_id)
     persisted_extracted_r1 = run_row_after_r1.get("extracted_data")
     assert persisted_extracted_r1 is not None, (
@@ -318,15 +312,14 @@ def test_multi_round_context_preserves_round1_correction(fake_repo, mock_llm):
         [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
     )
     # Combined extraction (original + accumulated Round-1 reply + Round-2 reply):
-    # _combined_context_email NOW accumulates Round-1's consumed reply text
-    # ("Maria actually worked 30, not 40...") alongside the ORIGINAL body
-    # (D-11-12) -- a real extraction model reading that accumulated context
-    # reads the CLIENT'S STATED CORRECTION (30), not the stale original (40).
-    # The mock reflects this: Round-1's reply text is now genuinely present in
-    # the extraction input (proven directly by test_combined_context.py::
-    # test_consumed_marker_from_resume_drives_next_round_accumulation),
-    # so scripting the model's response as 30 here matches what accumulation
-    # produces at runtime.
+    # _combined_context_email accumulates Round-1's consumed reply text ("Maria
+    # actually worked 30, not 40...") alongside the ORIGINAL body, so a real
+    # extraction model reading that accumulated context reads the CLIENT'S STATED
+    # CORRECTION (30), not the stale original (40). Scripting the mock's response
+    # as 30 matches what accumulation genuinely produces at runtime -- that the
+    # Round-1 reply text really is present in the extraction input is proven
+    # directly by test_combined_context.py::
+    # test_consumed_marker_from_resume_drives_next_round_accumulation.
     _r2_combined = _extraction_json(
         [{"submitted_name": "Maria Chen", "hours_regular": "30"}]
     )
@@ -341,67 +334,68 @@ def test_multi_round_context_preserves_round1_correction(fake_repo, mock_llm):
         f"must reach AWAITING_APPROVAL; got {run_after_r2['status']!r}"
     )
 
-    # CX-01 CLOSED: the final persisted/paid hours_regular is the client's
-    # Round-1 correction (30), NOT the stale ORIGINAL value (40). The
-    # correction survives into Round 2's accumulated context and is paid.
+    # The final persisted/paid hours_regular is the client's Round-1 correction
+    # (30), NOT the stale ORIGINAL value (40). The correction survives into
+    # Round 2's accumulated context and is paid.
     line_items = fake_repo.load_line_items(run_id)
     assert line_items, "paystub must be computed for a process run"
     chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
     assert chen_items, f"paystub item for Maria Chen ({CHEN_ID_STR}) must exist"
     final_regular = chen_items[0].hours_regular
     assert final_regular == Decimal("30"), (
-        f"CX-01 regression (D-11-12): the final paystub hours_regular must be "
-        f"30 -- the client's Round-1 correction, preserved into Round 2's "
-        f"accumulated context and paid; got {final_regular!r}. If this test "
-        "fails with hours_regular reverting to 40, the multi-round context "
-        "accumulation (Phase 11 Plan 03) has regressed -- do not chase it "
-        "back to asserting 40."
+        f"the final paystub hours_regular must be 30 -- the client's Round-1 "
+        f"correction, carried into Round 2's accumulated context and paid; got "
+        f"{final_regular!r}. If this fails with hours_regular reverting to 40, "
+        "multi-round context accumulation has regressed and the pipeline is "
+        "paying hours the client explicitly corrected away -- do not 'fix' it by "
+        "changing this assertion back to 40."
     )
 
 
 # ---------------------------------------------------------------------------
-# CX-03 regression — prior carried_forward terminals must survive later rounds
-# (this one asserts DESIRED behavior, unlike the known-edge fixture above)
+# A prior carried_forward terminal must survive later rounds
 # ---------------------------------------------------------------------------
 
 
 def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm):
-    """CX-03 regression (09-REVIEWS.md Cross-AI CODE review, confirmed bug).
-
-    Unlike the known-edge fixture above, this test asserts DESIRED behavior: a
-    prior-round `carried_forward` TERMINAL outcome must never be re-detected as
+    """A prior-round `carried_forward` TERMINAL outcome must never be re-detected as
     the same paid->absent drop in a LATER round and flipped back to 'asked'.
 
-    Pre-fix trace (orchestrator.py): `_resolved_by_name` collected only
-    confirmed_dropped/client_supplied, so a prior carried_forward pair was in
-    NEITHER suppression set in round N+1 -> detect_field_regression re-emitted
-    the drop -> _defer_field_regression_clarification's
-    `clarified.setdefault(emp_id, {})[field] = "asked"` overwrote the terminal
-    (setdefault protects only the OUTER dict). Fix: prior carried_forward pairs
-    join suppress_detection (SET A) ONLY -- never backfill_skip (SET B), which
-    must keep carried_forward backfillable from the snapshot (otherwise the
-    paystub pays 0 for a field the client said to carry forward: underpay).
+    The trap: `carried_forward` is terminal but the field stays ABSENT from every
+    subsequent extraction (that is what carrying forward means — the client never
+    restates it). So round N+1 sees the same paid->absent shape as the original drop
+    and re-detects it. If a prior carried_forward pair is in NEITHER suppression set,
+    detect_field_regression re-emits the drop and
+    `clarified.setdefault(emp_id, {})[field] = "asked"` overwrites the terminal —
+    setdefault protects only the OUTER dict, not the inner field. The run then
+    re-asks a question the client already answered, forever.
+
+    The asymmetry that makes this correct: prior carried_forward pairs join
+    suppress_detection ONLY, never backfill_skip. carried_forward MUST stay
+    backfillable from the snapshot — skipping the backfill would pay 0 for a field
+    the client told us to carry forward, an UNDERPAY. Suppress the re-question;
+    keep the refill.
 
     Scenario (hermetic -- fake_repo + mock_llm, no live DB/LLM):
       Snapshot: Maria Chen 40 regular, 2 overtime, 8 vacation.
       Round 1: combined extraction drops hours_overtime -> field_regression ->
         hours_overtime 'asked', run parks AWAITING_REPLY.
       Round 2: reply is SILENT on overtime -> classified carried_forward
-        (terminal). The combined extraction ALSO drops hours_vacation (paid 8
-        in snapshot) -> NEW field_regression -> hours_vacation 'asked', run
-        parks AWAITING_REPLY again.
-      Round 3: reply answers ONLY the vacation question ("8 hours") and is
-        again silent on overtime; the combined extraction again lacks overtime
-        while the snapshot holds a positive value (2).
+        (terminal). The combined extraction ALSO drops hours_vacation (paid 8 in
+        the snapshot) -> NEW field_regression -> hours_vacation 'asked', run parks
+        AWAITING_REPLY again.
+      Round 3: reply answers ONLY the vacation question ("8 hours") and is again
+        silent on overtime; the combined extraction again lacks overtime while the
+        snapshot holds a positive value (2) — the re-detection bait.
 
-    Assertions (both money-label AND money-value, per the Phase 7.5 lesson):
-      (a) the persisted hours_overtime outcome stays 'carried_forward' -- it is
-          NOT flipped back to 'asked' by the round-3 re-detection;
-      (b) the PAID value: the computed paystub line item still pays the
-          carried-forward snapshot overtime (2), and the run reaches
-          AWAITING_APPROVAL instead of re-asking a resolved question.
-    Without the fix this test fails on both: round 3 re-defers, overwrites the
-    terminal to 'asked', and never computes line items.
+    Assertions, both the money LABEL and the money VALUE:
+      (a) the persisted hours_overtime outcome stays 'carried_forward' -- it is NOT
+          flipped back to 'asked' by the round-3 re-detection;
+      (b) the computed paystub line item still PAYS the carried-forward snapshot
+          overtime (2), and the run reaches AWAITING_APPROVAL instead of re-asking
+          a resolved question.
+    A correct label with a wrong paid value is still a mispay, so (b) is not
+    redundant with (a).
     """
     run_id = _seed_run(
         fake_repo,
@@ -460,8 +454,8 @@ def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm
             [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
         ),
         # No further LLM calls: the round-2 clarification send is skipped by the
-        # purpose-scoped idempotency guard (WR-05, separate known limitation) --
-        # the run still parks at AWAITING_REPLY with hours_vacation 'asked'.
+        # purpose-scoped idempotency guard (a separate, known limitation) -- the
+        # run still parks at AWAITING_REPLY with hours_vacation 'asked'.
     ]
     resume_pipeline(run_id, _inbound("Sorry -- I'm not sure about her vacation."))
 
@@ -483,7 +477,7 @@ def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm
             [{"submitted_name": "Maria Chen", "hours_vacation": "8"}]
         ),
         # Combined extraction: AGAIN lacks the carried-forward overtime while
-        # the snapshot holds a positive value (2) -- the CX-03 re-detection bait.
+        # the snapshot holds a positive value (2) -- the re-detection bait.
         _extraction_json(
             [{"submitted_name": "Maria Chen", "hours_regular": "40"}]
         ),
@@ -493,9 +487,8 @@ def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm
     # (a) LABEL: the carried_forward terminal survives the round-3 re-detection.
     clarified_r3 = fake_repo.load_clarified_fields(run_id)
     assert clarified_r3.get(CHEN_ID_STR, {}).get("hours_overtime") == "carried_forward", (
-        f"CX-03: prior carried_forward terminal must NOT be flipped back to "
-        f"'asked' by a later round's re-detection; got "
-        f"{clarified_r3.get(CHEN_ID_STR, {})!r}"
+        f"a prior carried_forward terminal must NOT be flipped back to 'asked' by "
+        f"a later round's re-detection; got {clarified_r3.get(CHEN_ID_STR, {})!r}"
     )
     assert clarified_r3.get(CHEN_ID_STR, {}).get("hours_vacation") == "client_supplied", (
         f"Round 3's vacation answer must classify client_supplied; got "
@@ -503,8 +496,8 @@ def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm
     )
 
     # The run processes (all fields resolved) instead of re-asking a resolved
-    # question (which WR-05's round-blind send guard would silently never send,
-    # parking the run at AWAITING_REPLY unrecoverable by sweep).
+    # question -- which the purpose-scoped send guard would silently never send,
+    # parking the run at AWAITING_REPLY where no sweep can recover it.
     run_after_r3 = fake_repo.load_run(run_id)
     assert run_after_r3["status"] == RunStatus.AWAITING_APPROVAL.value, (
         f"Round 3 resolves the last asked field and must reach AWAITING_APPROVAL "
@@ -512,17 +505,17 @@ def test_prior_carried_forward_terminal_survives_later_round(fake_repo, mock_llm
         f"got {run_after_r3['status']!r}"
     )
 
-    # (b) VALUE: the PAID overtime is the carried-forward snapshot value (2) --
-    # assert the money value on the paystub line item, not just the label
-    # (Phase 7.5 lesson: fixing the classify LABEL != fixing the PAID VALUE).
+    # (b) VALUE: the PAID overtime is the carried-forward snapshot value (2).
+    # Assert the money value on the paystub line item, not just the label — fixing
+    # the classify LABEL is not the same as fixing the PAID VALUE.
     line_items = fake_repo.load_line_items(run_id)
     assert line_items, "paystub must be computed for a process run"
     chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
     assert chen_items, f"paystub item for Maria Chen ({CHEN_ID_STR}) must exist"
     assert chen_items[0].hours_overtime == Decimal("2"), (
-        f"CX-03 money assertion: the paid overtime must be the carried-forward "
-        f"snapshot value (2) -- carried_forward stays OUT of backfill_skip so the "
-        f"backfill fills it (adding it to SET B would pay 0: underpay); got "
+        f"the paid overtime must be the carried-forward snapshot value (2) -- "
+        f"carried_forward stays OUT of backfill_skip so the backfill refills it; "
+        f"adding it to backfill_skip would pay 0 (an underpay); got "
         f"{chen_items[0].hours_overtime!r}"
     )
     assert chen_items[0].hours_regular == Decimal("40")
