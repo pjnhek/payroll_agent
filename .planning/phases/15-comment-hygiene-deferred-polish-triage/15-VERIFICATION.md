@@ -1,25 +1,28 @@
 ---
-status: gaps_found
+status: passed
 phase: 15-comment-hygiene-deferred-polish-triage
 requirements: [COMM-01, COMM-02, COMM-03, POLISH-01, POLISH-02]
 verified_by: orchestrator (gsd-verifier agent died on a session/usage limit before producing output)
 date: 2026-07-13
-score: 4/5 must-haves verified
+score: 5/5 must-haves verified
+gaps_closed_in_phase: [COMM-01 vocabulary hole, COMM-01 scan-scope hole]
 ---
 
 # Phase 15 Verification
 
-All 11 plans executed, merged, and green. Four of five requirements fully verified against the
-live codebase. **COMM-01 is materially incomplete** — the guard it delivers has a vocabulary hole
-and a scope hole, both demonstrated below with live examples.
+All 11 plans executed, merged, and green. Verification initially scored **4/5**: COMM-01's guard
+had a vocabulary hole and a scope hole (documented in full below — the record is kept deliberately,
+because *how* the guard was blind is the most useful thing this phase learned). Both were closed
+inline in commit `9973c22`. **Final: 5/5.**
 
-## Gates (merged tree, HEAD)
+## Gates (merged tree, HEAD, after gap closure)
 
 | Gate | Result |
 |------|--------|
-| `uv run pytest -q` | 623 passed / 52 skipped |
+| `uv run pytest -q` | **623 passed / 52 skipped** |
 | `uv run ruff check .` | clean |
 | `uv run mypy` (strict) | clean, 117 files |
+| Comment-provenance guard | **3/3 passed** |
 | Worktrees outstanding | 0 |
 | SUMMARY.md present | 11/11 |
 
@@ -72,7 +75,14 @@ test that protects the deterministic-decisioning thesis.
 silently dropped or duplicated. Assert *conditions* proven untouched by AST comparison (172 + 77
 `ast.Assert.test` nodes identical); only assert *messages* changed.
 
-## GAPS — COMM-01 ❌
+## COMM-01 — the guard ✅ (after gap closure `9973c22`)
+
+**Both gaps below were found by verification and closed inline.** They are recorded in full rather
+than deleted, because the lesson generalises: *the guard was green because it was blind, not because
+the tree was clean.* A guard's scan scope and vocabulary are part of its correctness, and neither is
+visible from a passing run.
+
+### GAPS AS FOUND (now fixed)
 
 The comment-provenance guard (`tests/test_comment_provenance_guard.py`) works and is **not**
 vacuous — I independently falsified it rather than trusting the SUMMARY:
@@ -129,8 +139,39 @@ PR can go green without a real database ever executing them. Recorded by plan 15
 above the workflow's `on:` block; adding a `pull_request:` trigger is a CI-policy change outside
 POLISH-01's scope.
 
-## Recommendation
+## Gap closure — `9973c22`
 
-GAP-1 and GAP-2 are contained and mechanical. Closing them means: add `IN` to the review-ticket
-pattern, sweep 3 refs in scanned files, extend `SCAN_GLOBS` to the infra surface, and sweep the 17
-refs there (keeping the rationale, dropping the IDs). No money-path code is involved.
+Both gaps closed inline (the `gsd-verifier` agent had died on a usage limit, and the fix was
+mechanical and touched no money-path code):
+
+- Added `IN` to the `review-ticket` pattern.
+- Extended `SCAN_GLOBS` to `.github/workflows/*.yml`, `Dockerfile`, `pyproject.toml`,
+  `.dockerignore`, `.env.example`.
+- Widening the guard turned it **red on 32 real violations** — more than the 20 found by hand,
+  because the guard's fuller vocabulary also caught `HIGH-1` severity labels, `Pitfall 3/6` refs,
+  and `OPS-03` in the Docker/CI files. All 32 swept.
+- **Rationale preserved in every case; only labels dropped.** `pyproject.toml` still explains why
+  line-length is 100; `keepalive.yml` still explains why `curl -f` matters (a swallowed failure
+  would leave the workflow green during a real outage); `concurrency-proof.yml` still explains why
+  `--reset` is absent (it would put an unguarded drop outside the `ALLOW_DB_RESET` two-factor guard).
+- `app/db/seed.py` confirmed AST-identical — comment-only.
+- `.env.example` was edited by the user; the file is behind a permission guard the agent correctly
+  declined to route around.
+
+### Guard re-falsified after widening
+
+| Injection | Expected | Actual |
+|---|---|---|
+| `IN-08` / `CR-02` / `Phase 9` | red | red ✓ (the `IN-` family is now caught) |
+| `BOUND-01` / `FOUND-04` | green | green ✓ (no false positive on live requirement IDs) |
+
+Source restored byte-identical after each probe.
+
+## Carried forward (not a phase failure)
+
+1. **The concurrency proofs do not gate pull requests.** They run on push-to-master and manual
+   dispatch only, so a PR can go green without a real database ever executing them. Recorded by plan
+   15-01 above the workflow's `on:` block. Adding a `pull_request:` trigger is a CI-policy decision.
+2. **`FieldDrop` in `app/models/contracts.py` is dead code** — its comment promised a phase that
+   shipped on `RawFieldDrop` instead. Found by plan 15-04, documented rather than deleted (a
+   deletion is a code change, out of scope for a comment sweep). Clean one-line removal.
