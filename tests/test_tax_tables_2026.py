@@ -59,7 +59,12 @@ def test_step1_standard_mfs_equals_single() -> None:
 
 
 def test_mfs_standard_brackets_alias_single() -> None:
-    """married_separately MUST be the same list object as single (Pitfall #4)."""
+    """married_separately MUST be the SAME list object as single.
+
+    The IRS publishes one shared column for both statuses. Copying the rows instead of
+    aliasing them lets a future edit fix a bracket in one status and silently leave the
+    other wrong.
+    """
     from app.pipeline.tax_tables_2026 import STANDARD_BRACKETS
     assert STANDARD_BRACKETS["married_separately"] is STANDARD_BRACKETS["single"]
 
@@ -189,14 +194,16 @@ def test_single_step2_second_bracket() -> None:
 
 
 def test_single_step2_top_bracket_boundary_verified_against_irs() -> None:
-    """CR-01 refutation: Single/MFS Step-2 37% bracket begins at $328,350, base $96,489.63.
+    """Single/MFS Step-2 37% bracket begins at $328,350, base $96,489.63 — verified.
 
-    Code review round 1 (CR-01) claimed this boundary "should" be $200,225 based on an
-    MFJ=2x-Single heuristic. That heuristic does NOT hold for the IRS Step-2 schedules.
-    Verified against the live IRS source (irs.gov/publications/p15t, 2026, retrieved
-    2026-06-22): the Single/MFS Step-2 37% bracket begins at $328,350 with base
-    $96,489.63 — exactly as transcribed. This test pins the verified values so the
-    refuted "fix" can never be silently applied.
+    These figures look wrong under the tempting "MFJ = 2x Single" heuristic, which would
+    put the boundary at $200,225. That heuristic does NOT hold for the IRS Step-2
+    schedules. Verified against the live IRS source (irs.gov/publications/p15t, 2026,
+    retrieved 2026-06-22): the boundary really is $328,350 with base $96,489.63, exactly
+    as transcribed.
+
+    This test pins the verified values so a well-meaning "correction" toward the
+    heuristic can never be silently applied.
     """
     from app.pipeline.tax_tables_2026 import STEP2_BRACKETS
     top = STEP2_BRACKETS["single"][-1]
@@ -207,7 +214,7 @@ def test_single_step2_top_bracket_boundary_verified_against_irs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CR-01 (code review round 1): bracket base/rate continuity smoke-test.
+# Bracket base/rate continuity smoke-test.
 #
 # Each row's base is the cumulative tax at that bracket's lower bound:
 #   base[i] ≈ base[i-1] + (lower[i] - lower[i-1]) * rate[i-1]
@@ -253,7 +260,7 @@ def test_bracket_base_continuity_smoke() -> None:
 
 
 def test_bracket_upper_ties_to_next_lower() -> None:
-    """WR-04 (review round 2): each row's `upper` must equal the next row's `lower`.
+    """Each row's `upper` must equal the next row's `lower`.
 
     `BracketRow.upper` is transcribed on all 48 rows but `_find_bracket()` only reads
     `lower`, so `upper` is otherwise dead data that could silently drift out of sync with

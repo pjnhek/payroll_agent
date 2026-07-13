@@ -1,9 +1,10 @@
-"""Calc tests — focus on the 401k current-run override (review fix, D-A3-04).
+"""Calc tests — the 401k current-run override, the Pub 15-T postconditions, and the
+input guards that keep a malformed hours value from becoming a wrong paystub.
 
-`calculate` was ignoring the client-supplied `contribution_401k_override` and always
-using the employee's stored default. These tests pin the corrected behavior: the
-override applies to THIS paystub only, the stored default is used when no override is
-given, and the override never mutates the employee.
+The 401k override group pins one contract: a client-supplied
+`contribution_401k_override` applies to THIS paystub only, the employee's stored
+default is used when no override is given, and the override never mutates the
+employee record.
 """
 from __future__ import annotations
 
@@ -69,7 +70,7 @@ def test_zero_override_is_honored_not_treated_as_absent(hourly_employee):
     assert item.pretax_401k == Decimal("0.00")
 
 
-# ---- Phase 3 additions: CALC-01 / CALC-02 / CALC-07 / CALC-08 / Fix-A / R2-3 / R2-6 / Fix-9 ----
+# ---- Gross pay, leave pay, FICA caps, and the reconciliation backstop ----
 
 import uuid  # noqa: E402 — appended after existing imports; uuid is stdlib
 
@@ -177,10 +178,12 @@ def test_hourly_overtime_at_1_5x(hourly_employee):
 
 
 def test_leave_hours_excluded_from_ot_threshold(hourly_employee):
-    """CALC-01 + D-03: leave hours are paid straight time, never trigger OT premium.
+    """Leave hours are paid straight time and never trigger the OT premium.
 
-    D-03: OT is explicit-only. hours_regular=40, hours_vacation=8, hours_overtime=0
-    → gross = rate * (40 + 8) straight time. No 1.5x applied even though total hours > 40.
+    Overtime is explicit-only: hours_regular=40, hours_vacation=8, hours_overtime=0
+    → gross = rate * (40 + 8) at straight time. No 1.5x is applied even though total
+    hours exceed 40 — inferring OT from a total would overpay every employee who took
+    leave in a full week.
     """
     item = calculate(
         {
@@ -199,7 +202,7 @@ def test_leave_hours_excluded_from_ot_threshold(hourly_employee):
 
 
 def test_salaried_leave_pay_added_to_gross(salary_employee):
-    """CALC-02: salary gross = annual / pay_periods + leave pay when leave hours are submitted."""
+    """Salary gross = annual / pay_periods + leave pay when leave hours are submitted."""
     item_no_leave = calculate(_zero_hours(), salary_employee)
     item_with_leave = calculate(_leave_hours(), salary_employee)
     # Gross with leave must exceed gross without leave
@@ -207,7 +210,7 @@ def test_salaried_leave_pay_added_to_gross(salary_employee):
 
 
 def test_salaried_no_leave_gross_unchanged(salary_employee):
-    """CALC-02 baseline: salaried employee with zero leave → gross == _money(annual/pay_periods)."""
+    """Baseline: salaried employee with zero leave → gross == _money(annual/pay_periods)."""
     item = calculate(_zero_hours(), salary_employee)
     annual = salary_employee.annual_salary
     p = Decimal(salary_employee.pay_periods_per_year)
@@ -216,17 +219,18 @@ def test_salaried_no_leave_gross_unchanged(salary_employee):
 
 
 def test_salaried_leave_pay_frequency_invariant():
-    """FIX A + R2-6 regression guard: /2080 leave pay is identical at p=52, p=26, p=24, p=12.
+    """Leave pay is computed as annual/2080 per hour, so it is IDENTICAL at p=52, 26, 24, 12.
 
-    # FIX A + R2-6 regression guard: the prior period-proportion formula (period_salary * leave_h /
-    # standard_h_per_period, where standard_h = 40 * p / 52) was INVERTED. For p=24 it produced
-    # ~$2,166 instead of $200.00 (4.7x). For p=12 it produced ~$8,666 instead of $200.00 (18.8x).
-    # For p=52 it was accidentally correct (40*52/52 = 40 = actual weekly standard hours).
-    # R2-6 ADDS p=26 (biweekly): the formula was also wrong at p=26 (40*26/52=20h/period, but
-    # the real biweekly standard is 80h/2wks = the /2080 form is also correct at p=26).
-    # p=26 was the original reported bug context (4x off) — always include it in the invariant test.
-    # This test catches any re-introduction of a frequency-dependent denominator by asserting
-    # the invariant: leave_pay is identical across ALL valid pay_periods_per_year values.
+    The frequency-dependent alternative is a live overpay hazard. A period-proportion
+    formula (period_salary * leave_h / standard_h_per_period, where standard_h =
+    40 * p / 52) is inverted: at p=24 it pays ~$2,166 instead of $200.00 (4.7x), at
+    p=12 it pays ~$8,666 instead of $200.00 (18.8x), and at p=26 (biweekly — the shape
+    most real clients use) it is 4x off. It is only accidentally correct at p=52,
+    where 40*52/52 == 40 == the actual weekly standard hours, which is exactly why a
+    p=52-only test would let it through.
+
+    Asserting the invariant across ALL valid pay_periods_per_year values is what
+    catches any re-introduction of a frequency-dependent denominator.
     """
     emp_52 = _make_salary_employee(annual_salary=Decimal("52000"), pay_periods_per_year=52)
     emp_26 = _make_salary_employee(annual_salary=Decimal("52000"), pay_periods_per_year=26)
@@ -256,12 +260,11 @@ def test_salaried_leave_pay_frequency_invariant():
 
 
 def test_salaried_with_leave_gross_integration(salary_employee):
-    """Fix 9 — end-to-end integration: leave hours → higher gross → higher or equal withholding.
+    """End-to-end: leave hours → higher gross → higher or equal federal withholding.
 
-    Fix 9: the salaried-with-leave integration case is tested here in test_calculate.py
-    (not test_federal_withholding.py) per the plan wave-ordering note. This proves that
-    the leave pay addition in calculate.py correctly feeds through to the federal
-    withholding call — higher gross → higher or equal federal withholding.
+    Proves the leave-pay addition in calculate.py actually feeds through to the
+    federal-withholding call. A leave-pay bump that never reaches the withholding
+    input would under-withhold silently.
     """
     item_no_leave = calculate(_zero_hours(), salary_employee)
     item_with_leave = calculate(_leave_hours(), salary_employee)
@@ -272,13 +275,12 @@ def test_salaried_with_leave_gross_integration(salary_employee):
 
 
 def test_net_pay_is_real_net(hourly_employee):
-    """CALC-07: net = gross - pretax_401k - fica_ss - fica_medicare - federal_withholding.
+    """net = gross - pretax_401k - fica_ss - fica_medicare - federal_withholding.
 
-    Also asserts that federal_withholding > 0 for a typical earning employee
-    (Phase 3 postcondition).
+    Also asserts federal_withholding > 0 for a typical earning employee — a zero here
+    would mean the withholding engine silently degraded to a stub.
     """
     item = calculate(_hours(), hourly_employee)
-    # Federal withholding must be real in Phase 3
     assert item.federal_withholding > Decimal("0"), (
         f"federal_withholding should be > 0 for a typical employee, got {item.federal_withholding}"
     )
@@ -295,7 +297,7 @@ def test_net_pay_is_real_net(hourly_employee):
 
 
 def test_reconciliation_identity(hourly_employee):
-    """CALC-08: arithmetic backstop — net + taxes + deductions ties back to gross."""
+    """The arithmetic backstop — net + taxes + deductions must tie back to gross."""
     item = calculate(_hours(), hourly_employee)
     reconstructed = _money_local(
         item.net_pay
@@ -311,14 +313,18 @@ def test_reconciliation_identity(hourly_employee):
 
 
 def test_reconciliation_raises_on_drift():
-    """R2-3: _raise_if_reconciliation_drift() directly tests both pass and drift paths.
+    """_raise_if_reconciliation_drift() is exercised on BOTH paths, and the backstop
+    must be a real raise — never a bare `assert`.
 
-    # R2-3: _raise_if_reconciliation_drift() is a named pure helper (no monkeypatching needed).
-    # Both paths are tested directly:
-    # (a) pass path — correct arithmetic does not raise
-    # (b) drift path — deliberately wrong net triggers pytest.raises(PayrollCalculationError)
-    # This exercises the ACTUAL raise, not just a string in source code.
-    # FIX C secondary check: source grep confirms no bare 'assert _reconstructed' remains.
+    _raise_if_reconciliation_drift is a named pure helper, so both paths are driven
+    directly with no monkeypatching:
+      (a) pass path — correct arithmetic does not raise
+      (b) drift path — a deliberately wrong net raises PayrollCalculationError
+    This exercises the ACTUAL raise, not just the presence of a string in the source.
+
+    The source check in (c) is the load-bearing part: `python -O` strips bare `assert`
+    statements silently, so a backstop written as `assert _reconstructed == gross`
+    would vanish in an optimized run and let a mispay through unchecked.
     """
     # (a) Passing path — consistent values must NOT raise
     gross = Decimal("1000.00")
@@ -341,21 +347,25 @@ def test_reconciliation_raises_on_drift():
             Decimal("999.99"),  # deliberately wrong net — drift of ~$170.57
         )
 
-    # (c) Secondary FIX C source-grep check: no bare 'assert _reconstructed' in source
+    # (c) The reconciliation backstop must not be a bare `assert` in the source.
     import pathlib
     src = pathlib.Path("app/pipeline/calculate.py").read_text()
     assert "assert _reconstructed" not in src, (
-        "FIX C: bare assert must not remain in calculate.py source "
-        "(python -O strips bare asserts silently)"
+        "the reconciliation backstop must raise PayrollCalculationError, not use a "
+        "bare `assert` — `python -O` strips bare asserts silently, which would "
+        "disable the only runtime guard against a mispay"
     )
     assert issubclass(PayrollCalculationError, Exception)
 
 
 def test_fica_uses_gross_not_reduced_base(salary_employee):
-    """CALC-03: FICA SS and Medicare use gross as base — pretax_401k does NOT reduce FICA.
+    """FICA SS and Medicare use gross as their base — pretax_401k does NOT reduce FICA.
 
-    James Okafor has retirement_contribution_pct=0.04 (4%), so pretax_401k > 0.
-    FICA must be computed on gross, not (gross - pretax_401k).
+    The seeded salaried employee has retirement_contribution_pct=0.04 (4%), so
+    pretax_401k > 0 and the two bases genuinely differ. Computing FICA on
+    (gross - pretax_401k) — the intuitive but wrong reading, since 401k deferrals are
+    exempt from federal income tax but NOT from FICA — would under-withhold every
+    contributing employee.
     """
     item = calculate(_zero_hours(), salary_employee)
     remaining_cap = _SS_WAGE_BASE_REF - salary_employee.ytd_ss_wages
@@ -373,14 +383,13 @@ def test_fica_uses_gross_not_reduced_base(salary_employee):
 
 
 def test_additional_medicare_flag_present():
-    """User Decision 1 + FIX B + R2-2: Additional Medicare proxy flag.
+    """The Additional Medicare proxy flag fires only when the proxy really crosses $200k.
 
-    # R2-2: ytd_ss_wages=$184,500 is the MAXIMUM possible SS YTD (2026 SS wage base cap).
-    # Values above $184,500 are IMPOSSIBLE in a real run. A high current gross ($20k/period)
-    # is used to push (ytd + gross) above $200k, testing the real proxy semantics.
-    # The prior plan used ytd_ss_wages=197000 (impossible — above the cap). That tested
-    # the Boolean expression without testing the real proxy: an employee can NEVER have
-    # ytd_ss_wages=197000 in a real run, so the test was exercising dead code.
+    ytd_ss_wages=$184,500 is the MAXIMUM possible SS YTD (the 2026 SS wage base cap);
+    any value above it is impossible in a real run. So the flag must be pushed over
+    $200k by a high CURRENT gross ($20k/period), not by an out-of-range YTD. Seeding an
+    impossible ytd_ss_wages (e.g. 197000) would exercise the Boolean expression against
+    a state the system can never reach — a test of dead code, not of the proxy.
     """
     from app.models.roster import Employee
 
@@ -400,7 +409,7 @@ def test_additional_medicare_flag_present():
         step_3_dependents=Decimal("0"),
         step_4a_other_income=Decimal("0"),
         step_4b_deductions=Decimal("0"),
-        ytd_ss_wages=Decimal("184500"),  # at SS wage base cap — maximum realistic value (R2-2)
+        ytd_ss_wages=Decimal("184500"),  # at the SS wage base cap — the max real value
         pay_periods_per_year=52,
     )
     item_cap = calculate(
@@ -453,7 +462,7 @@ def test_additional_medicare_flag_present():
     )
 
 
-# ---- Code review round 2: input-guard hardening (WR-01 bool, WR-02 unknown keys, WR-03) ----
+# ---- Input guards: calculate() takes a raw dict, so it is the last line of defense ----
 
 def _valid_hours() -> dict[str, object]:
     return {
@@ -466,10 +475,11 @@ def _valid_hours() -> dict[str, object]:
 
 
 def test_bool_hours_rejected(hourly_employee):
-    """WR-01: a bool hours value must raise, not silently become 1 hour of pay.
+    """A bool hours value must raise, not silently become 1 hour of pay.
 
-    bool is a subclass of int, so without an explicit guard hours_regular=True would
-    pass isinstance(_, float)==False and Decimal(True)==1 — a silent wrong number.
+    bool is a subclass of int, so without an explicit guard hours_regular=True passes
+    isinstance(_, float)==False and Decimal(True)==1 — a silently wrong number that
+    reconciles cleanly.
     """
     bad = _valid_hours()
     bad["hours_regular"] = True
@@ -478,7 +488,7 @@ def test_bool_hours_rejected(hourly_employee):
 
 
 def test_float_hours_rejected(hourly_employee):
-    """Round-1 WR-02: a float hours value must raise (D-05 Decimal-everywhere)."""
+    """A float hours value must raise — money is Decimal end-to-end, never binary float."""
     bad = _valid_hours()
     bad["hours_overtime"] = 5.0
     with pytest.raises(TypeError, match="float"):
@@ -486,11 +496,12 @@ def test_float_hours_rejected(hourly_employee):
 
 
 def test_unknown_hours_key_rejected(hourly_employee):
-    """WR-02: a misspelled/unknown hours key must raise, not silently zero the field.
+    """A misspelled/unknown hours key must raise, not silently zero the field.
 
     calculate() takes a raw dict (no Pydantic extra='forbid'), so this is the only seam
     that can catch a malformed hours payload. A dropped 'hours_regualr' typo would zero
-    regular pay and still pass reconciliation — exactly the silent wrong number to prevent.
+    regular pay and STILL pass reconciliation — the arithmetic ties out perfectly around
+    a wrong number.
     """
     bad = _valid_hours()
     bad["hours_regualr"] = Decimal("40")  # typo of hours_regular
@@ -499,12 +510,11 @@ def test_unknown_hours_key_rejected(hourly_employee):
 
 
 def test_negative_hours_rejected(hourly_employee):
-    """WR-01 (round 3): negative hours must raise, not ship a negative paystub.
+    """Negative hours must raise, not ship a negative paystub.
 
     The reconciliation backstop is a sign-blind arithmetic identity, so a negative gross
-    ties out and would pass — exactly the "wrong-but-reconciliation-passing" paystub the
-    raw-dict seam documents itself as the last-line defense against. Mirrors the model-layer
-    ExtractedEmployee Field(ge=0).
+    ties out and passes — the "wrong-but-reconciliation-passing" paystub this raw-dict
+    seam exists to stop. Mirrors the model-layer ExtractedEmployee Field(ge=0).
     """
     bad = _valid_hours()
     bad["hours_regular"] = Decimal("-40")
@@ -513,8 +523,9 @@ def test_negative_hours_rejected(hourly_employee):
 
 
 def test_garbage_string_hours_raises_domain_error(hourly_employee):
-    """IN-01 (round 3): a non-numeric hours string raises a domain ValueError, not a
-    bare decimal.InvalidOperation, matching the typed errors used for bool/float."""
+    """A non-numeric hours string raises a domain ValueError, not a bare
+    decimal.InvalidOperation — matching the typed errors used for bool/float, so the
+    error boundary can record a meaningful reason."""
     bad = _valid_hours()
     bad["hours_regular"] = "abc"
     with pytest.raises(ValueError, match="not a valid number"):
@@ -522,11 +533,11 @@ def test_garbage_string_hours_raises_domain_error(hourly_employee):
 
 
 def test_additional_medicare_threshold_is_status_aware():
-    """WR-03: MFJ threshold ($250k) differs from single ($200k); flag must respect status.
+    """The Additional Medicare threshold is filing-status-aware: MFJ is $250k, single $200k.
 
     A single employee with a Medicare-wage proxy of $200,500 MUST fire the flag; an MFJ
-    employee at the same proxy (between $200k and $250k) must NOT — proving the threshold
-    is filing-status-aware rather than a flat $200k.
+    employee at the same proxy (between $200k and $250k) must NOT. A flat $200k threshold
+    would flag MFJ employees who owe no surtax.
     """
     from app.models.roster import Employee
 
@@ -548,5 +559,5 @@ def test_additional_medicare_threshold_is_status_aware():
         "single: proxy 200500 > 200000 must fire"
     )
     assert mfj_item.additional_medicare_not_modeled is False, (
-        "MFJ: proxy 200500 < 250000 must NOT fire (status-aware threshold, WR-03)"
+        "MFJ: proxy 200500 < 250000 must NOT fire — the threshold is status-aware"
     )

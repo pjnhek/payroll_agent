@@ -1,36 +1,33 @@
-"""needs_operator escalation proof — CLAR2-02 escalation half (Phase 11 Plan 02).
+"""needs_operator escalation proof — the clarification round cap has a human escape.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
-tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
-gated on `os.environ.get("DATABASE_URL")` being unset (the 09-REVIEWS.md /
-test_multiround_context_edge.py convention this module restates). This module
-is genuinely hermetic (FakeConnection + monkeypatched repo.* + TestClient, no
-live DB/LLM) and runs unconditionally offline — no module-level skip marker.
+tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker gated on
+`os.environ.get("DATABASE_URL")` being unset. This module is genuinely hermetic
+(FakeConnection + monkeypatched repo.* + TestClient, no live DB or LLM) and must run
+unconditionally offline — putting it there would silently skip it in every hermetic run.
 
 WHAT THIS MODULE PROVES:
-D-11-06/D-11-07/D-11-09 — after MAX_CLARIFICATION_ROUNDS (3) clarification
-sends, the next would-be send silently escalates the run to needs_operator
-instead of sending a 4th email. No LLM call, no gateway call, no new outbound
-row (D-11-09 silent handoff). needs_operator is also excluded from every
-scope list that would otherwise treat it as an in-flight or stranded state
-(D-11-06's "excluded from sweep scope, retrigger's stale-claim scope, and
-D-11-05 auto-resume by design").
+After MAX_CLARIFICATION_ROUNDS (3) clarification sends, the next would-be send silently
+escalates the run to needs_operator instead of sending a 4th email. No LLM call, no
+gateway call, no new outbound row — a silent handoff to a human, not more spam and not a
+silent stall. needs_operator is also excluded from every scope list that would otherwise
+treat it as in-flight or stranded (the recovery sweep, retrigger's stale-claim scope, and
+auto-resume), because it is a settled human-gate state, not a state to recover from.
 
-1. cap boundary (Open Q4 pin) — counter=2 lets the 3rd send proceed (gateway
-   called); counter=3 blocks the 4th (no gateway call, no llm call, status
-   becomes needs_operator).
-2. escalation is silent (D-11-09) — no new outbound email row is written.
-3. escalation write order — set_status(NEEDS_OPERATOR) is the LAST (in fact
-   the only) write of its transaction (AST pin, shared with
-   test_clarify_rounds.py's cap-precedes-transactions test).
-4. scope exclusions — "needs_operator" not in IN_FLIGHT_STATUSES (imported
-   from app.main) and not in retrigger's stale_statuses.
-5. badge rendering — TestClient GET of a needs_operator run's detail page
-   shows the "Needs Operator" label, not a raw title-cased fallback.
+1. cap boundary — counter=2 lets the 3rd send proceed (gateway called); counter=3 blocks
+   the 4th (no gateway call, no llm call, status becomes needs_operator).
+2. escalation is silent — no new outbound email row is written.
+3. escalation write order — set_status(NEEDS_OPERATOR) is the LAST (in fact the only)
+   write of its transaction (an AST pin, shared with test_clarify_rounds.py's
+   cap-precedes-transactions test).
+4. scope exclusions — "needs_operator" is not in IN_FLIGHT_STATUSES and not in
+   retrigger's stale_statuses.
+5. badge rendering — a TestClient GET of a needs_operator run's detail page shows the
+   "Needs Operator" label, not a raw title-cased fallback.
 
-Money-path discipline (Phase 7.5 lesson): assertions target PERSISTED
-STATE/BEHAVIOR (gateway/llm called or not, status value, scope membership),
-never log strings.
+Money-path discipline: assertions target PERSISTED STATE and BEHAVIOR (gateway/llm called
+or not, status value, scope membership) — never log strings, which can be green while the
+DB holds something else entirely.
 """
 from __future__ import annotations
 
@@ -180,8 +177,8 @@ def test_at_cap_send_escalates_with_no_gateway_or_llm_call(monkeypatch, fake_rep
     monkeypatch.setattr(gateway_mod, "send_outbound", _fail_send_outbound)
     monkeypatch.setattr(suggest_mod, "suggest_employees", _fail_suggest)
     monkeypatch.setattr(compose_mod, "compose_clarification", _fail_compose)
-    # Also patch the names as imported into clarification.py (import-time binding,
-    # Phase 13 Plan 02 — clarify moved from orchestrator.py to clarification.py).
+    # Also patch the names as imported into clarification.py — the import-time binding
+    # lives in that module's namespace, so patching the source module is not enough.
     import app.pipeline.clarification as clarification_mod
     monkeypatch.setattr(clarification_mod, "suggest_employees", _fail_suggest)
     monkeypatch.setattr(clarification_mod, "compose_clarification", _fail_compose)
@@ -191,19 +188,20 @@ def test_at_cap_send_escalates_with_no_gateway_or_llm_call(monkeypatch, fake_rep
     assert fake_repo.runs[str(run_id)]["status"] == "needs_operator", (
         "at the cap, the run must escalate to needs_operator instead of sending"
     )
-    # Round counter must NOT advance further on escalation (D-11-09: escalation
-    # is terminal/silent, not another round).
+    # The round counter must NOT advance further on escalation — escalation is a
+    # terminal handoff, not another round.
     assert fake_repo.runs[str(run_id)]["clarification_round"] == MAX_CLARIFICATION_ROUNDS
 
 
 # ===========================================================================
-# 2. escalation is silent (D-11-09) — no new outbound email row
+# 2. escalation is silent — no new outbound email row
 # ===========================================================================
 
 
 def test_escalation_writes_no_outbound_row(fake_repo):
     """Escalating to needs_operator must NOT write any new outbound email row —
-    no client-facing signal, no new purpose, no template (D-11-09)."""
+    no client-facing signal, no new purpose, no template. The handoff is to the
+    operator, so the client sees nothing at all."""
     run_id = uuid.uuid4()
     email = _bare_inbound()
     decision = _bare_decision()
@@ -221,7 +219,8 @@ def test_escalation_writes_no_outbound_row(fake_repo):
     _clarify(run_id, email, decision, roster, extracted, llm=None, purpose="clarification")
 
     assert fake_repo.outbound.get(str(run_id), []) == [], (
-        "escalation must write ZERO new outbound rows (D-11-09 silent handoff)"
+        "escalation must write ZERO new outbound rows — the handoff to the operator "
+        "is silent to the client"
     )
 
 
@@ -231,14 +230,13 @@ def test_escalation_writes_no_outbound_row(fake_repo):
 
 
 def test_escalation_transaction_writes_only_status():
-    """AST pin: the cap-escalation `with conn.transaction():` block in
-    clarify's source contains set_status as its only tracked write and does
-    NOT call set_clarification_round (escalation is terminal, D-11-09) — the
-    complementary assertion to test_clarify_rounds.py's cap-precedes-
-    transactions test, focused on the escalation block's CONTENTS.
+    """AST pin: the cap-escalation `with conn.transaction():` block in clarify's source
+    contains set_status as its ONLY tracked write, and does NOT call
+    set_clarification_round — escalation is terminal, so advancing the counter there
+    would imply a 4th round that never happens.
 
-    Phase 13 Plan 02: clarify moved to clarification.py (renamed from _clarify);
-    parses clarification.py's source, not orchestrator.py's.
+    The complementary assertion lives in test_clarify_rounds.py (the cap must precede
+    every transaction); this one pins the escalation block's CONTENTS.
     """
     import app.pipeline.clarification as clarification_mod
 
@@ -283,15 +281,16 @@ def test_escalation_transaction_writes_only_status():
         node for node in tx_blocks if _tracked_calls(node) == ["set_status"]
     ]
     assert len(escalation_blocks) == 1, (
-        "exactly one transaction block in _clarify must contain ONLY a "
-        "set_status call (the cap-escalation block, D-11-09)"
+        "exactly one transaction block in clarify must contain ONLY a set_status "
+        "call — the cap-escalation block"
     )
     # It must be the textually FIRST transaction block (cap check precedes the
     # (purpose, round) guard and any send path).
     first_block = min(tx_blocks, key=lambda n: n.lineno)
     assert escalation_blocks[0] is first_block, (
         "the escalation-only transaction block must be the FIRST transaction "
-        "block in _clarify's source (cap check runs before the guard/send paths)"
+        "block in clarify's source — the cap check has to run before the guard "
+        "and send paths, or a capped run still does work on its way out"
     )
 
 
@@ -301,16 +300,19 @@ def test_escalation_transaction_writes_only_status():
 
 
 def test_needs_operator_excluded_from_in_flight_statuses():
-    """needs_operator must NOT be in app.main.IN_FLIGHT_STATUSES — it is a
-    settled human-gate escalation state, not a processing state (D-11-06)."""
+    """needs_operator must NOT be in IN_FLIGHT_STATUSES — it is a settled human-gate
+    state, not a processing state, so the recovery sweep must leave it alone."""
     assert "needs_operator" not in IN_FLIGHT_STATUSES
 
 
 def test_needs_operator_excluded_from_retrigger_stale_statuses():
     """needs_operator must NOT be one of retrigger's stale_statuses (the
-    RECEIVED/EXTRACTING/COMPUTED/SENT scope that governs stale-in-flight
-    reclaim) — an escalated run's recovery path is the D-11-08 resolve form,
-    not a generic retrigger-from-original (D-11-06)."""
+    RECEIVED/EXTRACTING/COMPUTED/SENT scope that governs stale-in-flight reclaim).
+
+    An escalated run's recovery path is the operator's resolve form, not a generic
+    retrigger-from-original — retriggering would discard the very context the operator
+    was escalated to resolve.
+    """
     import inspect
 
     import app.routes.runs as runs_mod
@@ -336,7 +338,8 @@ def test_needs_operator_excluded_from_retrigger_stale_statuses():
         "sanity: expected retrigger's stale_statuses to reference RunStatus members"
     )
     assert "NEEDS_OPERATOR" not in all_members, (
-        "retrigger's stale_statuses must NEVER include NEEDS_OPERATOR (D-11-06)"
+        "retrigger's stale_statuses must NEVER include NEEDS_OPERATOR — an escalated "
+        "run is waiting on a human, not stranded"
     )
 
 
@@ -407,9 +410,8 @@ def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
 
 
 # ===========================================================================
-# 6. POST /runs/{run_id}/resolve — server-side roster validation (Security V4),
-#    override application, remember-checkbox bind, claim + resume dispatch
-#    (D-11-08, D-11-16, Phase 11 Plan 04)
+# 6. POST /runs/{run_id}/resolve — server-side roster validation, override
+#    application, remember-checkbox bind, claim + resume dispatch
 # ===========================================================================
 
 
@@ -494,26 +496,28 @@ def test_resolve_rejects_whole_post_on_invalid_employee_id(monkeypatch, fake_rep
     )
     # State must NOT have changed: still needs_operator, no override applied.
     assert fake_repo.runs[str(run_id)]["status"] == "needs_operator", (
-        "an invalid employee_id must reject the WHOLE POST — the run must "
-        "stay at needs_operator, not silently claim/advance (Security V4)"
+        "an invalid employee_id must reject the WHOLE POST — the run must stay at "
+        "needs_operator, not silently claim/advance. Client-supplied employee ids are "
+        "untrusted: an id off this business's roster would pay the wrong person."
     )
 
 
 def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_repo):
-    """A fully-valid POST (every employee_id on the roster) applies the
-    override and dispatches resume — but does NOT itself claim
-    NEEDS_OPERATOR -> EXTRACTING (GAP-1/CR-1 fix, 11-REVIEW.md).
+    """A fully-valid POST (every employee_id on the roster) applies the override and
+    dispatches resume — but does NOT itself claim NEEDS_OPERATOR -> EXTRACTING.
 
-    This test deliberately mocks resume_pipeline — it is a narrow unit test of
-    the route's validation/override/remember-checkbox logic in isolation, NOT
-    a proof that the run actually advances (see
-    test_resolve_drives_real_resume_pipeline_to_awaiting_approval below for
-    the real end-to-end proof that does NOT mock resume_pipeline). Because
-    resume_pipeline is mocked here and never performs its own claim, the run's
-    status must stay UNCHANGED at needs_operator immediately after the route
-    returns — this positively proves the route itself no longer claims
-    NEEDS_OPERATOR -> EXTRACTING (the prior double-CAS bug pre-claimed here,
-    which this assertion would have caught)."""
+    This test deliberately mocks resume_pipeline: it is a narrow unit test of the
+    route's validation/override/remember-checkbox logic in isolation, NOT a proof that
+    the run actually advances (see
+    test_resolve_drives_real_resume_pipeline_to_awaiting_approval below for the
+    end-to-end proof that does NOT mock resume_pipeline).
+
+    Because resume_pipeline is mocked here and never performs its own claim, the run's
+    status must stay UNCHANGED at needs_operator immediately after the route returns.
+    That is what positively proves the route does not pre-claim: a route that CAS'd the
+    status itself would leave the run at 'extracting' with nothing left to drive it —
+    a double-CAS that strands the run.
+    """
     from app.models.roster import Employee, Roster
 
     biz_id = COASTAL_BIZ_ID
@@ -562,15 +566,14 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
         data={"employee_id_0": str(real_emp_id), "remember_0": "on"},
     )
     assert response.status_code in (200, 303)
-    # GAP-1/CR-1 fix: the route must NOT claim NEEDS_OPERATOR -> EXTRACTING
-    # itself. resume_pipeline is mocked (never claims), so if the route no
-    # longer pre-claims either, the run's status is left UNCHANGED at
-    # needs_operator. (Before the fix, this assertion would see 'extracting'
-    # — the route's own now-removed claim_status call.)
+    # The route must NOT claim NEEDS_OPERATOR -> EXTRACTING itself. resume_pipeline is
+    # mocked here (so it never claims), which means the run's status is left UNCHANGED
+    # at needs_operator if and only if the route also refrains from pre-claiming. A
+    # route that pre-claimed would show 'extracting' here.
     assert fake_repo.runs[str(run_id)]["status"] == "needs_operator", (
-        "the /resolve route must NOT claim NEEDS_OPERATOR -> EXTRACTING "
-        "itself (GAP-1/CR-1) — resume_pipeline (mocked here) is the SOLE "
-        f"claimer; got status={fake_repo.runs[str(run_id)]['status']!r}"
+        "the /resolve route must NOT claim NEEDS_OPERATOR -> EXTRACTING itself — "
+        "resume_pipeline (mocked here) is the SOLE claimer, and two CAS claimers "
+        f"strand the run; got status={fake_repo.runs[str(run_id)]['status']!r}"
     )
     # resume_pipeline (via _operator_resume) must still have been scheduled
     # and invoked with the correct run_id and the validated override mapping.
@@ -589,8 +592,9 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
         f"resume_pipeline must receive the validated override mapping; "
         f"got {call_kwargs!r}"
     )
-    # The remember-checkbox (checked) must have pre-set the bound candidate so
-    # the existing approval-gate write path persists it (D-11-16).
+    # The remember-checkbox (checked) must have pre-set the bound candidate so the
+    # existing approval-gate write path persists it — the alias is still only written
+    # behind the single human gate, never here.
     candidates = fake_repo.runs[str(run_id)].get("alias_candidates") or {}
     assert candidates.get("Jimmy") == {
         "suggested": str(real_emp_id),
@@ -599,7 +603,11 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
 
 
 def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
-    """D-11-16: remember-checkbox OFF means override-only — nothing learned."""
+    """Remember-checkbox OFF means override-only: the run is fixed, nothing is learned.
+
+    The operator's one-off correction must not become a permanent alias unless they
+    explicitly say so.
+    """
     from app.models.roster import Employee, Roster
 
     biz_id = COASTAL_BIZ_ID
@@ -647,21 +655,23 @@ def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
     assert response.status_code in (200, 303)
     candidates = fake_repo.runs[str(run_id)].get("alias_candidates") or {}
     assert "Jimmy" not in candidates, (
-        "checkbox OFF must NOT set a bound candidate — override-only, "
-        "nothing learned (D-11-16)"
+        "checkbox OFF must NOT set a bound candidate — the override applies to this "
+        "run only, and nothing is learned"
     )
 
 
 # ===========================================================================
-# 7. GAP-1 (CR-1) regression — /resolve must NOT double-CAS with
-#    resume_pipeline (Phase 11 Plan 07). This test drives the REAL
-#    resume_pipeline (no monkeypatch of resume_pipeline or _operator_resume)
-#    end-to-end from a genuinely-reached needs_operator run, through the real
-#    HTTP /resolve route, all the way to awaiting_approval. Per 11-REVIEW.md
-#    CR-1, the ORIGINAL bug was hidden precisely because
-#    test_resolve_applies_override_and_claims_on_valid_post (above) mocks
-#    resume_pipeline and only asserts the route's OWN claim — this test
-#    exercises the real seam that bug lived in.
+# 7. /resolve must NOT double-CAS with resume_pipeline.
+#
+#    This test drives the REAL resume_pipeline (no monkeypatch of resume_pipeline or
+#    _operator_resume) end-to-end from a genuinely-reached needs_operator run, through
+#    the real HTTP /resolve route, all the way to awaiting_approval.
+#
+#    It exists because the mocked sibling above
+#    (test_resolve_applies_override_and_claims_on_valid_post) can only assert the
+#    route's OWN claim — a double-CAS between the route and resume_pipeline hides
+#    completely behind that mock and strands the run at 'extracting' in production.
+#    Only an unmocked drive through the real seam can catch it.
 # ===========================================================================
 
 
@@ -672,13 +682,14 @@ def _seed_needs_operator_run_real(
     from_addr: str,
     unresolved_token: str,
 ) -> uuid.UUID:
-    """Seed a run that has genuinely reached needs_operator via a real inbound
-    email + create_run (mirrors _seed_inbound_run in test_alias_full_loop.py),
-    then directly set clarification_round/status/decision/reconciliation to
-    exactly the state _clarify's round-cap branch leaves behind (orchestrator.py
-    :1226-1231 — status is the ONLY field _clarify's escalation touches; it
-    does not rewrite decision/reconciliation/alias_candidates). This is a
-    legitimately reachable state, not a fabrication of unrelated fields.
+    """Seed a run that has genuinely reached needs_operator via a real inbound email +
+    create_run, then set clarification_round/status/decision/reconciliation to exactly
+    the state the round-cap escalation branch leaves behind.
+
+    Status is the ONLY field the escalation touches — it does not rewrite decision,
+    reconciliation, or alias_candidates. Setting those fields to anything else would
+    fabricate a state the pipeline can never actually produce, and the test would prove
+    nothing about the real route.
     """
     eid, _ = fake_repo.insert_inbound_email(
         message_id=f"<{uuid.uuid4()}@test.example>",
@@ -720,18 +731,15 @@ def _seed_needs_operator_run_real(
 
 
 def test_resolve_drives_real_resume_pipeline_to_awaiting_approval(fake_repo, mock_llm):
-    """GAP-1/CR-1 regression (11-REVIEW.md): a valid /resolve POST must drive
-    the run all the way to awaiting_approval via the REAL resume_pipeline —
-    never stranded at extracting.
+    """A valid /resolve POST must drive the run all the way to awaiting_approval via the
+    REAL resume_pipeline — never stranded at extracting.
 
-    Before the fix: resolve() pre-claims NEEDS_OPERATOR -> EXTRACTING at
-    main.py:859, THEN _operator_resume -> resume_pipeline(from_status=
-    NEEDS_OPERATOR) attempts a SECOND claim_status(NEEDS_OPERATOR ->
-    EXTRACTING), which always fails (status is already EXTRACTING) and
-    resume_pipeline returns early doing nothing (orchestrator.py:328-336) —
-    the run is stranded at 'extracting' forever. This test MUST fail against
-    that code and PASS once resolve() stops pre-claiming (resume_pipeline
-    becomes the sole claimer).
+    The failure mode this pins: if resolve() pre-claims NEEDS_OPERATOR -> EXTRACTING,
+    then _operator_resume -> resume_pipeline(from_status=NEEDS_OPERATOR) attempts a
+    SECOND claim_status(NEEDS_OPERATOR -> EXTRACTING), which can never succeed (the
+    status is already EXTRACTING). resume_pipeline returns early doing nothing, and the
+    run sits at 'extracting' forever with no one to advance it. resume_pipeline must be
+    the SOLE claimer.
     """
     unresolved_token = "Jimmy"
     run_id = _seed_needs_operator_run_real(
@@ -741,19 +749,17 @@ def test_resolve_drives_real_resume_pipeline_to_awaiting_approval(fake_repo, moc
         unresolved_token=unresolved_token,
     )
 
-    # A REAL roster employee on the run's OWN business (James Okafor,
-    # Business 1) — resolves the Security V4 server-side validation naturally
-    # via fake_repo's real seeded roster (no roster monkeypatch needed).
+    # A REAL roster employee on the run's OWN business (James Okafor, Business 1) —
+    # passes the route's server-side roster validation naturally via fake_repo's real
+    # seeded roster, with no roster monkeypatch needed.
     james_id = uuid.UUID("e0000002-0000-0000-0000-000000000002")
 
-    # The operator-resume path has NO new reply to consume (inbound=None in
-    # resume_pipeline) — is_round_2 stays False (clarified_fields is empty),
-    # so _run_stages takes the Round-1 path with exactly ONE internal
-    # extract() call. The override resolves "Jimmy" -> james_id deterministically
-    # (reconcile_names(overrides=...)), so decide() reaches "process" and
-    # _run_stages advances the run to COMPUTED then AWAITING_APPROVAL
-    # (orchestrator.py:1148-1149) — no suggestion/draft LLM calls fire on the
-    # process branch.
+    # The operator-resume path has NO new reply to consume (inbound=None), so the
+    # Round-2 branch stays off (clarified_fields is empty) and _run_stages takes the
+    # Round-1 path with exactly ONE internal extract() call. The override resolves
+    # "Jimmy" -> james_id deterministically, so decide() reaches "process" and
+    # _run_stages advances the run COMPUTED -> AWAITING_APPROVAL. No suggestion or
+    # draft LLM calls fire on the process branch — hence a single scripted response.
     mock_llm.script = [
         json.dumps(
             {
@@ -774,18 +780,18 @@ def test_resolve_drives_real_resume_pipeline_to_awaiting_approval(fake_repo, moc
 
     final_run = fake_repo.load_run(run_id)
     assert final_run["status"] != "extracting", (
-        "GAP-1 (CR-1): the run must NEVER be stranded at 'extracting' after a "
-        "valid /resolve POST — this is exactly the double-CAS strand the fix "
-        f"closes; got status={final_run['status']!r}"
+        "the run must NEVER be stranded at 'extracting' after a valid /resolve POST — "
+        "that is the double-CAS strand (route claims, then resume_pipeline's claim "
+        f"fails and it no-ops); got status={final_run['status']!r}"
     )
     assert final_run["status"] == RunStatus.AWAITING_APPROVAL.value, (
         "a valid /resolve POST must drive the REAL resume_pipeline all the way "
         f"to awaiting_approval; got status={final_run['status']!r}"
     )
 
-    # Money-path assertion (Phase 7.5 lesson): a real paystub line item was
-    # actually computed for James at 40 hours — proving _run_stages' process
-    # branch genuinely ran (not just a status flip).
+    # Money-path assertion: a real paystub line item was actually computed for James at
+    # 40 hours. Asserting the status alone would pass on a bare status flip that paid
+    # nobody — the computed value is the only proof the process branch genuinely ran.
     line_items = fake_repo.line_items.get(str(run_id)) or []
     assert line_items, "the process branch must have computed real line items"
     james_items = [

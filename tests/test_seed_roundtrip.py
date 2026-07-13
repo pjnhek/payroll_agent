@@ -50,8 +50,8 @@ def test_seed_has_three_businesses() -> None:
 
 
 def test_seed_has_seven_employees() -> None:
-    """Seed contains exactly 7 employees (6 base + Daniel Reyes, the alias-collision
-    pair half added in Phase 2.1 for the deterministic collision-safety proof)."""
+    """Seed contains exactly 7 employees (6 base + Daniel Reyes, the second half of the
+    alias-collision pair that the collision-safety proof needs)."""
     from app.db.seed import seed
 
     result = seed(dry_run=True)
@@ -70,7 +70,7 @@ def test_seed_distinct_contact_emails() -> None:
 
 
 def test_all_employees_pass_pydantic_validation() -> None:
-    """Every Employee in the seed validates through the Pydantic contract (FOUND-06)."""
+    """Every Employee in the seed validates through the Pydantic contract."""
     from app.db.seed import seed
     from app.models.roster import Employee
 
@@ -111,7 +111,8 @@ def test_seed_has_step2_checkbox_employee() -> None:
 
 
 def test_seed_has_employee_with_known_aliases() -> None:
-    """At least one seed employee has known_aliases (alias fast-path coverage, D-13)."""
+    """At least one seed employee has known_aliases — the stored-alias resolution path
+    needs a fixture that actually exercises it."""
     from app.db.seed import seed
 
     result = seed(dry_run=True)
@@ -135,9 +136,9 @@ def test_seed_has_name_mismatch_hero() -> None:
 
     The gate_block_hero fixture submits the unknown shorthand 'David Reyez'. The
     deterministic resolver finds no unique exact/alias match, so it resolves to
-    source='none' and decide gates the run to request_clarification — no model
-    judgment, no score (D-21-01). The suggestion-only call then names this employee
-    in the clarification email. Phase 1 seeds the clean name; Phase 2.1 proves it.
+    source='none' and decide gates the run to request_clarification — no model judgment,
+    no score. The suggestion-only LLM call then names this employee in the clarification
+    email, but it never decides anything.
     """
     from app.db.seed import seed
 
@@ -149,11 +150,12 @@ def test_seed_has_name_mismatch_hero() -> None:
 
 
 def test_seed_has_alias_collision_pair() -> None:
-    """Two Business-2 employees share the known_alias 'D. Reyes' — the deterministic
-    collision-safety pair (D-21-02). A submitted 'D. Reyes' matches BOTH, so the
-    resolver refuses to pick either and the run gates to clarification. This is the
-    CONSTRAINT-SAFE construction: the two employees have DISTINCT full_names (so
-    UNIQUE(business_id, full_name) holds) but a SHARED alias.
+    """Two Business-2 employees share the known_alias 'D. Reyes' — the collision-safety
+    pair. A submitted 'D. Reyes' matches BOTH, so the resolver refuses to pick either and
+    the run gates to clarification rather than guessing whose paycheck it is.
+
+    The construction is deliberately constraint-safe: the two employees have DISTINCT
+    full_names (so UNIQUE(business_id, full_name) still holds) but a SHARED alias.
     """
     from app.db.seed import seed
 
@@ -164,7 +166,7 @@ def test_seed_has_alias_collision_pair() -> None:
     assert len(sharing) >= 2, (
         "the collision-safety pair must share the 'D. Reyes' alias on 2+ employees"
     )
-    # Same business (the in-business collision per D-21-02).
+    # Same business — a collision only matters within one roster.
     assert len({e.business_id for e in sharing}) == 1, (
         "the shared-alias collision pair must be in the same business"
     )
@@ -177,10 +179,12 @@ def test_seed_has_alias_collision_pair() -> None:
 def test_seed_high_earner_ss_cap_straddle() -> None:
     """Thomas Bergmann's ytd_ss_wages + per-period gross straddles the $184,500 SS cap.
 
-    Straddle condition (Finding #5 / D-13 corrected):
+    Straddle condition:
         remaining_cap > 0 AND per_period_gross > remaining_cap
-    where remaining_cap is the remaining SS WAGE BASE (not a tax amount).
-    This fires the partial-cap branch in Phase 3.
+    where remaining_cap is the remaining SS WAGE BASE, not a tax amount — confusing the
+    two is how a partial-cap period ends up taxing the full gross.
+
+    This fixture is what makes the partial-cap branch reachable at all.
 
     Expected math:
         ytd_ss_wages    = $183,900
@@ -237,12 +241,11 @@ _PERIODS_PER_YEAR = {
 def test_every_employee_cadence_matches_its_business() -> None:
     """Every seed employee's pay_periods_per_year matches its business's pay_period.
 
-    WR-10: generalizes the old single-business (Business 3, hardcoded 26) check to
-    all three businesses.  The relationship "weekly business ⇒ employees are 52,
-    biweekly ⇒ 26" has no DB-level enforcement — only the static CADENCE
-    VERIFICATION comment in seed.py — so this data-driven test is the only thing
-    that locks it.  A future edit reintroducing the FIX B class of bug (Sandra Kim
-    set to 52 under a biweekly business) would fail here.
+    The relationship "weekly business ⇒ employees are 52, biweekly ⇒ 26" has no DB-level
+    enforcement — only a comment in seed.py — so this data-driven check over ALL three
+    businesses is the only thing that locks it. A mismatched cadence (an employee set to
+    52 under a biweekly business) silently annualizes their wages wrong and misprices
+    every bracket lookup for them.
     """
     from app.db.seed import seed
 
@@ -274,7 +277,11 @@ def test_every_employee_cadence_matches_its_business() -> None:
 
 
 def test_seed_employees_have_stable_fixed_uuids() -> None:
-    """All employee UUIDs are stable fixed literals (not random uuid4()) per D-11."""
+    """All employee UUIDs are stable fixed literals, never random uuid4().
+
+    Re-seeding must be idempotent: random ids would create duplicate employees on every
+    run and break every fixture that references an employee by id.
+    """
     from uuid import UUID
 
     from app.db.seed import seed
@@ -391,10 +398,11 @@ def test_employee_roundtrip(seeded_db) -> None:
 
     assert len(rows) == 7, f"Expected 7 employee rows, got {len(rows)}"
     for row in rows:
-        # Pydantic will raise ValidationError if any FOUND-06 field is wrong
+        # Pydantic raises ValidationError if any contract field is wrong
         emp = Employee(**row)
         assert isinstance(emp, Employee)
-        # D-06: numeric fields arrive as Decimal via psycopg binary extension
+        # Numeric fields must arrive as Decimal via the psycopg binary extension —
+        # a float here would silently reintroduce binary rounding into the money path.
         assert isinstance(emp.ytd_ss_wages, Decimal), (
             f"ytd_ss_wages for {emp.full_name} must be Decimal,"
             f" got {type(emp.ytd_ss_wages)}"
@@ -425,7 +433,8 @@ def test_idempotent_reseed(seeded_db) -> None:
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_seed_containment(seeded_db) -> None:
-    """D-11: seed() never inserts into payroll_runs or email_messages."""
+    """seed() never inserts into payroll_runs or email_messages — it seeds reference
+    data only, so re-seeding can never fabricate a payroll run or an email."""
     from app.db.supabase import get_connection
 
     with get_connection() as conn:
@@ -445,10 +454,10 @@ def test_seed_containment(seeded_db) -> None:
 def test_hero_case_exists(seeded_db) -> None:
     """David Reyes (the deterministic name-mismatch hero) has exactly 1 row.
 
-    NOTE: This confirms the clean name is seeded. Phase 2.1 proves the behaviour —
-    that 'David Reyez' (the unknown shorthand) resolves to source='none'
-    deterministically and decide gates the run to request_clarification (no model,
-    no score, D-21-01). Phase 1 owns only seeding.
+    This only confirms the clean name is seeded. The behaviour it enables — 'David Reyez'
+    (the unknown shorthand) resolving to source='none' and decide gating the run to
+    request_clarification, with no model and no score — is proven by the decisioning
+    tests, not here.
     """
     from app.db.supabase import get_connection
 
@@ -465,7 +474,8 @@ def test_hero_case_exists(seeded_db) -> None:
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_alias_exists(seeded_db) -> None:
-    """Maria Chen's known_aliases contains 'Maria' (alias fast-path coverage, D-13)."""
+    """Maria Chen's known_aliases contains 'Maria' — the stored-alias resolution path
+    needs a real alias in the DB to exercise it end-to-end."""
     from app.db.supabase import get_connection
 
     with get_connection() as conn, conn.cursor(

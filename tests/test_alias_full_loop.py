@@ -1,47 +1,43 @@
-"""The D-11-17 full-loop stops-asking test (CLAR2-04, Phase 11 Plan 04).
+"""The full-loop stops-asking test — proof that alias learning actually closes.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
-tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
-gated on `os.environ.get("DATABASE_URL")` being unset (the established
-09-REVIEWS.md / test_multiround_context_edge.py convention this module
-restates). This module is genuinely hermetic (fake_repo + mock_llm only, no
-live DB/LLM) and must run unconditionally offline — no module-level skip
-marker of any kind.
+tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker gated on
+`os.environ.get("DATABASE_URL")` being unset. This module is genuinely hermetic
+(fake_repo + mock_llm only, no live DB or LLM) and must run unconditionally offline —
+putting it there would silently skip the one test that proves the loop closes.
 
-WHAT THIS MODULE PROVES (D-11-17's core finding: faked-state tests kept an
-unreachable bind loop green; only REAL resolution proves the loop closes):
+WHY REAL RESOLUTION, NOT SEEDED STATE: an alias-learning loop can be structurally
+unreachable and still keep a suite of faked-state tests green — every step passes in
+isolation while the loop never actually closes end-to-end. Only driving REAL
+reconcile_names and REAL _write_aliases_if_safe can prove otherwise. mock_llm is used
+here ONLY for extraction/suggestion/draft TEXT — never for name resolution, and never to
+fake a post-reconciliation state.
 
-  The full end-to-end alias-learning loop, driving REAL reconcile_names and
-  REAL _write_aliases_if_safe throughout (mock_llm is used ONLY for the
-  extraction/suggestion/draft TEXT — never for name resolution, never for a
-  faked post-reconciliation state):
+WHAT THIS MODULE PROVES:
 
-    1. FIRST submission: the client emails a nickname ("Jimmy") for an
-       employee (James Okafor) who has NO stored alias for it yet. Real
-       reconcile_names resolves this as source="none"/unresolved (no guess).
-       The deterministic decide() gate requests clarification. _clarify
-       captures the token, calls the (mocked-response) suggest_employees,
-       and persists the D-11-14 nested suggestion
+    1. FIRST submission: the client emails a nickname ("Jimmy") for an employee (James
+       Okafor) who has NO stored alias for it yet. Real reconcile_names resolves this as
+       source="none"/unresolved — it does not guess. The deterministic decide() gate
+       requests clarification. _clarify captures the token, calls the (mocked-response)
+       suggest_employees, and persists the nested suggestion
        {"Jimmy": {"suggested": <james.id>, "bound": None}}.
-    2. A CONFIRMING client reply restates the suggested canonical name
-       ("James Okafor") — resume_pipeline re-runs REAL reconcile_names; James
-       newly resolves and "Jimmy" is gone from unresolved. The D-11-15
-       bind-on-confirmation check (real, not seeded) binds
+    2. A CONFIRMING client reply restates the suggested canonical name ("James Okafor").
+       resume_pipeline re-runs REAL reconcile_names; James newly resolves and "Jimmy" is
+       gone from unresolved, so the bind-on-confirmation check (real, not seeded) binds
        {"Jimmy": {"suggested": <james.id>, "bound": <james.id>}}.
-    3. The operator approves at the single human gate — _deliver calls the
-       REAL _write_aliases_if_safe (not mocked), which runs the D-01b
-       collision re-check and writes known_aliases via update_known_alias.
-    4. THE STOPS-ASKING ASSERTION: a SECOND, INDEPENDENT submission using the
-       SAME nickname ("Jimmy") drives REAL reconcile_names against the
-       now-updated roster (load_roster_for_business re-reads
-       employees.known_aliases) and resolves via the stored alias
-       (source="alias", resolved=True) — the run does NOT enter
-       clarification at all (decide() gates to "process" directly) and a
-       real paystub is computed for James Okafor.
+    3. The operator approves at the single human gate — _deliver calls the REAL
+       _write_aliases_if_safe (not mocked), which re-runs the collision check and writes
+       known_aliases via update_known_alias.
+    4. THE STOPS-ASKING ASSERTION: a SECOND, INDEPENDENT submission using the SAME
+       nickname ("Jimmy") drives REAL reconcile_names against the now-updated roster
+       (load_roster_for_business re-reads employees.known_aliases) and resolves via the
+       stored alias (source="alias", resolved=True). The run does NOT enter clarification
+       at all — decide() gates straight to "process" — and a real paystub is computed for
+       James Okafor.
 
-  The misname guard (D-11-15) is also pinned here at the full-loop level: a
-  reply that corrects the SAME token to a DIFFERENT, non-suggested employee
-  must bind nothing (see test_misname_reply_binds_nothing_end_to_end below).
+  The misname guard is also pinned here at the full-loop level: a reply that corrects the
+  SAME token to a DIFFERENT, non-suggested employee must bind nothing (see
+  test_misname_reply_binds_nothing_end_to_end below).
 """
 from __future__ import annotations
 
@@ -140,10 +136,10 @@ def _inbound_persisted(
 
 
 def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
-    """The D-11-17 stops-asking proof, end-to-end, REAL resolution throughout.
+    """The stops-asking proof, end-to-end, with REAL resolution throughout.
 
-    Money-path assertion (Phase 7.5 lesson): the SECOND submission's paystub
-    line-item VALUE is asserted, not merely a status label.
+    Money-path discipline: the SECOND submission's paystub line-item VALUE is asserted,
+    not merely a status label — a run can reach awaiting_approval having paid nobody.
     """
     # ---- STEP 1: FIRST submission — a nickname with NO stored alias yet -----
     run_id = _seed_inbound_run(fake_repo, body="Jimmy worked 40 regular hours this week.")
@@ -165,22 +161,22 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
         "does not resolve via real reconcile_names"
     )
 
-    # The D-11-14 nested suggestion must be persisted with a REAL employee id
-    # (mapped from the suggested full_name via the already-loaded roster —
-    # Pitfall #5), NOT the raw suggested name string.
+    # The nested suggestion must be persisted with a REAL employee id, mapped from the
+    # suggested full_name via the already-loaded roster — NOT the raw suggested name
+    # string, which would leave a name to re-resolve (and possibly mis-resolve) later.
     candidates_after_first = run_after_first.get("alias_candidates") or {}
     assert "Jimmy" in candidates_after_first, (
         "the single genuinely-unresolved token 'Jimmy' must be captured"
     )
     persisted_candidate = candidates_after_first["Jimmy"]
     assert isinstance(persisted_candidate, dict), (
-        "the D-11-14 nested shape must be used, not a flat value"
+        "the nested {suggested, bound} shape must be used, not a flat value"
     )
     assert persisted_candidate == {"suggested": JAMES_ID_STR, "bound": None}, (
         f"expected {{'suggested': {JAMES_ID_STR!r}, 'bound': None}}, got "
         f"{persisted_candidate!r} — suggest_employees returns a NAME "
-        "('James Okafor'), which must be mapped to james's employee id at "
-        "persist time (D-11-14, Pitfall #5), and must NOT be bound yet."
+        "('James Okafor'), which must be mapped to James's employee id at persist "
+        "time, and must NOT be bound yet: nobody has confirmed anything."
     )
 
     # ---- STEP 2: a CONFIRMING reply restates the suggested canonical name ---
@@ -202,15 +198,15 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     candidates_after_confirm = run_after_confirm.get("alias_candidates") or {}
     bound_candidate = candidates_after_confirm.get("Jimmy")
     assert bound_candidate == {"suggested": JAMES_ID_STR, "bound": JAMES_ID_STR}, (
-        f"D-11-15 bind-on-confirmation must fire from REAL post-resume "
-        f"reconciliation (James newly resolved, 'Jimmy' gone from "
-        f"unresolved) — got {bound_candidate!r}"
+        f"bind-on-confirmation must fire from the REAL post-resume reconciliation "
+        f"(James newly resolved, 'Jimmy' gone from unresolved) — got {bound_candidate!r}"
     )
 
     # ---- STEP 3: operator approves at the SINGLE human gate ------------------
-    # _deliver calls the REAL _write_aliases_if_safe (never mocked in this
-    # test) — the D-01b collision re-check runs, then update_known_alias
-    # persists known_aliases via the real repo call (mirrored by fake_repo).
+    # _deliver calls the REAL _write_aliases_if_safe (never mocked in this test) — the
+    # collision re-check runs, then update_known_alias persists known_aliases via the
+    # real repo call (mirrored by fake_repo). The alias is only ever written behind the
+    # human gate.
     from app.pipeline.delivery import deliver as _deliver
 
     claimed = fake_repo.claim_status(
@@ -236,8 +232,8 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     )
     assert "Jimmy" in james_employee.known_aliases, (
         f"known_aliases for James Okafor must now include 'Jimmy' — the REAL "
-        f"_write_aliases_if_safe (D-01b collision re-check + update_known_alias) "
-        f"must have run at the approval gate; got {james_employee.known_aliases!r}"
+        f"_write_aliases_if_safe (collision re-check + update_known_alias) must have "
+        f"run at the approval gate; got {james_employee.known_aliases!r}"
     )
 
     # ---- STEP 4: THE STOPS-ASKING ASSERTION ----------------------------------
@@ -283,14 +279,14 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     )
     assert jimmy_match["resolved"] is True
     assert jimmy_match["source"] == "alias", (
-        f"the second submission's 'Jimmy' must resolve with source='alias' "
-        f"(the READ side of the learning loop, D-21-07); got {jimmy_match!r}"
+        f"the second submission's 'Jimmy' must resolve with source='alias' — the READ "
+        f"side of the learning loop; got {jimmy_match!r}"
     )
     assert jimmy_match["matched_employee_id"] == JAMES_ID_STR
 
-    # Money-path assertion (Phase 7.5 lesson): assert the PAID VALUE, not just
-    # a status label. A real paystub line item exists for James at 35 hours —
-    # proving the run actually PROCESSED (not just resolved-but-stuck).
+    # Money-path assertion: assert the PAID VALUE, not just a status label. A real
+    # paystub line item must exist for James at 35 hours, which is the only proof the
+    # run actually PROCESSED rather than resolving and then stalling.
     second_line_items = fake_repo.load_line_items(second_run_id)
     assert second_line_items, "a paystub must be computed for the second run"
     james_items = [i for i in second_line_items if str(i.employee_id) == JAMES_ID_STR]
@@ -302,15 +298,16 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
 
 
 def test_misname_reply_binds_nothing_end_to_end(fake_repo, mock_llm):
-    """D-11-15 misname guard, pinned at the FULL-LOOP level with REAL resolution.
+    """The misname guard, pinned at the FULL-LOOP level with REAL resolution.
 
-    A nickname is captured and a suggestion persisted (real capture path), but
-    the confirming reply actually corrects to a DIFFERENT, non-suggested
-    employee (Maria Chen, not James Okafor). The suggested id (James) never
-    newly-resolves, so nothing binds — "Robbie" must NOT become an alias for
-    Maria. This exercises the exact real-resolution chain the stops-asking
-    test does, but proves the negative case: the loop must NOT learn from
-    mere correction, only from CONFIRMED suggestion evidence.
+    A nickname is captured and a suggestion persisted (the real capture path), but the
+    reply actually corrects to a DIFFERENT, non-suggested employee (Maria Chen, not James
+    Okafor). The suggested id (James) never newly-resolves, so nothing binds — "Robbie"
+    must NOT become an alias for Maria.
+
+    This drives the same real-resolution chain as the stops-asking test, but proves the
+    negative: the loop learns only from CONFIRMED suggestion evidence, never from a bare
+    correction. Learning here would permanently misroute every future "Robbie".
     """
     run_id = _seed_inbound_run(fake_repo, body="Robbie worked 20 regular hours this week.")
 
