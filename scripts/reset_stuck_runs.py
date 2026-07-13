@@ -1,6 +1,6 @@
-"""Demo-DB hygiene helper (Phase 5).
+"""Demo-DB hygiene helper: inspect run statuses and clear stuck or stale runs.
 
-Two modes:
+Modes:
   --list                 show run counts by status (default if no flag)
   --fail-stuck [MINUTES]  mark runs stuck in an in-flight status (received/extracting/
                           computed) older than MINUTES (default 10) as 'error' so they
@@ -39,9 +39,9 @@ def main() -> None:
 
         elif mode == "--fail-stuck":
             minutes = int(args[1]) if len(args) > 1 else 10
-            # WR-02 (REVIEW-2): no f-string SQL — `= ANY(%s::text[])` takes the status
-            # list as a single bound array parameter (honors the project's
-            # "NEVER f-string SQL" discipline).
+            # Never f-string SQL: `= ANY(%s::text[])` takes the status list as a single
+            # bound array parameter, so the status values stay data and can never be
+            # interpolated into the statement text.
             rows = c.execute(
                 "UPDATE payroll_runs SET status='error', "
                 "error_reason=COALESCE(error_reason,'stuck-in-flight (manual reset)') "

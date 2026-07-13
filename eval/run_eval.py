@@ -1,10 +1,10 @@
-"""Payroll Agent eval scorer -- Phase 4.
+"""Payroll Agent eval scorer.
 
-Scores 15 committed eval fixtures against the production pipeline stages.
+Scores the committed eval fixtures against the production pipeline stages.
 Produces eval/summary.json with three core metrics:
-  - Extraction precision/recall/F1 + field accuracy (D-06, EVAL-04)
-  - Per-NAME reconciliation accuracy bucketed by category (D-03, D-02)
-  - Two-level decision accuracy + confusion matrix with false_process headline (D-10, D-11)
+  - Extraction precision/recall/F1 + field accuracy (EVAL-04)
+  - Per-NAME reconciliation accuracy bucketed by name category
+  - Two-level decision accuracy + confusion matrix with the false_process headline
 
 Usage:
   uv run python eval/run_eval.py             # score + write summary.json
@@ -12,14 +12,17 @@ Usage:
   uv run python eval/run_eval.py --record    # LIVE re-record extraction caches
                                               # (needs ALLOW_LIVE_LLM=true)
 
-Design notes:
-  - DB-FREE: no app.config import on the scoring/--check path (model id from env,
-    no DATABASE_URL needed).
-  - DRY seam: imports the SAME production pipeline functions (reconcile_names, validate, decide).
-  - PATH A: labeled expected extraction feeds the deterministic stages (unconfounded
-    by extraction noise, D-07).
-  - CACHE: real committed extraction JSON feeds the extraction scoring ONLY (D-07 isolation).
-  - --record: LIVE extraction via the production extract() -- gated by _require_live_llm() (D-05).
+Invariants:
+  - DB-FREE: no app.config import on the scoring/--check path (the model id comes from
+    the environment, so no DATABASE_URL is required).
+  - DRY seam: imports the SAME production functions (reconcile_names, validate, decide),
+    so the eval can never drift from what production actually does.
+  - Two extraction inputs, never conflated:
+      PATH A -- the LABELED expected extraction feeds the deterministic stages, so
+                extraction noise cannot confound the reconcile/validate/decide metrics.
+      CACHE  -- the real committed extraction JSON feeds the extraction scoring ONLY.
+  - --record performs LIVE extraction via the production extract(); it is gated by
+    _require_live_llm() so a routine scoring run can never hit the model.
 """
 import argparse
 import json
@@ -121,9 +124,10 @@ class AggregateResult(TypedDict):
 # Eval-only fixture keys — must be stripped before InboundEmail validation.
 # (extra="forbid" on InboundEmail rejects unknown keys.)
 #
-# WR-04 FIX: one constant shared by BOTH _load_fixture and _record_extraction
-# so the two strip sets cannot diverge. Adding a new eval-only key requires
-# exactly ONE edit here.
+# ONE constant shared by BOTH _load_fixture and _record_extraction so the two
+# strip sets cannot diverge — if they diverge, --record blows up with a
+# ValidationError on any fixture carrying a key the other path knows about.
+# Adding a new eval-only key requires exactly ONE edit here.
 # ---------------------------------------------------------------------------
 _EVAL_ONLY_KEYS: frozenset[str] = frozenset(
     {"expected", "fixture_category", "prior_extracted", "prior_matches"}
@@ -146,7 +150,7 @@ def _require_live_llm() -> None:
     """Gate for --record mode: checks allow_live_llm flag + api key.
 
     Imports app.config ONLY inside this function so the scoring/--check paths
-    never trigger the DATABASE_URL fail-fast (T-04-07).
+    never trigger the DATABASE_URL fail-fast.
     """
     from app.config import get_settings  # lazy import -- DB-free guard
 
@@ -167,7 +171,7 @@ def _extraction_model_id() -> str:
     """Resolve the pinned extraction model id WITHOUT importing app.config.
 
     Reads EXTRACTION_MODEL env var; defaults to the same value Settings uses.
-    This keeps the summary writer DB-free (no DATABASE_URL required, T-04-07).
+    This keeps the summary writer DB-free (no DATABASE_URL required).
     """
     return os.environ.get("EXTRACTION_MODEL", "deepseek-v4-flash")
 
@@ -191,11 +195,11 @@ def _load_fixture(path: pathlib.Path) -> dict[str, Any]:
 
     Strips eval-only keys (expected, fixture_category, prior_extracted, prior_matches)
     before InboundEmail validation. The raw dict (including prior_extracted and
-    prior_matches) is returned for use by _score_fixture (D-7.5-10 three-phase path).
+    prior_matches) is returned for use by _score_fixture's three-phase path.
     """
     raw = cast(dict[str, Any], json.loads(path.read_text()))
-    # WR-04 FIX: use the module-level _EVAL_ONLY_KEYS constant (shared with
-    # _record_extraction) so the two strip sets cannot diverge.
+    # Use the module-level _EVAL_ONLY_KEYS constant (shared with _record_extraction)
+    # so the two strip sets cannot diverge.
     input_fields = {k: v for k, v in raw.items() if k not in _EVAL_ONLY_KEYS}
     InboundEmail.model_validate(input_fields)  # raises ValidationError on schema drift
     return raw
@@ -213,7 +217,7 @@ def _load_extraction_cache(fixture_path: pathlib.Path) -> Extracted:
 
 
 def _expected_to_extracted(raw: dict[str, Any]) -> Extracted:
-    """Build an Extracted from the LABELED expected block (PATH A, D-07).
+    """Build an Extracted from the LABELED expected block (PATH A).
 
     Used for isolated deterministic scoring -- NOT the cache. Feeds labeled
     truth into reconcile/validate/decide so extraction noise doesn't confound
@@ -238,21 +242,21 @@ def _expected_to_extracted(raw: dict[str, Any]) -> Extracted:
 def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureResult:
     """Score one fixture. Returns a per-fixture result dict.
 
-    D-07 split:
+    The two extraction inputs stay split:
       PATH A -- labeled expected extraction -> deterministic stages (the thesis metric)
       CACHE  -- real recorded extraction -> extraction scoring ONLY (not conflated)
     """
     roster = _load_roster_for_fixture(raw["from_addr"])
 
-    # D-07: build BOTH extraction inputs, keep them separate.
+    # Build BOTH extraction inputs, keep them separate.
     expected_extracted = _expected_to_extracted(raw)     # labeled truth: drives PATH A
     # real model output: drives extraction scoring
     cached_extracted = _load_extraction_cache(fixture_path)
 
-    # D-7.5-10 three-phase path: deserialize prior_extracted + prior_matches if present.
-    # Fixtures 16 and 17 have no prior_extracted → else branch fires (no regression possible).
-    # Fixture 18 (MONEY-03 field-drop) has both → detect_field_regression called on raw extracted
-    # BEFORE validate, mirroring the production three-phase ordering (detect → validate → decide).
+    # Three-phase path: deserialize prior_extracted + prior_matches if present.
+    # A fixture with no prior_extracted takes the else branch (no regression possible).
+    # A field-drop fixture has both, so detect_field_regression runs on the RAW extraction
+    # BEFORE validate, mirroring the production ordering (detect → backfill → validate → decide).
     prior_extracted_raw = raw.get("prior_extracted")
     prior_matches_raw = raw.get("prior_matches")
 
@@ -270,26 +274,27 @@ def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureRe
     matches: list[NameMatchResult] = reconcile_names(submitted_names, roster)
 
     if prior_extracted is not None:
-        # WR-03 FIX: honor production three-phase ordering: detect → backfill → validate.
-        # Production _run_stages runs: detect_field_regression (on RAW) → backfill_extracted
-        # → validate(on BACKFILLED, with raw_drops + prior/prior_matches) → decide.
-        # The old eval code skipped backfill and passed neither prior= nor prior_matches=
-        # into validate, so a Round-2 carry-forward fixture would be scored as "missing"
-        # by the eval while production processes it cleanly — a silent eval/production gap.
+        # This branch MUST mirror the production stage ordering exactly:
+        #   detect_field_regression (on RAW) → backfill_extracted → validate (on BACKFILLED,
+        #   with raw_drops + prior/prior_matches) → decide.
+        # If the eval skips backfill, or omits prior=/prior_matches= from validate, a
+        # round-2 carry-forward fixture is scored as "missing fields" here while production
+        # processes it cleanly — a silent eval/production gap that would hide a real
+        # decision regression behind a green eval.
         #
-        # Note: detect raw_drops is still computed on RAW (pre-backfill) expected_extracted,
-        # exactly as in production (the drop must be visible before backfill fills it).
+        # raw_drops is computed on the RAW (pre-backfill) extraction, exactly as in
+        # production: the drop must be visible BEFORE backfill fills it back in.
         raw_drops = detect_field_regression(
             prior_extracted, expected_extracted, prior_matches, matches
         )
         # Backfill phase: fill silence fields from the snapshot, mirroring production.
-        # resolved_drops=None: eval has no backfill_skip concept (only scoring, not classify).
+        # resolved_drops=None: the eval has no backfill_skip concept (it scores, never classifies).
         expected_extracted = backfill_extracted(
             expected_extracted, prior_extracted, prior_matches, matches, resolved_drops=None
         )
-        # Validate on BACKFILLED extraction with prior context for N8 suppression.
-        # raw_field_drops= feeds the pre-backfill drops (Phase 1); prior_matches= threads
-        # the snapshot-round reconciliation for the N8 guard — mirrors production exactly.
+        # Validate on the BACKFILLED extraction with prior context so the N8 guard behaves as
+        # it does in production: raw_field_drops= carries the pre-backfill drops, and
+        # prior_matches= threads the snapshot-round reconciliation.
         issues = validate(
             expected_extracted,
             roster,
@@ -298,19 +303,19 @@ def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureRe
             prior_matches=prior_matches,
             raw_field_drops=raw_drops,
         )
-        # Note: the eval does not have a suppress_detection set (classify-first is an
-        # orchestrator concern, not a scoring concern). The eval currently covers only
-        # the Round-1 detect-and-clarify path (fixture 18). Round-2 carry-forward →
-        # paystub outcomes are covered by the integration tests in test_resume_pipeline.py.
-        # A future Round-2 fixture (e.g. 19_*) would exercise the full path here.
+        # The eval has no suppress_detection set — classify-first is an orchestrator concern,
+        # not a scoring concern. Fixtures here cover the round-1 detect-and-clarify path only;
+        # round-2 carry-forward → paystub outcomes are covered by the integration tests in
+        # test_resume_pipeline.py. A future round-2 fixture would exercise the full path here.
     else:
         issues = validate(expected_extracted, roster, matches)
 
     decision = decide(expected_extracted, matches, issues)
 
     # -----------------------------------------------------------------------
-    # EXTRACTION SCORING (D-06) -- multiset alignment so duplicates count as FP
-    # Score against the CACHED real extraction (not PATH A).
+    # EXTRACTION SCORING -- multiset alignment so duplicates count as false positives.
+    # Scored against the CACHED real extraction (never PATH A -- PATH A is labeled truth,
+    # so scoring it against itself would report a meaningless perfect 1.0).
     # -----------------------------------------------------------------------
     actual_counts = Counter(
         _normalize(e.submitted_name) for e in cached_extracted.employees
@@ -361,7 +366,8 @@ def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureRe
             if exp_val is None and act_val is None:
                 field_correct += 1
             elif exp_val is not None and act_val is not None:
-                # Decimal exact equality -- never float (D-06)
+                # Decimal exact equality -- never float (float == on money is a silent
+                # wrong-answer generator)
                 try:
                     if Decimal(str(act_val)) == Decimal(str(exp_val)):
                         field_correct += 1
@@ -381,8 +387,10 @@ def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureRe
     }
 
     # -----------------------------------------------------------------------
-    # RECONCILIATION SCORING (D-03, D-02) -- per-NAME from PATH A matches
-    # A wrong-but-real match FAILS: source + resolved + matched_employee_id must all match.
+    # RECONCILIATION SCORING -- per-NAME, from the PATH A matches.
+    # A wrong-but-real match FAILS: source + resolved + matched_employee_id must ALL match.
+    # Scoring only source/resolved would let "matched *an* employee" count as correct even
+    # when it matched the WRONG one -- exactly the mispay this project exists to prevent.
     # -----------------------------------------------------------------------
     match_by_name = {_normalize(m.submitted_name): m for m in matches}
     reconciliation_results: list[ReconciliationResult] = []
@@ -410,7 +418,7 @@ def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureRe
 
         source_match = (actual.source == expected_source)
         resolved_match = (actual.resolved == expected_resolved)
-        # D-02: matched_employee_id must equal the labeled intended id.
+        # matched_employee_id must equal the labeled intended id.
         # A wrong-but-REAL match (matching a different employee) is a FAIL.
         if expected_matched_id is not None:
             id_match = (
@@ -434,16 +442,17 @@ def _score_fixture(raw: dict[str, Any], fixture_path: pathlib.Path) -> FixtureRe
         })
 
     # -----------------------------------------------------------------------
-    # DECISION SCORING -- two levels (D-10)
+    # DECISION SCORING -- two levels: the action itself, and the gate structure behind it.
     # -----------------------------------------------------------------------
     exp_dec = raw["expected"]["decision"]
     action_correct = (decision.final_action == exp_dec["final_action"])
 
     gate_reasons_contains = exp_dec.get("gate_reasons_contains", [])
     if gate_reasons_contains:
-        # Match each expected substring against a SINGLE gate reason, never the
-        # space-joined blob -- joining lets an expected substring straddle two
-        # adjacent reasons and match spuriously (WR-01).
+        # Match each expected substring against a SINGLE gate reason, never a
+        # space-joined blob of all of them -- joining lets an expected substring straddle
+        # two adjacent reasons and match spuriously, passing a fixture whose real gate
+        # reasons are wrong.
         gate_reasons_match = all(
             any(s in reason for reason in decision.gate_reasons)
             for s in gate_reasons_contains
@@ -512,7 +521,8 @@ def _aggregate(fixture_results: list[FixtureResult]) -> AggregateResult:
     )
 
     # -----------------------------------------------------------------------
-    # RECONCILIATION per-NAME-category (D-12: fractions, not %)
+    # RECONCILIATION per-NAME-category -- k/n fractions, not percentages: at these
+    # sample sizes a "100%" bar would overclaim what one or two names actually prove.
     # -----------------------------------------------------------------------
     cat_recon: dict[str, dict[str, int]] = {}
     for r in fixture_results:
@@ -535,7 +545,7 @@ def _aggregate(fixture_results: list[FixtureResult]) -> AggregateResult:
         })
 
     # -----------------------------------------------------------------------
-    # DECISION confusion matrix (D-11, D-12)
+    # DECISION confusion matrix
     # -----------------------------------------------------------------------
     true_process = 0
     false_process = 0  # THE HEADLINE: leaked through, pays wrong person
@@ -576,7 +586,7 @@ def _aggregate(fixture_results: list[FixtureResult]) -> AggregateResult:
     }
 
     # -----------------------------------------------------------------------
-    # Per-fixture-category decision (D-12: k/n fractions)
+    # Per-fixture-category decision -- k/n fractions
     # -----------------------------------------------------------------------
     per_cat_dec: dict[str, dict[str, int]] = {}
     for r in fixture_results:
@@ -593,7 +603,7 @@ def _aggregate(fixture_results: list[FixtureResult]) -> AggregateResult:
         per_category_decision[cat] = {
             "correct": k,
             "total": n,
-            "fraction": f"{k}/{n}",  # D-12: honest at small n
+            "fraction": f"{k}/{n}",  # k/n stays honest at small n; a % would not
         }
 
     # -----------------------------------------------------------------------
@@ -625,7 +635,11 @@ def _aggregate(fixture_results: list[FixtureResult]) -> AggregateResult:
 def _write_summary_json(
     fixture_results: list[FixtureResult], aggregated: AggregateResult, suite_run_id: str
 ) -> None:
-    """Write eval/summary.json. suite_run_id threaded from main() so 04-04 can reuse it."""
+    """Write eval/summary.json.
+
+    suite_run_id is threaded in from main() rather than generated here, so the summary
+    file and the optional eval_results DB rows share one id for the same scoring run.
+    """
     summary = {
         "schema_version": "1",
         "suite_run_id": suite_run_id,
@@ -645,7 +659,7 @@ def _write_summary_json(
 
 
 # ---------------------------------------------------------------------------
-# --check regression gate (D-17)
+# --check regression gate
 # ---------------------------------------------------------------------------
 
 
@@ -659,8 +673,11 @@ def _assert_regression(
 ) -> None:
     """Compare fresh scoring against committed summary.json (parsed+rounded, not bytes).
 
-    Covers ALL scored metrics so no regression can slip through CI (D-17).
-    Prints a descriptive diff and raises SystemExit(1) on any mismatch.
+    Compares by parsed value, not raw bytes: summary.json carries a fresh generated_at
+    and suite_run_id on every run, so a byte comparison would always be red.
+
+    Must cover EVERY scored metric -- a metric that is written to summary.json but not
+    checked here can regress silently and CI stays green.
     """
     mismatches: list[str] = []
 
@@ -783,23 +800,23 @@ def _assert_regression(
 
 
 # ---------------------------------------------------------------------------
-# --record mode: LIVE extraction (D-05)
+# --record mode: LIVE extraction
 # ---------------------------------------------------------------------------
 
 
 def _record_extraction() -> None:
     """Re-record extraction caches via LIVE extraction.
 
-    Imports the live pieces INSIDE this function (keeps them off the
-    scoring/--check import path -- lazy-import discipline, T-04-07).
+    Imports the live pieces INSIDE this function so they stay off the scoring/--check
+    import path -- that path must remain DB-free and model-free.
 
     Called only when args.record is set, AFTER _require_live_llm() passes.
-    Re-recording OVERWRITES synthetic day-one caches (04-01) with genuine
-    model output. The 04-01 divergence validator runs against the COMMITTED
-    day-one caches, not post-record output -- so this is not a regression.
+    Re-recording OVERWRITES the committed caches with genuine model output, which is
+    the point: the committed caches ship with hand-authored divergences (see
+    eval/fixtures/DIVERGENCES.md) so the extraction metric is exercised before any
+    live run exists.
     """
-    # Lazy imports: live pieces only on the --record path (T-04-07).
-    # uuid is already imported at module level -- no lazy re-import needed (IN-01).
+    # Lazy imports: the live pieces load only on the --record path.
     from app.llm import client as llm_client  # noqa: PLC0415
     from app.pipeline.extract import extract  # noqa: PLC0415
 
@@ -810,10 +827,9 @@ def _record_extraction() -> None:
     for fp in fixture_paths:
         raw = _load_fixture(fp)
         roster = _load_roster_for_fixture(raw["from_addr"])
-        # WR-04 FIX: use the shared _EVAL_ONLY_KEYS constant (same as _load_fixture).
-        # The old code stripped only ("expected", "fixture_category"), so fixtures
-        # 16/17/18 with prior_extracted/prior_matches caused ValidationError here
-        # (InboundEmail is extra="forbid"). Unifying the strip set fixes --record mode.
+        # Use the shared _EVAL_ONLY_KEYS constant (same as _load_fixture). Stripping a
+        # narrower set here breaks --record with a ValidationError on any fixture carrying
+        # prior_extracted/prior_matches, because InboundEmail is extra="forbid".
         email_fields = {
             k: v for k, v in raw.items() if k not in _EVAL_ONLY_KEYS
         }
@@ -833,7 +849,7 @@ def _record_extraction() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SVG chart writer (D-08, D-11, D-12, D-13)
+# SVG chart writer
 # ---------------------------------------------------------------------------
 
 
@@ -844,14 +860,14 @@ def _write_svg_chart(
 
     3-subplot layout:
       Subplot 1 -- Extraction field accuracy + employee-set F1 per fixture category
-      Subplot 2 -- Reconciliation accuracy per name-category (k/n fractions, D-12)
-      Subplot 3 -- Decision confusion matrix 2x2 + false-process headline (D-11)
+      Subplot 2 -- Reconciliation accuracy per name-category (k/n fractions)
+      Subplot 3 -- Decision confusion matrix 2x2 + false-process headline
 
-    matplotlib imported inside this function only (NOT at module top level) to
-    keep it off the --check/scoring import path (CI has the dep only for chart
-    generation, not the regression gate).
+    matplotlib is imported inside this function only (NOT at module top level) so it
+    stays off the --check/scoring import path: the regression gate must run without
+    matplotlib installed.
     """
-    # Local imports only -- never at module level (T-04-11, D-08)
+    # Local imports only -- never at module level, or the scoring path grows a dependency.
     import matplotlib  # noqa: PLC0415
     matplotlib.use("Agg")                      # non-interactive backend, safe on CI/server
     import matplotlib.pyplot as plt  # noqa: PLC0415
@@ -906,7 +922,7 @@ def _write_svg_chart(
         )
 
     # -----------------------------------------------------------------------
-    # Subplot 2 -- Reconciliation accuracy per NAME-category (k/n fractions, D-12)
+    # Subplot 2 -- Reconciliation accuracy per NAME-category (k/n fractions)
     # -----------------------------------------------------------------------
     rec_data = aggregated["per_category_reconciliation"]
     # Sort by category name for stable ordering
@@ -915,14 +931,16 @@ def _write_svg_chart(
     acc_values = [r["accuracy"] for r in rec_data_sorted]
 
     bars_rec = ax2.barh(cat_labels, acc_values, color="seagreen")
-    ax2.set_xlabel("Accuracy on fixtures of category X")  # D-13 exact label wording
+    # Wording is deliberate: "on fixtures of category X", not "accuracy of category X" --
+    # the bar measures resolver accuracy WITHIN a bucket, not accuracy AT bucketing.
+    ax2.set_xlabel("Accuracy on fixtures of category X")
     ax2.set_title(
         "Name-reconciliation accuracy by name category\n"
         "(resolver returns none for all 4 unresolved categories -- these are coverage buckets)"
     )
     ax2.set_xlim(0, 1.05)
 
-    # Annotate each bar with "k/n" fraction (D-12)
+    # Annotate each bar with its "k/n" fraction so a 1.0 bar can't hide an n of 1.
     for bar, r in zip(bars_rec, rec_data_sorted, strict=False):
         label = f'{r["correct"]}/{r["total"]}'
         ax2.text(
@@ -949,10 +967,11 @@ def _write_svg_chart(
     table.set_fontsize(12)
     table.scale(1, 1.8)
 
-    # Highlight the FALSE-PROCESS cell (row 1, col 2) -- the dangerous error:
-    # "Actual: process" row x "Expected: clarify" col = pays the wrong person.
-    # Row 0 = header; row 1 = "Actual: process"; col 2 = "Expected: clarify".
-    # (Codex HIGH fix: prior [2,2] highlighted true-clarify, the SAFE cell.)
+    # Highlight the FALSE-PROCESS cell -- the only dangerous error in the matrix:
+    # "Actual: process" row x "Expected: clarify" col = the run paid the wrong person.
+    # Indices are load-bearing: row 0 = header; row 1 = "Actual: process";
+    # col 2 = "Expected: clarify". Highlighting [2, 2] instead would colour true-clarify,
+    # the SAFE cell -- a chart that advertises safety exactly where it should warn.
     table[1, 2].set_facecolor("#FFCCCC")
 
     ax3.set_title(
@@ -965,7 +984,8 @@ def _write_svg_chart(
     )
 
     # -----------------------------------------------------------------------
-    # Honesty caption (Codex partial-fix #1 -- don't overclaim extraction bars)
+    # Honesty caption -- the extraction bars are replayed from committed caches, not a
+    # live model run. Without this line the chart reads as a live benchmark it is not.
     # -----------------------------------------------------------------------
     model_id = _extraction_model_id()
     fig.text(
@@ -991,26 +1011,28 @@ def _write_svg_chart(
 
 
 # ---------------------------------------------------------------------------
-# D-14: Optional DB write -- derives from eval/summary.json (never in-memory)
+# Optional DB write -- derives from eval/summary.json, never from in-memory state
 # ---------------------------------------------------------------------------
 
 
 def _write_db_results() -> None:
     """Write per-fixture/per-metric rows to eval_results from eval/summary.json.
 
-    Design notes (D-14):
-    - Reads os.environ directly BEFORE any app.config import to avoid the
+    Invariants:
+    - Reads os.environ directly BEFORE any app.config import, to avoid the
       required-field fail-fast in Settings (DATABASE_URL has no default).
     - Only proceeds when DATABASE_URL is a real DSN (not absent, not the
       CI/dev "placeholder" sentinel).
-    - Derives suite_run_id and all rows from the committed eval/summary.json
-      so the DB rows can never diverge from the published artifact.
-    - psycopg imported inside this function (local import, not at module level).
-    - On psycopg.Error: warns and returns -- DB write is optional, never crashes eval.
+    - Derives suite_run_id and all rows from the committed eval/summary.json, so the DB
+      rows can never diverge from the published artifact. Reading in-memory state instead
+      would let the table and the chart tell two different stories.
+    - psycopg is imported inside this function so it stays off the scoring path.
+    - On psycopg.Error: warns and returns -- the DB write is optional and must never
+      crash the eval.
     """
-    # CRITICAL: check os.environ BEFORE importing app.config (Codex R4 LOW fix).
-    # Settings.database_url is a REQUIRED field with no default; calling
-    # get_settings() when DATABASE_URL is absent raises ValidationError.
+    # Check os.environ BEFORE importing app.config: Settings.database_url is a REQUIRED
+    # field with no default, so calling get_settings() with DATABASE_URL absent raises
+    # ValidationError -- turning an intentional "no DB, skip" into a crash.
     db_url = os.environ.get("DATABASE_URL")
 
     if not db_url or db_url == "placeholder":
@@ -1034,7 +1056,7 @@ def _write_db_results() -> None:
         fixture_id = entry["fixture_id"]
         details_json = json.dumps(entry)
 
-        # Derive each metric value explicitly (per-fixture shape from 04-02).
+        # Derive each metric value explicitly from the per-fixture record.
         metrics: dict[str, float] = {
             "extraction_f1": float(entry["extraction"]["f1"]),
             "extraction_field_accuracy": float(entry["extraction"]["field_accuracy"]),
@@ -1080,7 +1102,7 @@ def _write_db_results() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Payroll Agent eval scorer -- Phase 4"
+        description="Payroll Agent eval scorer"
     )
     parser.add_argument(
         "--check",
@@ -1120,7 +1142,8 @@ def main() -> None:
         )
         sys.exit(0)
 
-    # Generate a suite_run_id once -- threaded into summary.json and (04-04) the DB write.
+    # Generate a suite_run_id ONCE -- threaded into summary.json and the optional DB write
+    # so both describe the same scoring run.
     suite_run_id = str(uuid.uuid4())
 
     fixture_paths = sorted(FIXTURE_DIR.glob("*.json"))

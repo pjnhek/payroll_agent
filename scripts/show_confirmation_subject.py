@@ -1,9 +1,9 @@
-"""Phase 5 human-UAT helper: show the most recent outbound CONFIRMATION email's
-subject (and body preview) straight from the email_messages table.
+"""Show the most recent outbound CONFIRMATION email's subject (and body preview)
+straight from the email_messages table.
 
-Phase 5 has no real email provider yet (that's Phase 6) — gateway.send_outbound
-is a stub that records the sent email as an email_messages row. So the subject you
-want to eyeball lives in the DB, not an inbox. Run after approving a run.
+Every outbound email is recorded as an email_messages row before it leaves, so the
+subject can be eyeballed from the DB without waiting on an inbox. Run after approving
+a run.
 
 Usage:
   uv run python scripts/show_confirmation_subject.py
@@ -39,7 +39,7 @@ def main() -> None:
         print(f"  body[:200] : {body!r}")
         print("  " + "-" * 60)
 
-    print("\nExpected subject shape (CR-03 fix):")
+    print("\nExpected subject shape:")
     print('  "Payroll Confirmation — <real business name> — <start> to <end>"')
     print('  NOT the blank fallback "Payroll Confirmation — Payroll Run — "')
 
