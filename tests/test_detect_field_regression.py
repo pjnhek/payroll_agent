@@ -1,20 +1,22 @@
-"""Tests for detect_field_regression (Phase 7.5 Plan 02 — D-7.5-10 / R3-3 / SC2).
+"""Tests for detect_field_regression — the "did you forget the OT?" detector.
 
 detect_field_regression is a PUBLIC pure function in validate.py that:
   - Takes four args: original Extracted, resumed Extracted, prior_matches (list|None),
     current_matches (list)
   - Returns list[RawFieldDrop]
-  - Uses employee_id-keyed diff (not submitted_name intersection) to handle the
-    restated-name case (SC2 / R3-3 fix)
-  - Returns [] immediately when prior_matches is None (honest no-op)
-  - Is NOT called internally by validate() — detection runs in the orchestrator
-    (D-7.5-10 three-phase ordering)
+  - Diffs on employee_id, NOT on submitted_name intersection — a client who restates a
+    name in their reply ("I meant M. Chen") would otherwise look like a different
+    person, and the dropped field would go undetected
+  - Returns [] immediately when prior_matches is None (an honest no-op, not a guess)
+  - Is NOT called internally by validate(): detection must run in the orchestrator on
+    the RAW reply, BEFORE the carry-forward backfill, or the backfill would restore the
+    very value the detector is supposed to notice is missing
 
-validate() D-7.5-10 changes tested here:
-  - validate() gains raw_field_drops= kwarg (pre-computed drops from orchestrator)
-  - validate() promotes drops to ValidationIssue(issue_type="field_regression")
-  - N8 resolved_drops suppression uses str(employee_id) key type
-  - validate() does NOT self-detect — drops must be explicitly passed in
+The validate() side tested here:
+  - validate() takes a raw_field_drops= kwarg (drops pre-computed by the orchestrator)
+  - validate() promotes those drops to ValidationIssue(issue_type="field_regression")
+  - the resolved-drops suppression keys on str(employee_id)
+  - validate() does NOT self-detect — drops must be passed in explicitly
 """
 from __future__ import annotations
 
@@ -112,10 +114,12 @@ def test_detect_regression_ot_absent():
 
 
 def test_explicit_drop_zero_resumed_value():
-    """D-26: resumed hours_overtime=Decimal('0') → RawFieldDrop with
+    """resumed hours_overtime=Decimal('0') → RawFieldDrop carrying
     resumed_value=Decimal('0'), NOT None.
 
-    explicit zero preserved — confirmed_dropped signal must survive.
+    An explicit zero is the client SAYING "no overtime this week", which is different
+    from omitting the field. Collapsing it to None would let the backfill restore the
+    original OT — paying overtime the client just removed.
     """
     alice_id = uuid.uuid4()
     original = _extracted([ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("3"))])
@@ -127,12 +131,13 @@ def test_explicit_drop_zero_resumed_value():
 
     assert len(drops) == 1
     assert drops[0].resumed_value == Decimal("0"), (
-        "D-26: explicit zero must be Decimal('0'), not None (confirmed_dropped signal)"
+        "an explicit zero must be preserved as Decimal('0'), not flattened to None — "
+        "it is the client's removal signal, and the backfill must honor it"
     )
 
 
 def test_no_regression_noop():
-    """D-27: original and resumed identical → detect_field_regression returns []."""
+    """original and resumed identical → detect_field_regression returns []."""
     alice_id = uuid.uuid4()
     original = _extracted([ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("2"))])
     resumed = _extracted([ExtractedEmployee(submitted_name="Alice", hours_overtime=Decimal("2"))])
@@ -145,7 +150,11 @@ def test_no_regression_noop():
 
 
 def test_predicate_consistency_ot_zero_and_absent():
-    """D-25: OT 2->0 and OT 2->absent BOTH produce a RawFieldDrop (shared _is_paid predicate)."""
+    """OT 2->0 and OT 2->absent BOTH produce a RawFieldDrop.
+
+    Both are "the money that was there is gone" and both must be surfaced. The drop's
+    resumed_value is what later distinguishes them (removal vs omission).
+    """
     alice_id = uuid.uuid4()
     prior_matches = [_match("Alice", alice_id)]
     current_matches = [_match("Alice", alice_id)]
@@ -165,18 +174,20 @@ def test_predicate_consistency_ot_zero_and_absent():
         original_a, resumed_absent, prior_matches, current_matches
     )
 
-    assert len(drops_zero) == 1, "D-25: OT 2->0 must produce a RawFieldDrop"
-    assert len(drops_absent) == 1, "D-25: OT 2->absent must produce a RawFieldDrop"
+    assert len(drops_zero) == 1, "OT 2->0 must produce a RawFieldDrop"
+    assert len(drops_absent) == 1, "OT 2->absent must produce a RawFieldDrop"
     assert drops_zero[0].field == "hours_overtime"
     assert drops_absent[0].field == "hours_overtime"
 
 
 def test_restated_name_same_employee_id_is_detected():
-    """SC2 / R3-3 (headline restated-name case): 'M. Chen' in prior and 'Maria Chen' in resumed,
-    SAME employee_id → detect_field_regression returns one RawFieldDrop.
+    """The headline restated-name case: 'M. Chen' in prior and 'Maria Chen' in resumed,
+    SAME employee_id → one RawFieldDrop.
 
-    PREVIOUSLY FAILED because submitted_name intersection ('M. Chen' vs 'Maria Chen') was empty.
-    NOW PASSES because both map to the same employee_id before diffing.
+    A submitted_name intersection is empty here ('M. Chen' vs 'Maria Chen'), so a
+    name-keyed diff sees no shared employee and reports no drop — the client restates a
+    name, drops the OT, and the OT loss goes unnoticed. Keying on employee_id is what
+    makes the restated name survive the diff.
     """
     chen_id = uuid.uuid4()
     prior_matches = [_match("M. Chen", chen_id)]
@@ -192,7 +203,8 @@ def test_restated_name_same_employee_id_is_detected():
     drops = detect_field_regression(original, resumed, prior_matches, current_matches)
 
     assert len(drops) == 1, (
-        "SC2/R3-3: same employee_id under different submitted names must produce a RawFieldDrop"
+        "the same employee_id under two different submitted names must still produce "
+        "a RawFieldDrop"
     )
     assert drops[0].field == "hours_overtime"
     assert drops[0].original_value == Decimal("2")
@@ -202,8 +214,10 @@ def test_restated_name_same_employee_id_is_detected():
 
 
 def test_re_resolution_different_employee_id_is_skipped():
-    """D-11: if 'M. Chen' resolves to employee_A in prior but employee_B in current,
-    no drop is produced — different employee_id means re-resolution, not regression.
+    """If 'M. Chen' resolves to employee_A in prior but employee_B in current, no drop is
+    produced — a different employee_id means the name was RE-RESOLVED to someone else,
+    not that one person's field regressed. Reporting a drop here would carry employee_A's
+    hours forward onto employee_B.
     """
     employee_a = uuid.uuid4()
     employee_b = uuid.uuid4()
@@ -218,15 +232,16 @@ def test_re_resolution_different_employee_id_is_skipped():
     drops = detect_field_regression(original, resumed, prior_matches, current_matches)
 
     assert drops == [], (
-        "D-11: different employee_id (re-resolution) must not produce a RawFieldDrop"
+        "a different employee_id (re-resolution) must not produce a RawFieldDrop"
     )
 
 
 def test_prior_matches_none_returns_empty():
     """Honest no-op: prior_matches=None → detect_field_regression returns [] immediately.
 
-    Production (Plan 03) always threads prior_matches from the pre-resume reconciliation;
-    this branch never fires on the real path. Documented as an honest no-op.
+    Production always threads prior_matches from the pre-resume reconciliation, so this
+    branch never fires on the real path. With no prior resolution there is nothing to
+    diff against, and inventing one would be a guess.
     """
     alice_id = uuid.uuid4()
     current_matches = [_match("Alice", alice_id)]
@@ -239,16 +254,17 @@ def test_prior_matches_none_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# validate() D-7.5-10 compliant calling convention tests
+# validate()'s calling convention — it promotes drops, it does not detect them
 # ---------------------------------------------------------------------------
 
 
 def test_validate_field_regression_emitted_with_raw_drops():
-    """D-7.5-10 compliant calling convention: validate() with raw_field_drops= kwarg
-    → promotes pre-computed drops to ValidationIssue(issue_type='field_regression').
+    """validate(raw_field_drops=...) promotes pre-computed drops to
+    ValidationIssue(issue_type='field_regression').
 
-    validate() does NOT detect internally — it receives pre-computed drops from the
-    orchestrator via raw_field_drops= (D-7.5-10 three-phase ordering).
+    validate() runs AFTER the backfill, so it cannot detect drops itself — by then the
+    dropped value has been restored. Detection happens in the orchestrator against the
+    RAW reply, and the result is handed in here.
     """
     alice_id = uuid.uuid4()
     roster, emp = _make_roster(alice_id, pay_type="hourly")
@@ -277,10 +293,8 @@ def test_validate_field_regression_emitted_with_raw_drops():
 
 
 def test_validate_field_regression_not_emitted_when_raw_drops_none():
-    """D-7.5-10 baseline: validate() without raw_field_drops= kwarg (defaults None)
-    → does NOT emit a field_regression issue.
-
-    Confirms validate() does NOT self-detect; it only promotes pre-computed drops.
+    """validate() without raw_field_drops= (defaults None) does NOT emit a
+    field_regression issue — confirming it never self-detects, only promotes.
     """
     alice_id = uuid.uuid4()
     roster, emp = _make_roster(alice_id, pay_type="hourly")
@@ -297,19 +311,20 @@ def test_validate_field_regression_not_emitted_when_raw_drops_none():
 
 
 def test_resolved_drops_suppression_is_per_field():
-    """N8: resolved_drops suppresses the field_regression re-flag for suppressed fields.
+    """resolved_drops suppresses the field_regression re-flag for already-answered fields.
 
-    KEY TYPE: resolved_drops is set[tuple[str, str]] keyed by (employee_id_str, field).
-    The N8 check uses str(current_emp_id) — UUID converted to str for consistent matching.
+    KEY TYPE: resolved_drops is set[tuple[str, str]] keyed by (employee_id_str, field) —
+    the UUID must be str()'d on both sides or the lookup silently never matches and the
+    run re-clarifies a field the client already answered (an infinite clarify loop).
 
-    resolved_drops ONLY suppresses field_regression issues; the MONEY-01 any_hours gate
-    is completely unaffected.
+    resolved_drops suppresses ONLY field_regression issues. The zero-hours gate is
+    completely unaffected: a suppressed drop must never be able to unlock a $0 paystub.
     """
     alice_id = uuid.uuid4()
     roster, emp = _make_roster(alice_id, pay_type="hourly")
     matches = [_match("Alice", alice_id)]
 
-    # Employee has hours_regular=0 (MONEY-01 gate fires) + no hours at all
+    # Employee has hours_regular=0 — the zero-hours gate must fire
     extracted = _extracted([ExtractedEmployee(submitted_name="Alice", hours_regular=Decimal("0"))])
 
     raw_drops = [
@@ -329,24 +344,25 @@ def test_resolved_drops_suppression_is_per_field():
         raw_field_drops=raw_drops,
     )
 
-    # MONEY-01 any_hours gate fires (missing issue — regular=0 is not paid)
+    # The zero-hours gate still fires (regular=0 is not paid hours)
     assert any(i.issue_type == "missing" for i in issues), (
-        "N8: resolved_drops must NOT suppress the any_hours gate (MONEY-01)"
+        "resolved_drops must NOT suppress the zero-hours gate — suppressing a "
+        "clarified field can never open the door to a silent $0 paystub"
     )
     # field_regression is suppressed by resolved_drops
     assert not any(i.issue_type == "field_regression" for i in issues), (
-        "N8: field_regression for suppressed (employee_id_str, field) must be suppressed"
+        "a field the client already answered must not be re-flagged, or the run "
+        "clarifies the same field forever"
     )
 
 
 def test_any_hours_gate_sees_backfilled_data():
-    """D-7.5-10 gate assignment: validate() receives BACKFILLED extracted
-    (after orchestrator backfill).
+    """validate() receives the BACKFILLED extracted, so carried-forward values count.
 
-    An employee whose OT was backfilled from snapshot (hours_overtime=2, all others None)
-    is NOT flagged as missing by the any_hours gate — the backfilled value is present.
-
-    This confirms validate() correctly receives BACKFILLED data per D-7.5-10.
+    An employee whose OT was restored from the snapshot (hours_overtime=2, all others
+    None) must NOT be flagged as missing — the backfilled value is real paid hours.
+    Validating the pre-backfill data instead would gate a run that has everything it
+    needs.
     """
     alice_id = uuid.uuid4()
     roster, emp = _make_roster(alice_id, pay_type="hourly")
@@ -359,5 +375,5 @@ def test_any_hours_gate_sees_backfilled_data():
 
     missing_issues = [i for i in issues if i.issue_type == "missing"]
     assert not missing_issues, (
-        "D-7.5-10: a carried-forward employee (OT backfilled) must NOT be flagged as missing"
+        "a carried-forward employee (OT backfilled) must NOT be flagged as missing"
     )
