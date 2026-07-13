@@ -1,13 +1,23 @@
-"""Clarification draft+send tests (CLAR-01; review FIX 3, FIX B, D-A3-05).
+"""Clarification draft+send tests (CLAR-01).
 
-A gated run (final_action == request_clarification) drafts a clarification body
-(cheap DRAFT_* tier, free text), the stub gateway sends it and records the
-synthetic Message-ID on the linked outbound email_messages(direction='outbound',
-run_id) row — the SINGLE canonical anchor, NOT a payroll_runs column — and the run
-moves to AWAITING_REPLY via repo.set_status (the sole status writer). A draft that
-returns empty content falls back to a templated body so a draft failure never
-strands the run. The per-name reconciliation is persisted on the gated branch too,
-via the SAME persist_reconciliation call as the clean branch (non-NULL on EVERY run).
+A gated run (final_action == request_clarification) drafts a clarification body on the
+cheap drafting tier, the gateway sends it and records the synthetic Message-ID on the
+linked outbound email_messages row, and the run moves to AWAITING_REPLY.
+
+The invariants these tests hold in place:
+
+- The Message-ID anchor lives on the email_messages row and NOWHERE else — never a
+  payroll_runs column. One canonical anchor means the reply-threading lookup can never
+  disagree with the audit log.
+- A draft that returns empty content (or errors) falls back to a TEMPLATED body. The
+  clarification still goes out and still names the suggested employee, so a dead
+  drafting tier degrades the prose but never strands the run at awaiting_reply with no
+  email sent.
+- The per-name reconciliation is persisted on the GATED branch too, through the same
+  persist_reconciliation call the clean branch uses — so reconciliation is non-NULL on
+  EVERY run and the operator can always see why the gate fired.
+- The suggestion is email copy only: it must never reach decide or the persisted
+  Decision.
 """
 from __future__ import annotations
 
@@ -29,8 +39,9 @@ from app.pipeline.orchestrator import run_pipeline
 class _DraftLLM:
     """A call_text stand-in returning a scripted body (or None for empty content).
 
-    09-04: **kwargs absorbs compose_clarification's new timeout_s= without
-    raising TypeError (mirrors test_compose_confirmation.py's fakes)."""
+    **kwargs absorbs compose_clarification's timeout_s= without raising TypeError, so
+    adding a new keyword to the real call site does not break this double.
+    """
 
     def __init__(self, body: str | None):
         self._body = body
@@ -45,10 +56,12 @@ class _DraftLLM:
 
 
 def _gated_decision() -> Decision:
-    """A deterministically-gated Decision (D-21-01/04 shape): David Reyez is
-    unresolved, so final_action is request_clarification. No model_action /
-    confidence / gate_triggered / reasons exist anymore (the decision is pure
-    code over resolution facts)."""
+    """A deterministically-gated Decision: David Reyez is unresolved, so final_action
+    is request_clarification.
+
+    There is no model_action, confidence, or gate_triggered field — the decision is pure
+    code over the resolution facts, so there is nothing for a model to disagree with.
+    """
     return Decision(
         final_action="request_clarification",
         gate_reasons=["David Reyez: unresolved (no roster match)"],
@@ -89,14 +102,17 @@ def test_compose_falls_back_to_template_on_empty_content():
 
 
 # ---------------------------------------------------------------------------
-# D-21-05 — the suggestion names a SPECIFIC employee (the new Phase 2 hero copy)
+# The suggestion names a SPECIFIC employee — even on the deterministic floor
 # ---------------------------------------------------------------------------
 
 
 def test_template_names_suggested_employee_when_supplied():
-    """When a suggestion is supplied for an unresolved name, the DETERMINISTIC
-    template floor names the likely intended employee ("did you mean David
-    Reyes?") — so the specific ask survives even a total draft failure (WR-03)."""
+    """The template floor names the likely intended employee, not just the typo.
+
+    "Did you mean David Reyes?" is a question a client can answer in one word; "we could
+    not match 'David Reyez'" is not. The specific ask lives in the DETERMINISTIC
+    template, so it survives even a total draft-tier failure.
+    """
     llm = _DraftLLM(None)  # force the template floor
     body = compose_clarification(
         _gated_decision(),
@@ -140,21 +156,25 @@ def test_compose_threads_suggestion_into_draft_prompt():
     _tier, messages, _temp = llm.calls[0]
     prompt_text = " ".join(m["content"] for m in messages)
     assert "David Reyes" in prompt_text, (
-        "the suggested employee must be threaded into the draft prompt (D-21-05)"
+        "the suggested employee must be threaded into the draft prompt, or the model "
+        "cannot write the specific did-you-mean ask"
     )
 
 
 def test_compose_clarification_passes_bounded_timeout_s():
-    """09-04 (Codex HIGH-3): compose_clarification's call_text invocation must pass
-    an explicit, non-None timeout_s — previously this call had NO timeout at all,
-    the wholly-unbounded gap Codex HIGH-3 flagged."""
+    """compose_clarification must pass an explicit, non-None timeout_s to call_text.
+
+    Every LLM call in the pipeline must be time-bounded. An unbounded draft call can
+    hang a run for as long as the provider keeps the socket open — which on a sleeping
+    free-tier dyno means the run is simply stranded, with the client never asked.
+    """
     llm = _DraftLLM("Hi — we need to confirm one name before we can run payroll.")
     compose_clarification(_gated_decision(), llm=llm)
 
     assert llm.calls, "compose must call the draft LLM"
     assert llm.last_kwargs.get("timeout_s") is not None, (
-        "compose_clarification must pass a non-None timeout_s= to call_text "
-        "(Codex HIGH-3 — this gap was previously wholly unbounded)"
+        "compose_clarification must pass a non-None timeout_s= to call_text — an "
+        "unbounded draft call can hang the run indefinitely"
     )
 
 
@@ -170,8 +190,9 @@ def test_compose_signature_accepts_suggestions():
 class _RaisingDraftLLM:
     """A call_text stand-in that RAISES (an API error: auth, rate limit, bad model).
 
-    09-04: **kwargs absorbs compose_clarification's new timeout_s= without
-    raising TypeError (mirrors test_compose_confirmation.py's fakes)."""
+    **kwargs absorbs compose_clarification's timeout_s= without raising TypeError, so
+    adding a new keyword to the real call site does not break this double.
+    """
 
     def __init__(self, exc: Exception | None = None):
         self._exc = exc or RuntimeError("simulated draft API error (401/429/bad model)")
@@ -183,9 +204,13 @@ class _RaisingDraftLLM:
 
 
 def test_compose_falls_back_to_template_on_api_error(caplog):
-    """WR-03 — an API error in the draft call must ALSO fall back to the templated
-    body (not raise), so a misconfigured draft tier degrades the email rather than
-    ERRORing the run. The fallback is logged so the failure is visible."""
+    """An API error in the draft call falls back to the template rather than raising.
+
+    A misconfigured or rate-limited drafting tier must degrade the EMAIL, never fail the
+    RUN — the client still gets asked, just in the template's words. The fallback is
+    logged at WARNING so a permanently-dead draft tier is visible instead of silently
+    templating forever.
+    """
     import logging
 
     llm = _RaisingDraftLLM()
@@ -196,13 +221,17 @@ def test_compose_falls_back_to_template_on_api_error(caplog):
     assert body, "an API error must fall back to a non-empty templated body, not raise"
     assert "David Reyez" in body, "the fallback template surfaces the gate detail"
     assert any("draft call failed" in r.message for r in caplog.records), (
-        "the API-error fallback must be logged so a dead draft tier is visible (WR-03)"
+        "the API-error fallback must be logged, or a dead draft tier is invisible"
     )
 
 
 def test_compose_logs_empty_content_fallback(caplog):
-    """WR-03 — an empty-content fallback is also logged, so a silently-templating
-    draft tier is visible during a demo."""
+    """The empty-content fallback is logged too.
+
+    An empty draft response produces a perfectly serviceable templated email, so nothing
+    downstream looks wrong. Without the log line, a drafting tier that has quietly
+    stopped returning content would go unnoticed straight through a demo.
+    """
     import logging
 
     llm = _DraftLLM(None)  # empty content
@@ -210,16 +239,17 @@ def test_compose_logs_empty_content_fallback(caplog):
         compose_clarification(_gated_decision(), llm=llm)
 
     assert any("empty content" in r.message for r in caplog.records), (
-        "the empty-content fallback must be logged (WR-03)"
+        "the empty-content fallback must be logged"
     )
 
 
 def test_clarification_subject_threads_on_original():
-    """clarification_subject() — WR-05 dropped the dead `decision` param; P6 adds an
-    OPTIONAL `original_subject` (used, not ignored) so the clarification threads as a
-    reply. No args → the bare constant subject (backward compatible). With the
-    original subject → `Re: <original>` so mail clients group the thread. Already
-    `Re:`-prefixed input is not double-prefixed."""
+    """clarification_subject() threads the clarification onto the original email.
+
+    It takes an OPTIONAL `original_subject`, which it uses rather than ignores: with it,
+    the subject becomes `Re: <original>` so mail clients group the conversation; without
+    it, the bare constant subject. An already-`Re:`-prefixed input is not double-prefixed.
+    """
     from app.pipeline.compose_email import clarification_subject
 
     # No args: bare constant subject (Phase-2 / in-app callers, unchanged behavior).
@@ -301,12 +331,14 @@ def _gate_block_script(fake_repo) -> list[str]:
     """The orchestrator FIFO on the clarify branch: extract (structured) → SUGGEST
     (structured) → draft (free text).
 
-    reconcile_names + decide are PURE CODE now (no LLM, no confidence, no
-    model_action — D-21-01) so they consume NO scripted response. "David Reyez" is
-    not a roster name or stored alias, so the deterministic resolver leaves it
-    unresolved and the gate clarifies. The SUGGESTION call (D-21-05) then maps it
-    back to "David Reyes" purely for the email copy — it never touches the
-    decision. The draft body is last."""
+    reconcile_names + decide are PURE CODE — no LLM, no confidence, no model action —
+    so they consume NO scripted response. If either ever did, this FIFO would desync and
+    the draft would receive the suggestion's JSON, which is exactly the failure a script
+    entry for those stages should cause. "David Reyez" is not a roster name or a stored
+    alias, so the deterministic resolver leaves it unresolved and the gate clarifies. The
+    SUGGESTION call then maps it back to "David Reyes" purely for the email copy — it
+    never touches the decision. The draft body is last.
+    """
     return [
         json.dumps(
             {
@@ -331,9 +363,12 @@ def _gate_block_script(fake_repo) -> list[str]:
 
 
 def test_clarify_sends_and_pauses(fake_repo, mock_llm, monkeypatch):
-    """A gated run drafts + stub-sends a clarification, records the Message-ID on the
-    outbound email_messages row (retrievable via repo.get_outbound_message_id), and
-    pauses at awaiting_reply via repo.set_status (CLAR-01, FIX 3, FIX B)."""
+    """A gated run drafts + sends a clarification, anchors the Message-ID, and pauses.
+
+    The Message-ID lands on the outbound email_messages row (retrievable via
+    repo.get_outbound_message_id) — that row is the only anchor the reply-threading
+    lookup will have — and the run pauses at awaiting_reply (CLAR-01).
+    """
     # Capture the outbound send: the stub gateway records the Message-ID on an
     # outbound email_messages row. The in-memory store mirrors get_outbound_message_id.
     sent: dict[str, dict[str, str]] = {}
@@ -366,22 +401,24 @@ def test_clarify_sends_and_pauses(fake_repo, mock_llm, monkeypatch):
     assert sent[str(run_id)]["to_addr"] == "hr@metrodeli.example"
     # The outbound Message-ID was minted and is anchored on the outbound row.
     assert sent[str(run_id)]["message_id"].endswith("@payroll-agent.local>")
-    # Reconciliation persisted on the gated branch too (D-A3-05, non-NULL).
+    # Reconciliation is persisted on the GATED branch too, so it is non-NULL on every
+    # run and the operator can always see why the gate fired.
     assert run["reconciliation"] is not None
     assert len(run["reconciliation"]) == 1
-    # D-21-05 — the SUGGESTION made the sent clarification specific: the body names
-    # the suggested employee ("David Reyes"), the new Phase 2 hero copy.
+    # The suggestion made the sent clarification SPECIFIC: the body names the suggested
+    # employee, so the client can confirm with a single word.
     assert "David Reyes" in sent[str(run_id)]["body"]
 
 
 def test_clarify_suggestion_never_reaches_the_decision(fake_repo, mock_llm, monkeypatch):
-    """T-021-06 — the suggestion is wired AFTER decide and is purely email copy: it
-    is NEVER written into the persisted Decision (decision JSONB / reconciliation).
+    """The suggestion is email copy and must NEVER reach the persisted Decision.
 
-    The deterministic resolver leaves "David Reyez" unresolved; the suggestion maps
-    it to "David Reyes" for the email ONLY. The persisted decision must still show
-    the name UNRESOLVED with matched_employee_id null — the suggested employee must
-    not have leaked into final_action / resolutions."""
+    The deterministic resolver leaves "David Reyez" unresolved; the suggestion maps it to
+    "David Reyes" for the email ONLY. The persisted decision must still show the name
+    UNRESOLVED with matched_employee_id null. If the suggested employee ever leaked into
+    final_action or resolutions, the LLM would have silently decided who gets paid —
+    which is the one thing this system exists to prevent.
+    """
     def _fake_send_outbound(*, run_id, to_addr, subject, body, **kw):
         return f"<{uuid.uuid4()}@payroll-agent.local>"
 
@@ -404,7 +441,8 @@ def test_clarify_suggestion_never_reaches_the_decision(fake_repo, mock_llm, monk
     # The suggested employee id must NOT appear anywhere in the persisted decision
     # or reconciliation — the suggestion is copy only, walled off from the decision.
     assert david_id not in json.dumps(decision), (
-        "the suggested employee must never leak into the persisted Decision (T-021-06)"
+        "the suggested employee must never leak into the persisted Decision — that "
+        "would be the LLM deciding who gets paid"
     )
     for m in run["reconciliation"]:
         assert m["matched_employee_id"] is None, (
@@ -413,16 +451,18 @@ def test_clarify_suggestion_never_reaches_the_decision(fake_repo, mock_llm, monk
 
 
 def test_orchestrator_suggest_called_after_decide():
-    """Source-level (Phase 13 Plan 02 re-mechanized): decide() stays in
-    orchestrator.py; suggest_employees() moved to clarification.py's clarify()
-    (the else branch of the old orchestrator._clarify). The single-file position
-    assumption no longer holds post-split, so this test now asserts the SAME
-    invariant (D-21-05: the suggestion is wired strictly after the decision, and
-    is never fed into decide()) across the two-module boundary:
+    """Source-level: the suggestion is wired strictly AFTER decide, across two modules.
+
+    decide() lives in orchestrator.py; suggest_employees() lives in clarification.py's
+    clarify(). Because the two are in different files, a single-file ordering check would
+    be vacuous — so this asserts the invariant on BOTH sides of the boundary:
       - orchestrator.py: decide() is called, and the clarify branch calls
-        clarification.clarify(...) — never suggest_employees directly.
-      - clarification.py: suggest_employees() is present, and decide( is ABSENT
-        entirely — closing the gap a naive "still passes" retarget would open."""
+        clarification.clarify(...) — never suggest_employees directly;
+      - clarification.py: suggest_employees() is present, and decide( is ABSENT entirely.
+
+    Checking only the orchestrator side would let someone call decide() from inside
+    clarification.py, AFTER the suggestion — reversing the very ordering this protects.
+    """
     import pathlib
 
     from app.pipeline import clarification, orchestrator
@@ -432,30 +472,33 @@ def test_orchestrator_suggest_called_after_decide():
     clarify_call_pos = orch_src.index("clarification.clarify(")
     assert decide_pos < clarify_call_pos, (
         "clarification.clarify must be called AFTER decide() in the orchestrator "
-        "source — the suggestion is wired strictly after the decision (D-21-05)"
+        "source — the suggestion is wired strictly after the decision"
     )
     # decide() takes only (extracted, matches, issues) — the suggestion is never an
     # argument to it.
     decide_call = orch_src[decide_pos : orch_src.index(")", decide_pos) + 1]
     assert "suggest" not in decide_call, (
-        "the suggestion must never be passed into decide() (D-21-05)"
+        "the suggestion must never be passed into decide()"
     )
 
     clarification_src = pathlib.Path(clarification.__file__).read_text()
     assert "suggest_employees(" in clarification_src, (
-        "suggest_employees must be called inside clarification.py's clarify() "
-        "(the suggestion cluster moved here in Phase 13 Plan 02)"
+        "suggest_employees must be called inside clarification.py's clarify()"
     )
     assert "decide(" not in clarification_src, (
-        "clarification.py must never call decide() — the suggestion is advisory "
-        "copy only and must never precede or feed the decision (D-21-05); decide() "
-        "stays exclusively in orchestrator.py's _run_stages"
+        "clarification.py must never call decide() — the suggestion is advisory copy "
+        "only and must never precede or feed the decision; decide() stays exclusively "
+        "in orchestrator.py's _run_stages"
     )
 
 
 def test_clarify_persists_reconciliation_single_call():
-    """Source-level: the orchestrator has exactly ONE persist_reconciliation call,
-    reached by BOTH branches (no second call added on the gated branch — D-A3-05)."""
+    """Source-level: exactly ONE persist_reconciliation call, reached by BOTH branches.
+
+    Placing the call before the branch is what guarantees reconciliation is non-NULL on
+    every run. A second call added inside the gated branch would be the first step back
+    toward one branch forgetting to persist it at all.
+    """
     import pathlib
 
     from app.pipeline import orchestrator
@@ -467,12 +510,13 @@ def test_clarify_persists_reconciliation_single_call():
 
 
 def test_no_clarification_message_id_column_written():
-    """FIX 3: the Message-ID is NEVER written to a payroll_runs column — it lives
-    only on the outbound email_messages row.
+    """The Message-ID is NEVER written to a payroll_runs column.
 
-    The orchestrator never mentions such a column at all; the repo may DOCUMENT its
-    deliberate absence in prose, but must never SET it on payroll_runs (no UPDATE
-    payroll_runs ... clarification_message_id)."""
+    It lives only on the outbound email_messages row — a single canonical anchor. A
+    duplicate copy on payroll_runs could drift out of sync with the append-only audit
+    log, and reply threading would then match against a Message-ID the system never
+    actually sent. Prose may DOCUMENT the column's deliberate absence; nothing may SET it.
+    """
     import importlib
     import inspect
     import pathlib
@@ -485,12 +529,11 @@ def test_no_clarification_message_id_column_written():
     orch_src = pathlib.Path(orchestrator.__file__).read_text()
     assert "clarification_message_id" not in orch_src
 
-    # Post-split, repo.__file__ (the facade) contains no SQL at all — this sweep
-    # must scan across ALL the package's modules to preserve its original
-    # whole-repo-layer guarantee (Codex Round 2 vacuous-scan finding), matching
-    # test_gateway.py's test_repo_has_no_fstring_sql retarget. Enumerate the
-    # package DYNAMICALLY (Phase 13 review WR-03) so a future sixth aggregate
-    # module — or SQL added to _shared.py — can never silently escape.
+    # The facade (repo.__file__) contains no SQL at all, so scanning it alone would make
+    # this test vacuous — the scan must cover EVERY module in the package, exactly as
+    # test_gateway.py's test_repo_has_no_fstring_sql does. Enumerate the package
+    # DYNAMICALLY so a new aggregate module — or SQL added to _shared.py — cannot
+    # silently escape the scan.
     modules = {
         m.name: importlib.import_module(f"app.db.repo.{m.name}")
         for m in pkgutil.iter_modules(repo_pkg.__path__)
@@ -503,4 +546,4 @@ def test_no_clarification_message_id_column_written():
     # No UPDATE of a payroll_runs clarification_message_id column anywhere.
     assert not re.search(
         r"payroll_runs[^;]*SET[^;]*clarification_message_id", repo_src, re.IGNORECASE | re.DOTALL
-    ), "the Message-ID must never be written to a payroll_runs column (FIX 3)"
+    ), "the Message-ID must never be written to a payroll_runs column"
