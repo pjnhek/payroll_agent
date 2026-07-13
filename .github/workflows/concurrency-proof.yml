@@ -1,5 +1,9 @@
 name: concurrency-proof
 
+# Coverage limitation, stated rather than hidden: these proofs run on push to master
+# and on manual dispatch — NOT on pull requests. They are a post-merge gate on master,
+# not a pre-merge one. A PR can therefore go green without a real database ever having
+# executed them.
 on:
   push:
     branches: ["master"]
@@ -47,7 +51,42 @@ jobs:
         # CREATE TABLE IF NOT EXISTS, so on this empty ephemeral container it
         # is a clean idempotent create, not a redundant/unguarded drop.
         run: uv run python -m app.db.bootstrap
-      - name: Run the concurrency proof
-        # -m integration selects the capstone (default suite skips it). The
-        # proof module seeds its own rows via repo.* / the seeded_db fixture.
-        run: uv run pytest tests/test_concurrency_proof.py -m integration -v
+      - name: Run the real-Postgres invariant proofs
+        # This is the ONLY job in the repo with a real database, so it is the only
+        # place a live-DB test can actually execute. Two things to know before
+        # editing this step:
+        #
+        # 1. TEST FILES ARE SELECTED BY NAME. `-m integration` narrows to the live-DB
+        #    tests, but the file list below is what pytest collects in the first place.
+        #    A new live-DB test that is not added to this list will skip silently and
+        #    forever, in every CI job, while looking perfectly healthy.
+        #
+        #    What the two proofs cover:
+        #      - test_concurrency_proof.py: the Phase 9 invariants hold under genuine
+        #        parallelism (no double-approval, no lost update, no duplicate run,
+        #        no half-written state).
+        #      - test_email_epoch_arbiter_integration.py: the outbound upsert's
+        #        ON CONFLICT column list and the email_messages unique constraint stay
+        #        in agreement, so a retriggered run APPENDS a new outbound row instead
+        #        of overwriting the email it already sent.
+        #
+        # 2. THESE TESTS SELF-SKIP WITHOUT A DATABASE, so a green job only means
+        #    something if nothing skipped. If DATABASE_URL or ALLOW_DB_RESET goes
+        #    missing, or a fixture errors into a skip, every proof quietly opts out,
+        #    pytest exits 0, and the job passes having proven nothing. The guard below
+        #    reds the build on any skip, and also on the "nothing ran at all" variant.
+        #    Note that "deselected" is a different word from "skipped" and is both
+        #    expected and benign — the guard does not trip on it.
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run pytest tests/test_concurrency_proof.py tests/test_email_epoch_arbiter_integration.py -m integration -v -rs 2>&1 | tee pytest-integration.log
+          if grep -qE '[0-9]+ skipped' pytest-integration.log; then
+            echo "A live-DB proof was skipped instead of executed. A skipped proof proves nothing." >&2
+            echo "Check DATABASE_URL / ALLOW_DB_RESET and the module-level live-DB guards." >&2
+            exit 1
+          fi
+          if ! grep -qE '[0-9]+ passed' pytest-integration.log; then
+            echo "No integration test reported as passed — the file selection or the live-DB guard is broken." >&2
+            exit 1
+          fi
