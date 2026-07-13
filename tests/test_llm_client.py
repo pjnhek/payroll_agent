@@ -19,7 +19,13 @@ import pytest
 from openai import NOT_GIVEN, NotGiven
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.llm.client import _STRUCTURED_TIMEOUT_S, call_structured, call_text
+from app.llm.client import (
+    _EMPTY_CONTENT,
+    _STRUCTURED_TIMEOUT_S,
+    _scrubbed_validation_summary,
+    call_structured,
+    call_text,
+)
 
 # ---------------------------------------------------------------------------
 # A small response_model used purely to exercise the generic structured path.
@@ -325,6 +331,28 @@ def test_retry_prompt_scrubs_validation_input_values(monkeypatch):
         "the retry prompt must still contain the word JSON — the provider's JSON mode "
         "depends on it"
     )
+
+
+def test_non_pydantic_failure_summary_is_an_allowlist_not_a_passthrough():
+    """A ValueError that is not the known-safe local literal must never reach the provider.
+
+    The retry path catches (ValidationError, ValueError). Only one ValueError is raised
+    today — the local _EMPTY_CONTENT literal, which carries no model output and IS worth
+    echoing back ("you returned nothing" is what lets the model self-correct). The danger
+    is the next one: a future adapter that raises a ValueError built from the model's own
+    response would, under a bare str(exc), silently pipe untrusted text back out to a third
+    party. This pins the branch as an allowlist so that regression cannot happen quietly.
+    """
+    # The known-safe literal survives verbatim — the retry stays actionable.
+    assert _scrubbed_validation_summary(ValueError(_EMPTY_CONTENT)) == _EMPTY_CONTENT
+
+    # Anything else is replaced wholesale, carrying none of the original text.
+    leaked = _scrubbed_validation_summary(ValueError("model said SENTINEL_LEAK_ABC"))
+    assert "SENTINEL_LEAK_ABC" not in leaked, (
+        "a ValueError that is not the known-safe literal must not be echoed back to the "
+        "provider — it may have been built from the model's own output"
+    )
+    assert leaked == "output did not match the schema"
 
 
 def test_empty_content_is_treated_as_failure_and_retried(monkeypatch):

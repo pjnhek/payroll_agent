@@ -118,6 +118,13 @@ def _is_deepseek(model: str) -> bool:
     return "deepseek" in model.lower()
 
 
+# The one ValueError message the retry path may echo back to the provider. Defined once so
+# the raise site and the allowlist in _scrubbed_validation_summary cannot drift apart — if
+# they did, the allowlist would silently stop matching and the useful retry hint would be
+# replaced by the generic fallback.
+_EMPTY_CONTENT = "empty content from model"
+
+
 def _scrubbed_validation_summary(exc: ValidationError | ValueError) -> str:
     """Describe a validation failure WITHOUT echoing the model's own output.
 
@@ -126,11 +133,18 @@ def _scrubbed_validation_summary(exc: ValidationError | ValueError) -> str:
     interpolating it verbatim would return untrusted model output to a third party.
     `include_input=False` keeps the actionable half (where it failed, what the schema
     wanted: `msg` is pydantic's generic description, e.g. "Input should be a valid
-    number") and drops the value itself. The empty-content ValueError carries no model
-    output, so it passes through as-is.
+    number") and drops the value itself.
+
+    The non-ValidationError branch is an ALLOWLIST, not a passthrough. The only ValueError
+    that reaches the retry today is _EMPTY_CONTENT below — a local literal with no model
+    output in it — and echoing it back is genuinely useful, because "you returned nothing"
+    is what lets the model self-correct. But a bare str(exc) here is a standing invitation
+    for some future adapter to raise a ValueError built from the model's response and
+    silently reopen the leak. So: the known-safe message passes through verbatim, and
+    anything else collapses to a constant that cannot carry untrusted text.
     """
     if not isinstance(exc, ValidationError):
-        return str(exc)
+        return _EMPTY_CONTENT if str(exc) == _EMPTY_CONTENT else "output did not match the schema"
     parts = [
         f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['type']} — {err['msg']}"
         for err in exc.errors(include_url=False, include_input=False)
@@ -183,7 +197,7 @@ def call_structured[T: BaseModel](
         content = resp.choices[0].message.content
         try:
             if not content:  # DeepSeek can return empty content — treat as failure
-                raise ValueError("empty content from model")
+                raise ValueError(_EMPTY_CONTENT)
             return response_model.model_validate_json(content)
         except (ValidationError, ValueError) as exc:
             if attempt == 2:

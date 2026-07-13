@@ -67,6 +67,7 @@ SCAN_GLOBS = (
     ".github/workflows/*.yml",
     "Dockerfile",
     "pyproject.toml",
+    "render.yaml",
     ".dockerignore",
     ".env.example",
 )

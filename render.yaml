@@ -1,4 +1,4 @@
-# Render Blueprint for payroll-agent (OPS-01, D-09).
+# Render Blueprint for payroll-agent.
 # Verified schema: render.com/docs/blueprint-spec, 2026-06-23.
 #
 # Deploy: connect this repo in the Render dashboard and select "Blueprint".
@@ -10,8 +10,10 @@ services:
     type: web
     runtime: docker
 
-    # D-20 liveness — no DB hit so a Supabase blip does not fail the deploy.
-    # The readiness route (/health/ready) is the keep-alive cron target (GitHub Actions).
+    # Liveness only — deliberately no DB hit, so a Supabase blip cannot fail the deploy.
+    # The readiness route (/health/ready) DOES query the DB, and is the keep-alive cron
+    # target (GitHub Actions); pointing healthCheckPath at it would couple deploy success
+    # to database availability.
     healthCheckPath: /health/live
 
     envVars:

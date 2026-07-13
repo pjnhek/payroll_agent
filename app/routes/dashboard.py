@@ -124,6 +124,15 @@ def eval_view(request: Request) -> Response:
             # file outside the fixtures directory and render it here. Resolve the join and
             # refuse anything that escapes the fixtures root — a refusal is indistinguishable
             # from a missing file, so it reuses the same placeholder and adds no error path.
+            # resolve() collapses "..", rejects absolute paths via the containment check, and
+            # follows symlinks BEFORE the check, so a symlink out of the tree is caught too.
+            #
+            # THREAT MODEL — the check is deliberately not TOCTOU-safe. A race between
+            # resolve() and read_text() is only exploitable by someone who can already write
+            # into eval/fixtures/ on the running container, which means they already have code
+            # execution. The fixtures are committed artifacts baked into the image on an
+            # ephemeral filesystem. Hardening this with openat/O_NOFOLLOW would buy nothing
+            # against an attacker who is already inside. Filesystem mutation is out of scope.
             fixture_file = (EVAL_FIXTURES_DIR / fixture["fixture_path"]).resolve()
             if fixture_file.is_relative_to(fixtures_root) and fixture_file.exists():
                 fixture_data = json.loads(fixture_file.read_text())

@@ -15,9 +15,24 @@ Usage:
 Security:
     The DATABASE_URL password is stripped before any diagnostic print, so a
     credential can never reach CI logs or a terminal transcript.
-    --reset is opt-in only; the default path never issues a DROP.
     prepare_threshold=None on the connection (the Supavisor transaction-mode
     pooling gotcha — see app/db/supabase.py).
+
+Destructiveness — read before running this against a live database:
+    --reset is opt-in and drops EVERY table in _DROP_ORDER. That is the destructive path.
+
+    The default path is NOT drop-free. It always issues two narrowly-scoped DROPs, and
+    they are deliberate migrations, not cleanup:
+      - DROP TABLE IF EXISTS name_matches CASCADE
+      - ALTER TABLE paystub_line_items DROP COLUMN IF EXISTS match_confidence
+    Both retire schema that the deterministic-decisioning redesign removed. They must run
+    outside --reset because CREATE TABLE IF NOT EXISTS can add a table but can never
+    REMOVE one that already exists on a live database — so re-applying schema.sql alone
+    would leave the dead table and column in place forever. IF EXISTS makes both a no-op
+    once they are gone.
+
+    The practical consequence: running this with no flags against a live database WILL
+    drop name_matches and match_confidence if they are still present. Nothing else.
 """
 
 import pathlib
