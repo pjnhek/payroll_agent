@@ -1,24 +1,27 @@
-"""Integration tests for resume_pipeline — MONEY-03 state-machine invariants.
+"""Integration tests for resume_pipeline — the field-regression state machine.
 
-# Hermetic discipline (D-7.5-04d / Finding 7):
-# All 15 tests use the fake_repo (in-memory) + mock_llm fixture from conftest.py,
-# patching ALL repo calls onto an InMemoryRepo so no live DB writes occur during
-# the test run. The module-level pytestmark guards the module: when DATABASE_URL
-# is NOT set in the shell environment (module-load time, before any fixture runs),
-# the entire module is skipped — skip != evidence (D-7.5-04). When DATABASE_URL
-# IS set (signalling that the developer has a configured environment), all 15 tests
-# run end-to-end via the full pipeline (resume_pipeline calls, mock LLM scripted
-# responses, in-memory state machine) and must PASS. The mock_llm fixture sets a
-# stub DATABASE_URL via monkeypatch WITHIN each test, but the pytestmark is
-# evaluated at module load time so it correctly gates on the shell-level presence.
-#
-# Hermetic cleanup: fake_repo is function-scoped (default conftest fixture) and
-# resets its in-memory state on each test — no cross-test contamination.
-# No live DB cleanup is needed since no real DB writes are made.
-# The mock_llm fixture also clears its script/calls lists before each test.
-#
-# NOTE: The 16 xfail integration stubs from plan 03 are replaced by these
-# 15 PASSING tests. The xfail stubs are removed in this plan.
+These tests lock the money-safety invariants of the clarification reply loop:
+a dropped field is detected on the RAW reply, clarified exactly once, and then
+either carried forward from the snapshot (silence), honoured as a removal
+(explicit zero), or taken from the client's restated value — with no path that
+silently overpays or underpays.
+
+Hermetic discipline:
+Every test uses the fake_repo (in-memory) + mock_llm fixtures from conftest.py,
+patching ALL repo calls onto an InMemoryRepo so no live DB writes occur during
+the test run. The module-level pytestmark guards the module: when DATABASE_URL
+is NOT set in the shell environment (module-load time, before any fixture runs),
+the entire module is skipped — a skip is not evidence. When DATABASE_URL IS set
+(signalling a configured developer environment), every test runs end-to-end via
+the full pipeline (resume_pipeline calls, mock LLM scripted responses, in-memory
+state machine) and must PASS. The mock_llm fixture sets a stub DATABASE_URL via
+monkeypatch WITHIN each test, but the pytestmark is evaluated at module load time
+so it correctly gates on the shell-level presence.
+
+Hermetic cleanup: fake_repo is function-scoped (default conftest fixture) and
+resets its in-memory state on each test — no cross-test contamination. No live DB
+cleanup is needed since no real DB writes are made. The mock_llm fixture also
+clears its script/calls lists before each test.
 """
 from __future__ import annotations
 
@@ -38,19 +41,18 @@ from app.pipeline.orchestrator import resume_pipeline
 from tests.conftest import InMemoryRepo
 
 # ---------------------------------------------------------------------------
-# Module-level skip guard — skip != evidence (D-7.5-04)
+# Module-level skip guard — a skip is not evidence
 # ---------------------------------------------------------------------------
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
     reason=(
-        "requires DATABASE_URL set in shell env before phase gate; "
-        "skip != evidence (D-7.5-04). "
-        "Set DATABASE_URL to run these integration tests."
+        "requires DATABASE_URL set in the shell env; a skipped test is not "
+        "evidence. Set DATABASE_URL to run these integration tests."
     ),
 )
 
 # ---------------------------------------------------------------------------
-# Stable employee / business identifiers from seed.py (D-11)
+# Stable employee / business identifiers from seed.py
 # ---------------------------------------------------------------------------
 # Business 1 — Coastal Cleaning Co. (payroll@coastalcleaning.example)
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -75,7 +77,7 @@ def _mk_extracted(
     pay_period_end: str | None = None,
     run_id: uuid.UUID | None = None,
 ) -> Extracted:
-    """Build an Extracted from a list of employee dicts (PATTERNS.md §8 style)."""
+    """Build an Extracted from a list of employee dicts."""
     if run_id is None:
         run_id = uuid.uuid4()
     return Extracted(
@@ -92,7 +94,7 @@ def _mk_match(
     source: str = "exact",
     resolved: bool = True,
 ) -> NameMatchResult:
-    """Build a NameMatchResult (PATTERNS.md §8 style)."""
+    """Build a NameMatchResult."""
     return NameMatchResult(
         submitted_name=name,
         matched_employee_id=emp_id if resolved else None,
@@ -209,15 +211,14 @@ def _setup_round2(
     _set_run_awaiting_reply(fake_repo, run_id)
 
 
-# ---------------------------------------------------------------------------
-# Test 1 — test_snapshot_once_not_overwritten (D-19 / D-28)
-# ---------------------------------------------------------------------------
-
 def test_snapshot_once_not_overwritten(fake_repo, mock_llm):
-    """D-19/D-28: set_pre_clarify_extracted IS NULL guard — second write is a no-op.
+    """set_pre_clarify_extracted's IS NULL guard — a second write is a no-op.
 
     A second set_pre_clarify_extracted call must NOT overwrite the first snapshot.
-    The IS NULL CAS guard makes this idempotent.
+    The snapshot is the write-once record of what the client originally sent; if a
+    later round could overwrite it, the carry-forward backfill would restore the
+    reply's values instead of the original ones. The IS NULL CAS guard makes the
+    write idempotent.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular hours")
 
@@ -236,19 +237,17 @@ def test_snapshot_once_not_overwritten(fake_repo, mock_llm):
     assert loaded is not None
     ot = loaded.employees[0].hours_overtime
     assert ot == Decimal("2"), (
-        f"D-19: first snapshot (OT=2) must be preserved; got {ot!r}"
+        f"the first snapshot (OT=2) must be preserved; got {ot!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 2 — test_resume_calls_run_stages_exactly_once (N1)
-# ---------------------------------------------------------------------------
-
 def test_resume_calls_run_stages_exactly_once(fake_repo, mock_llm, monkeypatch):
-    """N1: resume_pipeline calls _run_stages exactly once per invocation.
+    """resume_pipeline calls _run_stages exactly once per invocation.
 
     The Round-1 and Round-2 _run_stages calls are in mutually-exclusive
-    if/else branches; exactly one fires per resume_pipeline call.
+    if/else branches; exactly one fires per resume_pipeline call. A second call
+    would re-extract and re-persist, double-charging the LLM and racing the first
+    call's writes.
     """
     import app.pipeline.orchestrator as orch_mod
 
@@ -278,21 +277,19 @@ def test_resume_calls_run_stages_exactly_once(fake_repo, mock_llm, monkeypatch):
     resume_pipeline(run_id, reply)
 
     assert call_count[0] == 1, (
-        f"N1: _run_stages must be called exactly once per resume_pipeline invocation; "
+        f"_run_stages must be called exactly once per resume_pipeline invocation; "
         f"called {call_count[0]} times"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 3 — test_asked_written_before_clarification_send (N2 — asked-before-send ordering)
-# ---------------------------------------------------------------------------
-
 def test_asked_written_before_clarification_send(fake_repo, mock_llm, monkeypatch):
-    """N2: clarified_fields has 'asked' BEFORE the clarification email is sent.
+    """clarified_fields records 'asked' BEFORE the clarification email is sent.
 
     The orchestrator must call set_clarified_fields (writing 'asked') before
-    calling _clarify (which writes the outbound row). This ordering is the N2
-    invariant — never send before writing 'asked'.
+    calling _clarify (which writes the outbound row). Never send before writing
+    'asked': a crash between the two would leave a question sitting in the
+    client's inbox that the system has no record of asking, so the reply would
+    be treated as an unrelated inbound.
     """
     import app.db.repo as repo_mod
     from app.pipeline import clarification
@@ -336,45 +333,42 @@ def test_asked_written_before_clarification_send(fake_repo, mock_llm, monkeypatc
     reply = _inbound("Maria Chen 40 regular hours")
     resume_pipeline(run_id, reply)
 
-    # N2: set_clarified_fields (writing 'asked') must precede _clarify (send)
+    # set_clarified_fields (writing 'asked') must precede _clarify (the send)
     assert "set_clarified_fields" in ordering, "set_clarified_fields must have been called"
     assert "_clarify" in ordering, "_clarify must have been called"
     asked_idx = ordering.index("set_clarified_fields")
     clarify_idx = ordering.index("_clarify")
     assert asked_idx < clarify_idx, (
-        f"N2 violation: set_clarified_fields (idx={asked_idx}) must precede "
-        f"_clarify (idx={clarify_idx}) — 'asked' must be written before the send"
+        f"set_clarified_fields (idx={asked_idx}) must precede _clarify "
+        f"(idx={clarify_idx}) — 'asked' must be written before the send"
     )
 
     # Also assert _clarify was called with purpose='clarification_field_regression'
     # (verifiable by checking outbound row purpose in fake_repo)
     outbound = fake_repo.outbound.get(str(run_id), [])
     assert any(r.get("purpose") == "clarification_field_regression" for r in outbound), (
-        "N2: _clarify must be called with purpose='clarification_field_regression'"
+        "_clarify must be called with purpose='clarification_field_regression'"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 4 — test_ordering_carried_forward_ot_in_paystub (D-7.5-04a — ROOT CAUSE PIN)
-# ---------------------------------------------------------------------------
-
 def test_ordering_carried_forward_ot_in_paystub(fake_repo, mock_llm):
-    """D-7.5-04a: carried-forward OT=2 lands in the FINAL PAYSTUB LINE ITEM.
+    """Carried-forward OT=2 lands in the FINAL PAYSTUB LINE ITEM.
 
-    Round-2 path: OT asked, reply is SILENT (OT=None). backfill_extracted
-    must run BEFORE _compute_line_items so the paystub sees OT=2.
+    Round-2 path: OT asked, reply is SILENT (OT=None). backfill_extracted must
+    run BEFORE _compute_line_items so the paystub sees OT=2.
 
-    NEGATIVE COMPANION: if backfill_extracted ran AFTER calc, OT would be
-    absent from the extracted passed to calculate(), and the paystub would
-    show OT=0 or None. This test FAILS if backfill-after-calc regression occurs.
-    (Pins R3-1 ordering invariant.)
+    The value of this test is that it asserts the PAID value, not just the
+    classification label: if backfill_extracted ran AFTER calc, OT would be
+    absent from the extracted passed to calculate(), the label would still read
+    'carried_forward', and the paystub would silently show OT=0 — an underpay
+    with a correct-looking label.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
-    # Round-2 reply: OT=None (client silent — should carry forward OT=2)
-    # CR-01 FIX: Round-2 now does TWO extractions — reply-only (classify) then
-    # combined (process/backfill). Both return the same here: OT=None (silence).
+    # Round-2 reply: OT=None (client silent — should carry forward OT=2).
+    # Round-2 does TWO extractions — reply-only (classify) then combined
+    # (process/backfill). Both return the same here: OT=None (silence).
     _r2_silent = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}])
     mock_llm.script = [_r2_silent, _r2_silent]
 
@@ -393,23 +387,20 @@ def test_ordering_carried_forward_ot_in_paystub(fake_repo, mock_llm):
     assert chen_items, f"paystub item for Maria Chen ({CHEN_ID_STR}) must exist"
     item = chen_items[0]
     assert item.hours_overtime == Decimal("2"), (
-        f"D-7.5-04a: carried-forward OT=2 must appear in paystub; "
+        f"carried-forward OT=2 must appear in the paystub; "
         f"got hours_overtime={item.hours_overtime!r}. "
-        "NEGATIVE COMPANION: if backfill ran AFTER calc, OT would be absent → paystub OT=0."
+        "If backfill ran AFTER calc, OT would be absent → paystub OT=0 (underpay)."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 5 — test_approved_bytes_equals_sent_bytes (D-7.5-04b — Finding 8)
-# ---------------------------------------------------------------------------
-
 def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
-    """D-7.5-04b (Finding 8): confirmation email source data uses the AWAITING_APPROVAL paystub.
+    """The confirmation email's source data is the AWAITING_APPROVAL paystub.
 
     The paystub at AWAITING_APPROVAL (with carried-forward OT=2) must be the SAME
     data that flows into compose_confirmation when the operator approves the run.
-    This pins the approved==sent invariant: the paystub the operator sees IS the
-    paystub in the confirmation email.
+    This pins the approved-equals-sent invariant: the paystub the operator
+    approves IS the paystub in the confirmation email. Anything else means the
+    human gate approved numbers the client never received.
     """
     import app.pipeline.delivery as delivery
 
@@ -417,7 +408,7 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     _r2_silent = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}])
     mock_llm.script = [_r2_silent, _r2_silent]
 
@@ -435,8 +426,9 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
         f"paystub at AWAITING_APPROVAL must have OT=2; got {approval_ot!r}"
     )
 
-    # Step 3: capture what compose_confirmation receives — same line items from repo
-    # (Finding 8: confirmation must use repo.load_line_items which reads the persisted paystub)
+    # Step 3: capture what compose_confirmation receives — the same line items
+    # from the repo (the confirmation must use repo.load_line_items, which reads
+    # the persisted paystub, not a freshly recomputed one).
     confirmation_items_received: list[Any] = []
     from app.pipeline.compose_email import compose_confirmation as original_compose
 
@@ -458,23 +450,24 @@ def test_approved_bytes_equals_sent_bytes(fake_repo, mock_llm, monkeypatch):
     )
     conf_ot = confirmation_items_received[0].hours_overtime
     assert conf_ot == Decimal("2"), (
-        f"D-7.5-04b: confirmation must use paystub with OT=2; got {conf_ot!r}. "
-        "Finding 8: approved==sent invariant — the operator sees OT=2, "
-        "the confirmation email must also carry OT=2."
+        f"the confirmation must use the paystub with OT=2; got {conf_ot!r}. "
+        "Approved must equal sent — the operator approved OT=2, so the "
+        "confirmation email must also carry OT=2."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 6 — test_tri_state_through_real_path (D-7.5-04c)
-# ---------------------------------------------------------------------------
-
 def test_tri_state_through_real_path(fake_repo, mock_llm):
-    """D-7.5-04c: None vs Decimal('0') survive through the JSONB round-trip.
+    """None vs Decimal('0') survive the JSONB round-trip as distinct values.
+
+    The tri-state (absent / explicit zero / positive) is the whole basis of the
+    carry-forward decision: None means the client was silent (carry forward), and
+    Decimal('0') means the client explicitly removed the hours (honour it). If the
+    round-trip collapsed the two, silence would zero out real hours or an explicit
+    removal would be re-backfilled — an underpay or an overpay respectively.
 
     set_pre_clarify_extracted serialises via model_dump(mode='json');
-    load_pre_clarify_extracted deserialises via Extracted.model_validate.
-    None must survive as None; Decimal('0') must survive as Decimal('0').
-    This tests the SAME serialisation path the real code uses (not hand-typed JSON).
+    load_pre_clarify_extracted deserialises via Extracted.model_validate. This
+    exercises the SAME serialisation path the real code uses (not hand-typed JSON).
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular")
 
@@ -499,18 +492,14 @@ def test_tri_state_through_real_path(fake_repo, mock_llm):
 
     # None survives as None (not 0, not absent)
     assert emp.hours_overtime is None, (
-        f"D-7.5-04c: None OT must round-trip as None; got {emp.hours_overtime!r}"
+        f"a None OT must round-trip as None (silence), not 0; got {emp.hours_overtime!r}"
     )
     # Decimal('0') survives as Decimal('0') (not None)
     assert emp.hours_vacation == Decimal("0"), (
-        f"D-7.5-04c: Decimal('0') vacation must round-trip as Decimal('0'); "
-        f"got {emp.hours_vacation!r}"
+        f"a Decimal('0') vacation must round-trip as Decimal('0') (an explicit "
+        f"removal), not None; got {emp.hours_vacation!r}"
     )
 
-
-# ---------------------------------------------------------------------------
-# Test 7 — test_loop_guard_fires_exactly_once
-# ---------------------------------------------------------------------------
 
 def test_loop_guard_fires_exactly_once(fake_repo, mock_llm):
     """Loop guard: a field-regression clarification fires exactly once.
@@ -522,7 +511,7 @@ def test_loop_guard_fires_exactly_once(fake_repo, mock_llm):
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
     # Round-2 reply: OT=None (silence → carry-forward → process → AWAITING_APPROVAL)
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     _r2_silent = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}])
     mock_llm.script = [_r2_silent, _r2_silent]
 
@@ -546,17 +535,15 @@ def test_loop_guard_fires_exactly_once(fake_repo, mock_llm):
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 8 — test_mixed_issue_records_asked_and_asks_field_regression (SC4 / R3-2)
-# ---------------------------------------------------------------------------
-
 def test_mixed_issue_records_asked_and_asks_field_regression(fake_repo, mock_llm):
-    """SC4 / R3-2: mixed-issue scenario — field_regression + unresolved name.
+    """Mixed-issue scenario — field_regression AND an unresolved name together.
 
     When a run has BOTH a field_regression issue (OT dropped) AND a normal
-    unresolved-name issue, the clarification defers under
-    purpose='clarification_field_regression' (R3-2 fix). The 'asked' outcome
-    is recorded in clarified_fields, and the outbound email has the correct purpose.
+    unresolved-name issue, the clarification must defer under
+    purpose='clarification_field_regression'. The 'asked' outcome is recorded in
+    clarified_fields, and the outbound email carries that purpose — otherwise the
+    dropped field is never marked asked, and the next round re-clarifies it
+    forever.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime, Unknown Bob 38 regular")
 
@@ -593,46 +580,45 @@ def test_mixed_issue_records_asked_and_asks_field_regression(fake_repo, mock_llm
     run = fake_repo.load_run(run_id)
     # Must be AWAITING_REPLY (not AWAITING_APPROVAL — mixed issue defers)
     assert run["status"] == RunStatus.AWAITING_REPLY.value, (
-        f"SC4: mixed-issue run must be AWAITING_REPLY; got {run['status']!r}"
+        f"a mixed-issue run must be AWAITING_REPLY; got {run['status']!r}"
     )
 
     # 'asked' must be in clarified_fields for Maria Chen
     clarified = fake_repo.load_clarified_fields(run_id)
-    assert CHEN_ID_STR in clarified, "SC4: clarified_fields must have entry for Maria Chen"
+    assert CHEN_ID_STR in clarified, "clarified_fields must have an entry for Maria Chen"
     assert clarified[CHEN_ID_STR].get("hours_overtime") == "asked", (
-        f"SC4: hours_overtime must be 'asked' for Maria Chen; "
+        f"hours_overtime must be 'asked' for Maria Chen; "
         f"got {clarified[CHEN_ID_STR]!r}"
     )
 
-    # Outbound must have purpose='clarification_field_regression' (R3-2 fix)
+    # The outbound row must carry purpose='clarification_field_regression'
     outbound = fake_repo.outbound.get(str(run_id), [])
     assert any(r.get("purpose") == "clarification_field_regression" for r in outbound), (
-        "SC4 / R3-2: mixed-issue must clarify under purpose='clarification_field_regression'"
+        "a mixed-issue run must clarify under purpose='clarification_field_regression'"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 9 — test_restated_name_prior_matches_threading (R3-3 + R2-2)
-# ---------------------------------------------------------------------------
-
 def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
-    """R3-3 + R2-2 integration pin: 'M. Chen' in snapshot, 'Maria Chen' in reply.
+    """A restated name ('M. Chen' in snapshot, 'Maria Chen' in reply) must not
+    break detection or carry-forward. Both halves are keyed on employee_id, never
+    on the submitted name, because the client is free to write the name
+    differently in every message.
 
-    PART A (Round-1 — R3-3 pin):
-      'M. Chen' submitted in original email (snapshot OT=2).
-      Round-1 reply uses full name 'Maria Chen' (same employee_id via alias).
+    PART A (Round-1 — detection):
+      'M. Chen' submitted in the original email (snapshot OT=2).
+      Round-1 reply uses the full name 'Maria Chen' (same employee_id via alias).
       Reply OT=None → field_regression must be DETECTED and asked.
       Assert: run at AWAITING_REPLY, 'asked' written.
-      R3-3 integration pin: FAILS if prior_matches is defaulted to None —
-      detect_field_regression returns [] without prior_matches, no drop detected,
-      run processes instead of clarifying.
+      FAILS if prior_matches is defaulted to None — detect_field_regression then
+      returns [] and the run processes instead of clarifying (a silent drop).
 
-    PART B (Round-2 — R2-2 pin):
-      Round-2: 'Maria Chen' still silent on OT.
+    PART B (Round-2 — carry-forward):
+      Round-2: 'Maria Chen' is still silent on OT.
       Assert: paystub OT=Decimal('2') (employee_id-keyed backfill carried the value).
       Assert: clarified_fields outcome 'carried_forward'.
-      R2-2 fix pin: FAILS if backfill_extracted uses submitted_name-keyed snapshot lookup
-      ('Maria Chen' absent from prior alias key 'M. Chen' → no carry-forward → OT=0).
+      FAILS if backfill_extracted uses a submitted_name-keyed snapshot lookup
+      ('Maria Chen' is absent from the prior alias key 'M. Chen' → no carry-forward
+      → paystub OT=0, an UNDERPAY).
     """
     # ---- PART A: Round-1 field_regression detected with restated name ----
 
@@ -655,9 +641,9 @@ def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
     fake_repo.persist_reconciliation(run_id, [prior_match_alias])
     _set_run_awaiting_reply(fake_repo, run_id)
 
-    # Round-1 reply: "Maria Chen" (full name restated) with OT=None
-    # R3-3 pin: prior_matches must be threaded into detect_field_regression so
-    # the employee_id-keyed diff finds "M. Chen" (prior) == "Maria Chen" (current)
+    # Round-1 reply: "Maria Chen" (full name restated) with OT=None.
+    # prior_matches must be threaded into detect_field_regression so the
+    # employee_id-keyed diff finds "M. Chen" (prior) == "Maria Chen" (current)
     # → same employee_id → OT 2→None is a regression drop → field_regression issue.
     mock_llm.script = [
         _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}]),
@@ -670,18 +656,18 @@ def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_REPLY.value, (
-        f"R3-3 integration pin: field_regression must be detected (AWAITING_REPLY); "
+        f"the field_regression must be detected (AWAITING_REPLY); "
         f"got {run['status']!r}. "
-        "FAILS if prior_matches is defaulted to None — detect_field_regression returns "
-        "[] without prior_matches, no drop detected, run processes instead of clarifying."
+        "FAILS if prior_matches is defaulted to None — detect_field_regression then "
+        "returns [], no drop is detected, and the run processes instead of clarifying."
     )
 
     clarified = fake_repo.load_clarified_fields(run_id)
     assert CHEN_ID_STR in clarified, (
-        "R3-3: clarified_fields must have entry for Maria Chen's employee_id"
+        "clarified_fields must have an entry for Maria Chen's employee_id"
     )
     assert clarified[CHEN_ID_STR].get("hours_overtime") == "asked", (
-        f"R3-3: hours_overtime must be 'asked'; got {clarified[CHEN_ID_STR]!r}"
+        f"hours_overtime must be 'asked'; got {clarified[CHEN_ID_STR]!r}"
     )
 
     # ---- PART B: Round-2 carry-forward via employee_id-keyed backfill ----
@@ -689,7 +675,7 @@ def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
     _set_run_awaiting_reply(fake_repo, run_id)
 
     # Round-2: "Maria Chen" still silent on OT
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     _r2_silent = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}])
     mock_llm.script = [_r2_silent, _r2_silent]
 
@@ -698,7 +684,7 @@ def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"R2-2: Round-2 silence should reach AWAITING_APPROVAL; got {run['status']!r}"
+        f"Round-2 silence should reach AWAITING_APPROVAL; got {run['status']!r}"
     )
 
     # Paystub must have OT=2 (employee_id-keyed backfill_extracted carried it)
@@ -708,37 +694,38 @@ def test_restated_name_prior_matches_threading(fake_repo, mock_llm):
     assert chen_items, "paystub item for Maria Chen must exist"
     ot = chen_items[0].hours_overtime
     assert ot == Decimal("2"), (
-        f"R2-2 fix pin: carried-forward paystub must have OT=2; got {ot!r}. "
-        "FAILS if backfill_extracted uses submitted_name-keyed snapshot lookup: "
-        "'Maria Chen' is absent from snapshot keyed by 'M. Chen' → no carry-forward."
+        f"the carried-forward paystub must have OT=2; got {ot!r}. "
+        "FAILS if backfill_extracted uses a submitted_name-keyed snapshot lookup: "
+        "'Maria Chen' is absent from a snapshot keyed by 'M. Chen' → no "
+        "carry-forward → UNDERPAY."
     )
 
     # clarified_fields outcome must be 'carried_forward'
     clarified_r2 = fake_repo.load_clarified_fields(run_id)
     assert clarified_r2.get(CHEN_ID_STR, {}).get("hours_overtime") == "carried_forward", (
-        f"R2-2: clarified_fields outcome must be 'carried_forward'; "
+        f"the clarified_fields outcome must be 'carried_forward'; "
         f"got {clarified_r2.get(CHEN_ID_STR, {})!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 10 — test_confirmed_dropped_no_reloop_on_round2 (BLOCKER FIX)
-# ---------------------------------------------------------------------------
-
 def test_confirmed_dropped_no_reloop_on_round2(fake_repo, mock_llm):
-    """BLOCKER FIX cross-plan key-type consistency: confirmed_dropped suppresses reloop.
+    """A confirmed_dropped field is terminal: it neither re-clarifies nor refills.
 
     Round-1: 'M. Chen' OT=2 snapshot; Round-1 reply OT=Decimal('0')
-    → OT classified as 'confirmed_dropped' (injected as terminal state).
+    → OT classified as 'confirmed_dropped' (injected here as the terminal state).
 
     Round-2: 'Maria Chen' OT=None (restated name, same employee_id, silent).
-    Assert: OT NOT backfilled (confirmed_dropped is in backfill_skip → guard fires).
-    Assert: run reaches AWAITING_APPROVAL (N8 suppression fired — no re-clarify).
+    Assert: OT NOT backfilled (confirmed_dropped is in backfill_skip → the guard
+    fires, so the client's removal is honoured and there is no overpay).
+    Assert: the run reaches AWAITING_APPROVAL (detection suppressed — no
+    re-clarify, so the loop terminates).
 
-    FAILS for any of three regressions:
-    1. suppress_detection set keyed by submitted_name (not emp_id_str).
-    2. str(current_emp_id) missing — UUID vs str mismatch in the set lookup.
-    3. backfill_extracted guard keyed by name instead of (emp_id_str, field).
+    Every key in this path is (employee_id_str, field), never the submitted name,
+    because the client may restate the name in any round. FAILS for any of three
+    key-type regressions:
+    1. the suppress_detection set keyed by submitted_name (not emp_id_str),
+    2. a UUID-vs-str mismatch in the set lookup (str(current_emp_id) missing),
+    3. the backfill_extracted guard keyed by name instead of (emp_id_str, field).
     """
     run_id = _seed_run(fake_repo, body="M. Chen 40 regular 2 overtime")
 
@@ -762,10 +749,10 @@ def test_confirmed_dropped_no_reloop_on_round2(fake_repo, mock_llm):
     fake_repo.set_clarified_fields(run_id, clarified)
     _set_run_awaiting_reply(fake_repo, run_id)
 
-    # Round-2: 'Maria Chen' OT=None (restated name, same employee_id)
-    # BLOCKER FIX: suppress_detection must use (emp_id_str, field) keys (not names).
+    # Round-2: 'Maria Chen' OT=None (restated name, same employee_id).
+    # suppress_detection must use (emp_id_str, field) keys, not names.
     # The current reconciliation resolves 'Maria Chen' → CHEN_ID.
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     _r2_silent = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}])
     mock_llm.script = [_r2_silent, _r2_silent]
 
@@ -774,9 +761,10 @@ def test_confirmed_dropped_no_reloop_on_round2(fake_repo, mock_llm):
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"BLOCKER FIX cross-plan key-type consistency: N8 must suppress re-clarify "
-        f"for confirmed_dropped OT; got {run['status']!r}. "
-        "FAILS if suppress_detection set uses submitted_name keys instead of (emp_id_str, field)."
+        f"detection must be suppressed for a confirmed_dropped OT — no re-clarify; "
+        f"got {run['status']!r}. "
+        "FAILS if the suppress_detection set uses submitted_name keys instead of "
+        "(emp_id_str, field)."
     )
 
     # OT must NOT be backfilled (confirmed_dropped in backfill_skip → no overpay)
@@ -786,33 +774,33 @@ def test_confirmed_dropped_no_reloop_on_round2(fake_repo, mock_llm):
         if chen_items:
             ot = chen_items[0].hours_overtime
             assert ot != Decimal("2"), (
-                f"BLOCKER FIX: confirmed_dropped OT must NOT be re-backfilled; "
-                f"got OT={ot!r} (expected 0 or None)"
+                f"a confirmed_dropped OT must NOT be re-backfilled (that is an "
+                f"OVERPAY); got OT={ot!r} (expected 0 or None)"
             )
 
 
-# ---------------------------------------------------------------------------
-# Test 11 — test_detect_fired_on_raw (D-7.5-10 three-phase ordering — R2-1 proof)
-# ---------------------------------------------------------------------------
-
 def test_detect_fired_on_raw(fake_repo, mock_llm, monkeypatch):
-    """D-7.5-10 three-phase ordering — R2-1 proof.
+    """The three-phase ordering: detect < backfill < validate/calc.
 
-    PART A: Round-1 path — detect_field_regression fires on RAW (pre-backfill) extracted.
-      Setup: 'Maria Chen' OT=2 in snapshot. Round-1 reply has OT=None (client silent).
-      Assert: (1) field_regression issue emitted (run at AWAITING_REPLY).
-              (2) 'asked' written in clarified_fields before _clarify (N2).
-              (3) outbound with purpose='clarification_field_regression' sent.
+    Detection MUST read the RAW reply, before any backfill. This is the whole
+    reason the phases are ordered that way, and this test is the proof.
 
-      D-7.5-10 detect-on-raw proof: if backfill ran before detect, the snapshot's
-      OT=2 would fill in the reply's None → both sides OT=2 → no drop → no issue →
-      no clarification. The test would then FAIL on assertion (1) (AWAITING_REPLY
-      expected, AWAITING_APPROVAL actual — no regression detected).
+    PART A: Round-1 — detect_field_regression fires on the RAW (pre-backfill)
+      extracted.
+      Setup: 'Maria Chen' OT=2 in the snapshot. Round-1 reply has OT=None
+      (the client went silent on overtime).
+      Assert: (1) a field_regression issue is emitted (run at AWAITING_REPLY),
+              (2) 'asked' is written in clarified_fields before _clarify,
+              (3) an outbound with purpose='clarification_field_regression' is sent.
 
-    PART B: Continue to Round-2 carry-forward — full round-trip proof.
-      Round-2 reply still silent on OT → carry-forward fires → paystub OT=2.
-      Assert: paystub OT=Decimal('2').
-      Together with PART A, proves D-7.5-10 end-to-end.
+      If backfill ran BEFORE detect, the snapshot's OT=2 would fill in the reply's
+      None → both sides read OT=2 → no drop → no issue → no clarification, and the
+      dropped field would be silently paid from stale data. That regression fails
+      assertion (1) (AWAITING_REPLY expected, AWAITING_APPROVAL actual).
+
+    PART B: Round-2 carry-forward — the full round-trip.
+      Round-2 reply is still silent on OT → carry-forward fires → paystub OT=2.
+      Together with PART A this exercises the ordering end to end.
     """
     import app.pipeline.orchestrator as orch_mod
     from app.pipeline.validate import detect_field_regression
@@ -849,34 +837,36 @@ def test_detect_fired_on_raw(fake_repo, mock_llm, monkeypatch):
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_REPLY.value, (
-        f"D-7.5-10 detect-on-raw proof: field_regression must be detected (AWAITING_REPLY); "
+        f"the field_regression must be detected (AWAITING_REPLY); "
         f"got {run['status']!r}. "
-        "If backfill ran before detect, OT 2→None drop would be masked → no issue → no clarify."
+        "If backfill ran before detect, the OT 2→None drop would be masked → no "
+        "issue → no clarification."
     )
 
     # Drops must have been detected on RAW (pre-backfill) data
     ot_drops = [d for d in detected_on_raw_drops if d.field == "hours_overtime"]
     assert ot_drops, (
-        "D-7.5-10: detect_field_regression must have emitted an OT drop on the RAW extracted "
-        "(pre-backfill). If detect ran post-backfill, the snapshot's OT=2 would mask the drop."
+        "detect_field_regression must emit an OT drop against the RAW extracted "
+        "(pre-backfill). If detect ran post-backfill, the snapshot's OT=2 would "
+        "mask the drop."
     )
 
     # 'asked' must be written
     clarified = fake_repo.load_clarified_fields(run_id)
     assert clarified.get(CHEN_ID_STR, {}).get("hours_overtime") == "asked", (
-        "D-7.5-10: hours_overtime must be 'asked' after field_regression detection"
+        "hours_overtime must be 'asked' after field_regression detection"
     )
 
     # Outbound with purpose='clarification_field_regression'
     outbound = fake_repo.outbound.get(str(run_id), [])
     assert any(r.get("purpose") == "clarification_field_regression" for r in outbound), (
-        "D-7.5-10: clarification_field_regression outbound must be sent"
+        "a clarification_field_regression outbound must be sent"
     )
 
     # ---- PART B: Round-2 carry-forward (full round-trip proof) ----
     _set_run_awaiting_reply(fake_repo, run_id)
 
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     _r2_silent = _extraction_json([{"submitted_name": "Maria Chen", "hours_regular": "40"}])
     mock_llm.script = [_r2_silent, _r2_silent]
 
@@ -885,7 +875,7 @@ def test_detect_fired_on_raw(fake_repo, mock_llm, monkeypatch):
 
     run_r2 = fake_repo.load_run(run_id)
     assert run_r2["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        "D-7.5-10 PART B: Round-2 silence should carry-forward and reach AWAITING_APPROVAL"
+        "Round-2 silence should carry-forward and reach AWAITING_APPROVAL"
     )
 
     line_items = fake_repo.load_line_items(run_id)
@@ -894,39 +884,30 @@ def test_detect_fired_on_raw(fake_repo, mock_llm, monkeypatch):
     assert chen_items, "paystub item for Maria Chen must exist"
     ot = chen_items[0].hours_overtime
     assert ot == Decimal("2"), (
-        f"D-7.5-10 PART B full round-trip: carried-forward paystub OT must be 2; "
-        f"got {ot!r}. Both PART A + PART B together prove D-7.5-10 end-to-end."
+        f"the carried-forward paystub OT must be 2; got {ot!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 12 — test_client_supplied_same_value_labeled_correctly (R2-3 fix proof)
-# ---------------------------------------------------------------------------
-
 def test_client_supplied_same_value_labeled_correctly(fake_repo, mock_llm):
-    """R2-3 fix proof: client supplies OT=2 (SAME as snapshot) → 'client_supplied'.
+    """The client supplies OT=2 (the SAME value as the snapshot) → 'client_supplied'.
 
-    The classify-first step reads from RAW reply BEFORE backfill. Raw reply has
+    Classify reads the RAW reply BEFORE backfill. The raw reply has
     OT=Decimal('2') (present-positive) → classified as 'client_supplied'.
 
-    Before the D-7.5-11 / R2-3 fix: a post-decide reclassifier would see
-    the backfilled extracted (OT=2 from snapshot) and mistake it for silence
-    carry-forward → 'carried_forward' (incorrect label, implies client was silent).
+    A post-decide reclassifier would instead read the already-backfilled extracted
+    (OT=2, restored from the snapshot) and mistake it for silence → 'carried_forward'
+    — a label that claims the client never answered when in fact they did. The paid
+    value happens to be identical here, so only the label is wrong; but the same
+    ordering bug pays the wrong number whenever the client's value differs.
 
-    After the fix: classify-first sees raw reply OT=2 > 0 → 'client_supplied'.
-    The label is correct: the client actively re-supplied the same value.
-
-    Assert: clarified_fields outcome for hours_overtime is 'client_supplied' NOT 'carried_forward'.
-    Assert: run at AWAITING_APPROVAL.
-
-    R2-3 fix proof: classify-first reads raw reply before backfill; present-positive
-    → client_supplied.
+    Assert: the clarified_fields outcome for hours_overtime is 'client_supplied',
+    NOT 'carried_forward', and the run reaches AWAITING_APPROVAL.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
     # Round-2 reply: OT=Decimal('2') (same value as snapshot — client re-confirms)
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     _r2_ot2 = _extraction_json(
         [{"submitted_name": "Maria Chen", "hours_regular": "40", "hours_overtime": "2"}]
     )
@@ -937,58 +918,49 @@ def test_client_supplied_same_value_labeled_correctly(fake_repo, mock_llm):
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"R2-3: client_supplied run must reach AWAITING_APPROVAL; got {run['status']!r}"
+        f"a client_supplied run must reach AWAITING_APPROVAL; got {run['status']!r}"
     )
 
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "client_supplied", (
-        f"R2-3 fix proof: OT=2 (same as snapshot) in RAW reply must be 'client_supplied', "
-        f"NOT 'carried_forward'; got {outcome!r}. "
-        "Before fix: post-decide classifier saw backfilled data → mislabeled as carried_forward. "
-        "After fix: classify-first reads raw reply before backfill → present-positive → "
-        "client_supplied."
+        f"OT=2 (the same value as the snapshot) present in the RAW reply must be "
+        f"'client_supplied', NOT 'carried_forward'; got {outcome!r}. "
+        "A post-decide classifier reads the already-backfilled data and mislabels "
+        "it as carried_forward; classify must read the raw reply before backfill."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 13 — test_answered_silence_reaches_approval (NEW — D-7.5-11 proof)
-# ---------------------------------------------------------------------------
-
 def test_answered_silence_reaches_approval(fake_repo, mock_llm):
-    """D-7.5-11 proof: answered-silence reaches AWAITING_APPROVAL in ONE _run_stages call.
+    """An answered-then-silent field reaches AWAITING_APPROVAL in ONE _run_stages call.
 
     Setup: Round-1 asked OT (snapshot OT=2, clarified={chen_id: {hours_overtime: 'asked'}}).
-           Round-2 reply: Maria Chen OT=None (SILENCE — client does not mention OT).
-    Call resume_pipeline (Round-2 path).
+           Round-2 reply: Maria Chen OT=None (SILENCE — the client does not mention OT).
+    Call resume_pipeline (the Round-2 path).
 
     Assertions:
       1. run status == AWAITING_APPROVAL (NOT AWAITING_REPLY — no second clarification).
       2. paystub hours_overtime == Decimal('2') (carry-forward fired; not dropped).
-      3. clarified_fields outcome for hours_overtime is 'carried_forward'.
-      4. No second outbound row with purpose='clarification_field_regression'.
+      3. the clarified_fields outcome for hours_overtime is 'carried_forward'.
+      4. no second outbound row with purpose='clarification_field_regression'.
 
-    # D-7.5-11 proof: answered-silence reaches AWAITING_APPROVAL in a single _run_stages call.
-    # The fix (classify-first): classify-first labels OT 'carried_forward', includes it in
-    # suppress_detection. _run_stages: N8 suppresses field_regression re-emission for OT.
-    # decide → process → run reaches AWAITING_APPROVAL. Paystub OT=2 (backfill fired in Phase 2).
-    #
-    # NEGATIVE COMPANION — the D-7.5-11 failure mode (classify-after-decide ordering):
-    # If classify-first is removed and the old ordering is restored:
-    # Step E2 builds _resolved_by_name from TERMINAL outcomes only ('asked' is not terminal).
-    # The just-answered OT field is NOT in _resolved_by_name.
-    # _run_stages(resolved_drops=_resolved_by_name) does NOT suppress OT in N8.
-    # detect_field_regression sees OT: 2→None (a drop) → field_regression issue emitted.
-    # decide → request_clarification → _run_stages DEFERS, skips _compute_line_items.
-    # Run re-clarifies (strands at AWAITING_REPLY). This test then FAILS assertion (1)
-    # (expected AWAITING_APPROVAL, got AWAITING_REPLY) — the exact D-7.5-11 stranding bug.
-    # classify-first is the fix; classify-after-decide is the failure mode.
+    Why classify must run BEFORE decide:
+    classify labels the just-answered OT 'carried_forward' and adds it to
+    suppress_detection, so the field-regression re-emission is suppressed, decide
+    processes, and backfill restores OT=2 in the paystub.
+
+    Run classify AFTER decide instead and the run strands: the suppression set is
+    built from TERMINAL outcomes only, and 'asked' is not terminal, so the
+    just-answered OT is absent from it. detect_field_regression then sees OT 2→None
+    as a fresh drop, decide returns request_clarification, and the run re-clarifies
+    the question the client already answered — forever. That regression fails
+    assertion (1) (AWAITING_APPROVAL expected, AWAITING_REPLY actual).
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
     # Round-2 reply: OT=None (SILENCE — client does not mention overtime)
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     # Both return the same here: OT=None (silence). The classify step sees None →
     # carried_forward. The combined step also sees None → backfill fills OT=2 from
     # snapshot → paystub OT=2.
@@ -1001,10 +973,10 @@ def test_answered_silence_reaches_approval(fake_repo, mock_llm):
     # Assertion 1: run reaches AWAITING_APPROVAL (NOT AWAITING_REPLY)
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"D-7.5-11 proof: answered-silence must reach AWAITING_APPROVAL; "
+        f"an answered-then-silent field must reach AWAITING_APPROVAL; "
         f"got {run['status']!r}. "
-        "classify-after-decide ordering would strand the run at AWAITING_REPLY "
-        "(the D-7.5-11 failure mode this test prevents)."
+        "A classify-after-decide ordering strands the run at AWAITING_REPLY, "
+        "re-asking a question the client already answered."
     )
 
     # Assertion 2: paystub OT=2 (carry-forward fired, not dropped)
@@ -1014,68 +986,58 @@ def test_answered_silence_reaches_approval(fake_repo, mock_llm):
     assert chen_items, "paystub item for Maria Chen must exist"
     ot = chen_items[0].hours_overtime
     assert ot == Decimal("2"), (
-        f"D-7.5-11 proof: carry-forward must set paystub OT=2; got {ot!r}. "
-        "Silence means client intended OT=2 to carry forward (not drop)."
+        f"carry-forward must set paystub OT=2; got {ot!r}. "
+        "Silence means the client intended OT=2 to carry forward, not to drop."
     )
 
     # Assertion 3: clarified_fields outcome is 'carried_forward'
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "carried_forward", (
-        f"D-7.5-11 proof: outcome must be 'carried_forward'; got {outcome!r}"
+        f"the outcome must be 'carried_forward'; got {outcome!r}"
     )
 
     # Assertion 4: no second outbound field_regression clarification
     outbound = fake_repo.outbound.get(str(run_id), [])
     field_reg_rows = [r for r in outbound if r.get("purpose") == "clarification_field_regression"]
     assert len(field_reg_rows) == 0, (
-        f"D-7.5-11 proof: no second clarification_field_regression email must be sent; "
+        f"no second clarification_field_regression email must be sent; "
         f"found {len(field_reg_rows)} such rows"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 14 — test_answered_explicit_zero_not_rebackfilled (D-7.5-11 overpay guard)
-# ---------------------------------------------------------------------------
-
 def test_answered_explicit_zero_not_rebackfilled(fake_repo, mock_llm):
-    """D-7.5-11 overpay guard proof: explicit-zero answered field is NOT re-backfilled.
+    """THE OVERPAY GUARD: an explicit-zero answer is NOT re-backfilled.
 
-    Setup: same as test 13 (snapshot OT=2, 'asked' for OT), EXCEPT:
-           Round-2 reply has OT=Decimal('0') (EXPLICIT ZERO — client removing OT).
-    Call resume_pipeline (Round-2 path).
+    Setup: as in the answered-silence case (snapshot OT=2, 'asked' for OT), EXCEPT
+           the Round-2 reply has OT=Decimal('0') — an EXPLICIT ZERO, the client
+           removing the overtime.
 
     Assertions:
       1. run status == AWAITING_APPROVAL (no second clarification).
       2. paystub hours_overtime is None or Decimal('0') — NOT Decimal('2').
-         This is the critical overpay guard: the explicit zero is honored.
-         The snapshot value (OT=2) is NOT re-backfilled.
-      3. clarified_fields outcome is 'confirmed_dropped'.
+         The explicit zero is honoured; the snapshot's OT=2 is NOT restored.
+      3. the clarified_fields outcome is 'confirmed_dropped'.
 
-    # D-7.5-11 overpay guard proof: explicit-zero answered field is NOT re-backfilled.
-    # _is_paid(Decimal('0')) is False — explicit zero LOOKS backfillable by value alone.
-    # The classify-first step labels OT 'confirmed_dropped' and includes it in suppress_detection.
-    # backfill_extracted: (emp_id_str, 'hours_overtime') in resolved_drops (= backfill_skip;
-    # confirmed_dropped IS in backfill_skip) → SKIP backfill.
-    # Paystub OT=0 (or absent), not OT=2.
-    # NOTE: confirmed_dropped is in BOTH suppress_detection (for N8) AND backfill_skip
-    # (for backfill guard). carried_forward is in suppress_detection ONLY (NOT
-    # backfill_skip) → backfill FILLS → OT=2 in test 13.
-    #
-    # The naive "also suppress on asked" patch would NOT protect this: if we had added
-    # 'asked' to _resolved_by_name without classify-first, the suppress set is populated
-    # but backfill_extracted doesn't know whether to skip because the set only blocks
-    # re-detection, not re-backfill.
-    # The actual fix is that classify-first determines confirmed_dropped (not just
-    # 'suppress for asked') so backfill_extracted's check (emp_id_str, field) in
-    # resolved_drops correctly excludes it.
-    # Test FAILS if paystub OT=2 (re-backfilled — OVERPAY).
+    Why this needs a dedicated guard: `_is_paid(Decimal('0'))` is False, so an
+    explicit zero is indistinguishable from silence *by value alone* — it looks
+    backfillable. Only the outcome label separates them. classify labels the field
+    'confirmed_dropped', which puts (emp_id_str, 'hours_overtime') in backfill_skip,
+    and backfill_extracted then skips it. The paystub pays 0, not 2.
+
+    The two outcome sets are deliberately different:
+      - confirmed_dropped → suppress_detection AND backfill_skip (never refill).
+      - carried_forward   → suppress_detection ONLY, so backfill DOES refill (OT=2).
+
+    Suppressing re-detection alone would not be enough: that only stops the field
+    being re-asked, it does not stop backfill from restoring the snapshot value.
+    The test FAILS if the paystub shows OT=2 (re-backfilled — an OVERPAY).
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
     # Round-2 reply: OT=Decimal('0') (EXPLICIT ZERO — client removes overtime)
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     # Both return OT=0 here. The reply-only classify step sees Decimal('0') →
     # confirmed_dropped → backfill_skip. The combined step also sees OT=0 (no
     # restoration from snapshot). Paystub OT=0.
@@ -1090,7 +1052,7 @@ def test_answered_explicit_zero_not_rebackfilled(fake_repo, mock_llm):
     # Assertion 1: run reaches AWAITING_APPROVAL (no second clarification)
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"D-7.5-11 overpay guard: explicit-zero must reach AWAITING_APPROVAL; "
+        f"an explicit-zero answer must reach AWAITING_APPROVAL; "
         f"got {run['status']!r}"
     )
 
@@ -1101,53 +1063,42 @@ def test_answered_explicit_zero_not_rebackfilled(fake_repo, mock_llm):
         if chen_items:
             ot = chen_items[0].hours_overtime
             assert ot != Decimal("2"), (
-                f"D-7.5-11 OVERPAY GUARD: explicit-zero OT=0 must NOT be re-backfilled to 2; "
-                f"got {ot!r}. "
-                "_is_paid(Decimal('0')) is False so explicit-zero looks backfillable by value "
-                "alone; the resolved_drops gate (confirmed_dropped in backfill_skip) is the "
-                "protection."
+                f"an explicit-zero OT=0 must NOT be re-backfilled to 2; got {ot!r}. "
+                "_is_paid(Decimal('0')) is False, so an explicit zero looks "
+                "backfillable by value alone; the backfill_skip gate "
+                "(confirmed_dropped) is the only protection."
             )
 
     # Assertion 3: clarified_fields outcome is 'confirmed_dropped'
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "confirmed_dropped", (
-        f"D-7.5-11 overpay guard: OT=Decimal('0') must be 'confirmed_dropped'; "
-        f"got {outcome!r}"
+        f"OT=Decimal('0') must be 'confirmed_dropped'; got {outcome!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 15 — test_answered_positive_uses_client_value (D-7.5-11 client_supplied)
-# ---------------------------------------------------------------------------
-
 def test_answered_positive_uses_client_value(fake_repo, mock_llm):
-    """D-7.5-11 client_supplied proof: positive answered field uses the client's value.
+    """A positive answered field pays the client's value, not the snapshot's.
 
-    Setup: same as test 13 (snapshot OT=2, 'asked' for OT), EXCEPT:
-           Round-2 reply has OT=Decimal('5') (POSITIVE VALUE — client supplies different amount).
-    Call resume_pipeline (Round-2 path).
+    Setup: as in the answered-silence case (snapshot OT=2, 'asked' for OT), EXCEPT
+           the Round-2 reply has OT=Decimal('5') — the client supplies a different
+           amount.
 
     Assertions:
       1. run status == AWAITING_APPROVAL.
-      2. paystub hours_overtime == Decimal('5') (client-supplied value, NOT snapshot OT=2).
-      3. clarified_fields outcome is 'client_supplied'.
+      2. paystub hours_overtime == Decimal('5') (the client's value, NOT snapshot OT=2).
+      3. the clarified_fields outcome is 'client_supplied'.
 
-    # D-7.5-11 client_supplied proof: positive answered field uses the client's value.
-    # classify-first: OT=Decimal('5') in raw reply → present-positive → client_supplied.
-    # (emp_id_str, 'hours_overtime') added to suppress_detection.
-    # backfill_extracted: field in resolved_drops (= backfill_skip; client_supplied IS in
-    # backfill_skip) → SKIP backfill.
-    # NOTE: client_supplied is in BOTH suppress_detection (for N8) AND backfill_skip
-    # (for backfill guard).
-    # BUT the raw extracted already has OT=5, so _compute_line_items uses OT=5.
-    # Paystub OT=5 (client value), labeled 'client_supplied'.
+    classify sees OT=Decimal('5') in the raw reply → present-positive →
+    'client_supplied', which lands in backfill_skip, so backfill never overwrites it
+    with the snapshot's 2. The raw extracted already carries OT=5, so
+    _compute_line_items pays 5.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
 
     # Round-2 reply: OT=Decimal('5') (POSITIVE VALUE — client supplies a different amount)
-    # CR-01 FIX: Round-2 now does TWO extractions (reply-only then combined).
+    # Round-2 does TWO extractions: reply-only (classify) then combined (process).
     # Both return OT=5 here. The reply-only classify step sees Decimal('5') > 0 →
     # client_supplied → backfill_skip. Paystub uses raw extracted OT=5.
     _r2_ot5 = _extraction_json(
@@ -1161,7 +1112,7 @@ def test_answered_positive_uses_client_value(fake_repo, mock_llm):
     # Assertion 1: run reaches AWAITING_APPROVAL
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"D-7.5-11 client_supplied: run must reach AWAITING_APPROVAL; "
+        f"a client_supplied run must reach AWAITING_APPROVAL; "
         f"got {run['status']!r}"
     )
 
@@ -1172,28 +1123,23 @@ def test_answered_positive_uses_client_value(fake_repo, mock_llm):
     assert chen_items, "paystub item for Maria Chen must exist"
     ot = chen_items[0].hours_overtime
     assert ot == Decimal("5"), (
-        f"D-7.5-11 client_supplied proof: paystub OT must be 5 (client-supplied); "
-        f"got {ot!r} (NOT snapshot OT=2). "
-        "backfill_extracted skips client_supplied fields (in backfill_skip); "
-        "raw extracted OT=5 flows directly to _compute_line_items."
+        f"the paystub OT must be 5 (the client's value); got {ot!r} — NOT the "
+        f"snapshot's OT=2. backfill_extracted skips client_supplied fields (they "
+        f"are in backfill_skip); the raw extracted OT=5 flows straight to "
+        f"_compute_line_items."
     )
 
     # Assertion 3: clarified_fields outcome is 'client_supplied'
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "client_supplied", (
-        f"D-7.5-11 client_supplied proof: outcome must be 'client_supplied'; "
-        f"got {outcome!r}"
+        f"the outcome must be 'client_supplied'; got {outcome!r}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 16 — test_round2_new_regression_reaches_awaiting_reply (CR-02 fix)
-# ---------------------------------------------------------------------------
-
 def test_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
-    """CR-02 fix: Round-2 reply that introduces a NEW field regression sends a
-    clarification and reaches AWAITING_REPLY — NOT stuck at 'extracting'.
+    """A Round-2 reply that introduces a NEW field regression sends a clarification
+    and reaches AWAITING_REPLY — it must NOT stall at 'extracting'.
 
     Setup:
     - Snapshot: Maria Chen hours_overtime=2, hours_holiday=8.
@@ -1203,19 +1149,21 @@ def test_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
       from Round-1. detect_field_regression emits a NEW drop for hours_holiday (NOT
       suppressed) → validate → decide → request_clarification → clarify_deferred=True.
 
-    Pre-fix behaviour (CR-02 bug):
-      Round-2 branch IGNORED stage.clarify_deferred → fell through to set_clarified_fields
-      + alias diff → run left at 'extracting' with no email sent. Nothing silently hangs
-      (INGEST-05 violation).
+    The failure mode this guards:
+      if the Round-2 branch IGNORES stage.clarify_deferred it falls through to
+      set_clarified_fields + the alias diff, and the run is left at 'extracting'
+      with no email sent — a silent hang, with the client waiting on a question
+      that was never asked. Nothing may ever silently hang.
 
-    Post-fix behaviour (asserted here):
-      _defer_field_regression_clarification() is called (IN-01 shared helper) →
-      'asked' written for hours_holiday → clarification_field_regression email sent →
-      run reaches AWAITING_REPLY.
+    The correct behaviour (asserted here):
+      defer_field_regression_clarification() runs → 'asked' is written for
+      hours_holiday → a clarification_field_regression email is sent → the run
+      reaches AWAITING_REPLY.
 
-    Note: Round-2 now does TWO extractions (reply-only for classify, combined for
-    process). Both are scripted to return OT=2, holiday=None (dropped).
-    The clarification path fires before _run_stages process branch → no paystub computed.
+    Note: Round-2 does TWO extractions (reply-only for classify, combined for
+    process). Both are scripted to return OT=2, holiday=None (dropped). The
+    clarification path fires before the _run_stages process branch, so no paystub
+    is computed.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime 8 holiday")
 
@@ -1247,7 +1195,7 @@ def test_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
     # → validate → field_regression issue for holiday → decide → request_clarification.
     # → _run_stages returns clarify_deferred=True.
     #
-    # CR-01 FIX: two extractions — reply-only (classify) then combined (process).
+    # Two extractions — reply-only (classify) then combined (process).
     # Both return OT=2 (answered) and holiday=None (newly dropped).
     _r2_holiday_dropped = _extraction_json([{
         "submitted_name": "Maria Chen",
@@ -1269,19 +1217,19 @@ def test_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
     # Assertion 1: run must be AWAITING_REPLY (NOT stuck at 'extracting')
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_REPLY.value, (
-        f"CR-02 fix: Round-2 introducing a NEW field regression must reach AWAITING_REPLY; "
+        f"a Round-2 reply introducing a NEW field regression must reach AWAITING_REPLY; "
         f"got {run['status']!r}. "
-        "Pre-fix: Round-2 branch ignored stage.clarify_deferred → run stuck at 'extracting'. "
-        "Post-fix: _defer_field_regression_clarification() sends the email → AWAITING_REPLY."
+        "Ignoring stage.clarify_deferred leaves the run stuck at 'extracting' with "
+        "no email sent; defer_field_regression_clarification() must send it."
     )
 
     # Assertion 2: a clarification_field_regression outbound row must exist
     outbound = fake_repo.outbound.get(str(run_id), [])
     field_reg_rows = [r for r in outbound if r.get("purpose") == "clarification_field_regression"]
     assert len(field_reg_rows) >= 1, (
-        f"CR-02 fix: a clarification_field_regression outbound email must be sent; "
+        f"a clarification_field_regression outbound email must be sent; "
         f"found {len(field_reg_rows)} such rows. "
-        "_defer_field_regression_clarification() must call _clarify with "
+        "defer_field_regression_clarification() must call _clarify with "
         "purpose='clarification_field_regression'."
     )
 
@@ -1289,46 +1237,44 @@ def test_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
     clarified_after = fake_repo.load_clarified_fields(run_id)
     hours_holiday_outcome = clarified_after.get(CHEN_ID_STR, {}).get("hours_holiday")
     assert hours_holiday_outcome == "asked", (
-        f"CR-02 fix: hours_holiday must be 'asked' in clarified_fields (written before send, N2); "
+        f"hours_holiday must be 'asked' in clarified_fields, written before the send; "
         f"got {hours_holiday_outcome!r}. "
-        "_defer_field_regression_clarification must write 'asked' for the NEW "
+        "defer_field_regression_clarification must write 'asked' for the NEW "
         "field_regression drop."
     )
 
     # Assertion 4: hours_overtime outcome must be 'client_supplied' (answered in Round-2 classify)
     ot_outcome = clarified_after.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert ot_outcome == "client_supplied", (
-        f"CR-02: hours_overtime (answered in Round-2 with OT=2) must be 'client_supplied'; "
+        f"hours_overtime (answered in Round-2 with OT=2) must be 'client_supplied'; "
         f"got {ot_outcome!r}."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 17 — test_explicit_zero_overpay_guard_with_prompt_inspecting_mock
-# ---------------------------------------------------------------------------
-
 def test_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
     fake_repo, mock_llm, monkeypatch
 ):
-    """CR-01 fix: classify uses REPLY-ONLY extraction, not combined body.
+    """Classify must read the REPLY-ONLY extraction, never the combined body.
 
-    Test approach: PROMPT-INSPECTING MOCK (not ALLOW_LIVE_LLM).
-    The mock's create() inspects the user message for "ORIGINAL PAYROLL EMAIL:"
-    (the delimiter _combined_context_email inserts):
-    - Reply-only call (no delimiter): returns OT=0 (client's explicit zero)
-    - Combined call (delimiter present): returns OT=2 (adversarial: original section wins)
+    Test approach: a PROMPT-INSPECTING MOCK (no live LLM). The mock's create()
+    inspects the user message for "ORIGINAL PAYROLL EMAIL:" — the delimiter that
+    _combined_context_email inserts:
+    - Reply-only call (no delimiter): returns OT=0 (the client's explicit zero).
+    - Combined call (delimiter present): returns OT=2 (adversarial — the original
+      section's value wins over the reply's).
 
-    Key assertion: classify outcome is 'confirmed_dropped' (not 'client_supplied').
-    This proves classify saw OT=0 from the REPLY-ONLY extraction, not OT=2 from combined.
+    The combined body contains BOTH the original email (OT=2) and the reply (OT=0),
+    so an extraction over it can legitimately return either. Classify must therefore
+    never be fed the combined body: if it were, the original section's positive value
+    could eclipse the client's explicit zero, the field would be labelled
+    'client_supplied' instead of 'confirmed_dropped', and OT=2 would flow through to
+    the paystub — an OVERPAY of hours the client explicitly removed.
 
-    Without the CR-01 fix, classify would use the combined extraction: the adversarial
-    mock returns OT=2 → classified 'client_supplied' (semantic corruption — the original
-    section's value eclipses the client's explicit zero in the reply). The combined
-    extraction's OT=2 then flows to _run_stages → paystub OT=2 = OVERPAY.
-
-    With the fix: reply-only extraction returns OT=0 → 'confirmed_dropped'. The combined
-    extraction (OT=2) feeds the process/backfill path losslessly (FIX 4). backfill_skip
-    prevents snapshot restore (not the combined value).
+    Two assertions, deliberately separate:
+      - the classify LABEL is 'confirmed_dropped' (it read the reply-only OT=0), and
+      - the PAID value on the paystub is 0.
+    Fixing the label alone is not enough; the raw extracted must also be reconciled
+    to the reply-derived value, or the label is right and the money is still wrong.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
@@ -1337,15 +1283,15 @@ def test_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
     # (the delimiter _combined_context_email inserts).
     #
     # Reply-only classify call (no delimiter in body):
-    #   → mock returns OT=0 (explicit zero from the reply)
-    #   → classified as 'confirmed_dropped' (CR-01 correctness proof)
+    #   → mock returns OT=0 (the explicit zero from the reply)
+    #   → must be classified as 'confirmed_dropped'
     #
     # Combined process/backfill call (delimiter present):
-    #   → mock returns OT=2 (adversarial: original section's value eclipses reply)
-    #   This simulates the exact failure mode CR-01 prevents for the CLASSIFY step.
+    #   → mock returns OT=2 (adversarial: the original section's value eclipses the
+    #     reply's) — the exact failure mode a combined-body classify would hit.
     #
-    # Key assertion: classify outcome is 'confirmed_dropped' (not 'client_supplied'),
-    # proving classify saw OT=0 from the reply-only extraction, not OT=2 from combined.
+    # Key assertion: the classify outcome is 'confirmed_dropped' (not
+    # 'client_supplied'), proving classify saw OT=0 from the reply-only extraction.
     from tests.conftest import _MockCompletions
 
     call_count = [0]
@@ -1380,76 +1326,71 @@ def test_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
     reply = _inbound("Maria Chen 40 regular 0 overtime this week")
     resume_pipeline(run_id, reply)
 
-    # Assertion 1: classify outcome must be 'confirmed_dropped' (reply-only OT=0).
+    # Assertion 1: the classify outcome must be 'confirmed_dropped' (reply-only OT=0).
     # If classify used the combined extraction (adversarial mock returns OT=2), the
-    # outcome would be 'client_supplied' — the exact CR-01 semantic corruption where
-    # the original section's positive value eclipses the reply's explicit zero.
+    # outcome would be 'client_supplied' — the original section's positive value
+    # eclipsing the reply's explicit zero.
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "confirmed_dropped", (
-        f"CR-01 fix proof: classify must use REPLY-ONLY extraction → OT=0 → 'confirmed_dropped'; "
+        f"classify must use the REPLY-ONLY extraction → OT=0 → 'confirmed_dropped'; "
         f"got {outcome!r}. "
-        "Without the fix, classify uses combined extraction → adversarial mock returns OT=2 "
-        "→ 'client_supplied' (semantic corruption, paystub gets OT=2 = OVERPAY)."
+        "Classifying off the combined body lets the adversarial OT=2 win → "
+        "'client_supplied' → the paystub pays OT=2 = OVERPAY."
     )
 
     # Assertion 2: at least 2 extraction LLM calls (reply-only classify + combined process)
     assert call_count[0] >= 2, (
-        f"CR-01 fix: Round-2 must make at least 2 LLM extraction calls; got {call_count[0]}. "
-        "First call is reply-only (classify); second is combined (process/backfill)."
+        f"Round-2 must make at least 2 LLM extraction calls; got {call_count[0]}. "
+        "The first is reply-only (classify); the second is combined (process/backfill)."
     )
 
     # Assertion 3: run reaches AWAITING_APPROVAL (OT asked and answered → process path)
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"CR-01: after answering OT=0, run must reach AWAITING_APPROVAL; "
+        f"after answering OT=0, the run must reach AWAITING_APPROVAL; "
         f"got {run['status']!r}"
     )
 
-    # Assertion 4 (CR-01 MONEY-SAFETY — strengthened): paystub OT must be 0, NOT 2.
-    # This is the critical payment assertion: the adversarial mock returns OT=2 from the
-    # combined extraction. Without the CR-01 fix (_run_stages sees raw_extracted with OT=2),
-    # the paystub would be paid at OT=2 even though classify correctly labels it
-    # 'confirmed_dropped'. This assertion pins the money-safe outcome and MUST fail
-    # before the fix and pass after.
+    # Assertion 4 — the MONEY assertion, deliberately separate from the label:
+    # the adversarial mock returns OT=2 from the combined extraction. If _run_stages
+    # sees raw_extracted with OT=2, the paystub pays OT=2 even though classify
+    # correctly labelled the field 'confirmed_dropped'. A correct label with a wrong
+    # paid value is still an overpay — so assert the paid value, not just the label.
     line_items = fake_repo.load_line_items(run_id)
     assert line_items, (
-        "CR-01 paystub value assertion: line_items must be computed on a process run"
+        "line_items must be computed on a process run"
     )
     chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
     assert chen_items, "paystub item for Maria Chen must exist"
     ot_paid = chen_items[0].hours_overtime
     assert ot_paid == Decimal("0"), (
-        f"CR-01 OVERPAY regression pin: paystub OT must be 0 (reply-derived, confirmed_dropped); "
-        f"got {ot_paid!r}. "
-        "Without the fix, the combined extraction's adversarial OT=2 flows to _run_stages → "
-        "paystub OT=2 = OVERPAY, even though classify correctly labels it 'confirmed_dropped'. "
-        "The CR-01 fix overwrites raw_extracted's OT field with the reply-derived value (0) "
+        f"the paystub OT must be 0 (reply-derived, confirmed_dropped); got {ot_paid!r}. "
+        "Otherwise the combined extraction's adversarial OT=2 flows to _run_stages → "
+        "paystub OT=2 = OVERPAY, even with a correct 'confirmed_dropped' label. "
+        "raw_extracted's OT field must be overwritten with the reply-derived value (0) "
         "so the paid value matches the classify decision."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 18 — test_extraction_divergence_confirmed_dropped_paystub_value
-# ---------------------------------------------------------------------------
-
 def test_extraction_divergence_confirmed_dropped_paystub_value(fake_repo, mock_llm, monkeypatch):
-    """CR-01 divergence regression pin: confirmed_dropped case — paystub must pay OT=0, not 2.
+    """Extraction divergence, confirmed_dropped case — the paystub must pay OT=0, not 2.
 
     Drives resume_pipeline with a prompt-inspecting mock where the TWO extractions
     DISAGREE on the asked field:
-      - Reply-only (classify): OT=0 (client's explicit zero → confirmed_dropped)
-      - Combined (process):   OT=2 (adversarial: original section's value eclipses reply)
+      - Reply-only (classify): OT=0 (the client's explicit zero → confirmed_dropped)
+      - Combined (process):    OT=2 (adversarial: the original section's value
+                                     eclipses the reply's)
 
-    Without the CR-01 raw_extracted-reconcile fix, _run_stages receives raw_extracted
-    with OT=2 (from the combined extraction) → paystub OT=2 = OVERPAY, even though
-    classify correctly labels the outcome 'confirmed_dropped'.
+    When the two disagree, the reply-only value is authoritative for an asked field:
+    it is the client's answer to the question we asked. If _run_stages instead
+    receives raw_extracted with OT=2 (the combined value), the paystub pays OT=2 —
+    an OVERPAY — even though classify correctly labels the outcome
+    'confirmed_dropped'.
 
-    With the fix: reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = Decimal('0')
-    → raw_extracted is rebuilt with OT=0 before _run_stages → paystub OT=0.
-
-    This test MUST FAIL at base (before the fix) and PASS after.
-    It is the definitive regression pin for the OVERPAY case (CR-01 row 1).
+    The reply-derived value must therefore be written back into raw_extracted
+    (reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = Decimal('0')) before
+    _run_stages runs, so the PAID value matches the classify decision.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
@@ -1489,52 +1430,48 @@ def test_extraction_divergence_confirmed_dropped_paystub_value(fake_repo, mock_l
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "confirmed_dropped", (
-        f"Test 18: classify must see reply OT=0 → 'confirmed_dropped'; got {outcome!r}"
+        f"classify must see the reply's OT=0 → 'confirmed_dropped'; got {outcome!r}"
     )
 
     # Assertion 2: run reaches AWAITING_APPROVAL
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"Test 18: run must reach AWAITING_APPROVAL after answering OT=0; got {run['status']!r}"
+        f"the run must reach AWAITING_APPROVAL after answering OT=0; got {run['status']!r}"
     )
 
-    # Assertion 3 (MONEY-SAFE): paystub OT must be 0 — NOT the combined extraction's 2.
-    # This FAILS before the fix (paystub OT=2 = OVERPAY) and PASSES after (paystub OT=0).
+    # Assertion 3 — the MONEY assertion: the paystub OT must be 0, NOT the combined
+    # extraction's 2. A correct 'confirmed_dropped' label with a paid OT=2 is still
+    # an overpay, so the paid value is what gets asserted here.
     line_items = fake_repo.load_line_items(run_id)
-    assert line_items, "Test 18: paystub must be computed on a process run"
+    assert line_items, "the paystub must be computed on a process run"
     chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
-    assert chen_items, "Test 18: paystub item for Maria Chen must exist"
+    assert chen_items, "the paystub item for Maria Chen must exist"
     ot_paid = chen_items[0].hours_overtime
     assert ot_paid == Decimal("0"), (
-        f"CR-01 DIVERGENCE OVERPAY regression pin: paystub OT must be 0 (reply said 0 = drop); "
-        f"got {ot_paid!r}. "
+        f"the paystub OT must be 0 (the reply said 0 = drop); got {ot_paid!r}. "
         "Reply-only extraction: OT=0. Combined extraction (adversarial): OT=2. "
-        "Without the CR-01 raw_extracted-reconcile fix, _run_stages sees OT=2 from combined → "
-        "paystub OT=2 = OVERPAY even though classify says 'confirmed_dropped'. "
-        "With fix: raw_extracted's OT overwritten to 0 before _run_stages → paystub OT=0."
+        "If _run_stages sees OT=2 from the combined extraction, the paystub pays "
+        "OT=2 = OVERPAY even though classify says 'confirmed_dropped'. raw_extracted's "
+        "OT must be overwritten to 0 before _run_stages."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 19 — test_extraction_divergence_client_supplied_paystub_value
-# ---------------------------------------------------------------------------
-
 def test_extraction_divergence_client_supplied_paystub_value(fake_repo, mock_llm, monkeypatch):
-    """CR-01 divergence regression pin: client_supplied case — paystub must pay OT=5, not 2.
+    """Extraction divergence, client_supplied case — the paystub must pay OT=5, not 2.
 
     Drives resume_pipeline with a prompt-inspecting mock where the TWO extractions
     DISAGREE on the asked field:
-      - Reply-only (classify): OT=5 (client supplied a new amount → client_supplied)
-      - Combined (process):   OT=2 (adversarial: original section's value eclipses reply)
+      - Reply-only (classify): OT=5 (the client supplied a new amount → client_supplied)
+      - Combined (process):    OT=2 (adversarial: the original section's value
+                                     eclipses the reply's)
 
-    Without the CR-01 raw_extracted-reconcile fix, _run_stages receives raw_extracted
-    with OT=2 → paystub OT=2 = UNDERPAY (client's supplied OT=5 is discarded).
+    The mirror image of the confirmed_dropped case: if _run_stages receives
+    raw_extracted with OT=2, the paystub pays OT=2 — an UNDERPAY, silently discarding
+    the OT=5 the client actually supplied.
 
-    With the fix: reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = Decimal('5')
-    → raw_extracted is rebuilt with OT=5 before _run_stages → paystub OT=5.
-
-    This test MUST FAIL at base (before the fix) and PASS after.
-    It is the definitive regression pin for the UNDERPAY case (CR-01 row 2).
+    The reply-derived value must be written back into raw_extracted
+    (reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = Decimal('5')) before
+    _run_stages runs.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
@@ -1574,59 +1511,53 @@ def test_extraction_divergence_client_supplied_paystub_value(fake_repo, mock_llm
     clarified = fake_repo.load_clarified_fields(run_id)
     outcome = clarified.get(CHEN_ID_STR, {}).get("hours_overtime")
     assert outcome == "client_supplied", (
-        f"Test 19: classify must see reply OT=5 → 'client_supplied'; got {outcome!r}"
+        f"classify must see the reply's OT=5 → 'client_supplied'; got {outcome!r}"
     )
 
     # Assertion 2: run reaches AWAITING_APPROVAL
     run = fake_repo.load_run(run_id)
     assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
-        f"Test 19: run must reach AWAITING_APPROVAL after answering OT=5; got {run['status']!r}"
+        f"the run must reach AWAITING_APPROVAL after answering OT=5; got {run['status']!r}"
     )
 
-    # Assertion 3 (MONEY-SAFE): paystub OT must be 5 — NOT the combined extraction's 2.
-    # This FAILS before the fix (paystub OT=2 = UNDERPAY) and PASSES after (paystub OT=5).
+    # Assertion 3 — the MONEY assertion: the paystub OT must be 5, NOT the combined
+    # extraction's 2 (which would silently discard the client's answer).
     line_items = fake_repo.load_line_items(run_id)
-    assert line_items, "Test 19: paystub must be computed on a process run"
+    assert line_items, "the paystub must be computed on a process run"
     chen_items = [i for i in line_items if str(i.employee_id) == CHEN_ID_STR]
-    assert chen_items, "Test 19: paystub item for Maria Chen must exist"
+    assert chen_items, "the paystub item for Maria Chen must exist"
     ot_paid = chen_items[0].hours_overtime
     assert ot_paid == Decimal("5"), (
-        f"CR-01 DIVERGENCE UNDERPAY regression pin: paystub OT must be 5 (client-supplied); "
-        f"got {ot_paid!r}. "
+        f"the paystub OT must be 5 (the client's supplied value); got {ot_paid!r}. "
         "Reply-only extraction: OT=5. Combined extraction (adversarial): OT=2. "
-        "Without the CR-01 raw_extracted-reconcile fix, _run_stages sees OT=2 from combined → "
-        "paystub OT=2 = UNDERPAY (client's OT=5 is silently discarded). "
-        "With fix: raw_extracted's OT overwritten to 5 before _run_stages → paystub OT=5."
+        "If _run_stages sees OT=2 from the combined extraction, the paystub pays "
+        "OT=2 = UNDERPAY and the client's OT=5 is silently discarded. raw_extracted's "
+        "OT must be overwritten to 5 before _run_stages."
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 20 — test_extraction_divergence_unresolvable_asked_money_safe
-# ---------------------------------------------------------------------------
-
 def test_extraction_divergence_unresolvable_asked_money_safe(fake_repo, mock_llm, monkeypatch):
-    """CR-01 divergence regression pin: _unresolvable_asked case — combined OT=2 must NOT be paid.
+    """Extraction divergence, unresolvable-asked case — a combined OT=2 must NOT be paid.
 
     Drives resume_pipeline with a prompt-inspecting mock where:
-      - Reply-only (classify): employee OMITTED (reply doesn't mention Maria Chen at all)
-        → _unresolvable_asked for (CHEN_ID, hours_overtime) → field stays unresolved
-      - Combined (process):   Maria Chen OT=2 (adversarial: original section carries it)
+      - Reply-only (classify): the employee is OMITTED (the reply never mentions
+        Maria Chen) → (CHEN_ID, hours_overtime) is unresolvable → the field stays
+        unanswered
+      - Combined (process): Maria Chen OT=2 (adversarial: the original section
+        carries the value forward)
 
-    Without the CR-01 raw_extracted-reconcile fix, raw_extracted carries OT=2 from the
-    combined extraction. _unresolvable_asked adds (CHEN_ID, OT) to backfill_skip (prevents
-    snapshot RESTORE), but the combined value OT=2 is already in raw_extracted and flows
-    directly to _compute_line_items → paystub OT=2. The run reaches AWAITING_APPROVAL
-    with the field still 'asked' and no re-clarification = money paid on an unanswered field.
+    This is the subtlest of the three divergence cases. Marking the field
+    unresolvable puts (CHEN_ID, OT) in backfill_skip, which prevents a snapshot
+    RESTORE — but the combined extraction has already placed OT=2 directly into
+    raw_extracted, and that flows straight to _compute_line_items. The run would
+    reach AWAITING_APPROVAL paying OT=2 on a field still marked 'asked', with no
+    re-clarification: money paid on a question the client never answered.
 
-    With the fix: reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = None
-    → raw_extracted's OT is forced to None before _run_stages.
-    Now the field is genuinely absent: decide→validate sees missing required hours →
-    request_clarification fires OR the run does NOT advance to AWAITING_APPROVAL paying OT=2.
-    Either outcome is money-safe; the critical invariant is that OT=2 is NOT paid on a
-    field still marked 'asked' in clarified_fields.
-
-    This test MUST FAIL at base (paystub OT=2 = paid on unanswered field) and PASS after.
-    It is the definitive regression pin for the unresolvable_asked case (CR-01 row 3).
+    Forcing raw_extracted's OT to None before _run_stages
+    (reply_value_overrides[(CHEN_ID_STR, 'hours_overtime')] = None) makes the field
+    genuinely absent, so validate/decide either request a clarification or refuse to
+    advance. Either is money-safe. The invariant asserted here is narrow and
+    absolute: OT=2 must NOT be paid while the field is still 'asked'.
     """
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular 2 overtime")
     _setup_round2(fake_repo, run_id, "Maria Chen", CHEN_ID, CHEN_ID_STR)
@@ -1675,14 +1606,12 @@ def test_extraction_divergence_unresolvable_asked_money_safe(fake_repo, mock_llm
     # combined extraction's adversarial value for an unanswered asked field).
     if status == RunStatus.AWAITING_APPROVAL.value:
         assert ot_paid != Decimal("2"), (
-            f"CR-01 DIVERGENCE UNRESOLVABLE_ASKED regression pin: "
-            f"run reached AWAITING_APPROVAL but paystub OT={ot_paid!r}. "
-            "This is the CR-01 row-3 overpay: combined extraction carries OT=2 for a field "
-            "still 'asked' (unanswered). The field must be genuinely absent (OT=0 or None), "
-            "not paid at OT=2 because the combined extraction eclipsed the unanswered state. "
-            "Without the CR-01 fix, raw_extracted's OT=2 flows to _compute_line_items unchecked. "
-            "With fix: raw_extracted's OT is forced to None → the field is genuinely absent → "
-            "decide/validate routes money-safely."
+            f"the run reached AWAITING_APPROVAL but the paystub shows OT={ot_paid!r}. "
+            "That is an overpay: the combined extraction carried OT=2 for a field still "
+            "marked 'asked' (unanswered). The field must be genuinely absent (OT=0 or "
+            "None), never paid at OT=2 because the combined extraction eclipsed the "
+            "unanswered state. raw_extracted's OT must be forced to None so validate/decide "
+            "can route it money-safely."
         )
     # If the run is at AWAITING_REPLY — the re-clarification fired — that is also
     # money-safe (the field was not paid). No further assertion needed for that path.
