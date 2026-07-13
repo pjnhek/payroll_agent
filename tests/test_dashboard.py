@@ -17,6 +17,7 @@ contract that Wave 3 must satisfy.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC
 from typing import Any
@@ -187,6 +188,81 @@ def test_eval_returns_200_no_summary_json():
             f"Unexpected status {response.status_code} from GET /eval (expected 200, "
             "404, or 405 in Wave 0 RED state)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Eval view path containment: a fixture_path may not escape the fixtures directory
+# ---------------------------------------------------------------------------
+
+
+def test_eval_view_refuses_fixture_path_traversal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A fixture_path that escapes the fixtures directory must not disclose file contents.
+
+    eval_view joins each summary entry's fixture_path onto the fixtures directory and reads
+    the result. A relative-parent path ("../secret.txt") would otherwise read — and render —
+    a file outside that directory. The escape must fall into the missing-file placeholder
+    while a legitimate fixture inside the directory still renders its body.
+
+    The route's two data paths are redirected via their module constants (never
+    monkeypatch.chdir: the Jinja searchpath is relative, so moving the cwd would make
+    eval.html unresolvable and the route would fail for the wrong reason).
+    """
+    from app.routes import dashboard
+
+    sentinel = "TRAVERSAL_SENTINEL_CONTENT"
+    legit_body = "LEGITIMATE_FIXTURE_BODY_TEXT"
+
+    fixtures_dir = tmp_path / "fixtures"
+    fixtures_dir.mkdir()
+    (fixtures_dir / "legit.json").write_text(json.dumps({"body_text": legit_body}))
+    # The escape target: outside the fixtures directory, reachable only via "..".
+    (tmp_path / "secret.txt").write_text(json.dumps({"body_text": sentinel}))
+
+    def _fixture_entry(fixture_path: str) -> dict[str, Any]:
+        return {
+            "fixture_id": fixture_path,
+            "fixture_path": fixture_path,
+            "fixture_category": "exact",
+            "extraction": {"f1": 1.0},
+            "decision": {"final_action": "process", "expected_final_action": "process"},
+        }
+
+    summary = {
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "extraction_model_id": "test-model",
+        "extraction_overall_f1": 1.0,
+        "false_process_rate": 0.0,
+        "confusion_matrix": {
+            "true_process": 1,
+            "false_process": 0,
+            "false_clarify": 0,
+            "true_clarify": 0,
+        },
+        "per_fixture": [_fixture_entry("legit.json"), _fixture_entry("../secret.txt")],
+    }
+    (tmp_path / "summary.json").write_text(json.dumps(summary))
+
+    monkeypatch.setattr(dashboard, "EVAL_SUMMARY_PATH", tmp_path / "summary.json")
+    monkeypatch.setattr(dashboard, "EVAL_FIXTURES_DIR", fixtures_dir)
+
+    response = client.get("/eval")
+
+    assert response.status_code == 200, (
+        f"GET /eval must still render when a fixture_path escapes; got {response.status_code}"
+    )
+    assert sentinel not in response.text, (
+        "a fixture_path that escapes the fixtures directory must never have its file "
+        "contents rendered on the eval page"
+    )
+    assert "‹fixture file missing›" in response.text, (
+        "the refused fixture must fall back to the missing-file placeholder"
+    )
+    assert legit_body in response.text, (
+        "refusing escapes must not break legitimate fixtures: a fixture_path that stays "
+        "inside the fixtures directory must still render its body"
+    )
 
 
 # ---------------------------------------------------------------------------
