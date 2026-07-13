@@ -6,10 +6,11 @@ for a short, friendly clarification email in plain prose. The gate detail
 the client knows exactly what to fix. There is intentionally no "json" / example
 shape here (that would be wrong for a free-text drafting call).
 
-D-21-05: when the suggestion call (app/pipeline/suggest.py) has a likely intended
-employee for an unresolved name, that suggestion is threaded in here so the model
-can write a SPECIFIC ask ("did you mean David Reyes?") — the new Phase 2 hero. The
-suggestion is advisory COPY only; it never feeds decide / final_action.
+When the suggestion call (app/pipeline/suggest.py) has a likely intended employee for
+an unresolved name, that suggestion is threaded in here so the model can write a
+SPECIFIC ask ("did you mean David Reyes?"). The suggestion is advisory COPY only — it
+never feeds decide / final_action, because a name match is a money-moving decision the
+code owns, not the model.
 """
 from __future__ import annotations
 
@@ -34,10 +35,10 @@ def build_messages(
 ) -> list[ChatCompletionMessageParam]:
     """Build the clarification-drafting chat messages from the gated Decision.
 
-    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY
-    from the suggestion call (D-21-05). When present for an unresolved name, the
-    ask names the likely intended employee so the model can write the specific
-    "did you mean David Reyes?" hero line. It never feeds any decision.
+    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY from
+    the suggestion call. When present for an unresolved name, the ask names the likely
+    intended employee so the model can write the specific "did you mean David Reyes?"
+    line. It never feeds any decision — the client still has to confirm.
     """
     suggestions = suggestions or {}
     asks: list[str] = []

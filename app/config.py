@@ -16,9 +16,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Env-driven config for the payroll agent.
 
-    D-04: database_url has no default — a missing env var raises a ValidationError
-    at import time so the problem is visible immediately, not buried in a later
-    connection attempt.
+    database_url deliberately has NO default: a missing env var raises a ValidationError
+    at import time, so the problem is visible immediately instead of surfacing as a
+    confusing failure mid-pipeline on the first connection attempt.
     """
 
     # ── Database ──────────────────────────────────────────────────────────────
@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     extraction_api_key: str = ""
 
     # ── Drafting tier (cheap model) ───────────────────────────────────────────
-    # The mid/decision tier was removed in Phase 2.1 (D-21-05): the decision is pure
-    # code with no model call, so there are TWO tiers — extraction + drafting (the
-    # cheap tier also serves the optional clarification-suggestion call in Wave 4).
+    # There are exactly TWO tiers — extraction + drafting. There is deliberately no
+    # decision tier: the process-vs-clarify decision is pure code with no model call.
+    # The cheap tier also serves the optional clarification-suggestion call.
     draft_model: str = "moonshot-v1-8k"
     draft_base_url: str = "https://api.moonshot.ai/v1"
     draft_api_key: str = ""
@@ -43,13 +43,14 @@ class Settings(BaseSettings):
     # Drives the bracket tables in the Pub 15-T engine. Default 2026.
     tax_year: int = 2026
 
-    # ── Live-LLM opt-in (D-A2-01) ─────────────────────────────────────────────
-    # Two-factor guard mirroring the live-DB ALLOW_DB_RESET pattern: the live_llm
-    # test suite hits the REAL DeepSeek/Kimi APIs only when this flag is truthy
-    # AND the per-tier API keys are present. Default False so CI stays green/free.
+    # ── Live-LLM opt-in ───────────────────────────────────────────────────────
+    # Two-factor guard mirroring the live-DB ALLOW_DB_RESET pattern: the live_llm test
+    # suite hits the REAL DeepSeek/Kimi APIs only when this flag is truthy AND the
+    # per-tier API keys are present. Default False so CI stays green and free — flipping
+    # the default would silently bill every CI run against the real providers.
     allow_live_llm: bool = False
 
-    # ── Email provider (Resend, Phase 6) ──────────────────────────────────────
+    # ── Email provider (Resend) ───────────────────────────────────────────────
     # Empty-string defaults: missing keys log a warning but do not fail startup —
     # the stub fixture path must still work locally without Resend credentials.
     resend_api_key: str = ""            # RESEND_API_KEY env var

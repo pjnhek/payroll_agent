@@ -4,7 +4,8 @@
   <span id="run-status-badge" class="badge badge-{{ run.status | badge_class }} badge-inline">{{ run.status | badge_label }}</span>
 </h1>
 
-{# UAT #3/#4: vanilla-JS per-run status poll — replaces the blunt meta-refresh.
+{# Vanilla-JS per-run status poll — replaces a blunt meta-refresh, which would reset
+   the page (and any in-progress form) on every tick.
    Polls GET /runs/{id}/status every 2s ONLY while the run is in-flight.
    Swaps the badge in-place; STOPS when the status leaves the in-flight set.
    Cap: 30 attempts (~60s) so a genuinely stuck run never polls forever.
@@ -105,7 +106,7 @@
 <div class="banner banner-awaiting banner-mb">
   <strong>Awaiting client reply</strong> — A clarification email has been sent. Waiting for the client to respond.
   <div class="banner-divider">
-    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply <span style="font-weight: 400; text-transform: none; letter-spacing: 0;">(demo only — Phase 6 uses real inbound webhook)</span></p>
+    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply <span style="font-weight: 400; text-transform: none; letter-spacing: 0;">(demo only — production uses the real inbound webhook)</span></p>
     <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer">
       <textarea name="reply_body" rows="3" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
       <div class="form-inline" style="margin-bottom: 0;">
@@ -173,7 +174,7 @@
             </th>
           </tr>
         </thead>
-        {# D-7.5-08: provenance badge macro for field-regression outcomes (4 outcomes). #}
+        {# Provenance badge macro for clarification-round field outcomes (4 outcomes). #}
         {# clarified_fields_by_name[emp.submitted_name][field] → outcome string. #}
         {# Outcomes: carried-forward (silence), confirmed_dropped (client removed), #}
         {# client_supplied (positive replacement), asked (awaiting reply). #}
@@ -243,7 +244,7 @@
   </div>
 </div>
 
-{# --- Sent emails section (UAT #1) --- #}
+{# --- Sent emails section --- #}
 {% if outbound_emails %}
 <div class="mt-xl">
   <p class="column-label">Sent Emails</p>

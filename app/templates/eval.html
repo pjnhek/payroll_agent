@@ -4,7 +4,7 @@
 
 {% if summary %}
 
-{# --- Section 1: Headline metrics (UI-SPEC §eval.html) --- #}
+{# --- Section 1: Headline metrics --- #}
 <div class="card card-pad section">
   <dl class="metric-strip">
     <div>
@@ -26,7 +26,7 @@
   <p class="metric-meta">Eval run: {{ summary.generated_at }} — Models: {{ summary.extraction_model_id }}</p>
 </div>
 
-{# --- Section 2: Chart (UI-SPEC §eval.html) --- #}
+{# --- Section 2: Chart (served from the committed eval/chart.svg) --- #}
 <div class="card card-pad card-center section">
   <img src="/eval/chart.svg" alt="Per-category eval chart" style="max-width: 100%; height: auto;">
 </div>
@@ -82,7 +82,7 @@
 
 {% endif %}
 
-{# --- UAT #6: Send Test Email with fixture picker (UI-SPEC DASH-05) --- #}
+{# --- Send Test Email with fixture picker (DASH-05) --- #}
 <div class="mt-2xl">
   <form method="post" action="/demo/send-test" class="form-inline" style="margin-bottom: 0;">
     <label for="fixture_key_eval" class="form-help" style="font-weight: 600;">Demo scenario</label>

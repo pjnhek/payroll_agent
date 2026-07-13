@@ -286,9 +286,9 @@ td a:hover {
   background: #FEE2E2;
 }
 
-/* needs_operator (D-11-06): distinct attention-drawing class — neither the
-   routine "pending" (awaiting_approval) nor a failure "bad" (rejected/error);
-   an explicit escalation that needs the operator's attention now. */
+/* needs_operator: its own attention-drawing class — neither the routine "pending"
+   (awaiting_approval) nor a failure "bad" (rejected/error). It is an explicit
+   escalation that needs the operator's attention now. */
 .badge-escalate {
   color: #9A3412;
   background: #FFEDD5;
@@ -733,7 +733,7 @@ td a:hover {
   color: var(--text-muted);
 }
 
-/* --- Demo scenario select (UAT #6) --- */
+/* --- Demo scenario select --- */
 .demo-select {
   font-family: var(--font-sans);
   font-size: 14px;

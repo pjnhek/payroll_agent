@@ -1,23 +1,24 @@
-"""Extraction prompt template (Stage 1, LLM-03; review FIX A, Pitfall 1).
+"""Extraction prompt template (LLM-03).
 
-The prompt MUST contain the literal word "json" + an example object shape or
-DeepSeek silently does not enter JSON mode (RESEARCH Pitfall 1). The example
-targets the ExtractionPayload schema (employees + pay_period, NO run_id) — the
-model returns only the judgment payload; extract() stamps the code-owned run_id
-(FIX A). Absent hours MUST be null (None), never 0 — null is how the client
-signals "didn't say" so decide() can gate on a missing field (Pitfall 2).
+The prompt MUST contain the literal word "json" plus an example object shape, or
+DeepSeek silently does not enter JSON mode and returns prose. The example targets the
+ExtractionPayload schema (employees + pay_period, NO run_id): the model returns only
+the judgment payload, and extract() stamps the code-owned run_id afterwards.
 
-D-11-11 (absent-if-unaddressed, Phase 11 Plan 03): the resume/reply extraction
-context (see orchestrator._combined_context_email) may carry a "QUESTIONS WE
-ASKED:" anchor plus one or more "CLARIFICATION REPLY" sections. The system
-prompt below instructs the model not to blindly attribute a bare answer to an
-asked field unless the reply attributably addresses it. This is a PROMPT
-INSTRUCTION ONLY — a best-effort nudge, not the enforcement mechanism
-(RESEARCH Pitfall #9). The real money-safety guarantee is downstream and
-deterministic: a still-absent asked field flows through decide() -> a NEW,
-narrower clarification round that now actually sends (D-11-01/11-02), never a
-silent guess onto an unaddressed employee. Tests assert that deterministic
-backstop (Task 4), never this instruction's effect on the LLM.
+Absent hours MUST be null (None), never 0. Null is how the client signals "didn't say",
+which is what lets decide() gate on a missing field. Coercing an absent value to 0 would
+turn "the client forgot to tell us" into "this employee worked zero hours" and pay them
+nothing, with no clarification ever sent.
+
+The resume/reply extraction context (see orchestrator._combined_context_email) may carry
+a "QUESTIONS WE ASKED:" anchor plus one or more "CLARIFICATION REPLY" sections. The
+system prompt below instructs the model not to blindly attribute a bare answer to an
+asked field unless the reply attributably addresses it. That is a PROMPT INSTRUCTION
+ONLY — a best-effort nudge, NOT the enforcement mechanism, and it must never be relied
+on as one. The real money-safety guarantee is downstream and deterministic: a
+still-absent asked field flows through decide() into a NEW, narrower clarification
+round, never a silent guess onto an unaddressed employee. The tests assert that
+deterministic backstop, never this instruction's effect on the LLM.
 """
 from __future__ import annotations
 
