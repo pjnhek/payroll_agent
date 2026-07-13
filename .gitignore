@@ -10,3 +10,10 @@ venv/
 # Personal system-design audit prep (not project artifacts)
 SYSTEM_DESIGN_AUDIT_CHANGELOG.md
 system_design_audit.html
+
+# Claude Code local harness state. settings.local.json is per-machine (the ".local"
+# suffix is the convention for "never commit this"), and worktrees/ holds transient
+# agent checkouts. Both are untracked-but-unignored otherwise, which makes every agent
+# worktree read as dirty and fail-closes the wave-merge safety check.
+.claude/settings.local.json
+.claude/worktrees/

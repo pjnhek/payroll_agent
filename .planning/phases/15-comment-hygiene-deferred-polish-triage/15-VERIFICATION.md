@@ -167,11 +167,46 @@ mechanical and touched no money-path code):
 
 Source restored byte-identical after each probe.
 
-## Carried forward (not a phase failure)
+## Carried-forward items — ALL CLOSED
 
-1. **The concurrency proofs do not gate pull requests.** They run on push-to-master and manual
-   dispatch only, so a PR can go green without a real database ever executing them. Recorded by plan
-   15-01 above the workflow's `on:` block. Adding a `pull_request:` trigger is a CI-policy decision.
-2. **`FieldDrop` in `app/models/contracts.py` is dead code** — its comment promised a phase that
-   shipped on `RawFieldDrop` instead. Found by plan 15-04, documented rather than deleted (a
-   deletion is a code change, out of scope for a comment sweep). Clean one-line removal.
+Closed after the phase, alongside the Codex cross-AI review fixes:
+
+1. ~~**The concurrency proofs do not gate pull requests.**~~ **CLOSED.** A `pull_request:` trigger
+   was added to `.github/workflows/concurrency-proof.yml`. This was the only gap that could let a
+   money-path regression reach master unproven: the real-Postgres proofs are the *only* tests that
+   touch a real database — the rest of the suite mocks it, so a broken `ON CONFLICT` arbiter or a
+   lost update is invisible to them by construction. Safe on fork PRs: the DB is an ephemeral service
+   container with throwaway credentials and the job reads no repository secrets.
+2. ~~**`FieldDrop` in `app/models/contracts.py` is dead code.**~~ **CLOSED.** Deleted. Verified dead
+   first: its only three appearances in the entire tree were its own class definition, its section
+   header, and a cross-reference comment pointing at it. Every real code path uses `RawFieldDrop`.
+3. ~~**`.claude/settings.local.json` untracked and unignored.**~~ **CLOSED.** Added to `.gitignore`
+   along with `.claude/worktrees/`. This was not cosmetic — an unignored harness file makes every
+   agent worktree read as dirty, which fail-closed the wave-merge safety check during this very
+   phase's execution.
+
+## Cross-AI review (Codex, `codex-cli 0.144.0`)
+
+Codex reviewed the phase and found **no CRITICAL issues**. It independently confirmed the two claims
+this verification rests on — that only `dashboard.py` and `client.py` changed real logic, and that
+the money path is byte-identical — and confirmed the new threading tests are not vacuous and the
+eval relabel rebuckets without rescoring.
+
+Its three warnings and one info were all real and are fixed in `244a7e7`:
+
+- **`app/db/bootstrap.py` docstring lied.** Its Security section claimed *"the default path never
+  issues a DROP"*. False — the default path always drops the dead `name_matches` table and the
+  `match_confidence` column. The code is correct (deliberate idempotent migrations that must live
+  outside `--reset`), but an operator reading that docstring would run it against production
+  believing it was non-destructive. **A lying comment in a DB bootstrap's security notes is the exact
+  failure mode this phase existed to eliminate, and the sweep walked past it.** Docstring corrected;
+  verified AST-identical, so no DROP behavior moved.
+- **`render.yaml` was outside the guard's `SCAN_GLOBS`** and still carried `OPS-01`/`D-09`/`D-20`.
+  Swept and added to the guard. Two independent reviews, two scan-scope holes — the lesson is that
+  *what a guard does not look at is invisible from a passing run.*
+- **Path containment is not TOCTOU-safe.** Accepted and documented rather than engineered around:
+  exploiting it requires write access to `eval/fixtures/` on the running container, i.e. code
+  execution already. `openat`/`O_NOFOLLOW` buys nothing against an attacker already inside.
+- **`client.py`'s non-Pydantic branch returned `str(exc)`.** Safe today, but a standing invitation to
+  reopen the prompt-echo leak. Now an allowlist, guarded by a test that was falsified (it goes red
+  when reverted to a bare passthrough).

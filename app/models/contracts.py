@@ -146,8 +146,8 @@ class RawFieldDrop(BaseModel):
     Collapsing them would either underpay (treating silence as a deliberate removal) or
     overpay (backfilling hours the client explicitly zeroed out).
 
-    This submitted_name-keyed record is the one the shipped pipeline actually uses. (See
-    FieldDrop below for an employee_id-keyed variant that was scaffolded but never adopted.)
+    Keyed by submitted_name, not employee_id: the record has to survive a name that did
+    not resolve, which is exactly the case a field regression tends to accompany.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -208,38 +208,6 @@ class ClarifiedFields(BaseModel):
     def to_dict(self) -> dict[str, dict[str, ClarifiedFieldOutcome]]:
         """Return the raw outcomes dict."""
         return self.outcomes
-
-
-# ---------------------------------------------------------------------------
-# FieldDrop — employee_id-keyed field-regression record (currently unused)
-# ---------------------------------------------------------------------------
-
-
-class FieldDrop(BaseModel):
-    """An employee_id-keyed field-regression record.
-
-    CURRENTLY UNUSED: nothing in the codebase constructs, emits, or reads this type. The
-    shipped field-regression path is keyed by submitted_name and uses RawFieldDrop
-    (detect_field_regression -> validate). This model was scaffolding for an
-    employee_id-keyed public record that was never adopted. Do not build on it without
-    first deciding whether it should exist at all.
-
-    Its intended semantics, if it is ever revived:
-    - employee_id is always a real resolved UUID.
-    - field is always a bare hours-field name, never qualified with submitted_name
-      (e.g. "hours_overtime").
-    - resumed_value=None means carried_forward: the reply was silent, so the original
-      value should be backfilled.
-    - resumed_value=Decimal('0') means confirmed_dropped: the client explicitly zeroed the
-      field, so honor the removal and do NOT backfill.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    employee_id: UUID
-    field: str
-    original_value: Decimal = Field(ge=0)
-    resumed_value: Decimal | None = Field(ge=0)
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,16 @@
 name: concurrency-proof
 
-# Coverage limitation, stated rather than hidden: these proofs run on push to master
-# and on manual dispatch — NOT on pull requests. They are a post-merge gate on master,
-# not a pre-merge one. A PR can therefore go green without a real database ever having
-# executed them.
+# These proofs are a PRE-merge gate: they run on pull requests as well as on push to
+# master, so a PR cannot go green without a real database having executed them. That
+# matters because they are the only tests in the repo that touch real Postgres — the
+# rest of the suite mocks the DB, and a broken ON CONFLICT arbiter or a lost update is
+# invisible to a mocked test by construction.
+#
+# Running on pull_request is safe from forks: the database is an ephemeral service
+# container with hardcoded throwaway credentials (see env below) and this job reads no
+# repository secrets, so there is nothing a fork PR could exfiltrate.
 on:
+  pull_request:
   push:
     branches: ["master"]
   workflow_dispatch:

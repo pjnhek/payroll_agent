@@ -4,8 +4,16 @@ name: ci
 permissions:
   contents: read
 
+# Pre-merge gate. `pull_request` is what makes it one: without it a fork PR would run the
+# real-Postgres proofs (concurrency-proof.yml triggers on pull_request) while lint, tests,
+# and mypy never ran at all — the worst of both worlds.
+#
+# push is scoped to master rather than left unrestricted so a same-repo PR does not run the
+# whole suite twice (once for the branch push, once for the PR).
 on:
+  pull_request:
   push:
+    branches: ["master"]
   workflow_dispatch:
 
 # lint/test runs are safely cancellable (unlike deploy-migrate's mid-flight DDL,
