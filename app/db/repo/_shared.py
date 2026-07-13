@@ -1,9 +1,12 @@
-"""DB repo — internal plumbing shared by every aggregate module (connection
-context + no-op transaction).
+"""DB repo — internal plumbing shared by every aggregate module: the connection
+context manager and the no-op transaction used when a caller owns the transaction.
 
-Discipline (PATTERNS.md / RESEARCH Security Domain): pooled get_connection() +
-conn.transaction(); %s / named placeholders ONLY, NEVER f-string SQL. The
-header-chain `references` LIKE (app/db/repo/emails.py) is a named placeholder.
+SQL discipline (holds across the whole package, no exceptions): every statement
+runs on a pooled get_connection() inside a conn.transaction(), and every value
+reaches SQL through a `%s` or named placeholder — NEVER an f-string. Even the
+header-chain `references` LIKE in emails.py, which reads like string assembly, is
+a named placeholder. An f-string here would put attacker-controlled email headers
+straight into a statement.
 """
 from __future__ import annotations
 

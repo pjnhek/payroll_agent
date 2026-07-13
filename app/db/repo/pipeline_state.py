@@ -22,9 +22,13 @@ def persist_extracted(
     conn: psycopg.Connection | None = None,
 ) -> None:
     """Write the Extracted JSONB + the run's pay-period columns (no status — the
-    orchestrator advances state). The pay_period_start/end run columns were left null
-    before (review fix): they exist on payroll_runs for the dashboard/queries to read
-    off the run row, so populate them from the extraction rather than only the JSONB."""
+    orchestrator advances state).
+
+    pay_period_start/end are populated on the run row as well as inside the JSONB:
+    they exist on payroll_runs precisely so the dashboard and queries can read them
+    off the row without unpacking JSONB. Writing only the JSONB leaves them NULL and
+    every such reader blind.
+    """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
             "UPDATE payroll_runs SET extracted_data = %s, "
@@ -46,9 +50,9 @@ def persist_decision(
 ) -> None:
     """Write the Decision JSONB ONLY.
 
-    Takes NO final_status argument (FIX B): persistence helpers never own status
-    transitions. The orchestrator calls set_status SEPARATELY to advance state
-    after persisting the decision.
+    Takes NO final_status argument: persistence helpers never own status
+    transitions. The orchestrator calls set_status SEPARATELY after persisting the
+    decision, keeping the state machine's writers countable.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -62,11 +66,12 @@ def persist_reconciliation(
     matches: list[NameMatchResult],
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Write the per-run list[NameMatchResult] JSONB ONLY (D-A3-05; no status).
+    """Write the per-run list[NameMatchResult] JSONB ONLY (no status).
 
     The deterministic NameMatchResult shape (source/resolved) carries no score, so
-    the persisted JSONB is automatically free of any per-name confidence; there is no
-    separate name_matches relational write path (dropped in Phase 2.1, D-21-06).
+    the persisted JSONB is structurally free of any per-name confidence value —
+    there is nothing for a later reader to mistake for one. This JSONB is the only
+    write path for name matches; there is no parallel relational table.
     """
     payload = [m.model_dump(mode="json") for m in matches]
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
@@ -84,7 +89,8 @@ def replace_line_items(
     """Replace all paystub_line_items for a run (DELETE-by-run then insert).
 
     The idempotency invariant: a re-trigger / resume re-computes wholesale rather
-    than appending duplicates (RESEARCH Pattern 6 invariant 2).
+    than appending. Without the DELETE, a second pass would leave the run holding
+    two sets of paystubs and double its reconciled total.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -131,29 +137,27 @@ def set_alias_candidates(
     candidates: dict[str, Any],
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """MERGE candidates into payroll_runs.alias_candidates JSONB column (D-04, WR-1 fix).
+    """MERGE candidates into the payroll_runs.alias_candidates JSONB column.
 
-    Separate column (not a key in reconciliation JSONB) so it is NEVER overwritten
-    by persist_reconciliation on resume (RESEARCH Open Question #1, D-04 decision).
+    Alias candidates live in their OWN column, not as a key inside the
+    reconciliation JSONB, so persist_reconciliation on resume can never overwrite
+    them.
 
-    WR-1 (11-REVIEW.md): this was a full-column overwrite
-    (`alias_candidates = %s`). With 2+ distinct tokens across 2+ rounds, the
-    last writer erased every OTHER token's candidate — a client-confirmed
-    bind from an earlier round (or an earlier call in the same round) could
-    be silently wiped by a later, unrelated capture/suggest/bind write before
-    `_write_aliases_if_safe` ever read it at the approval gate.
+    This is a MERGE, not an assignment, and it must stay one. A full-column
+    overwrite (`alias_candidates = %s`) is wrong once a run has 2+ distinct tokens
+    across 2+ rounds: the last writer erases every OTHER token's candidate, so a
+    client-confirmed bind from an earlier round can be silently wiped by a later,
+    unrelated capture/suggest/bind write before `_write_aliases_if_safe` ever reads
+    it at the approval gate — and the system quietly fails to learn.
 
-    The fix: a JSONB `||` merge. `COALESCE(alias_candidates, '{}'::jsonb)`
-    handles a NULL starting column (a run that has never captured any
-    candidate yet) without erroring on `NULL || jsonb`. `||` keeps every key
-    NOT present in the new `candidates` dict untouched, and overwrites only
-    the keys the caller passed — exactly the semantics every existing caller
-    needs: `_clarify`'s capture writes ONE new token key, STEP C's bind
-    writes updates for the SAME tokens it read, and `/resolve`'s
-    remember-checkbox writes the tokens it validated. A caller that reads the
-    full existing dict and passes a REDUCED copy back is still correct and
-    backward-compatible under merge semantics — merging a full dict into
-    itself is a no-op for unrelated keys and a correct update for its own.
+    `COALESCE(alias_candidates, '{}'::jsonb)` handles a NULL starting column (a run
+    that has never captured a candidate) without erroring on `NULL || jsonb`. `||`
+    leaves every key absent from the new `candidates` dict untouched and overwrites
+    only the keys the caller passed — exactly what each caller needs: `_clarify`'s
+    capture writes ONE new token key, the bind step updates the SAME tokens it read,
+    and `/resolve`'s remember-checkbox writes the tokens it validated. A caller that
+    reads the full dict and passes a REDUCED copy back is still correct under merge
+    semantics.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -169,12 +173,16 @@ def set_pre_clarify_extracted(
     extracted: Extracted,
     conn: psycopg.Connection | None = None,
 ) -> bool:
-    """Snapshot the pre-clarify extracted data (IS NULL write-once guard, D-19 MONEY-03).
+    """Snapshot the pre-clarify extracted data, write-once.
 
-    Uses a CAS UPDATE with `WHERE id = %s AND pre_clarify_extracted IS NULL RETURNING id`
-    — atomic check-and-write so the snapshot is written ONLY ONCE on the first call.
-    Subsequent calls return False (idempotent no-op). Called BEFORE each of the
-    three set_status(AWAITING_REPLY) paths in _clarify (N7 fix).
+    A CAS UPDATE (`WHERE id = %s AND pre_clarify_extracted IS NULL RETURNING id`)
+    makes the check-and-write atomic, so the snapshot is captured ONLY on the first
+    call. This is the original, pre-clarification money data — a second write would
+    overwrite it with post-clarification values, and the carry-forward backfill
+    would then "restore" the very field the client dropped. Later calls are
+    idempotent no-ops.
+
+    Must be called BEFORE every set_status(AWAITING_REPLY) path in _clarify.
 
     Returns True if written (first write), False if already set.
     """
@@ -191,7 +199,7 @@ def load_pre_clarify_extracted(
     run_id: uuid.UUID,
     conn: psycopg.Connection | None = None,
 ) -> Extracted | None:
-    """Load the pre-clarify extraction snapshot (D-19 MONEY-03).
+    """Load the pre-clarify extraction snapshot.
 
     Returns None if the column is NULL (no snapshot taken yet — first resume or
     non-field-regression run). Deserializes via Extracted.model_validate.
@@ -212,21 +220,28 @@ def set_clarified_fields(
     clarified: dict[str, Any],
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Write the clarified_fields JSONB column (D-13 MONEY-03, D-7.5-03b typed-on-write).
+    """Write the clarified_fields JSONB column, typed-on-write.
 
-    D-7.5-03b: shape validated through ClarifiedFields before persisting — a mislabeled
-    carried_forward->confirmed_dropped silently underpays. Four outcomes:
-    - asked (awaiting reply)
-    - carried_forward (client silent; value from snapshot; RAW reply had None/absent —
-      D-7.5-10b/D-7.5-11; does NOT mean client resupplied the same value)
-    - confirmed_dropped (explicit zero/none from client; protected from re-backfill
-      even though _is_paid(Decimal('0')) is False — D-7.5-11 overpay guard)
-    - client_supplied (positive replacement from client — raw reply had the value
-      before backfill; NOT same-value resupply mislabeled)
+    The shape is validated through ClarifiedFields BEFORE persisting, because these
+    labels drive money. A carried_forward mislabeled as confirmed_dropped silently
+    UNDERPAYS (the snapshot value is never restored); the reverse silently OVERPAYS
+    (a field the client explicitly zeroed gets backfilled again). Typing the write
+    means an invalid outcome string fails here, not on a paystub.
+
+    Four outcomes:
+    - asked — question sent, awaiting the client's reply.
+    - carried_forward — client stayed silent (the RAW reply had the field absent or
+      None), so the original value is restored from the pre-clarify snapshot. This
+      does NOT mean the client re-supplied the same value.
+    - confirmed_dropped — client explicitly zeroed/removed the field. Protected from
+      re-backfill even though _is_paid(Decimal('0')) is False; without this guard the
+      snapshot would refill it and overpay.
+    - client_supplied — client sent a positive replacement (present in the raw reply
+      before any backfill).
 
     Raises pydantic.ValidationError if the shape is wrong (any invalid outcome string).
     """
-    # D-7.5-03b: validate through ClarifiedFields before serializing.
+    # Validate through ClarifiedFields before serializing.
     ClarifiedFields(outcomes=clarified)
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -239,7 +254,7 @@ def load_clarified_fields(
     run_id: uuid.UUID,
     conn: psycopg.Connection | None = None,
 ) -> dict[str, Any]:
-    """Load the clarified_fields JSONB column (D-13 MONEY-03).
+    """Load the clarified_fields JSONB column.
 
     Returns {} on NULL (no field-regression outcomes yet — first resume or
     non-field-regression run). Deserializes via json.loads.
@@ -261,12 +276,10 @@ def load_clarified_fields(
 def get_clarification_round(
     run_id: uuid.UUID, conn: psycopg.Connection | None = None
 ) -> int:
-    """Read payroll_runs.clarification_round (D-11-01). Returns 0 if row missing.
+    """Read payroll_runs.clarification_round. Returns 0 if the row is missing.
 
-    Zero behavior change in Plan 11-01: nothing calls this yet — the round-guard
-    orchestrator work lands in a later plan. The column defaults to 0 for every
-    run (old and new), so a caller reading it before that later plan wires the
-    increment always sees the pre-Phase-11 value (0).
+    The column defaults to 0 for every run, so a run that has never been through a
+    clarification round reads as round 0 rather than NULL.
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -283,11 +296,13 @@ def set_clarification_round(
     value: int,
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Write payroll_runs.clarification_round (D-11-01).
+    """Write payroll_runs.clarification_round.
 
-    Caller-joinable transaction (copy of link_email_to_run's shape) so a later
-    plan's `_clarify` finalize path can write this in the SAME transaction as
-    set_status(AWAITING_REPLY) (D-9-02: status-advance-last).
+    Caller-joinable transaction (same shape as link_email_to_run) so `_clarify`'s
+    finalize path can write the round in the SAME transaction as
+    set_status(AWAITING_REPLY). The status advance goes last: a crash between the
+    two must leave the run un-advanced rather than parked in awaiting_reply with a
+    round counter that never got written.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -299,29 +314,32 @@ def set_clarification_round(
 def clear_reply_context(
     run_id: uuid.UUID, conn: psycopg.Connection | None = None
 ) -> None:
-    """Null ALL reply-round context on a run in one statement (D-11-04).
+    """Null ALL reply-round context on a run in one statement.
 
-    "Context lost means ALL of it": the pre-clarify snapshot, the field-
-    regression outcomes, the round counter, AND the suggestion/candidate state
-    are cleared together — a retrigger that wipes only some of these would
-    leave the round machine (or the alias-suggestion state) referencing a
-    conversation that no longer exists. Caller-joinable transaction so a later
-    plan's retrigger route can clear strictly AFTER a winning claim_status, in
-    the same transaction that commits before _run_pipeline is scheduled
-    (Pitfall #8).
+    Context lost means ALL of it: the pre-clarify snapshot, the field-regression
+    outcomes, the round counter AND the suggestion/candidate state are cleared
+    together. A retrigger that wiped only some of these would leave the round
+    machine (or the alias-suggestion state) referencing a conversation that no
+    longer exists. Caller-joinable transaction, so the retrigger route can clear
+    strictly AFTER a winning claim_status, in the transaction that commits before
+    the pipeline is re-scheduled.
 
-    GAP-2/GAP-3 (11-06): this statement ALSO bumps reply_epoch = reply_epoch + 1.
-    Without this bump, a retrigger resets clarification_round to 0 but leaves
-    the run's PRIOR round-0 'sent' outbound row and any consumed reply rows
-    fully intact in email_messages (the append-only audit log is never touched
-    here, by design) — so the retriggered run's first clarification would see
-    the stale round-0 row and silently suppress the send (GAP-2, WR-05
-    reintroduced), and a resume would re-accumulate a stale consumed reply
-    from a conversation that no longer exists (GAP-3, mispay risk). The epoch
-    bump gives every round-machine read (get_outbound_for_round,
-    load_consumed_replies, find_stranded_unconsumed_replies) a scope boundary
-    that the retrigger crosses but no stale row can — the historical rows
-    remain fully queryable, just invisible to the CURRENT epoch's reads.
+    The statement ALSO bumps reply_epoch = reply_epoch + 1, and that bump is
+    load-bearing. This function does NOT touch email_messages — the audit log is
+    append-only by design — so after a retrigger the run's PRIOR round-0 'sent'
+    outbound row and any consumed reply rows are still sitting there, while
+    clarification_round has been reset to 0. Without the epoch bump:
+    - the retriggered run's first clarification would find the stale round-0 'sent'
+      row, read it as proof the question was already asked, and silently suppress
+      the send — parking the run at awaiting_reply with no email out;
+    - a resume would re-accumulate a stale consumed reply from the dead
+      conversation into the new run's context — hours from a payroll the client
+      never re-submitted, i.e. a mispay.
+
+    The bump gives every round-machine read (get_outbound_for_round,
+    load_consumed_replies, find_stranded_unconsumed_replies) a scope boundary that
+    the retrigger crosses but no stale row can. The historical rows stay fully
+    queryable — just invisible to the CURRENT epoch's reads.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
@@ -338,19 +356,20 @@ def update_known_alias(
     new_alias: str,
     conn: psycopg.Connection | None = None,
 ) -> bool:
-    """Idempotently append new_alias to employees.known_aliases (D-01).
+    """Idempotently append new_alias to employees.known_aliases.
 
-    Caller MUST have already called _safe_to_learn_alias() — this function does
-    NOT re-check collision; it only deduplicates the TEXT[] array.
+    PRECONDITION: the caller MUST have already passed _safe_to_learn_alias(). This
+    function does NOT re-check for collisions — it only deduplicates the array. An
+    alias learned onto the wrong employee silently misroutes that person's pay on
+    every future run.
 
-    Uses a conditional UPDATE with `NOT (%s = ANY(known_aliases))` in the WHERE
-    clause so the alias is only appended when absent. Returns True if the alias
-    was actually added, False if it was already present (idempotent: safe to call
-    twice without creating a double-add, D-01 idempotency).
+    The conditional `NOT (%s = ANY(known_aliases))` in the WHERE clause appends only
+    when the alias is absent, so calling twice cannot double-add. Returns True if
+    the alias was actually added, False if it was already present.
 
-    employees.known_aliases is TEXT[] (schema.sql line 32) — native TEXT[] array
-    operators (unnest / ANY) are used, NOT JSONB ops (to_jsonb / jsonb_agg /
-    jsonb_array_elements_text / @>). CR-01 fix.
+    employees.known_aliases is a native TEXT[], so this uses array operators
+    (unnest / ANY) — NOT the JSONB ops (to_jsonb / jsonb_agg /
+    jsonb_array_elements_text / @>), which would fail against this column type.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
