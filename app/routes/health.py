@@ -1,7 +1,4 @@
-"""GET /health/live, /health/ready, /health/schema — health probes (D-05, D-20).
-
-Carved out of app/main.py (Phase 13 Plan 03).
-"""
+"""GET /health/live, /health/ready, /health/schema — health probes."""
 from __future__ import annotations
 
 import logging
@@ -19,26 +16,27 @@ router = APIRouter()
 
 @router.get("/health/live")
 def health_live() -> JSONResponse:
-    """Liveness probe — no DB hit. Render deploy healthCheckPath target (D-20).
+    """Liveness probe — no DB hit. The Render deploy healthCheckPath target.
 
-    T-06-02-01: Returns {"status": "ok"} only — no version, no stack, no DB state.
-    A Supabase blip during deploy must NOT fail this check (that is why no DB is
-    touched here). render.yaml points healthCheckPath at this route.
+    Returns {"status": "ok"} only — no version, no stack, no DB state. A Supabase
+    blip during deploy must NOT fail this check, which is why no DB is touched
+    here: a DB-dependent liveness probe would roll back an otherwise healthy
+    deploy. render.yaml points healthCheckPath at this route.
     """
     return JSONResponse({"status": "ok"})
 
 
 @router.get("/health/ready")
 def health_ready() -> JSONResponse:
-    """Readiness probe — runs a real SELECT. GitHub Actions keep-alive target (D-16/D-20).
+    """Readiness probe — runs a real SELECT. The GitHub Actions keep-alive target.
 
-    Touches a real table (businesses) so Supabase free project registers DB activity
-    and does not pause (D-16 / RESEARCH Pitfall 5 / Assumption A7).
-    A bare SELECT 1 without a real table may not count as 'use' in Supabase's pause
-    detection. On DB failure raises 503 — correct for a failed readiness probe.
+    Touches a real table (businesses) so the Supabase free project registers DB
+    activity and does not pause. A bare `SELECT 1` against no table may not count
+    as 'use' in Supabase's pause detection — keep the table reference.
+    On DB failure raises 503 — correct for a failed readiness probe.
 
-    T-06-02-02: On failure raises 503 with "database not ready" only — no connection
-    string or stack trace in the response body.
+    The 503 body carries "database not ready" only — never the connection string
+    or a stack trace, which would leak DB host/credential shape to any caller.
     """
     try:
         with get_connection() as conn:
@@ -52,14 +50,14 @@ def health_ready() -> JSONResponse:
 @router.get("/health/schema")
 def health_schema() -> JSONResponse:
     """Live schema-parity probe (columns + status/purpose CHECK values + the
-    Phase-11 unique constraint) vs what schema.sql declares.
+    clarification-round unique constraint) vs what schema.sql declares.
 
     200 {"status":"in_sync"}                       — live DB matches schema.sql
     503 {"status":"drift","missing":{...}}         — declared-but-missing on live
     503 {"detail":"schema check unavailable"}      — DB unreachable / parse error
 
-    Body carries only schema identifier NAMES (no row data, no connection string,
-    no stack trace) — same PII rule as /health/ready (T-06-02).
+    The body carries only schema identifier NAMES — no row data, no connection
+    string, no stack trace. Same disclosure rule as /health/ready.
     """
     try:
         with get_connection() as conn:

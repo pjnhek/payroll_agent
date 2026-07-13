@@ -1,8 +1,7 @@
-"""Everything under /runs* — the operator gate + run detail (D-06).
+"""Everything under /runs* — the operator gate + run detail.
 
-Carved out of app/main.py (Phase 13 Plan 03): list, detail, status, approve,
-reject, resolve, retrigger, pdf, simulate-reply, plus the runs_list
-stranded-sweep block.
+list, detail, status, approve, reject, resolve, retrigger, pdf, simulate-reply,
+plus the runs_list stranded-sweep block.
 """
 from __future__ import annotations
 
@@ -32,57 +31,51 @@ logger = logging.getLogger("payroll_agent.webhook")
 
 router = APIRouter()
 
-# Staleness threshold for stale in-flight state recovery (finding #6, D-13b extension;
-# D-9-13/D-9-10/11/12, 09-03/09-04). SHARED by BOTH retrigger()'s stale-in-flight claim
-# AND runs_list()'s recovery sweep (repo.sweep_stranded_runs) — ONE constant, two
-# use sites (D-9-13: "keep ONE shared constant unless tracing shows they genuinely
-# need different values" — no such need was found).
+# Staleness threshold for stale in-flight state recovery. SHARED by BOTH retrigger()'s
+# stale-in-flight claim AND runs_list()'s recovery sweep (repo.sweep_stranded_runs) —
+# ONE constant, two use sites. Keep it that way unless tracing shows the two sites
+# genuinely need different values; two drifting thresholds would let a run be swept by
+# one path while the other still considers it live.
 #
-# 09-04 (closing Codex HIGH-3, both rounds, AND RESEARCH.md Assumption A1): the
-# previous (09-03) 65-minute value was DELIBERATELY CONSERVATIVE, documenting the
-# UNTIGHTENED worst case pending this plan. This plan closes every gap that was
-# counted against that conservative figure, so the threshold is now re-derived
-# against the FULLY-tightened, CORRECTLY-COUNTED ceiling:
+# The value must sit safely ABOVE the worst-case gap between two consecutive DB writes
+# on the longest real path, or the sweep will yank a run that is merely slow, not stuck
+# — restarting a payroll that is mid-flight. It is derived, not guessed:
 #   (a) call_structured (app/llm/client.py) — used for BOTH extraction AND the
-#       clarification suggestion (app/pipeline/suggest.py:81) — now passes an
-#       explicit timeout=_STRUCTURED_TIMEOUT_S (45.0s) AND max_retries=0 to its
-#       OpenAI(...) client construction, so the library's own retry layer can no
-#       longer compound with the app's own `for attempt in (1, 2):` reflective
-#       retry. Ceiling per call: _STRUCTURED_TIMEOUT_S x 2 app-attempts = 90s.
-#   (b) resume Round-2's back-to-back double extraction (orchestrator.py:377,380 —
-#       raw_reply_extracted = extract(inbound, ...) THEN raw_extracted =
-#       extract(combined_email, ...), verified live) — TWO calls through (a) before
-#       the next DB write: _STRUCTURED_TIMEOUT_S x 2 app-attempts x 2 = 180s (3 min).
-#   (c) call_text (app/llm/client.py) — ALL callers, including
-#       compose_clarification (app/pipeline/compose_email.py) — now gets an
-#       UNCONDITIONAL max_retries=0 on its own client construction (closing the
-#       Codex round-2 STILL-OPEN finding that call_text has no app-level retry
-#       loop, so the library's own max_retries=2 was the sole, previously-uncounted
-#       retry layer). compose_clarification's own call now ALSO passes an explicit
-#       timeout_s=_CLARIFICATION_TIMEOUT_S (30.0s, app/pipeline/compose_email.py).
-#       Ceiling: _CLARIFICATION_TIMEOUT_S x 1 = 30s.
-# (b) and (c) are SEQUENTIAL on the clarify branch (extraction happens, THEN,
-# separately, a clarification draft may be composed) — not concurrent — so they
-# SUM, not multiply: 180s + 30s = 210s (3.5 min) is the full, correctly-derived
-# worst-case gap between two consecutive DB writes on the longest real path.
-# STALE_THRESHOLD is tightened to 15 minutes — comfortably (~4x) above the 3.5-min
-# ceiling, while remaining far short of the old 65-minute value now that the true
-# ceiling is known and bounded by construction, not merely assumed. A run in a
-# recoverable in-flight state (RECEIVED/EXTRACTING/COMPUTED, plus SENT for
-# retrigger only — see the scope-divergence comment on retrigger's stale_statuses
-# below) whose updated_at is older than this threshold may be claimed/swept for a
-# fresh start; fresh in-flight runs are never force-restarted.
+#       clarification suggestion (app/pipeline/suggest.py) — passes an explicit
+#       timeout=_STRUCTURED_TIMEOUT_S (45.0s) AND max_retries=0 to its OpenAI(...)
+#       client construction, so the library's own retry layer cannot compound with the
+#       app's `for attempt in (1, 2):` reflective retry. Both of those must stay pinned
+#       or this ceiling silently multiplies.
+#       Ceiling per call: _STRUCTURED_TIMEOUT_S x 2 app-attempts = 90s.
+#   (b) The resume path's back-to-back double extraction (orchestrator.py: extract the
+#       reply, THEN extract the combined email) — TWO calls through (a) before the next
+#       DB write: 45s x 2 app-attempts x 2 calls = 180s (3 min).
+#   (c) call_text (app/llm/client.py) — ALL callers, including compose_clarification
+#       (app/pipeline/compose_email.py) — gets an UNCONDITIONAL max_retries=0 on its
+#       client construction. It has no app-level retry loop, so without that the
+#       library's default max_retries=2 would be an uncounted retry layer.
+#       compose_clarification also passes an explicit timeout_s=_CLARIFICATION_TIMEOUT_S
+#       (30.0s). Ceiling: 30s x 1 = 30s.
+# (b) and (c) are SEQUENTIAL on the clarify branch (extraction happens, then a
+# clarification draft may be composed) — not concurrent — so they SUM rather than
+# multiply: 180s + 30s = 210s (3.5 min) worst case.
+#
+# 15 minutes is ~4x that ceiling. A run in a recoverable in-flight state
+# (RECEIVED/EXTRACTING/COMPUTED, plus SENT for retrigger only — see the
+# scope-divergence comment on retrigger's stale_statuses below) whose updated_at is
+# older than this may be claimed/swept for a fresh start; fresh in-flight runs are
+# never force-restarted.
 STALE_THRESHOLD = timedelta(minutes=15)
 STALE_THRESHOLD_SECONDS = int(STALE_THRESHOLD.total_seconds())
 
-# UAT #3: in-flight statuses — a run in any of these states is still processing.
+# In-flight statuses — a run in any of these states is still processing.
 # Templates receive an `auto_refresh` boolean driven from this constant so no status
 # string is ever hardcoded in the HTML. Terminal statuses never trigger auto-refresh.
-# IN-02 (REVIEW-2): awaiting_reply is included so the detail page keeps polling across the
-# simulate-reply (and real-reply) transition — the badge advances awaiting_reply →
-# extracting → … → needs_approval live, then the run-detail poll reloads once on settle to
-# surface the resumed run's data. A run parked at awaiting_reply (no reply yet) simply polls
-# with an unchanged badge until the 30-attempt cap, which is harmless.
+# awaiting_reply is included deliberately: without it the detail page stops polling the
+# moment a clarification goes out, and the reply-driven transition (awaiting_reply →
+# extracting → … → needs_approval) would never appear without a manual refresh. A run
+# parked at awaiting_reply with no reply yet simply polls with an unchanged badge until
+# the 30-attempt cap, which is harmless.
 IN_FLIGHT_STATUSES: frozenset[str] = frozenset(
     {"received", "extracting", "computed", "awaiting_reply"}
 )
@@ -93,39 +86,45 @@ def approve(
     run_id: uuid.UUID,
     background_tasks: BackgroundTasks,
 ) -> RedirectResponse:
-    """Hardened approve: CAS claim (AWAITING_APPROVAL → APPROVED) + D-13b delivery.
+    """The single human gate: CAS claim (AWAITING_APPROVAL → APPROVED), then deliver.
 
-    Race-safety: claim_status is an atomic CAS — a second concurrent approval loses
-    the claim and 303-redirects without running _deliver a second time (T-05-14,
-    D-12, FOUND-04). Delivery is synchronous and bounded by D-10b timeout in
-    compose_confirmation. On delivery exception: record ERROR (D-13b invariant —
-    APPROVED is NOT terminal, so record_run_error can advance it to ERROR).
+    Race-safety: claim_status is an atomic compare-and-set. A second concurrent approval
+    (double-click, two operator tabs) LOSES the claim and 303-redirects without running
+    delivery again — otherwise the client would receive the payroll confirmation twice.
 
-    PII-safe error logging (D-A1-03): error_reason = type(exc).__name__ ONLY.
+    Delivery is synchronous and bounded by the compose_confirmation timeout. On a
+    delivery exception the run is recorded as ERROR: APPROVED is deliberately NOT a
+    terminal status, precisely so record_run_error can advance it and the operator can
+    retrigger rather than the run wedging at APPROVED with no confirmation sent.
+
+    Error logging is PII-safe: error_reason is type(exc).__name__ ONLY.
     """
     claimed = repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED)
     if claimed:
         try:
-            # REVIEW-4 WR-01: load_run is INSIDE the D-13b boundary. A transient DB failure
-            # during the load (e.g. pooler blip) must route to ERROR + error_reason like any
-            # other delivery failure — not leave the run silently stuck at APPROVED with a
-            # raw 500 (INGEST-05 "nothing silently hangs"). APPROVED is non-terminal, so
-            # record_run_error can advance it to ERROR and the operator can retrigger.
+            # load_run is INSIDE the error boundary on purpose. A transient DB failure
+            # during the load (e.g. a pooler blip) must route to ERROR + error_reason
+            # like any other delivery failure — not leave the run silently stuck at
+            # APPROVED behind a raw 500 (INGEST-05: "nothing silently hangs"). APPROVED
+            # is non-terminal, so record_run_error can advance it to ERROR and the
+            # operator can retrigger.
             run = repo.load_run(run_id)
             if run is None:
                 raise TypeError("run not found")
             delivery.deliver(run_id, run)
-        except Exception as exc:  # noqa: BLE001 — D-13b error boundary
-            # PII-safe: type only — str(exc) may echo model output, submitted names,
-            # or raw email content (D-A1-03). run_id is the correlation key for debug.
+        except Exception as exc:  # noqa: BLE001 — delivery error boundary
+            # PII-safe: log the exception TYPE only. str(exc) may echo model output,
+            # submitted employee names, or raw email content. run_id is the correlation
+            # key for debugging.
             logger.warning("delivery of run %s failed: %s", run_id, type(exc).__name__)
-            # OPS2-01 + WR-04 (phase-8 review): approve() never loads a roster itself
-            # (D-8-01b — the error path must never LOAD one), but _deliver stashes the
-            # roster it already loaded for PDF/compose interpolation on any exception
-            # raised past that point (exc.payroll_roster). Forward it so _scrub can
-            # redact employee names from the delivery error_detail — the boundary
-            # where names are MOST likely to appear in exception text. Failures
-            # before _deliver's roster load carry no attribute → None (locked design).
+            # approve() must never LOAD a roster itself — the error path loading one
+            # would turn a DB outage into a second failure inside the handler. But
+            # delivery.deliver stashes the roster it ALREADY loaded (for PDF/compose
+            # interpolation) onto any exception raised past that point, as
+            # exc.payroll_roster. Forward it so the scrubber can redact employee names
+            # from the delivery error_detail — that text is the boundary where names
+            # are most likely to leak. Failures raised BEFORE deliver's roster load
+            # carry no such attribute, hence the getattr default of None.
             repo.record_run_error(
                 run_id,
                 type(exc).__name__,
@@ -138,17 +137,18 @@ def approve(
 
 @router.post("/runs/{run_id}/reject")
 def reject(run_id: uuid.UUID) -> RedirectResponse:
-    """Hardened reject: CAS claim (AWAITING_APPROVAL OR NEEDS_OPERATOR → REJECTED) → 303.
+    """Reject: CAS claim (AWAITING_APPROVAL OR NEEDS_OPERATOR → REJECTED) → 303.
 
-    claim_status is atomic — a concurrent rejection or approval sees False and no-ops
-    (D-12, FOUND-04). Always 303 to run detail regardless of claim outcome.
+    claim_status is atomic — a concurrent rejection or approval sees False and no-ops,
+    so a rejected run can never also be delivered. Always 303 to run detail regardless
+    of the claim outcome.
 
-    D-11-08 extension: needs_operator is also a valid reject source (one of the
-    escalation's two exits — resolve+resume, or reject). The `or` short-circuits:
-    if the first CAS wins (run was awaiting_approval), the second is skipped; if
-    it loses, the second CAS attempts the needs_operator claim. At most one of
-    the two can ever succeed for a given run (they target mutually exclusive
-    prior statuses), so there is no risk of a double-claim race between them.
+    needs_operator is also a valid reject source (one of the escalation's two exits —
+    resolve+resume, or reject). The `or` short-circuits: if the first CAS wins (the run
+    was awaiting_approval) the second is skipped; if it loses, the second CAS attempts
+    the needs_operator claim. The two target mutually exclusive prior statuses, so at
+    most one can ever succeed for a given run — there is no double-claim race between
+    them.
     """
     repo.claim_status(
         run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED
@@ -160,39 +160,38 @@ def reject(run_id: uuid.UUID) -> RedirectResponse:
 async def resolve(
     run_id: uuid.UUID, request: Request, background_tasks: BackgroundTasks
 ) -> RedirectResponse:
-    """Operator resolve+resume for a needs_operator run (D-11-08, D-11-16, Security V4).
+    """Operator resolve+resume for a needs_operator run.
 
-    Form shape (per unresolved name/token, dynamic field names keyed by the
-    LOOP INDEX over decision.unresolved_names — never the raw token text, so a
-    field name can never collide with an ill-formed/injected token string):
+    Form shape (per unresolved name/token, dynamic field names keyed by the LOOP INDEX
+    over decision.unresolved_names — never by the raw token text, so a field name can
+    never collide with an ill-formed or injected token string):
       - employee_id_{i}: the operator-selected roster employee id for token i
-      - remember_{i}: checkbox, present (any value) = ON, absent = OFF (D-11-16
-        default-checked in the template; unchecked posts nothing for that key)
+      - remember_{i}: checkbox, present (any value) = ON, absent = OFF (default-checked
+        in the template; an unchecked box posts nothing at all for that key)
 
-    Security V4 (server-side roster validation): every posted employee_id MUST
-    belong to `load_roster_for_business(run.business_id)` — never trust the
-    dropdown. ANY invalid/unknown/cross-business id rejects the WHOLE POST (no
-    partial apply, no state change) — the run stays needs_operator and the
-    operator sees the same page again (a malformed/tampered request is simply
-    a no-op, not a partial misroute).
+    Server-side roster validation: every posted employee_id MUST belong to
+    `load_roster_for_business(run.business_id)` — never trust the dropdown. ANY
+    invalid / unknown / cross-business id rejects the WHOLE POST, with no partial apply
+    and no state change: the run stays needs_operator and the operator sees the same
+    page again. Applying a POST partially would silently route some hours to the wrong
+    employee — a tampered request must be a clean no-op, not a partial misroute.
 
-    On a valid POST: apply the mapping as the per-run override (drives
-    resolution via reconcile_names(overrides=...) inside resume_pipeline); for
-    each remember-checked token, ALSO pre-set the candidate's `bound` field so
-    the existing single-human-gate write path (_write_aliases_if_safe, called
-    from _deliver at approval) persists it — checkbox OFF means override-only,
-    nothing learned (D-11-16). The route does NOT claim NEEDS_OPERATOR ->
-    EXTRACTING itself (GAP-1/CR-1 fix, 11-REVIEW.md): it unconditionally
+    On a valid POST: apply the mapping as the per-run override (which drives resolution
+    via reconcile_names(overrides=...) inside resume_pipeline); for each remember-checked
+    token, ALSO pre-set the candidate's `bound` field so the existing single-human-gate
+    write path (_write_aliases_if_safe, called from delivery at approval) persists it.
+    Checkbox OFF means override-only — nothing is learned.
+
+    This route does NOT claim NEEDS_OPERATOR -> EXTRACTING itself. It unconditionally
     schedules the operator-resume in the background, and resume_pipeline's own
-    claim_status(NEEDS_OPERATOR -> EXTRACTING) CAS is the SOLE claim in this
-    path — exactly mirroring how the webhook's reply-resume path never
-    pre-claims either. A concurrent double-submit or a stale reload is
-    absorbed by resume_pipeline's existing "late/duplicate reply/resolve
-    dropped" no-op (a failed claim there just returns early), not by a
-    route-level pre-check — the prior pre-claim raced resume_pipeline's own
-    claim and always lost, silently stranding the run in EXTRACTING forever.
-    Always 303 — post-commit scheduling only (no LLM/provider call in this
-    request's synchronous path).
+    claim_status(NEEDS_OPERATOR -> EXTRACTING) CAS is the SOLE claim in the path —
+    mirroring the webhook's reply-resume path, which likewise never pre-claims. A
+    route-level pre-claim races resume_pipeline's own claim and always loses, which
+    strands the run in EXTRACTING forever; a concurrent double-submit or stale reload is
+    instead absorbed by resume_pipeline's existing "duplicate resolve dropped" no-op (a
+    failed claim there simply returns early).
+
+    Always 303 — scheduling only, no LLM/provider call in this request's synchronous path.
     """
     try:
         run = repo.load_run(run_id)
@@ -222,9 +221,10 @@ async def resolve(
 
     form = await request.form()
 
-    # Security V4: validate EVERY posted employee_id against the run's OWN
-    # business roster before applying anything. Reject the WHOLE POST (no
-    # partial apply) on any invalid/unknown/cross-business id.
+    # Validate EVERY posted employee_id against the run's OWN business roster before
+    # applying anything. Reject the WHOLE POST — no partial apply — on any
+    # invalid/unknown/cross-business id: a partially-applied mapping would pay some
+    # employees against another business's roster.
     overrides: dict[str, str] = {}
     remember_tokens: set[str] = set()
     for i, token in enumerate(unresolved_names):
@@ -232,7 +232,7 @@ async def resolve(
         if posted_id is None or str(posted_id) not in roster_ids:
             logger.warning(
                 "resolve: rejected whole POST for run %s — invalid/missing "
-                "employee_id at index %d (Security V4)",
+                "employee_id at index %d",
                 run_id,
                 i,
             )
@@ -241,11 +241,12 @@ async def resolve(
         if form.get(f"remember_{i}") is not None:
             remember_tokens.add(token)
 
-    # Apply the validated mapping as the per-run override (drives resolution
-    # deterministically before reconcile_names's exact/alias tiers) AND, for
-    # each remember-checked token, pre-set `bound` on the candidate so the
-    # existing single-human-gate write path persists the alias at approval
-    # (D-11-16: checkbox OFF = override only, nothing learned).
+    # Apply the validated mapping as the per-run override (it drives resolution
+    # deterministically, ahead of reconcile_names's exact/alias tiers) AND, for each
+    # remember-checked token, pre-set `bound` on the candidate so the existing
+    # single-human-gate write path persists the alias at approval. Checkbox OFF =
+    # override only, nothing learned — an alias must never be persisted without the
+    # operator explicitly asking for it.
     if remember_tokens:
         existing_candidates = run.get("alias_candidates") or {}
         updated_candidates = dict(existing_candidates)
@@ -254,11 +255,10 @@ async def resolve(
             updated_candidates[token] = {"suggested": employee_id, "bound": employee_id}
         repo.set_alias_candidates(run_id, updated_candidates)
 
-    # GAP-1/CR-1 fix: no route-level pre-claim. resume_pipeline (invoked via
-    # operator_resume_bg) performs its OWN claim_status(NEEDS_OPERATOR ->
-    # EXTRACTING) CAS exactly once — this is now the ONLY claim in the entire
-    # path. Unconditionally schedule; resume_pipeline's claim is what actually
-    # gates whether the run advances.
+    # No route-level pre-claim (see the docstring). resume_pipeline — invoked via
+    # operator_resume_bg — performs its OWN claim_status(NEEDS_OPERATOR -> EXTRACTING)
+    # CAS exactly once, and that is the ONLY claim in the entire path. Schedule
+    # unconditionally; resume_pipeline's claim is what actually gates the advance.
     background_tasks.add_task(pipeline_glue.operator_resume_bg, run_id, overrides)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
@@ -270,49 +270,45 @@ def retrigger(
 ) -> RedirectResponse:
     """Retrigger a run from ERROR, APPROVED, or stale in-flight states (INGEST-05).
 
-    D-13b extension (finding #6): the retrigger path is extended to also claim from
-    stale RECEIVED/EXTRACTING/COMPUTED/SENT states — a worker that died mid-run
-    leaves the run stuck with no recovery UI otherwise.
+    Retrigger can also claim from stale RECEIVED/EXTRACTING/COMPUTED/SENT states: a
+    worker that died mid-run otherwise leaves the run stuck forever with no recovery UI.
 
-    Stale guard: in-flight claims require updated_at older than STALE_THRESHOLD
-    (09-03: shared with runs_list()'s recovery sweep — see the constant's own
-    comment for the honest current worst-case rationale). A freshly-started
-    in-flight run is never force-restarted.
+    Stale guard: in-flight claims require updated_at older than STALE_THRESHOLD (shared
+    with runs_list()'s recovery sweep — see the constant's own comment for the derived
+    worst-case rationale). A freshly-started in-flight run is NEVER force-restarted, or
+    a retrigger click would race the live worker and double-process the run.
 
-    09-03 (Codex MEDIUM, reply-context-loss on retrigger — accepted, documented):
-    a stranded run that entered via a clarification REPLY (i.e. one with non-empty
-    clarified_fields or a pre_clarify_extracted snapshot), once claimed here
-    (whether by the ERROR/APPROVED CAS above or the stale in-flight branch below),
-    is dispatched to run_pipeline_bg — NOT resume_pipeline_bg — because retrigger
-    has no way to know a stranded run was originally entered via a reply. Per D-9-10
-    ("never auto-restart" — the operator retrigger IS the accepted recovery
-    mechanism), this is NOT changed here: adding reply-aware retrigger dispatch is
-    new state-machine capability, out of scope (deferred alongside 260623-08, see
-    09-CONTEXT.md Deferred Ideas). The retriggered run restarts cleanly from the
-    ORIGINAL inbound email; the in-flight reply context that was being processed
-    when it stranded is lost. This is a known, accepted limitation — the operator
-    retains full visibility (the run reaches ERROR, diagnosable) and can manually
-    re-send the clarification's context via a fresh email if the retriggered run's
-    result looks wrong.
+    KNOWN LIMITATION — reply-context loss on retrigger (accepted, not a bug): a stranded
+    run that originally entered via a clarification REPLY (non-empty clarified_fields or
+    a pre_clarify_extracted snapshot), once claimed here — by either the ERROR/APPROVED
+    CAS below or the stale in-flight branch — is dispatched to run_pipeline_bg, NOT
+    resume_pipeline_bg, because retrigger cannot tell that the stranded run was entered
+    via a reply. Runs are never auto-restarted; the operator's retrigger IS the accepted
+    recovery mechanism, and making retrigger reply-aware is new state-machine capability,
+    deliberately out of scope. Consequence: the retriggered run restarts cleanly from the
+    ORIGINAL inbound email, and the in-flight reply context it was processing when it
+    stranded is lost. The operator retains full visibility (the run reaches ERROR and is
+    diagnosable) and can re-send the clarification context as a fresh email if the
+    retriggered result looks wrong.
 
-    R2-HIGH stale CAS exclusivity (finding #6): the claim target MUST differ from the
-    current status so the conditional UPDATE genuinely changes the row and two
-    concurrent retrigger clicks cannot both win. A stale RECEIVED run → EXTRACTING
-    (not RECEIVED→RECEIVED which is a no-op). All other stale statuses → RECEIVED.
-    This prevents the degenerate case where the conditional UPDATE is a no-op and
-    two concurrent callers both see the same row unchanged and both win.
+    Stale CAS exclusivity: the claim TARGET must differ from the CURRENT status, so the
+    conditional UPDATE genuinely changes the row. A stale RECEIVED run therefore claims
+    to EXTRACTING, not RECEIVED→RECEIVED. All other stale statuses claim to RECEIVED. If
+    the target equalled the current status the UPDATE would be a no-op, two concurrent
+    retrigger clicks would both see the row unchanged, and BOTH would win — running the
+    pipeline twice over the same payroll.
 
-    NOTE: COMPUTED is the correct post-calculation in-flight status (there is no
-    COMPUTING member in RunStatus).
+    NOTE: COMPUTED is the correct post-calculation in-flight status; there is no
+    COMPUTING member in RunStatus.
 
-    The already-sent confirmation guard in _deliver makes retrigger safe for SENT:
-    RECONCILED is the only true terminal-success; a run stranded in SENT (worker died
-    between set_status(SENT) and set_status(RECONCILED)) can be safely re-run from
-    start because _deliver checks get_outbound_message_id(purpose='confirmation')
-    before re-sending.
+    Retrigger is safe for SENT because delivery re-checks
+    get_outbound_message_id(purpose='confirmation') before sending. RECONCILED is the
+    only true terminal-success state; a run stranded in SENT (worker died between
+    set_status(SENT) and set_status(RECONCILED)) can be re-run from the start without
+    the client receiving a second confirmation email.
     """
-    # Core CAS claims (always safe — purpose-aware already-sent guard in _deliver
-    # prevents duplicate confirmation emails even if the run already sent one).
+    # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
+    # prevents a duplicate confirmation email even if the run already sent one.
     claimed = repo.claim_status(
         run_id, RunStatus.ERROR, RunStatus.RECEIVED
     ) or repo.claim_status(
@@ -320,7 +316,7 @@ def retrigger(
     )
 
     if not claimed:
-        # Stale in-flight recovery (finding #6): only claim if updated_at is stale.
+        # Stale in-flight recovery: only claim if updated_at is genuinely stale.
         run = repo.load_run(run_id)
         if run is not None:
             updated_at = run.get("updated_at")
@@ -328,17 +324,17 @@ def retrigger(
                 updated_at is not None
                 and datetime.now(tz=UTC) - updated_at > STALE_THRESHOLD
             )
-            # 09-03 (checker WARNING 3, prior review round): this scope is FOUR
-            # statuses, including SENT — deliberately DIVERGENT from
-            # repo.sweep_stranded_runs's D-9-12 scope (EXACTLY THREE:
-            # received/extracting/computed). "Keep ONE shared constant" (the
-            # THRESHOLD VALUE, STALE_THRESHOLD_SECONDS) does NOT mean "keep ONE
-            # shared scope LIST" — the two lists structurally diverge by design
-            # and must NOT be made to converge: a SENT run has already durably
-            # committed the provider-send evidence (D-13c) and belongs to
-            # retrigger's own re-run path (safe via _deliver's already-sent
-            # idempotency guard), not the sweep's "background task died before
-            # persisting anything durable" scope. Do NOT "fix" this into parity.
+            # This scope is FOUR statuses, including SENT — deliberately DIVERGENT
+            # from repo.sweep_stranded_runs's scope (EXACTLY THREE:
+            # received/extracting/computed). Sharing ONE threshold VALUE
+            # (STALE_THRESHOLD_SECONDS) does NOT mean sharing one scope LIST: the two
+            # lists diverge by design and must NOT be converged. A SENT run has already
+            # durably committed the provider-send evidence, so it belongs to retrigger's
+            # operator-initiated re-run path — safe only because delivery's already-sent
+            # idempotency guard suppresses a second confirmation. It does NOT belong to
+            # the sweep, whose scope is "the background task died before persisting
+            # anything durable". Adding SENT to the sweep would auto-re-run runs that
+            # already emailed the client. Do NOT "fix" this into parity.
             stale_statuses = {
                 RunStatus.RECEIVED.value,
                 RunStatus.EXTRACTING.value,
@@ -346,11 +342,11 @@ def retrigger(
                 RunStatus.SENT.value,
             }
             if stale and run["status"] in stale_statuses:
-                # R2-HIGH stale CAS fix: target MUST differ from current status.
-                # RECEIVED→EXTRACTING (not RECEIVED→RECEIVED no-op).
-                # All other stale statuses→RECEIVED (EXTRACTING/COMPUTED/SENT→RECEIVED).
-                # This guarantees the conditional UPDATE actually changes the row so
-                # two concurrent retrigger clicks cannot both win.
+                # The claim target MUST differ from the current status:
+                # RECEIVED→EXTRACTING (never the RECEIVED→RECEIVED no-op), and every
+                # other stale status (EXTRACTING/COMPUTED/SENT)→RECEIVED. This
+                # guarantees the conditional UPDATE actually changes the row, so two
+                # concurrent retrigger clicks cannot both win and run the pipeline twice.
                 # NOTE: COMPUTING is NOT a RunStatus member — the valid post-calc
                 # in-flight state is COMPUTED.
                 target = (
@@ -363,24 +359,24 @@ def retrigger(
                 )
                 if claimed:
                     logger.info(
-                        "stale run %s (%s) claimed to %s (finding #6, D-13b)",
+                        "stale run %s (%s) claimed to %s",
                         run_id,
                         run["status"],
                         target.value,
                     )
 
     if claimed:
-        # WR-06 (D-11-04, Plan 11-05): "context lost means ALL of it" — clear
-        # clarified_fields + pre_clarify_extracted + the round counter +
-        # suggestion/candidate state AFTER the winning claim (both branches
-        # above converge here) and BEFORE run_pipeline_bg is scheduled, so
-        # is_round_2 = bool(clarified) sees a genuinely fresh run and no
-        # provenance badge can outlive the data that produced it.
-        # clear_reply_context opens its own committed transaction (conn=None)
-        # — a durable unit that does NOT span the LLM-heavy run_pipeline_bg
-        # background task (Pitfall #8).
+        # Context lost means ALL of it. Clear clarified_fields + pre_clarify_extracted
+        # + the round counter + suggestion/candidate state AFTER the winning claim
+        # (both branches above converge here) and BEFORE run_pipeline_bg is scheduled.
+        # The retriggered run re-extracts from the ORIGINAL email, so any surviving
+        # reply context would be stale: is_round_2 = bool(clarified) would misread a
+        # fresh run as a round-2 resume, and a provenance badge would outlive the data
+        # that produced it — pointing at values the run no longer holds.
+        # clear_reply_context opens its own committed transaction (conn=None): a
+        # durable unit that must NOT span the LLM-heavy run_pipeline_bg background task.
         repo.clear_reply_context(run_id)
-        logger.info("run_id=%s reply context cleared on retrigger (WR-06)", run_id)
+        logger.info("run_id=%s reply context cleared on retrigger", run_id)
         background_tasks.add_task(pipeline_glue.run_pipeline_bg, run_id)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
@@ -449,31 +445,29 @@ def _build_alias_rationale_notes(
 def runs_list(request: Request, background_tasks: BackgroundTasks) -> Response:
     """DASH-01: Render the reverse-chronological runs list with status badges.
 
-    D-9-10/11 (09-03): sweeps stranded in-flight runs to ERROR BEFORE loading the
-    list, so a run whose background task died mid-flight becomes visible as a
-    diagnosable ERROR on the very NEXT dashboard load — GET /runs is the one HTTP
-    entry point Render's free tier guarantees will be hit periodically. The sweep
-    call is wrapped in the SAME try/except-swallow-on-DB-unavailable style the
-    route already uses for load_all_runs — a sweep failure must never 500 the
-    dashboard.
+    Sweeps stranded in-flight runs to ERROR BEFORE loading the list, so a run whose
+    background task died mid-flight becomes visible as a diagnosable ERROR on the very
+    NEXT dashboard load. This route carries the sweep because GET /runs is the one HTTP
+    entry point Render's free tier guarantees will be hit periodically — there is no
+    cron. The sweep call is wrapped in the SAME swallow-on-DB-unavailable try/except the
+    route already uses for load_all_runs: a sweep failure must never 500 the dashboard.
 
-    D-11-05 (Plan 11-05): beside the sweep, this same try-block also re-schedules
-    resume_pipeline_bg for every stale, unconsumed reply against an awaiting_reply
-    run (repo.find_stranded_unconsumed_replies) — the recovery route for a
-    redelivery that never arrived. Scope is EXACTLY awaiting_reply + unconsumed +
-    stale, which structurally EXCLUDES needs_operator runs (D-11-06: those exit
-    only via /resolve or reject, never an autonomous re-schedule). The CAS claim
-    inside resume_pipeline absorbs any double-schedule; a failure here must never
-    500 the dashboard, same swallow-on-failure style as the sweep.
+    The same try-block also re-schedules resume_pipeline_bg for every stale, unconsumed
+    reply against an awaiting_reply run (repo.find_stranded_unconsumed_replies) — the
+    recovery route for a redelivery that never arrived. Scope is EXACTLY
+    awaiting_reply + unconsumed + stale, which structurally EXCLUDES needs_operator runs:
+    those exit only via /resolve or reject, never via an autonomous re-schedule, because
+    an escalated run is waiting on a human judgment that no sweep can supply. The CAS
+    claim inside resume_pipeline absorbs any double-schedule.
     """
     try:
         repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
         for reply_row in repo.find_stranded_unconsumed_replies(STALE_THRESHOLD_SECONDS):
-            # GAP-5/CR-5: re-assert FIX-5 before dispatching this stranded-sweep
-            # re-schedule — a reply that already failed sender revalidation on
-            # first delivery (left linked+unconsumed) must never be auto-
-            # resumed by a later dashboard load either. load_run is needed
-            # anyway to get business_id for the check.
+            # Re-assert the sender revalidation before dispatching this stranded-sweep
+            # re-schedule. A spoofed reply that already failed the sender check on
+            # first delivery is left linked+unconsumed — exactly what this sweep picks
+            # up — so without the re-check a mere dashboard load would auto-resume it.
+            # load_run is needed anyway to get business_id for the check.
             candidate_run = repo.load_run(reply_row["run_id"])
             if candidate_run is not None and pipeline_glue.reply_sender_ok(
                 reply_row, candidate_run
@@ -485,8 +479,7 @@ def runs_list(request: Request, background_tasks: BackgroundTasks) -> Response:
                 )
             elif candidate_run is not None:
                 logger.warning(
-                    "run_id=%s stranded-sweep resume blocked — sender mismatch "
-                    "persists (GAP-5/CR-5 fix)",
+                    "run_id=%s stranded-sweep resume blocked — sender mismatch persists",
                     reply_row["run_id"],
                 )
     except Exception:
@@ -517,7 +510,7 @@ def runs_list(request: Request, background_tasks: BackgroundTasks) -> Response:
 
 @router.get("/runs/{run_id}/status")
 def run_status(run_id: uuid.UUID) -> JSONResponse:
-    """Lightweight status poll endpoint for the vanilla-JS badge updater (UAT #3/#4).
+    """Lightweight status poll endpoint for the vanilla-JS badge updater.
 
     Returns {"status": "<status>", "badge_class": "<class>", "badge_label": "<label>"}.
     The JS poller in run_detail.html / runs_list.html calls this every 2s per in-flight
@@ -558,27 +551,28 @@ def run_detail(request: Request, run_id: uuid.UUID) -> Response:
         logger.debug("load_inbound_email/load_line_items unavailable for run %s", run_id)
         raw_email = None
         paystubs = []
-    # UAT #1: load outbound emails (confirmation / clarification) sent for this run.
+    # Load outbound emails (confirmation / clarification) sent for this run.
     try:
         outbound_emails = repo.load_outbound_emails(run_id)
     except Exception:
         logger.debug("load_outbound_emails unavailable for run %s", run_id)
         outbound_emails = []
-    # 06-08: load full thread (inbound source row via OR subquery + all outbound rows).
+    # Load the full thread (inbound source row via OR subquery + all outbound rows).
     try:
         thread_messages = repo.load_thread_messages(run_id)
     except Exception:
         logger.debug("load_thread_messages unavailable for run %s", run_id)
         thread_messages = []
-    # 06-08: alias-rationale notes for source='alias' resolutions (PRESENTATION ONLY).
+    # Alias-rationale notes for source='alias' resolutions. PRESENTATION ONLY — these
+    # never feed back into resolution or the calc.
     try:
         alias_rationale_notes = _build_alias_rationale_notes(run, repo.load_roster_for_business)
     except Exception:
         alias_rationale_notes = []
-    # D-7.5-08: load clarified_fields for provenance badge rendering in the template.
-    # Provides a submitted_name → {field: outcome} lookup so the template can render
-    # the four outcome badges (carried-forward / client-removed / client-supplied /
-    # awaiting-reply) on field-regression-affected hours rows.
+    # Load clarified_fields for provenance badge rendering in the template. Provides a
+    # submitted_name → {field: outcome} lookup so the template can render the four
+    # outcome badges (carried-forward / client-removed / client-supplied /
+    # awaiting-reply) on the hours rows a clarification round touched.
     try:
         clarified_fields_by_id = repo.load_clarified_fields(run_id) or {}
         # Build reconciliation lookup: submitted_name → employee_id_str
@@ -596,12 +590,12 @@ def run_detail(request: Request, run_id: uuid.UUID) -> Response:
     except Exception:
         logger.debug("load_clarified_fields unavailable for run %s", run_id)
         clarified_fields_by_name = {}
-    # D-11-08: for a needs_operator run, the template needs (a) the business's
-    # roster employees to populate each unresolved name's dropdown and (b) the
-    # persisted per-token suggestion (D-11-14 nested alias_candidates shape) to
-    # pre-select the LLM's advisory guess. Both are best-effort — a load
-    # failure degrades to an empty dropdown/no pre-selection rather than a
-    # 500, matching every other try/except-debug block on this route.
+    # For a needs_operator run, the template needs (a) the business's roster employees
+    # to populate each unresolved name's dropdown and (b) the persisted per-token
+    # suggestion (the nested alias_candidates shape) to pre-select the LLM's ADVISORY
+    # guess — the operator still makes the call. Both loads are best-effort: a failure
+    # degrades to an empty dropdown / no pre-selection rather than a 500, matching every
+    # other try/except-debug block on this route.
     roster_employees: list[Employee] = []
     unresolved_suggestions: dict[str, str] = {}
     if run.get("status") == RunStatus.NEEDS_OPERATOR.value:
@@ -671,13 +665,14 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID) -> StreamingResponse:
         filing_status=emp.filing_status if emp else None,
         hourly_rate=emp.hourly_rate if emp else None,
     )
-    # CR-01 (REVIEW-2/3): sanitize the filename to a safe charset before embedding it in the
-    # Content-Disposition header. emp_name can be an LLM-extracted submitted_name (when the
-    # matched employee was removed from the roster post-run), so a raw value could carry a
-    # double-quote or CRLF and break/inject the header. The re.ASCII flag is REQUIRED:
-    # without it Python's unicode-aware \w passes through chars above U+00FF (e.g. "ł", "ı"),
-    # which then raise UnicodeEncodeError when Starlette latin-1-encodes the header (500 on
-    # any non-latin-1 employee name). re.ASCII restricts \w to [A-Za-z0-9_], always latin-1 safe.
+    # Sanitize the filename to a safe charset BEFORE embedding it in the Content-Disposition
+    # header. emp_name can be an LLM-extracted submitted_name (when the matched employee was
+    # removed from the roster post-run), so a raw value could carry a double-quote or a CRLF
+    # — enough to terminate the filename early or inject an entire extra response header.
+    # The re.ASCII flag is REQUIRED: without it Python's unicode-aware \w passes through
+    # chars above U+00FF (e.g. "ł", "ı"), which then raise UnicodeEncodeError when Starlette
+    # latin-1-encodes the header — a 500 on any non-latin-1 employee name. re.ASCII restricts
+    # \w to [A-Za-z0-9_], which is always latin-1 safe. Do not loosen this pattern.
     safe_name = re.sub(r"[^\w.\-]", "_", emp_name, flags=re.ASCII) or "employee"
     return StreamingResponse(
         BytesIO(pdf_bytes),
@@ -694,16 +689,17 @@ def simulate_reply(
 ) -> RedirectResponse:
     """Simulate a client email reply to complete an awaiting_reply run in the demo.
 
-    DEMO-ONLY affordance (Phase 6 replaces this with real inbound webhook traffic).
+    DEMO-ONLY affordance; in production a real inbound webhook carries the reply.
 
     Constructs a synthetic InboundEmail that mirrors the RFC threading a real client
     reply would carry (same In-Reply-To / References as the clarification outbound,
     same from_addr as the original inbound sender), then routes it through the REAL
     pipeline_glue.route_reply path — no logic duplication, no guard bypass.
 
-    The FIX-5 spoof guard passes because from_addr is taken from the run's own
-    source inbound email (the original business contact email), which is the same
-    address find_business_by_sender resolves.
+    The sender spoof guard passes because from_addr is taken from the run's own source
+    inbound email (the original business contact email), which is the same address
+    find_business_by_sender resolves. Synthesizing any other from_addr here would be
+    correctly rejected by that guard.
 
     Guards:
     - 303 no-op if run.status != 'awaiting_reply' (nothing to reply to)
@@ -732,9 +728,9 @@ def simulate_reply(
     if not clar_mid:
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-    # Load the run's source inbound email to get the original sender address.
-    # Using from_addr from the original inbound ensures the FIX-5 spoof guard passes
-    # (find_business_by_sender will resolve this address to the same business).
+    # Load the run's source inbound email to get the original sender address. Using
+    # from_addr from the original inbound is what lets the sender spoof guard pass —
+    # find_business_by_sender resolves this address to the same business.
     try:
         source_inbound = repo.load_inbound_email(run_id)
     except Exception:
@@ -769,9 +765,9 @@ def simulate_reply(
     # uq_message_id unique constraint dedupes if somehow the same synthetic ID
     # appears twice — that is not possible with uuid4 but is handled gracefully).
     try:
-        # IN-01 (REVIEW-2): link the synthetic reply row to its run for a complete audit
-        # trail. Routing/resume keys off the RFC header chain (not this column), so this
-        # is purely for traceability — a join-based audit query now sees the reply.
+        # Link the synthetic reply row to its run for a complete audit trail. Routing
+        # and resume key off the RFC header chain, not this column, so the link is
+        # purely for traceability — it lets a join-based audit query see the reply.
         repo.insert_inbound_email(
             message_id=email.message_id,
             in_reply_to=email.in_reply_to,
@@ -786,14 +782,13 @@ def simulate_reply(
         logger.debug("simulate-reply: insert_inbound_email failed for run %s", run_id)
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-    # Hand off to the real reply-routing path — all guards (FIX-5 spoof check,
+    # Hand off to the real reply-routing path — all guards (the sender spoof check,
     # late-reply detection) execute exactly as they would for a real inbound.
-    # WR-04 (Phase 13 review): route_reply returns a JSONResponse on EVERY
-    # header match — {"status": "resumed"} when it scheduled the background
-    # resume, {"status": "sender_mismatch"} / {"status": "late_reply"} when a
-    # guard stopped it — and None ONLY when the header matched nothing (the
-    # synthetic reply went nowhere). The previous None-check logged "NOT
-    # resumed" on every successful resume; branch on the actual outcome.
+    # Branch on route_reply's BODY, not on None: it returns a JSONResponse on EVERY
+    # header match — {"status": "resumed"} when it scheduled the background resume, and
+    # {"status": "sender_mismatch"} / {"status": "late_reply"} when a guard stopped it —
+    # and None ONLY when the header matched nothing at all. A bare None-check reads a
+    # successful resume as a failure and logs "NOT resumed" on every happy path.
     handled = pipeline_glue.route_reply(email, cleaned, background_tasks)
     outcome = (
         json.loads(bytes(handled.body))["status"]
