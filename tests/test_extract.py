@@ -1,8 +1,8 @@
-"""Extraction stage tests (LLM-03; review FIX A, FIX 1). Mocked LLM, DB-free.
+"""Extraction stage tests (LLM-03). Mocked LLM, DB-free.
 
-Covers: the code-owned run_id stamping (FIX A), the no-run_id ExtractionPayload
-schema (FIX A), absent hours preserved as None (Pitfall 2), and the non-numeric
-extraction value routing to the reflective retry then ERROR (FIX 1).
+Covers: the code-owned run_id stamping, the no-run_id ExtractionPayload schema,
+absent hours preserved as None (never coerced to 0), and a non-numeric extraction
+value routing to the reflective retry and then to ERROR.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _clear_settings_cache():
 
 
 # ---------------------------------------------------------------------------
-# FIX A — extract() stamps the code-owned run_id; the model never supplies it
+# extract() stamps the code-owned run_id; the model never supplies it
 # ---------------------------------------------------------------------------
 
 
@@ -55,7 +55,8 @@ def test_extract_stamps_code_owned_run_id(inbound_email, roster_from_seed, mock_
     # (No run_id key was in the scripted JSON, yet Extracted.run_id is populated.)
     assert out.employees[0].submitted_name == "Maria Chen"
     assert out.employees[0].hours_regular == Decimal("40")
-    # Absent hours stay None — never coerced to 0 (Pitfall 2).
+    # Absent hours stay None — never coerced to 0. Coercing would pay the employee
+    # zero for a period the client simply did not describe.
     assert out.employees[1].hours_regular is None
     assert out.employees[0].hours_overtime is None
 
@@ -88,7 +89,7 @@ def test_payload_schema_has_no_run_id():
 
 
 # ---------------------------------------------------------------------------
-# FIX 1 — a non-numeric hours value routes to the reflective retry, then ERROR
+# A non-numeric hours value routes to the reflective retry, then ERROR
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +99,7 @@ def test_non_numeric_hours_routes_to_retry_then_error(
     """"forty" makes ExtractionPayload.model_validate_json raise → one reflective
     retry; if the retry also fails, the client raises (run destined for ERROR).
     This is the documented non_numeric path — an EXTRACTION-stage parse failure,
-    NOT a validate.py issue (FIX 1)."""
+    NOT a validate.py issue."""
     bad = json.dumps(
         {
             "employees": [{"submitted_name": "Maria Chen", "hours_regular": "forty"}],

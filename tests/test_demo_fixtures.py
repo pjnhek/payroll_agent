@@ -1,4 +1,4 @@
-"""Demo-fixture replay tests (DEMO-01, D-A4-03, D-21 reframe).
+"""Demo-fixture replay tests (DEMO-01).
 
 The committed CLEAN fixture replays end-to-end via POST and reaches
 awaiting_approval — then a crude approve drives it to APPROVED.
@@ -49,7 +49,7 @@ def client(fake_repo, monkeypatch):
 
 def _script_clean_run(mock_llm) -> None:
     """The clean happy path makes ONE LLM call — extraction. reconcile/decide are
-    pure code (D-21-01) and need no scripted response; both names resolve exactly so
+    pure code and need no scripted response; both names resolve exactly so
     the run processes without a clarify draft."""
     mock_llm.script = [
         json.dumps(
@@ -91,7 +91,7 @@ def test_clean_fixture_replays_to_pause_and_approves(client, fake_repo, mock_llm
     # route (Plan 05-06) that doesn't exist yet — TestClient would 404 following it.
     approve = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
     assert approve.status_code == 303, (
-        f"approve must return 303 POST-redirect-GET (Plan 05-05 D-06b); got {approve.status_code}"
+        f"approve must return 303 POST-redirect-GET; got {approve.status_code}"
     )
     # After approve + _deliver, the run advances to RECONCILED (success) or ERROR (delivery
     # failed in the test env without a live LLM/DB). Both are valid post-approval states.
@@ -108,7 +108,7 @@ def test_clean_fixture_replays_to_pause_and_approves(client, fake_repo, mock_llm
 # ---------------------------------------------------------------------------
 # Reframed hero: David Reyez (unknown shorthand) → reconcile resolves to none in
 # PURE CODE → decide gates to request_clarification → clarify-with-suggestion →
-# awaiting_reply. No model judgment, no score — the deterministic thesis (D-21-01).
+# awaiting_reply. No model judgment, no score — the decision is pure code.
 # ---------------------------------------------------------------------------
 
 
@@ -117,8 +117,7 @@ def _script_hero_run(mock_llm) -> None:
       1. extract: David Reyez with explicit 38 hours (so the ONLY gate trigger is
          the unresolved NAME, not a missing field).
       2. suggest (draft tier, copy only): David Reyez → David Reyes — names the
-         specific intended employee for the clarification email (D-21-05). NEVER
-         feeds decide.
+         specific intended employee for the clarification email. NEVER feeds decide.
       3. draft: the free-text clarification body.
     """
     mock_llm.script = [
@@ -156,11 +155,11 @@ def test_gate_block_fixture_validates_as_inbound_email():
 
 
 def test_hero_fixture_replays_to_deterministic_clarify(client, fake_repo, mock_llm):
-    """The new Phase 2 hero (DEMO-01 reframe): an unknown shorthand 'David Reyez'
-    can't be resolved deterministically, so decide gates the run to
-    request_clarification and the run pauses at awaiting_reply end-to-end. There is
-    NO model action and NO score — final_action is computed purely from the
-    resolution facts (D-21-01), and the gate_reason names the unresolved name."""
+    """DEMO-01: an unknown shorthand 'David Reyez' cannot be resolved
+    deterministically, so decide gates the run to request_clarification and the run
+    pauses at awaiting_reply end-to-end. There is NO model action and NO score —
+    final_action is computed purely from the resolution facts, and the gate_reason
+    names the unresolved name."""
     _script_hero_run(mock_llm)
 
     r = client.post("/webhook/inbound", json=json.loads(_GATE_BLOCK_FIXTURE.read_text()))
@@ -197,7 +196,7 @@ def test_hero_fixture_replays_to_deterministic_clarify(client, fake_repo, mock_l
 # Collision-safety: "D. Reyes" is a known alias SHARED by two Business-2 employees
 # (David Reyes + Daniel Reyes). The deterministic resolver refuses to pick either —
 # source="none", resolved=False — so decide gates the run to clarification. Two
-# plausible matches → always clarify, never guess (D-21-02).
+# plausible matches → always clarify, never guess.
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +236,7 @@ def test_collision_fixture_validates_as_inbound_email():
 
 
 def test_collision_fixture_replays_to_deterministic_clarify(client, fake_repo, mock_llm):
-    """Collision safety (D-21-02): 'D. Reyes' is an alias shared by two Business-2
+    """Collision safety: 'D. Reyes' is an alias shared by two Business-2
     employees, so the resolver cannot uniquely resolve it — it returns unresolved
     rather than guessing. decide gates the run to request_clarification; the system
     never picks one of two plausible matches."""

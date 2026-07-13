@@ -40,7 +40,7 @@ COASTAL_EMAIL = "payroll@coastalcleaning.example"
 def test_sweep_stranded_runs_sql_shape():
     """The sweep's executed SQL must contain the CAS predicate shape (status =
     ANY(%s)), RETURNING, and the SQL-concatenation form of error_detail
-    (|| status, not a Python '{status}' placeholder — Codex LOW, closed)."""
+    (|| status, not a Python '{status}' placeholder)."""
     conn = FakeConnection()
     conn.script_fetchall([])
 
@@ -50,7 +50,7 @@ def test_sweep_stranded_runs_sql_shape():
     sql_executed = conn.all_sql()
     assert "status = ANY(%s)" in sql_executed, (
         "sweep_stranded_runs SQL must contain 'status = ANY(%s)' — the CAS scope "
-        "predicate (T-09-01)"
+        "predicate"
     )
     assert "RETURNING" in sql_executed.upper() and "id" in sql_executed.lower(), (
         "sweep_stranded_runs SQL must contain 'RETURNING id'"
@@ -58,20 +58,20 @@ def test_sweep_stranded_runs_sql_shape():
     assert "|| status" in sql_executed, (
         "sweep_stranded_runs SQL must build error_detail via SQL concatenation "
         "of the pre-update status column (%s || status) — NOT a literal "
-        "'{status}' placeholder string (Codex LOW, closed)"
+        "'{status}' placeholder string"
     )
     assert "{status}" not in sql_executed, (
         "sweep_stranded_runs SQL must NOT contain a literal unresolved "
-        "'{status}' placeholder (Codex LOW regression guard)"
+        "'{status}' placeholder (regression guard)"
     )
 
 
-def test_sweep_stranded_runs_scope_pin_d_9_12():
+def test_sweep_stranded_runs_scope_pin():
     """The scope param list passed to conn.execute must equal EXACTLY
     ['received', 'extracting', 'computed'] — never the parked statuses
-    (awaiting_reply/awaiting_approval/approved). D-9-12 pin: sweeping a
-    parked-by-design status would be a correctness bug (a run waiting on a
-    human is not stranded)."""
+    (awaiting_reply/awaiting_approval/approved). Sweeping a parked-by-design
+    status would be a correctness bug: a run waiting on a human is not
+    stranded, and sweeping it to ERROR discards the pending human decision."""
     conn = FakeConnection()
     conn.script_fetchall([])
 
@@ -85,20 +85,18 @@ def test_sweep_stranded_runs_scope_pin_d_9_12():
     assert scope_lists, "expected a list-typed scope param in the executed SQL params"
     assert scope_lists[0] == ["received", "extracting", "computed"], (
         "sweep_stranded_runs scope must be exactly "
-        "['received', 'extracting', 'computed'] (D-9-12)"
+        "['received', 'extracting', 'computed']"
     )
     for parked in ("awaiting_reply", "awaiting_approval", "approved"):
         assert parked not in scope_lists[0], (
             f"sweep_stranded_runs scope must NEVER include parked status "
-            f"'{parked}' — a run waiting on a human is not stranded (D-9-12)"
+            f"'{parked}' — a run waiting on a human is not stranded"
         )
-    # D-11-06: needs_operator is a settled human-gate escalation state (like
-    # awaiting_approval), NOT a stranded background-task failure — it must
-    # NEVER join the sweep scope. Phase 11 CONTEXT.md: "must be added to the
-    # exclusion tests."
+    # needs_operator is a settled human-gate escalation state (like awaiting_approval),
+    # NOT a stranded background-task failure — it must NEVER join the sweep scope.
     assert "needs_operator" not in scope_lists[0], (
         "sweep_stranded_runs scope must NEVER include 'needs_operator' — it is "
-        "a settled human-gate escalation state, not a stranded run (D-11-06)"
+        "a settled human-gate escalation state, not a stranded run"
     )
 
 
@@ -182,15 +180,15 @@ def test_find_run_by_message_id_returns_uuid_when_found():
 
 
 # ---------------------------------------------------------------------------
-# runs_list() wiring — the sweep runs before load_all_runs (09-03, D-9-11)
+# runs_list() wiring — the sweep runs before load_all_runs
 # ---------------------------------------------------------------------------
 
 
 def test_runs_list_calls_sweep_before_load_all_runs(monkeypatch):
     """GET /runs must call repo.sweep_stranded_runs BEFORE repo.load_all_runs
-    (D-9-11 — freshly-swept ERROR rows must appear in the SAME page load) and
-    must never 500 if the sweep itself raises (matches the existing
-    try/except-swallow-on-DB-unavailable style already used for load_all_runs)."""
+    — freshly-swept ERROR rows must appear in the SAME page load — and must never
+    500 if the sweep itself raises (matching the try/except-swallow-on-DB-unavailable
+    style already used for load_all_runs)."""
     from fastapi.testclient import TestClient
 
     import app.main as app_main
@@ -221,7 +219,7 @@ def test_runs_list_calls_sweep_before_load_all_runs(monkeypatch):
     assert response.status_code == 200
     assert call_order == ["sweep", "load"], (
         f"sweep_stranded_runs must be called BEFORE load_all_runs on every "
-        f"GET /runs (D-9-11); got order={call_order}"
+        f"GET /runs; got order={call_order}"
     )
 
 
@@ -249,10 +247,9 @@ def test_runs_list_never_500s_when_sweep_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# SC3 end-to-end integration test (09-04) — strand, sweep, retrigger via the
-# ACTUAL POST /runs/{run_id}/retrigger route (Codex Round-2 MEDIUM fix: not a
-# direct repo.claim_status(...) call, which only proves claimability, not the
-# operator recovery path).
+# SC3 end-to-end integration test — strand, sweep, retrigger via the ACTUAL
+# POST /runs/{run_id}/retrigger route. Driving repo.claim_status(...) directly
+# instead would only prove claimability, not the operator recovery path.
 # ---------------------------------------------------------------------------
 
 
@@ -289,9 +286,9 @@ def _backdate_updated_at(run_id: uuid.UUID, seconds_ago: int) -> None:
 def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     """SC3 end-to-end (DATA-03): a run stranded mid-flight is swept to ERROR
     with a distinguishing sentinel, then successfully retriggered to a
-    progressing status via the ACTUAL operator-facing retrigger route (not the
-    underlying claim primitive) — proving the recovery path a human operator
-    actually uses, per Codex Round-2's MEDIUM finding.
+    progressing status via the ACTUAL operator-facing retrigger route, not the
+    underlying claim primitive — so this proves the recovery path a human operator
+    actually uses.
     """
     from app.routes.runs import STALE_THRESHOLD_SECONDS
 
@@ -347,11 +344,10 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
 @pytest.mark.integration
 @_SKIP_LIVE_DB
 def test_parked_statuses_never_swept_live(seeded_db):
-    """Second, real-DB confirmation of D-9-12 (closing the loop with the
-    FakeConnection-based test_sweep_stranded_runs_scope_pin_d_9_12 unit test
-    above): a run in awaiting_reply/awaiting_approval/approved with a
-    backdated updated_at must NEVER be swept — it is waiting on a HUMAN, not
-    stranded."""
+    """Real-DB confirmation of the sweep scope, closing the loop with the
+    FakeConnection-based test_sweep_stranded_runs_scope_pin unit test above: a run in
+    awaiting_reply/awaiting_approval/approved with a backdated updated_at must NEVER
+    be swept — it is waiting on a HUMAN, not stranded."""
     from app.routes.runs import STALE_THRESHOLD_SECONDS
 
     parked_statuses = [
@@ -371,7 +367,7 @@ def test_parked_statuses_never_swept_live(seeded_db):
     for run_id in parked_run_ids:
         assert run_id not in swept_ids, (
             f"a parked-by-design run ({run_id}) must never be swept — it is "
-            "waiting on a human, not stranded (D-9-12)"
+            "waiting on a human, not stranded"
         )
         # Confirm the status is untouched.
         run = cast(dict[str, Any], repo.load_run(run_id))

@@ -1,23 +1,22 @@
-"""Minimal in-house inbound-body cleaning (INGEST-02, T-02-10, review FIX C).
+"""Minimal in-house inbound-body cleaning (INGEST-02).
 
-Strips quoted reply history and trailing signatures BEFORE the body is persisted
-to email_messages.body_text, so the stored body is the single cleaned source of
-truth the extraction stage reads (FIX C) and a signature name is never pulled in
-as a phantom employee.
+Strips quoted reply history and trailing signatures BEFORE the body is persisted to
+email_messages.body_text, so the stored body is the single cleaned source of truth the
+extraction stage reads. Without this, a name in a quoted thread or an email signature
+gets extracted as a phantom employee and paid.
 
 This is deliberately a SMALL code-strip — NOT a third-party reply-parser (talon /
-email-reply-parser) and NOT a sprawling hand-rolled engine. It covers the common
-markers present in the committed Phase 2 fixtures:
+email-reply-parser) and NOT a sprawling hand-rolled engine. It covers the common markers
+present in the committed fixtures:
 
   - quoted-history lines beginning with ">"
   - an "On <date> ... wrote:" attribution block and everything below it
-  - a trailing signature delimiter ("-- " on its own line, or a "Sent from my ..."
-    line) and everything below it
+  - a trailing signature delimiter ("-- " on its own line, or a "Sent from my ..." line)
+    and everything below it
 
-Adopting a purpose-built reply-parser for real-client variety is explicitly
-deferred to P6 (RESEARCH Don't-Hand-Roll qualifier; D-A4-03 fixture-first). Doing
-so re-introduces a package-legitimacy gate at that point — out of scope here. This
-module adds NO new dependency.
+Adopting a purpose-built reply-parser for real-client variety is deliberately deferred;
+it would add a new dependency (and a package-legitimacy review with it). This module
+adds NO new dependency.
 """
 from __future__ import annotations
 
@@ -53,8 +52,8 @@ def clean_body(text: str) -> str:
         if _ATTRIBUTION_RE.match(stripped):
             cut = min(cut, i)
             break
-        # A quoted-history line — drop from here down (the quoted block + anything
-        # trailing it). Phase 2 fixtures quote contiguous ">" blocks at the tail.
+        # A quoted-history line — drop from here down (the quoted block plus anything
+        # trailing it). Real clients quote contiguous ">" blocks at the tail.
         if stripped.startswith(">"):
             cut = min(cut, i)
             break

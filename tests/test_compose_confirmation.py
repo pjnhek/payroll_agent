@@ -104,10 +104,8 @@ def _minimal_run() -> dict[str, str]:
 
 
 def test_compose_confirmation_template_floor_on_llm_exception(caplog):
-    """WR-03 analog: an API error in the draft call must fall back to the templated
-    confirmation body (not raise), so a draft failure never strands the run.
-
-    Will fail RED until Wave 2 adds compose_confirmation to compose_email.py.
+    """An API error in the draft call must fall back to the templated confirmation
+    body rather than raising, so a draft failure never strands the run.
     """
     paystubs = [_minimal_paystub()]
     run = _minimal_run()

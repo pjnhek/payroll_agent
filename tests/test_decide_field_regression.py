@@ -1,6 +1,6 @@
 """Tests for decide() Rule 2b — field_regression issues gate to request_clarification.
 
-Phase 7.5 Plan 02 (D-17, C-1 resolution, MONEY-03):
+MONEY-03:
   - Rule 2b: field_regression issues → gate_reasons (like Rule 2 for missing)
   - Decision.missing_fields is NOT widened (regressions feed gate_reasons only)
 """
@@ -67,7 +67,7 @@ def test_field_regression_issue_gates_to_clarification():
 def test_field_regression_does_not_widen_missing_fields():
     """Rule 2b: regressions feed gate_reasons only, NOT Decision.missing_fields.
 
-    D-7.5 PATTERNS §4: missing_fields stays scoped to issue_type='missing'.
+    missing_fields stays scoped to issue_type='missing'.
     """
     alice_id = uuid.uuid4()
     extracted = _extracted("Alice")

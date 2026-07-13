@@ -1,7 +1,4 @@
-"""GET /, /eval, /eval/chart.svg — dashboard views (D-06).
-
-Carved out of app/main.py (Phase 13 Plan 03).
-"""
+"""GET /, /eval, /eval/chart.svg — dashboard views."""
 from __future__ import annotations
 
 import json
@@ -104,7 +101,7 @@ def landing(
 
 
 # ---------------------------------------------------------------------------
-# DASH-04: GET /eval — eval view with headline metrics + chart + per-fixture drill-in
+# GET /eval — eval view with headline metrics + chart + per-fixture drill-in (DASH-04)
 # ---------------------------------------------------------------------------
 
 
@@ -112,10 +109,10 @@ def landing(
 def eval_view(request: Request) -> Response:
     """DASH-04: Render the eval view. Hermetic disk read of committed eval artifacts.
 
-    R2-MEDIUM fix: enriches each per_fixture record with raw_body loaded from the
-    committed fixture file at eval/fixtures/<fixture_path>. eval/summary.json does
-    NOT store body_text — the body lives in the fixture files. Rendering '—' does
-    NOT satisfy DASH-04; each fixture's raw body is shown in the drill-in table.
+    Enriches each per_fixture record with raw_body loaded from the committed fixture
+    file at eval/fixtures/<fixture_path>. eval/summary.json does NOT store body_text —
+    the body lives in the fixture files, so without this join the drill-in table would
+    show a placeholder dash instead of each fixture's raw email body.
     """
     summary_path = EVAL_SUMMARY_PATH
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
@@ -153,8 +150,9 @@ def eval_view(request: Request) -> Response:
 def eval_chart() -> FileResponse:
     """Serve the committed eval/chart.svg as image/svg+xml.
 
-    # D-21: serves committed eval/chart.svg baked into image; relative path requires
-    # WORKDIR=/app (Dockerfile).
+    The chart is baked into the image at build time, not generated per request. The
+    path is relative, so it only resolves if the container keeps WORKDIR=/app
+    (Dockerfile) — change that and this route 404s in production but passes locally.
     """
     chart_path = Path("eval/chart.svg")
     if not chart_path.exists():

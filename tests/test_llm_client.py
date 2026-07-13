@@ -5,7 +5,7 @@ client imports, recording construction kwargs + create() calls and replaying a
 scripted sequence of responses. These tests prove the wrapper mechanics
 (LLM-01/LLM-02): per-tier routing, temperature=0 + json_object, the DeepSeek
 non-thinking toggle, the single reflective retry, raise-on-double-failure, and the
-free-text drafting path. Real-model accuracy is the eval's job (Phase 4), not here.
+free-text drafting path. Real-model accuracy is the eval's job, not this suite's.
 
 Run with the default CI selection (no markers): these always run, free, offline.
 """
@@ -173,7 +173,7 @@ def test_structured_returns_validated_object_and_routes_per_tier(monkeypatch):
 
 
 def test_draft_tier_routes_to_draft_config(monkeypatch):
-    """The mid/decision tier was removed (D-21-05) — only extraction + draft remain.
+    """The mid/decision tier does not exist — only extraction + draft.
     The draft tier routes to its own Settings triple."""
     _set_tier_env(
         monkeypatch,
@@ -195,7 +195,7 @@ def test_draft_tier_routes_to_draft_config(monkeypatch):
 
 
 def test_decision_tier_is_removed():
-    """D-21-05 — the decision tier no longer exists; resolving it raises (the mid
+    """The decision tier does not exist; resolving it raises (the mid
     model was retired when the decision became pure code)."""
     with pytest.raises(ValueError, match="unknown tier"):
         call_structured(
@@ -363,7 +363,7 @@ def test_double_failure_raises(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # 09-04 — call_structured passes an explicit bounded timeout= AND max_retries=0
-# (Codex HIGH-3: without max_retries=0 the library's own retry layer compounds
+# (Without max_retries=0 the library's own retry layer compounds
 # with the app's 2-attempt reflective retry loop, 3x2=6x not 2x).
 # ---------------------------------------------------------------------------
 
@@ -385,7 +385,7 @@ def test_call_structured_client_has_explicit_timeout_and_max_retries_zero(monkey
     assert inst.max_retries == 0, (
         "call_structured must pass max_retries=0 so the library's own retry "
         "layer cannot compound with the app's 2-attempt reflective retry loop "
-        "(Codex HIGH-3 — without this the true worst case is timeout x 3 "
+        "(without this the true worst case is timeout x 3 "
         "library-attempts x 2 app-attempts = 6x, not 2x)"
     )
 
@@ -420,7 +420,7 @@ def test_call_text_returns_none_on_empty_without_raising(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 09-04 (Codex round-2, STILL-OPEN HIGH, closed here) — call_text's OWN client
+# call_text's OWN client
 # construction gains an UNCONDITIONAL max_retries=0, present whether or not
 # timeout_s was passed (call_text has no app-level retry loop, so the library's
 # own max_retries=2 default was the sole, previously-uncounted retry layer).
@@ -447,7 +447,7 @@ def test_call_text_client_has_max_retries_zero_when_timeout_s_provided(monkeypat
 def test_call_text_client_has_max_retries_zero_when_timeout_s_omitted(monkeypatch):
     """The unconditional part of the fix: max_retries=0 must be present even when
     timeout_s is None/omitted, proving the fix does not piggyback on the timeout
-    kwarg's own conditional (Codex round-2 STILL-OPEN HIGH)."""
+    kwarg's own conditional."""
     _set_tier_env(monkeypatch, prefix="DRAFT", model="moonshot-v1-8k")
     _FakeOpenAI.next_script = ["Some drafted body."]
 
@@ -462,5 +462,5 @@ def test_call_text_client_has_max_retries_zero_when_timeout_s_omitted(monkeypatc
     assert inst.max_retries == 0, (
         "call_text must pass max_retries=0 UNCONDITIONALLY — even with no "
         "timeout_s at all, the library's own max_retries=2 default must still "
-        "be suppressed (Codex round-2 STILL-OPEN HIGH)"
+        "be suppressed"
     )

@@ -1,13 +1,10 @@
-"""HTTP-to-orchestrator bridge helpers (D-07, BOUND-01 promotion).
+"""HTTP-to-orchestrator bridge helpers (BOUND-01).
 
-Carved out of app/main.py (Phase 13 Plan 03). These seven functions were
-previously module-private helpers inside the monolithic main.py
-(`_row_to_inbound`, `_reply_sender_ok`, `_finish_reply_resume`, `_route_reply`,
-`_resume_pipeline`, `_run_pipeline`, `_operator_resume`) — all promoted to
-public names here and imported by every router via a module-object import
-(`from app.routes import pipeline_glue`), never a bare-name import, so every
-existing monkeypatch.setattr(<module>, <fn>) seam retargets mechanically to
-this one owning module.
+Every router imports these via a module-object import
+(`from app.routes import pipeline_glue`), NEVER a bare-name import. A bare-name
+import would bind the function object at import time, and the tests'
+`monkeypatch.setattr(pipeline_glue, <fn>)` seams would silently stop taking
+effect — the router would keep calling the real orchestrator.
 """
 from __future__ import annotations
 
@@ -26,20 +23,21 @@ logger = logging.getLogger("payroll_agent.webhook")
 
 
 def row_to_inbound(row: dict[str, Any]) -> InboundEmail:
-    """Build an InboundEmail from a PERSISTED email_messages row dict (Plan 11-05).
+    """Build an InboundEmail from a PERSISTED email_messages row dict.
 
-    The single conversion point reused by both the WR-04 duplicate-redelivery
-    re-schedule and the D-11-05 stranded-unconsumed-reply runs-list auto-resume.
-    Pure — no DB I/O. Uses `row["body_text"]` VERBATIM: it is already the body
-    cleaned at first ingest (the authoritative, actually-processed text) — this
-    helper must NEVER re-clean it (Pitfall #11a; a redelivered webhook request
-    body could diverge from what was actually persisted/processed).
+    The single conversion point reused by both the duplicate-redelivery re-schedule
+    and the stranded-unconsumed-reply runs-list auto-resume. Pure — no DB I/O.
 
-    `row` must supply the full InboundEmail field set (id, message_id,
-    in_reply_to, references_header, subject, from_addr, to_addr, body_text,
-    created_at) — both `repo.get_inbound_by_message_id` and
-    `repo.find_stranded_unconsumed_replies` are widened to return exactly this
-    shape (plus run_id, which this helper ignores; the caller already has it).
+    Uses `row["body_text"]` VERBATIM. That column already holds the body cleaned at
+    first ingest — the authoritative, actually-processed text. This helper must NEVER
+    re-clean it: a redelivered webhook's request body can diverge from what was
+    persisted, and re-cleaning would resume the run against text the run never saw.
+
+    `row` must supply the full InboundEmail field set (id, message_id, in_reply_to,
+    references_header, subject, from_addr, to_addr, body_text, created_at). Both
+    `repo.get_inbound_by_message_id` and `repo.find_stranded_unconsumed_replies`
+    return exactly this shape (plus run_id, which this helper ignores — the caller
+    already has it).
     """
     return InboundEmail(
         id=row["id"],
@@ -55,23 +53,23 @@ def row_to_inbound(row: dict[str, Any]) -> InboundEmail:
 
 
 def reply_sender_ok(row: dict[str, Any], run: dict[str, Any]) -> bool:
-    """Re-assert FIX-5's sender revalidation for an already-persisted reply row (GAP-5/CR-5).
+    """Re-assert the reply sender revalidation for an already-persisted reply row.
 
-    A reply is linked to its run INSIDE the webhook's ingest transaction based
-    purely on the RFC header chain (in_reply_to/references) — attacker-
-    controllable and NOT authentication. FIX-5 (`find_business_by_sender`
-    matching the run's business) is the actual authentication gate, and it is
-    the SAME comparison `finish_reply_resume` performs post-commit at first
-    delivery. That guard only runs once, on the FIRST delivery, though: any
-    OTHER seam capable of re-dispatching `resume_pipeline_bg` from a
-    persisted, linked-but-unconsumed reply row (a redelivery, a later
-    stranded-reply sweep) must re-assert it too, or a reply that already
-    failed FIX-5 once — and was left linked+unconsumed — can still drive the
-    run via that seam. This is that shared predicate, reused by both
-    re-schedule seams.
+    A reply is linked to its run INSIDE the webhook's ingest transaction based purely
+    on the RFC header chain (in_reply_to/references). Those headers are
+    attacker-controllable and are NOT authentication. The real authentication gate is
+    `find_business_by_sender` matching the run's business — the SAME comparison
+    `finish_reply_resume` performs post-commit at first delivery.
 
-    Calls `find_business_by_sender` exactly ONCE (assigned to a local first) —
-    no duplicate lookup.
+    But that guard runs only ONCE, on the first delivery. Any OTHER seam capable of
+    re-dispatching `resume_pipeline_bg` from a persisted, linked-but-unconsumed reply
+    row (a webhook redelivery, a later stranded-reply sweep) must re-assert it too.
+    Otherwise a spoofed reply that already failed the sender check once — and was
+    therefore left linked+unconsumed, which is exactly the state those seams resume
+    from — can still drive the run to payroll. This is that shared predicate, reused
+    by both re-schedule seams.
+
+    Calls `find_business_by_sender` exactly ONCE (assigned to a local first).
     """
     reply_business_id = repo.find_business_by_sender(row.get("from_addr") or "")
     return reply_business_id is not None and str(reply_business_id) == str(
@@ -87,18 +85,18 @@ def finish_reply_resume(
 ) -> JSONResponse:
     """Post-commit sender-revalidation + response-shaping for a reply-resume candidate.
 
-    Called AFTER the webhook's ingest transaction has ALREADY classified this
-    inbound as a reply-resume candidate (`find_awaiting_reply_for_header` found
-    `run_id` INSIDE that transaction, Codex HIGH-1 fix) — this helper does NOT
-    re-run that header lookup (re-deriving the classification would reintroduce
-    the same race in a different shape). It only performs FIX 5's sender
-    re-validation (a pure read-then-branch with no write, so it stays OUTSIDE
-    the transaction unchanged in its own logic) and shapes the response /
-    schedules the background resume.
+    Called AFTER the webhook's ingest transaction has ALREADY classified this inbound
+    as a reply-resume candidate (`find_awaiting_reply_for_header` found `run_id` INSIDE
+    that transaction). This helper does NOT re-run that header lookup — re-deriving the
+    classification post-commit reintroduces the duplicate-run race in a different shape.
+    It only performs the sender re-validation (a pure read-then-branch with no write, so
+    it is safe outside the transaction) and shapes the response / schedules the resume.
     """
-    # FIX 5 — re-assert the reply sender against the matched run's business
-    # (the original inbound sender / businesses.contact_email). Reuse the SAME
-    # comparison find_business_by_sender performs at first ingest (INGEST-03).
+    # Re-assert the reply sender against the matched run's business (the original
+    # inbound sender / businesses.contact_email). Same comparison
+    # find_business_by_sender performs at first ingest (INGEST-03). The header chain
+    # alone is forgeable — this is the gate that stops a spoofed reply from steering
+    # someone else's payroll run.
     run = repo.load_run(run_id)
     expected_business_id = run["business_id"] if run else None
     reply_business_id = repo.find_business_by_sender(email.from_addr)
@@ -107,7 +105,7 @@ def finish_reply_resume(
     ):
         logger.warning(
             "reply sender from_addr=%s does NOT match run %s business — "
-            "not resumed (spoof guard, FIX 5)",
+            "not resumed (spoof guard)",
             email.from_addr,
             run_id,
         )
@@ -116,13 +114,14 @@ def finish_reply_resume(
             content={"status": "sender_mismatch", "run_id": str(run_id)},
         )
 
-    # Sender revalidated → schedule the resume (idempotent + lossless, FIX 4).
-    # CR-02: do NOT flip EXTRACTING here. The orchestrator owns that transition
-    # (resume_pipeline, after re-asserting the run is still awaiting_reply under
-    # the same code path that mutates it). Setting EXTRACTING in the webhook —
-    # a DIFFERENT context from the BackgroundTask that does the work — is the
-    # exact seam the status race lived in: it would also defeat resume_pipeline's
-    # new precondition (the run would already be EXTRACTING, never awaiting_reply).
+    # Sender revalidated → schedule the resume (idempotent + lossless).
+    # Do NOT flip the run to EXTRACTING here. The orchestrator owns that transition
+    # (resume_pipeline, which re-asserts the run is still awaiting_reply under the
+    # same code path that mutates it). Setting EXTRACTING in the webhook — a DIFFERENT
+    # context from the BackgroundTask that does the work — is the exact seam the status
+    # race lived in, and it would also defeat resume_pipeline's own precondition: the
+    # run would already be EXTRACTING and never awaiting_reply, so the resume would
+    # refuse to claim it and the reply would be dropped on the floor.
     # The run stays awaiting_reply until the background resume claims it.
     reply_for_resume = email.model_copy(update={"body_text": cleaned})
     background_tasks.add_task(resume_pipeline_bg, run_id, reply_for_resume)
@@ -137,34 +136,35 @@ def route_reply(
 ) -> JSONResponse | None:
     """Route a header-bearing inbound as a clarification reply, or None to fall through.
 
-    Used by `simulate_reply` (the demo-only affordance) and any other caller that
-    has NOT already classified the inbound inside a transaction — it performs its
-    OWN header lookups. The real webhook's `inbound()` route does NOT call this;
-    it classifies the reply INSIDE its ingest transaction (Codex HIGH-1 fix) and
-    then calls `finish_reply_resume` for the sender-revalidation + response
-    shaping, so the header lookups are never re-derived a second time on that path.
+    Used by `simulate_reply` (the demo-only affordance) and any other caller that has
+    NOT already classified the inbound inside a transaction — it performs its OWN header
+    lookups. The real webhook's `inbound()` route does NOT call this: it classifies the
+    reply INSIDE its ingest transaction and then calls `finish_reply_resume` for the
+    sender revalidation + response shaping, so the header lookups are never re-derived
+    a second time on that path (re-deriving them post-commit reopens the duplicate-run
+    race the transaction exists to close).
 
-    The header chain is the primary AND only Phase 2 routing path (CLAR-02): the
-    reply's In-Reply-To / References are matched against stored outbound Message-IDs.
-    Subject/provider-thread fallback is a deliberately-deferred P6 concern (real
-    provider thread variety) and is NOT built here.
+    The header chain is the only routing path (CLAR-02): the reply's In-Reply-To /
+    References are matched against stored outbound Message-IDs. There is deliberately no
+    subject/provider-thread fallback.
 
     Decision flow:
       1. find_awaiting_reply_for_header — match restricted to status='awaiting_reply'.
-         On a match: delegate to `finish_reply_resume` (FIX 5 sender re-assertion +
-         response shaping + background scheduling).
+         On a match: delegate to `finish_reply_resume` (sender re-assertion + response
+         shaping + background scheduling).
       2. Else find_any_run_for_header — a header match to a run in ANY OTHER status
-         (sent/reconciled/rejected/computed) is a LATE REPLY: log it, do NOT resume
-         (FIX 10; CLAR-03 invariant 4).
+         (sent/reconciled/rejected/computed) is a LATE REPLY: log it, do NOT resume.
+         Resuming an already-advanced run would re-drive a settled payroll
+         (CLAR-03 invariant 4).
       3. No header match at all → return None so the caller treats it as an ordinary
          inbound (first ingest).
 
-    Return contract (WR-04, Phase 13 review — a caller misread this as
-    "response means not resumed"): a JSONResponse is returned on EVERY header
-    match, with body {"status": ...} distinguishing the outcome —
-    "resumed" (background resume scheduled), "sender_mismatch" (FIX 5 spoof
-    guard), or "late_reply" (FIX 10). None means ONLY "no header match; fall
-    through to ordinary first ingest" — it is NOT the success signal.
+    Return contract — read this before branching on the result. A JSONResponse is
+    returned on EVERY header match, with the body's {"status": ...} distinguishing the
+    outcome: "resumed" (background resume scheduled), "sender_mismatch" (spoof guard),
+    or "late_reply". A non-None return does NOT mean "not resumed". None means ONLY
+    "no header match; fall through to ordinary first ingest" — treating None as the
+    success signal inverts the whole contract.
     """
     run_id = repo.find_awaiting_reply_for_header(
         in_reply_to=email.in_reply_to,
@@ -173,15 +173,14 @@ def route_reply(
     if run_id is not None:
         return finish_reply_resume(run_id, email, cleaned, background_tasks)
 
-    # No awaiting_reply match — is it a LATE reply to an already-advanced run? (FIX 10)
+    # No awaiting_reply match — is it a LATE reply to an already-advanced run?
     late_run_id = repo.find_any_run_for_header(
         in_reply_to=email.in_reply_to,
         references_header=email.references_header,
     )
     if late_run_id is not None:
         logger.info(
-            "late reply: header matched run %s not in awaiting_reply — not resumed "
-            "(FIX 10)",
+            "late reply: header matched run %s not in awaiting_reply — not resumed",
             late_run_id,
         )
         return JSONResponse(
@@ -196,9 +195,10 @@ def route_reply(
 def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
     """Background wrapper for resume_pipeline (mirrors run_pipeline_bg's safety net).
 
-    resume_pipeline owns its own try/except error-wrap (D-A1-03); this outer guard
-    only ensures a catastrophic start failure cannot escape the BackgroundTask (the
-    webhook already returned 200)."""
+    resume_pipeline owns its own try/except error-wrap and persists ERROR on stage
+    failure; this outer guard only ensures a catastrophic START failure (e.g. the
+    orchestrator failing to import) cannot escape the BackgroundTask. The webhook has
+    already returned 200, so a background crash must be logged, never raised."""
     try:
         from app.pipeline.orchestrator import resume_pipeline
 
@@ -210,12 +210,12 @@ def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
 def run_pipeline_bg(run_id: uuid.UUID) -> None:
     """Run the orchestrator for a run.
 
-    The orchestrator owns its own try/except error-wrap (D-A1-03) and persists
-    ERROR on any stage failure. This outer guard exists ONLY so a catastrophic
-    failure (e.g. the orchestrator itself failing to import/start) can never
-    propagate out of the BackgroundTask — the webhook already returned 200, so a
-    background crash must be logged, not raised. It does NOT swallow stage errors;
-    those are caught and persisted inside run_pipeline before they reach here."""
+    The orchestrator owns its own try/except error-wrap and persists ERROR on any
+    stage failure. This outer guard exists ONLY so a catastrophic failure (e.g. the
+    orchestrator itself failing to import/start) can never propagate out of the
+    BackgroundTask — the webhook already returned 200, so a background crash must be
+    logged, not raised. It does NOT swallow stage errors; those are caught and
+    persisted inside run_pipeline before they ever reach here."""
     try:
         from app.pipeline.orchestrator import run_pipeline
 
@@ -227,9 +227,9 @@ def run_pipeline_bg(run_id: uuid.UUID) -> None:
 def operator_resume_bg(run_id: uuid.UUID, overrides: dict[str, str]) -> None:
     """Background wrapper for the operator-resume path (mirrors resume_pipeline_bg).
 
-    resume_pipeline owns its own try/except error-wrap (D-A1-03); this outer
-    guard only ensures a catastrophic start failure cannot escape the
-    BackgroundTask (the /resolve route already returned 303)."""
+    resume_pipeline owns its own try/except error-wrap; this outer guard only ensures
+    a catastrophic START failure cannot escape the BackgroundTask — the /resolve route
+    has already returned 303, so a background crash must be logged, never raised."""
     try:
         from app.pipeline.orchestrator import resume_pipeline
 

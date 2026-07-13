@@ -8,12 +8,10 @@ These tests will fail RED until Wave 3 adds the dashboard routes to app/main.py:
 
 Also covers:
 - DASH-05 eval graceful handling of missing summary.json (200 with "No eval results")
-- Message-ID uniqueness (finding MEDIUM): /demo/send-test mints a fresh ID per click
-- UUID path param validation (T-05-05 SQLi guard): /runs/not-a-uuid → 422
-- UAT #3/#4 status poll endpoint: GET /runs/{id}/status → 200 JSON / 404
-
-Routes do not yet exist in app/main.py — these tests are the Nyquist Wave 0
-contract that Wave 3 must satisfy.
+- Message-ID uniqueness: /demo/send-test mints a fresh ID per click
+- UUID path param validation: /runs/not-a-uuid → 422 (non-UUID strings must never
+  reach a SQL query)
+- Status poll endpoint: GET /runs/{id}/status → 200 JSON / 404
 """
 from __future__ import annotations
 
@@ -47,15 +45,14 @@ def test_runs_list_returns_200():
 
 
 # ---------------------------------------------------------------------------
-# D-8-07 / OPS2-02 — load_all_runs explicit-column projection (jsonb_typeof-guarded
-# employee_count, review fix #2). DB-free via FakeConnection (fake_conn fixture,
-# tests/conftest.py).
+# load_all_runs explicit-column projection (jsonb_typeof-guarded employee_count).
+# DB-free via FakeConnection (fake_conn fixture, tests/conftest.py).
 # ---------------------------------------------------------------------------
 
 
 def test_load_all_runs_projection_has_no_select_star(fake_conn):
-    """D-8-07 — the SQL text has no `pr.*` / `SELECT *`, and names the explicit
-    scalar columns plus the two computed aliases."""
+    """The SQL text has no `pr.*` / `SELECT *`, and names the explicit scalar
+    columns plus the two computed aliases."""
     from app.db import repo
 
     fake_conn.script_fetchall([])
@@ -72,9 +69,9 @@ def test_load_all_runs_projection_has_no_select_star(fake_conn):
 
 
 def test_load_all_runs_employee_count_uses_jsonb_typeof_guard(fake_conn):
-    """Review fix #2 / T-8-12 — employee_count is guarded by a jsonb_typeof CASE
-    expression, NOT a bare COALESCE(jsonb_array_length(...), 0) — the bare form
-    still raises on a non-array JSON scalar/null literal."""
+    """employee_count is guarded by a jsonb_typeof CASE expression, NOT a bare
+    COALESCE(jsonb_array_length(...), 0) — the bare form still raises on a
+    non-array JSON scalar/null literal."""
     from app.db import repo
 
     fake_conn.script_fetchall([])
@@ -266,13 +263,13 @@ def test_eval_view_refuses_fixture_path_traversal(
 
 
 # ---------------------------------------------------------------------------
-# Test 6: UUID path validation — /runs/not-a-uuid returns 422 (T-05-05 SQLi guard)
+# Test 6: UUID path validation — /runs/not-a-uuid returns 422
 # ---------------------------------------------------------------------------
 
 
 def test_runs_invalid_uuid_returns_422():
-    """T-05-05 SQLi guard: GET /runs/not-a-uuid must return 422 (Pydantic UUID
-    validation rejects non-UUID strings before they reach the DB layer).
+    """GET /runs/not-a-uuid must return 422 — Pydantic UUID validation rejects
+    non-UUID strings before they reach the DB layer.
 
     This pins the security property: run_id path parameters are validated as UUIDs,
     so arbitrary strings never reach a SQL query. Will be verified RED until Wave 3
@@ -293,12 +290,12 @@ def test_runs_invalid_uuid_returns_422():
 
 
 # ---------------------------------------------------------------------------
-# Test 8: UAT #3/#4 — GET /runs/{id}/status returns 404 for unknown run
+# Test 8: GET /runs/{id}/status returns 404 for unknown run
 # ---------------------------------------------------------------------------
 
 
 def test_run_status_endpoint_404_for_unknown_run():
-    """UAT #3/#4: GET /runs/{id}/status → 404 for a run that does not exist.
+    """GET /runs/{id}/status → 404 for a run that does not exist.
 
     The JS poller relies on this contract to stop polling on a missing run.
     The endpoint must never return 500 for an unknown UUID.
@@ -312,12 +309,12 @@ def test_run_status_endpoint_404_for_unknown_run():
 
 
 # ---------------------------------------------------------------------------
-# Test 9: UAT #3/#4 — GET /runs/{id}/status returns 422 for non-UUID path
+# Test 9: GET /runs/{id}/status returns 422 for non-UUID path
 # ---------------------------------------------------------------------------
 
 
 def test_run_status_endpoint_422_for_non_uuid():
-    """UAT #3/#4: GET /runs/not-a-uuid/status → 422 (UUID validation guard).
+    """GET /runs/not-a-uuid/status → 422 (UUID validation guard).
 
     Ensures the status endpoint rejects non-UUID strings before they reach DB.
     """
@@ -328,12 +325,12 @@ def test_run_status_endpoint_422_for_non_uuid():
 
 
 # ---------------------------------------------------------------------------
-# Test 10: UAT #3/#4 — runs list page does NOT contain meta-refresh
+# Test 10: runs list page does NOT contain meta-refresh
 # ---------------------------------------------------------------------------
 
 
 def test_runs_list_has_no_meta_refresh():
-    """UAT #3/#4: GET /runs must NOT emit <meta http-equiv="refresh">.
+    """GET /runs must NOT emit <meta http-equiv="refresh">.
 
     The blunt meta-refresh was replaced by a vanilla-JS status poll.
     This test pins the removal so it can't silently regress.
@@ -342,12 +339,12 @@ def test_runs_list_has_no_meta_refresh():
     assert response.status_code == 200
     assert 'http-equiv="refresh"' not in response.text, (
         "GET /runs must not emit <meta http-equiv='refresh'> — "
-        "the vanilla-JS poll replaced it (UAT #3/#4)"
+        "the vanilla-JS poll replaced it"
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 11: UAT #3/#4 — run detail page does NOT contain meta-refresh
+# Test 11: run detail page does NOT contain meta-refresh
 # ---------------------------------------------------------------------------
 
 
@@ -392,7 +389,7 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# OPS2-01 — end-to-end key link: DB column -> RUN_COLS/load_run -> run_detail.html
+# End-to-end key link: DB column -> RUN_COLS/load_run -> run_detail.html
 # ---------------------------------------------------------------------------
 
 
@@ -448,17 +445,18 @@ def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
 @pytest.mark.parametrize(
     "bad_name",
     [
-        'Bad "Name"\r\nX-Injected: evil',  # CR-01 REVIEW-2: quote + CRLF header injection
-        "Paweł Łukasiński",                # CR-01 REVIEW-3: non-latin-1 unicode (ł=U+0142)
+        'Bad "Name"\r\nX-Injected: evil',  # quote + CRLF header injection
+        "Paweł Łukasiński",                # non-latin-1 unicode (ł=U+0142)
         "İrem Çağ",                        # Turkish dotted-I + ç, also above U+00FF
     ],
 )
 def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
-    """CR-01 (REVIEW-2 + REVIEW-3) security regression: the paystub PDF Content-Disposition
-    filename must be sanitized so it (a) cannot break/inject the header (quote/CRLF) and
-    (b) is always latin-1 encodable — Starlette latin-1-encodes header values, so a unicode
-    name above U+00FF would raise UnicodeEncodeError → 500 without re.ASCII. emp_name falls
-    back to item.submitted_name (LLM-extracted) when the employee was removed post-run.
+    """Security regression: the paystub PDF Content-Disposition filename must be
+    sanitized so it (a) cannot break or inject the header (quote/CRLF) and (b) is always
+    latin-1 encodable — Starlette latin-1-encodes header values, so a unicode name above
+    U+00FF would raise UnicodeEncodeError and 500 without re.ASCII. emp_name falls back
+    to item.submitted_name (LLM-extracted) when the employee was removed post-run, so the
+    value can be fully attacker-shaped.
     """
     from datetime import datetime
     from decimal import Decimal
@@ -578,7 +576,7 @@ def test_run_detail_poll_reloads_on_status_change_not_just_settle(monkeypatch):
 
 
 def test_run_detail_has_no_meta_refresh():
-    """UAT #3/#4: GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
+    """GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
 
     The blunt meta-refresh was replaced by a vanilla-JS status poll.
     """
@@ -587,7 +585,7 @@ def test_run_detail_has_no_meta_refresh():
     # 404 is acceptable (run not found) — we're testing the 200 path for no-refresh.
     if response.status_code == 200:
         assert 'http-equiv="refresh"' not in response.text, (
-            "GET /runs/{id} must not emit <meta http-equiv='refresh'> (UAT #3/#4)"
+            "GET /runs/{id} must not emit <meta http-equiv='refresh'>"
         )
 
 
@@ -696,7 +694,7 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
     with in_reply_to == clarification Message-ID and from_addr == source inbound sender.
 
     This is the core contract: the synthetic reply carries the right RFC threading
-    headers so _route_reply finds the awaiting_reply run AND the FIX-5 spoof guard
+    headers so _route_reply finds the awaiting_reply run AND the sender spoof guard
     passes (from_addr == business contact email).
     """
     from datetime import datetime
@@ -780,7 +778,7 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
         f"synthetic reply references_header must == clarification mid; "
         f"got {synthetic.references_header!r}"
     )
-    # from_addr == business contact email (FIX-5 spoof guard will pass)
+    # from_addr == business contact email (the sender spoof guard will pass)
     assert synthetic.from_addr == client_addr, (
         f"synthetic reply from_addr must == source inbound sender; got {synthetic.from_addr!r}"
     )
@@ -796,12 +794,12 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
 
 @pytest.mark.integration
 def test_send_test_mints_fresh_message_id_each_click():
-    """UAT #2 / finding MEDIUM: two consecutive POST /demo/send-test calls must
-    produce DISTINCT runs with DISTINCT message_ids — even though both now
-    redirect to /runs (the queue view, not the individual run detail URL).
+    """Two consecutive POST /demo/send-test calls must produce DISTINCT runs with
+    DISTINCT message_ids — even though both redirect to /runs (the queue view, not
+    the individual run detail URL).
 
     Contract (DASH-05):
-    - Both clicks → 303 to /runs (success path; UAT #2 fix).
+    - Both clicks → 303 to /runs (success path).
     - Each click inserts a distinct email_messages row (different message_id).
     - Each click creates a distinct payroll_runs row.
 
@@ -822,15 +820,15 @@ def test_send_test_mints_fresh_message_id_each_click():
         f"got {response2.status_code}"
     )
 
-    # UAT #2: both clicks now redirect to /runs (the triage queue), not to a
-    # specific run URL. This is the correct CX: operator watches the queue.
+    # Both clicks redirect to /runs (the triage queue), not to a specific run URL,
+    # so the operator watches the queue as the runs advance.
     loc1 = response1.headers.get("location", "")
     loc2 = response2.headers.get("location", "")
     assert loc1 == "/runs", (
-        f"First /demo/send-test must redirect to /runs (UAT #2); got {loc1!r}"
+        f"First /demo/send-test must redirect to /runs; got {loc1!r}"
     )
     assert loc2 == "/runs", (
-        f"Second /demo/send-test must redirect to /runs (UAT #2); got {loc2!r}"
+        f"Second /demo/send-test must redirect to /runs; got {loc2!r}"
     )
 
     # DASH-05 core contract: two distinct runs were created in the DB.
@@ -855,26 +853,20 @@ def test_send_test_mints_fresh_message_id_each_click():
 
 
 # ---------------------------------------------------------------------------
-# D-20: Health probe routes
-#
-# 06-01 wrote these as xfail(strict=True) stubs ("fail until the routes exist");
-# 06-02 implemented GET /health/live and /health/ready in app/main.py, so the
-# stubs flip to GREEN — the xfail markers are removed here at merge (the
-# designed XFAIL→XPASS→remove-marker transition). These are now real assertions.
+# Health probe routes
 # ---------------------------------------------------------------------------
 
 
 def test_health_live_returns_200_no_db():
-    """D-20 liveness: GET /health/live must return 200 with no DB connection.
+    """Liveness: GET /health/live must return 200 with no DB connection.
 
-    This route is the Render deploy healthCheckPath — a Supabase blip during
-    deploy must not fail this check. It touches NO database. (OPS-01 / D-20)
-
-    T-06-02-01: Response body is {"status": "ok"} only.
+    This route is the Render deploy healthCheckPath — a Supabase blip during deploy
+    must not fail this check, so it touches NO database. The response body is
+    {"status": "ok"} only: no version, no stack, no DB state.
     """
     response = client.get("/health/live")
     assert response.status_code == 200, (
-        f"GET /health/live must return 200 (D-20 liveness); got {response.status_code}"
+        f"GET /health/live must return 200 (liveness); got {response.status_code}"
     )
     assert response.json()["status"] == "ok", (
         f"GET /health/live must return {{\"status\": \"ok\"}}; got {response.json()}"
@@ -882,18 +874,18 @@ def test_health_live_returns_200_no_db():
 
 
 # ---------------------------------------------------------------------------
-# Tests for 06-06 Task 1: HIGH-1 per-fixture routing fix + demo_reset re-arming
+# Per-fixture demo routing + demo_reset re-arming
 # ---------------------------------------------------------------------------
 
 
 def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
-    """HIGH-1 (R4) multi-business proof: coastal_exact fixture routes to Coastal
-    Cleaning Co. unconditionally, independent of any demo_sender_bindings state.
+    """Multi-business proof: the coastal_exact fixture routes to Coastal Cleaning Co.
+    unconditionally, independent of any demo_sender_bindings state.
 
-    from_addr is now resolved from _SEED_CONTACTS[fixture["business_name"]] —
-    a constant map — NOT from a DB lookup or global DEMO_CONTACT_EMAIL. Seed
-    contacts are permanently stable (06-08 HIGH-2), so the constant is always
-    correct. Each fixture routes to its own business with zero DB coupling.
+    from_addr resolves from _SEED_CONTACTS[fixture["business_name"]] — a constant map —
+    NOT from a DB lookup or a global contact-email. The seed contacts are permanently
+    stable, so each fixture routes to its own business with zero DB coupling; resolving
+    via binding state would drag every fixture to whichever business was bound last.
     """
     import uuid as _uuid
 
@@ -955,7 +947,7 @@ def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
 
 
 def test_demo_send_test_metro_unknown_shorthand_routes_to_metro(monkeypatch):
-    """HIGH-1 (R4) Beat-2 fixture: unknown_shorthand_metro routes to Metro Deli Group.
+    """The unknown_shorthand_metro fixture routes to Metro Deli Group.
 
     from_addr resolves to 'hr@metrodeli.example' via _SEED_CONTACTS because
     unknown_shorthand_metro has business_name='Metro Deli Group'. The run is
@@ -1026,8 +1018,8 @@ def test_demo_reset_rearming_writes_demo_sender_bindings_not_contact_email():
 
     Using FakeConnection (from conftest.py), asserts that:
     1. The re-arming SQL targets demo_sender_bindings (not businesses).
-    2. No 'UPDATE businesses' SQL is executed anywhere — the 06-08 HIGH-2
-       invariant (seed .example contacts are permanently stable) is preserved.
+    2. No 'UPDATE businesses' SQL is executed anywhere, preserving the invariant that
+       the seed .example contacts are permanently stable.
     """
     import importlib
     import os
@@ -1076,7 +1068,7 @@ def test_demo_reset_rearming_writes_demo_sender_bindings_not_contact_email():
         f"executed SQL:\n{all_sql}"
     )
 
-    # Assert NO UPDATE businesses SQL was executed (HIGH-2 invariant)
+    # Assert NO UPDATE businesses SQL was executed (stable-seed-contacts invariant)
     assert "UPDATE businesses" not in all_sql, (
         "demo_reset._rearm_demo_identity must NOT execute 'UPDATE businesses'; "
         f"executed SQL:\n{all_sql}"
@@ -1085,16 +1077,16 @@ def test_demo_reset_rearming_writes_demo_sender_bindings_not_contact_email():
 
 @pytest.mark.integration
 def test_health_ready_returns_200_with_db(seeded_db):
-    """D-20 readiness: GET /health/ready must run a real SELECT and return 200.
+    """Readiness: GET /health/ready must run a real SELECT and return 200.
 
-    This route is the GitHub Actions keep-alive target. It touches the businesses
-    table to register DB activity so Supabase does not pause (D-16). The SELECT
-    hits a real table (not SELECT 1) so Supabase registers activity. (OPS-01 / D-20 / D-16)
+    This route is the GitHub Actions keep-alive target. It touches the businesses table
+    so the Supabase free project registers DB activity and does not pause — a bare
+    SELECT 1 against no table may not count as "use" in Supabase's pause detection.
     Requires a live DB — skip-guarded with @pytest.mark.integration.
     """
     response = client.get("/health/ready")
     assert response.status_code == 200, (
-        f"GET /health/ready must return 200 (D-20 readiness); got {response.status_code}"
+        f"GET /health/ready must return 200 (readiness); got {response.status_code}"
     )
     assert response.json()["status"] == "ready", (
         f"GET /health/ready must return {{\"status\": \"ready\"}}; got {response.json()}"

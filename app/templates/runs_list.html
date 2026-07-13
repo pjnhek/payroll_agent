@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
-{# UAT #3/#4: vanilla-JS per-row status poll — replaces the blunt meta-refresh.
+{# Vanilla-JS per-row status poll — replaces a blunt meta-refresh, which would reset
+   the demo-business <select> and the scroll position on every tick.
    Polls GET /runs/{id}/status every 2s for each in-flight row.
    Swaps each badge IN PLACE; STOPS polling that row when it settles.
    Cap: 30 attempts (~60s) per row. Fetch errors silently skipped.
@@ -81,7 +82,7 @@
 </div>
 {% endif %}
 
-{# UAT #6: demo send-test with business/fixture picker #}
+{# Demo send-test with business/fixture picker #}
 <div class="mt-2xl">
   <form method="post" action="/demo/send-test" class="form-inline" style="margin-bottom: 0;">
     <label for="fixture_key_runs" class="form-help" style="font-weight: 600;">Demo scenario</label>

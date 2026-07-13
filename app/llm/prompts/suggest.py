@@ -1,21 +1,23 @@
-"""Clarification-SUGGESTION prompt (LLM-05, D-21-05) — the new Phase 2 hero copy.
+"""Clarification-SUGGESTION prompt (LLM-05).
 
-For a name the DETERMINISTIC resolver could NOT resolve, this prompt asks the
-cheap (draft) tier which roster employee the client most likely meant, so the
-clarification email can be specific ("did you mean David Reyes?"). This is where
-nickname knowledge (Bob→Robert) beats plain string distance — the LLM doing real
-judgment beyond extraction.
+For a name the DETERMINISTIC resolver could NOT resolve, this prompt asks the cheap
+(draft) tier which roster employee the client most likely meant, so the clarification
+email can be specific ("did you mean David Reyes?"). This is where nickname knowledge
+(Bob→Robert) beats plain string distance — the LLM doing real judgment beyond
+extraction.
 
-CRITICAL (D-21-05): the suggestion is advisory COPY only. It is produced AFTER the
-deterministic gate has already decided request_clarification and it NEVER feeds
-`decide` / `final_action`. The system prompt states this explicitly so the model
-understands it is helping write an email, not deciding anything.
+CRITICAL: the suggestion is advisory COPY only. It is produced AFTER the deterministic
+gate has already decided request_clarification, and it NEVER feeds `decide` /
+`final_action`. Wiring it into the decision would hand a money-moving name match back
+to the model — the exact thing the deterministic resolver exists to prevent. The system
+prompt states this explicitly so the model understands it is helping write an email,
+not deciding anything.
 
 Unlike the free-text clarify-DRAFTING prompt, this is a JSON-mode STRUCTURED call
-(call_structured against NameSuggestionResponse), so it carries the literal word
-"json" + an example shape — the DeepSeek json_object convention, kept even though
-the draft tier is Kimi (one consistent JSON-mode discipline across structured
-calls, RESEARCH §Pattern 2).
+(call_structured against NameSuggestionResponse), so it carries the literal word "json"
+plus an example shape. That is the DeepSeek json_object convention, kept even though the
+draft tier is Kimi, so there is one consistent JSON-mode discipline across all structured
+calls.
 """
 from __future__ import annotations
 

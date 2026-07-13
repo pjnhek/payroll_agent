@@ -1,19 +1,19 @@
-"""Suggestion-only call tests (LLM-05, D-21-05) — the NEW Phase 2 hero copy.
+"""Suggestion-only call tests (LLM-05).
 
 `suggest_employees(unresolved_names, roster, llm=...)` makes ONE cheap-tier
 (`draft`) structured call to suggest the most likely intended roster employee for
 each name the deterministic resolver could NOT resolve. The result is advisory
 COPY only — it is used solely to make the clarification email specific ("did you
-mean David Reyes?") and NEVER feeds `decide` / `final_action` (D-21-05).
+mean David Reyes?") and NEVER feeds `decide` / `final_action`.
 
 Invariants pinned here:
   - a scripted suggestion maps the submitted name → a roster full_name;
   - an EMPTY unresolved list makes NO LLM call (nothing to suggest);
   - any failure (API error, empty content, parse/validation, or the model
     returning null/unknown) degrades to NO entry for that name and NEVER raises —
-    a suggestion failure can never strand the run (mirrors compose_email's WR-03);
+    a suggestion failure can never strand the run (mirroring compose_email);
   - `decide.py` never imports / references `suggest` — the suggestion is
-    structurally walled off from the money-moving decision (T-021-06).
+    structurally walled off from the money-moving decision.
 """
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def test_suggests_roster_full_name_for_unresolved():
     assert out == {"David Reyez": "David Reyes"}
     assert llm.calls, "an unresolved name must trigger the suggestion call"
     tier, _messages, model = llm.calls[0]
-    assert tier == "draft", "the suggestion rides the cheap (draft) tier (D-21-05)"
+    assert tier == "draft", "the suggestion rides the cheap (draft) tier"
     assert model is NameSuggestionResponse
 
 
@@ -144,7 +144,7 @@ def test_suggested_name_not_in_roster_is_dropped():
 
 
 # ---------------------------------------------------------------------------
-# Failure degradation — never raises, always {} (mirrors WR-03)
+# Failure degradation — never raises, always {}
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ def test_parse_failure_degrades_to_empty_mapping():
 
 
 def test_empty_content_degrades_to_empty_mapping():
-    """Empty-content from the model degrades to {} (the WR-03 empty-content path)."""
+    """Empty content from the model degrades to {} rather than raising."""
     llm = _StructuredLLM(content="")
     out = suggest_employees(["David Reyez"], _roster(), llm=llm)
 
@@ -176,13 +176,13 @@ def test_empty_content_degrades_to_empty_mapping():
 
 
 # ---------------------------------------------------------------------------
-# T-021-06 — the suggestion is structurally walled off from the decision
+# The suggestion is structurally walled off from the decision
 # ---------------------------------------------------------------------------
 
 
 def test_decide_never_references_suggest():
     """decide.py must NEVER import or reference `suggest` — the suggestion is copy
-    only and can never reach the money-moving decision (D-21-05, T-021-06)."""
+    only and can never reach the money-moving decision."""
     from app.pipeline import decide as decide_mod
 
     src = pathlib.Path(decide_mod.__file__).read_text()
@@ -193,5 +193,5 @@ def test_decide_never_references_suggest():
     )
     assert "suggest" not in code.lower(), (
         "decide.py must not reference suggest — the suggestion never feeds the "
-        "deterministic decision (D-21-05, T-021-06)"
+        "deterministic decision"
     )
