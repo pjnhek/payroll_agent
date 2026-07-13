@@ -1,18 +1,21 @@
-"""The clarification drafting call (CLAR-01, AI-SPEC §1 Drafting call).
+"""The clarification and confirmation drafting calls: the model writes prose, only prose.
 
-When final_action == request_clarification, the cheap DRAFT_* tier drafts a
-human-readable clarification email asking the client to resolve what the code gate
-blocked. This is the ONE LLM call that is NOT JSON mode — it is prose, so it goes
-through `client.call_text` (free text, no schema, no reflective retry) and may run
-a low non-zero temperature.
+When final_action == request_clarification, the cheap draft tier writes a human-readable
+email asking the client to resolve whatever the code gate blocked. This is the ONE LLM call
+that is not JSON mode — it is prose, so it goes through `client.call_text` (free text, no
+schema, no reflective retry) and may run at a low non-zero temperature.
 
-A draft failure must NEVER strand the run: `call_text` returns None on empty
-content, and this module falls back to a deterministic templated body built from
-the Decision's gate detail (gate_reasons / unresolved_names / missing_fields). So
-the run always has a body to send and always pauses cleanly at AWAITING_REPLY.
+The model here only phrases the question. WHAT to ask was already decided in code by
+decide(); the draft cannot add, drop, or soften a gate reason.
 
-PURE: typed Decision in, str out. No DB, no connection — the orchestrator owns the
-send + status transition.
+A draft failure must NEVER strand the run. `call_text` returns None on empty content, and
+this module falls back to a deterministic templated body built from the Decision's gate
+detail (gate_reasons / unresolved_names / missing_fields). The run always has a body to
+send and always pauses cleanly at AWAITING_REPLY — a flaky model call must not be able to
+leave a payroll in limbo.
+
+PURE: typed Decision in, str out. No DB, no connection — the orchestrator owns the send and
+the status transition.
 """
 from __future__ import annotations
 
@@ -27,15 +30,12 @@ logger = logging.getLogger("payroll_agent.compose_email")
 
 _SUBJECT = "Quick question before we run your payroll"
 
-# 09-04 (Codex HIGH-3): compose_clarification's call_text invocation previously
-# passed NO timeout_s= at all — the wholly-unbounded gap Codex HIGH-3 flagged
-# (no client-side timeout, and call_text has no app-level retry loop wrapping it
-# either). A clarification draft is free-text prose, not a heavier structured-JSON
-# round-trip (app/llm/client.py's _STRUCTURED_TIMEOUT_S = 45.0), so this uses the
-# lower end of the same 30-60s range RESEARCH.md recommends. Combined with
-# call_text's own new unconditional max_retries=0 (app/llm/client.py), this call's
-# true worst case is now timeout_s x 1, not the previous unbounded (~10-min library
-# default) x 3 (library retries).
+# Every draft call MUST pass timeout_s. call_text has no app-level retry loop around it,
+# so an unbounded call inherits the library's ~10-minute default and (with library retries)
+# can hang a webhook request for half an hour. A clarification draft is free-text prose,
+# lighter than the structured-JSON round trip (see client._STRUCTURED_TIMEOUT_S = 45.0),
+# so it takes the lower bound of the sane range. Together with call_text's unconditional
+# max_retries=0, the true worst case here is timeout_s x 1.
 _CLARIFICATION_TIMEOUT_S = 30.0
 
 
@@ -46,15 +46,15 @@ def _field_regression_lines(gate_reasons: list[str]) -> list[str]:
     rsplit('.',1) correctly handles dotted submitted names like 'M. Chen.hours_overtime'
     → ('M. Chen', 'hours_overtime'), NOT ('M', 'Chen.hours_overtime').
 
-    Returns a list of D-7.5-09 wording lines, one per field regression gate_reason.
+    Returns one wording line per field-regression gate_reason.
     """
     lines: list[str] = []
     for reason in gate_reasons:
         if reason.startswith("field regression: "):
             qualified = reason[len("field regression: "):]
-            # IN-03 guard: rsplit(".", 1) raises ValueError if there is no ".".
-            # A malformed gate_reason (no dot separator) is skipped rather than
-            # crashing the draft call and stranding the run (CLAR-01 contract).
+            # A malformed gate_reason (no dot separator) is SKIPPED, never allowed to
+            # raise: a formatting quirk in one reason line must not crash the draft and
+            # strand the whole run.
             parts = qualified.rsplit(".", 1)
             if len(parts) != 2:
                 continue
@@ -89,15 +89,15 @@ def _template_body(
 ) -> str:
     """A deterministic clarification body from the gate detail (fallback / floor).
 
-    Surfaces exactly what the code gate blocked on so the client can resolve it,
-    even when the draft model returns nothing.
+    Surfaces exactly what the code gate blocked on so the client can resolve it, even when
+    the draft model returns nothing at all.
 
-    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY
-    from the suggestion call (D-21-05). When a suggestion exists for an unresolved
-    name, the line names the likely intended employee ("We could not match
-    'David Reyez' — did you mean David Reyes?") instead of the bare name. This is
-    the DETERMINISTIC floor of the new Phase 2 hero, so the specific ask survives
-    even a total draft-tier failure (WR-03).
+    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY. When a
+    suggestion exists for an unresolved name, the line names the likely intended employee
+    ("We could not match 'David Reyez' — did you mean David Reyes?") instead of the bare
+    name. Threading suggestions through this deterministic floor (and not only the model
+    draft) is what keeps the specific, useful ask alive even on total draft-tier failure.
+    The suggestion is copy: it never feeds decide() or final_action.
     """
     suggestions = suggestions or {}
     lines = [
@@ -129,10 +129,10 @@ def _template_body(
             + ", ".join(decision.missing_fields)
             + "."
         )
-    # N5 fix: field-regression lines emitted UNCONDITIONALLY (before the fallback gate)
-    # so they appear regardless of whether unresolved_names or missing_fields also exist.
-    # Uses _field_regression_lines() helper with rsplit last-dot split for dotted names.
-    # D-7.5-09 wording: 'Reply with the {field_name} hours for {submitted_name}, or 'none' ...'
+    # Field-regression lines are emitted UNCONDITIONALLY, before the raw-gate-reason
+    # fallback below. If they were emitted only in the fallback branch, a run that ALSO
+    # has unresolved names or missing fields would never ask about the dropped hours — the
+    # client would answer the other questions and the regression would silently persist.
     fr_lines = _field_regression_lines(decision.gate_reasons)
     lines.extend(fr_lines)
 
@@ -154,26 +154,25 @@ def compose_clarification(
     suggestions: dict[str, str] | None = None,
     llm: Any = llm_client,
 ) -> str:
-    """Draft a clarification email body for a gated run (CLAR-01).
+    """Draft a clarification email body for a gated run.
 
-    Uses the DRAFT_* tier free-text path; on empty model content falls back to a
-    templated body so a draft failure never strands the run. Returns the body
-    string the orchestrator hands to gateway.send_outbound.
+    Uses the draft tier's free-text path; on empty model content it falls back to a
+    templated body so a draft failure never strands the run. Returns the body string the
+    orchestrator hands to gateway.send_outbound.
 
-    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY
-    from the suggestion call (D-21-05), threaded into BOTH the draft prompt (so the
-    model can write "did you mean David Reyes?") AND the deterministic template
-    fallback (so the specific ask survives a draft failure, WR-03). It is copy
-    only — it never feeds decide / final_action.
+    `suggestions` (submitted_name → suggested roster full_name) is advisory COPY, threaded
+    into BOTH the draft prompt (so the model can write "did you mean David Reyes?") AND the
+    deterministic template fallback (so the specific ask survives a draft failure). It is
+    copy only — it never feeds decide() or final_action.
     """
     messages = clarify_prompt.build_messages(decision, suggestions)
-    # WR-03: the "draft failure never strands the run" guarantee must cover BOTH
-    # empty content AND an API error (auth/rate-limit/etc.). call_text returns None
-    # on empty content but RAISES on an API error — unwrapped, that exception would
-    # propagate out through _clarify and route the run to ERROR instead of falling
-    # back to the template. Wrap it so an API error also degrades to the templated
-    # body, and LOG every fallback so a misconfigured draft tier (wrong key/model)
-    # is VISIBLE rather than silently templating every clarification.
+    # The "a draft failure never strands the run" guarantee must cover BOTH empty content
+    # AND an API error (auth, rate limit, etc.). call_text returns None on empty content
+    # but RAISES on an API error — left unwrapped, that exception propagates out and routes
+    # the run to ERROR instead of falling back to the template, turning a transient model
+    # blip into a dead payroll. Wrap it so an API error also degrades to the templated body.
+    # LOG every fallback: a misconfigured draft tier (wrong key or model id) would otherwise
+    # silently template every clarification and look fine.
     api_error = False
     try:
         body = cast(
@@ -182,9 +181,9 @@ def compose_clarification(
                 "draft", messages, temperature=0.3, timeout_s=_CLARIFICATION_TIMEOUT_S
             ),
         )
-    except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (CLAR-01)
-        # Log the failure TYPE only — no exc_info (a traceback can echo the prompt /
-        # submitted names — payroll PII — review fix).
+    except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run
+        # Log the failure TYPE only, with no exc_info: a traceback can echo the prompt and
+        # the submitted names, which are payroll PII and must not land in logs.
         logger.warning(
             "draft call failed (%s) — falling back to templated clarification body",
             type(exc).__name__,
@@ -198,10 +197,10 @@ def compose_clarification(
             logger.warning("draft returned empty content — using templated clarification body")
         return _template_body(decision, suggestions)
 
-    # Finding 4 fix (HIGH — D-7.5-09 wording lock): the deterministic field-regression
-    # question is APPENDED after the LLM draft body so it is guaranteed to appear on the
-    # real (LLM-draft) path, not only in the _template_body fallback.
-    # _field_regression_lines() uses rsplit last-dot split (handles dotted names like 'M. Chen').
+    # The deterministic field-regression question is APPENDED after the model's draft body,
+    # so it is guaranteed to appear on the real (model-drafted) path and not only in the
+    # _template_body fallback. Trusting the model to carry it would mean a drafted email
+    # could quietly omit the one question about hours the client dropped.
     fr_lines = _field_regression_lines(decision.gate_reasons)
     if fr_lines:
         body = body.rstrip("\n") + "\n\n" + "\n".join(fr_lines)
@@ -233,10 +232,11 @@ def _confirmation_template_body(
     paystubs: list[PaystubLineItem],
     run: dict[str, Any],
 ) -> str:
-    """Deterministic confirmation floor — fires when draft times out or fails (D-10).
+    """Deterministic confirmation floor — fires when the draft call times out or fails.
 
-    Never strands the send, even on total draft failure. Per UI-SPEC copywriting
-    contract (Confirmation Email Subject / Template Floor body):
+    Never strands the send, even on total draft failure: the operator already approved this
+    payroll, so it must go out whether or not the model can write a nice sentence about it.
+    The required copy shape is:
       - Opens: "Your payroll run has been reviewed and approved..."
       - One line per employee with net pay
       - Closes: "Please contact us if you have any questions."
@@ -255,17 +255,17 @@ def _confirmation_template_body(
 def confirmation_subject(
     run: dict[str, Any], original_subject: str | None = None
 ) -> str:
-    """The confirmation email subject line (HITL-02, UI-SPEC Copywriting Contract).
+    """The confirmation email subject line.
 
     Format: "Payroll Confirmation — {business_name} — {pay_period_label}".
-    run is a dict from repo.load_run; uses .get() with safe fallbacks so a
-    missing key never raises here.
+    run is a dict from repo.load_run; uses .get() with safe fallbacks so a missing key can
+    never raise here and kill an approved send over a subject line.
 
-    P6 threading: when the original inbound subject is supplied, the line is
-    prefixed `Re: <original subject>` so the confirmation lands in the client's
-    existing thread (the bot replies from a different From address, so the subject
-    match is what groups the conversation). With no original subject it returns the
-    standalone confirmation subject — backward compatible.
+    Threading: when the original inbound subject is supplied, the line is prefixed
+    `Re: <original subject>` so the confirmation lands in the client's existing thread. The
+    bot replies from a different From address, so the subject match is what groups the
+    conversation for the client. With no original subject it returns the standalone
+    confirmation subject.
     """
     business_name = run.get("business_name", "Payroll Run")
     pay_period_label = run.get("pay_period_label", "")
@@ -282,16 +282,17 @@ def compose_confirmation(
     llm: Any = llm_client,
     timeout_s: float = 3.0,
 ) -> str:
-    """Draft a confirmation email body for an approved run (HITL-02).
+    """Draft a confirmation email body for an approved run.
 
-    Mirrors compose_clarification exactly — uses the DRAFT_* tier free-text path;
-    on any LLM error or empty content falls back to _confirmation_template_body so
-    a draft failure never strands the approval (D-10, T-05-11).
+    Mirrors compose_clarification: uses the draft tier's free-text path, and on any LLM
+    error or empty content falls back to _confirmation_template_body, so a draft failure
+    never strands an approval the operator already gave.
 
-    `timeout_s` (D-10b): hard ~3s timeout on the LLM call bounds cold-dyno latency;
-    a timeout exception is caught by the broad except clause and falls to the floor.
-    Passed to llm.call_text as a keyword argument — test fakes must accept **kwargs
-    or the "uses_draft_when_present" test gets a spurious TypeError (T-05-11b).
+    `timeout_s`: a hard, short timeout bounds cold-start latency on the send path — the
+    client is waiting on an approved payroll, not on prose. A timeout is caught by the
+    broad except below and falls through to the template floor. It is passed to
+    llm.call_text as a KEYWORD argument, so test fakes must accept **kwargs or they raise
+    a spurious TypeError instead of exercising the draft path.
     """
     messages = [
         {
@@ -315,19 +316,20 @@ def compose_confirmation(
             ),
         },
     ]
-    # D-10 / WR-03 analog: the "draft failure never strands the run" guarantee must
-    # cover BOTH empty content AND an API error (auth/rate-limit/timeout/etc.).
-    # call_text returns None on empty content but RAISES on an API error — unwrapped,
-    # that exception would propagate through _deliver and ERROR the run instead of
-    # falling back to the template floor. Broad except so a timeout also degrades.
+    # Same guarantee as compose_clarification: "a draft failure never strands the run" must
+    # cover BOTH empty content AND an API error (auth, rate limit, timeout). call_text
+    # returns None on empty content but RAISES on an API error — left unwrapped, that
+    # exception propagates through _deliver and ERRORs a run the operator already approved,
+    # instead of falling back to the template floor. The except is deliberately broad so a
+    # timeout degrades the same way.
     api_error = False
     try:
         body = cast(
             str | None,
             llm.call_text("draft", messages, temperature=0.3, timeout_s=timeout_s),
         )
-    except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run (D-10)
-        # Log the failure TYPE only — no exc_info (traceback can echo PII, D-A1-03).
+    except Exception as exc:  # noqa: BLE001 — a draft failure must never strand the run
+        # Log the failure TYPE only, with no exc_info: a traceback can echo payroll PII.
         logger.warning(
             "confirmation draft call failed (%s) — falling back to templated confirmation body",
             type(exc).__name__,

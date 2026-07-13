@@ -1,13 +1,16 @@
-"""D-14 roster / judgment-stage I/O shapes.
+"""Roster and judgment-stage I/O shapes — the pure-value contracts.
 
-Every judgment stage (reconcile_names, validate, decide) must be callable by the
-eval with only typed fixture inputs — zero DB access inside the function.  These
-types are the pure-value contracts that make that possible.
+Every judgment stage (reconcile_names, validate, decide) must be callable by the eval with
+nothing but typed fixture inputs and ZERO DB access inside the function. These types are
+what make that possible, which is what lets the eval measure the code that actually ships.
 
-D-05: all monetary / rate fields are Decimal, never float.
-D-10 / FOUND-06: Employee enforces the pay_type ↔ compensation field invariant
-   via @model_validator so a missing calc input fails at construction time
-   (seed time) rather than mid-demo during the calc engine.
+Invariants:
+  - All monetary / rate fields are Decimal, never float.
+  - Employee enforces the pay_type <-> compensation-field invariant at CONSTRUCTION time,
+    so an un-computable employee (hourly with no rate, salaried with no salary) fails at
+    seed time rather than halfway through a live calc.
+  - The validators in this module reject impossible states outright, so downstream stages
+    can trust their inputs instead of re-checking them.
 """
 from __future__ import annotations
 
@@ -18,16 +21,17 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------------------
-# Employee — roster input shape (not a DB row mirror, per D-07/D-14)
+# Employee — roster input shape (a pure value, not a DB row mirror)
 # ---------------------------------------------------------------------------
 
 
 class Employee(BaseModel):
-    """One employee as a pure value passed into reconcile_names / calc engine.
+    """One employee as a pure value passed into reconcile_names and the calc engine.
 
-    Fields follow FOUND-06 (calc input set) + build plan data model.
-    pay_type / filing_status / pay_type are Literal-constrained (Finding #7)
-    because their complete legal value sets are known from REQUIREMENTS.md now.
+    pay_type, filing_status, and pay_periods_per_year are Literal-constrained because
+    their complete legal value sets are known. That closes the door on an eval fixture or
+    a model-produced payload smuggling in an unrecognized value that the calc would then
+    have to guess how to handle.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -49,42 +53,43 @@ class Employee(BaseModel):
     # Retirement
     retirement_contribution_pct: Decimal = Field(ge=0, le=1)  # e.g. 0.03 for 3%
 
-    # W-4 fields (2020+ form). All four are dollar amounts the Pub 15-T worksheet
-    # adds/subtracts, so a negative silently inflates or deflates withholding
-    # (step_3_dependents is *subtracted*). ge=0 closes the validation gate so a
-    # bad value never reaches the calc engine. (WR-08)
+    # W-4 fields (2020+ form). All are dollar amounts the Pub 15-T worksheet adds to or
+    # subtracts from the annualized wage, so a NEGATIVE value silently inflates or deflates
+    # withholding (step_3_dependents is subtracted, so a negative there over-withholds).
+    # ge=0 closes that gate at construction, so a bad value never reaches the calc engine.
     filing_status: Literal["single", "married_jointly", "married_separately"]
     step_2_checkbox: bool
     step_3_dependents: Decimal = Field(ge=0)      # dollar amount, often 0
     step_4a_other_income: Decimal = Field(ge=0)   # other income, often 0
     step_4b_deductions: Decimal = Field(ge=0)     # extra deductions, often 0
 
-    # YTD Social Security wages before this run (for the $184,500 wage-base cap).
-    # A negative makes remaining_cap = 184500 - ytd_ss_wages exceed the wage base,
-    # breaking the SS-cap straddle logic. (WR-08)
+    # YTD Social Security wages before this run, used for the $184,500 wage-base cap.
+    # A negative would make remaining_cap = 184500 - ytd_ss_wages EXCEED the wage base and
+    # break the SS-cap straddle logic, over-withholding Social Security past the legal cap.
     ytd_ss_wages: Decimal = Field(ge=0)
 
-    # Pay schedule — mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52))
-    # so an eval fixture / LLM-produced value can't drift past the contract (WR-02).
+    # Pay schedule. Mirrors the schema.sql CHECK (pay_periods_per_year IN (12,24,26,52)) so
+    # an eval fixture or model-produced value cannot drift past the DB contract — the calc
+    # annualizes wages by this number, so a bogus value scales withholding by that factor.
     # 52=weekly, 26=biweekly, 24=semi-monthly, 12=monthly
     pay_periods_per_year: Literal[12, 24, 26, 52]
 
     # ------------------------------------------------------------------
-    # D-10 / FOUND-06 compensation invariant
+    # Compensation invariant
     # ------------------------------------------------------------------
     @model_validator(mode="after")
     def _require_compensation_field(self) -> Employee:
-        """Enforce pay_type ↔ compensation field requirement at construction.
+        """Enforce the pay_type <-> compensation-field requirement at construction time.
 
         An hourly employee without hourly_rate, or a salaried employee without
-        annual_salary, is un-computable.  Catching this at seed time (before any
-        DB write) guarantees a missing calc input never reaches the calc engine
-        mid-demo.
+        annual_salary, is UN-COMPUTABLE: the calc would fall back to Decimal("0") and
+        produce a $0 paycheck. Catching it here — at seed time, before any DB write —
+        guarantees a missing calc input can never reach the calc engine mid-run.
 
-        Exclusivity is enforced as well (WR-07): the docstring claims the comp
-        fields are "mutually exclusive per pay_type," so a stray off-type field
-        (e.g. an hourly employee carrying an annual_salary) is rejected rather
-        than left to be silently picked up by a later calc path.
+        Exclusivity is enforced too: the compensation fields are mutually exclusive per
+        pay_type, so a stray off-type field (an hourly employee also carrying an
+        annual_salary) is REJECTED rather than left lying around for a later calc path to
+        silently pick up and pay from.
         """
         if self.pay_type == "hourly":
             if self.hourly_rate is None:
@@ -115,8 +120,8 @@ class Employee(BaseModel):
 class Roster(BaseModel):
     """A business's complete employee list as a typed value.
 
-    reconcile_names(extracted_names, roster) accepts this — it never loads
-    from the DB inside the function (D-14 acceptance bar).
+    reconcile_names(extracted_names, roster) takes this and never loads from the DB inside
+    the function — which is exactly what lets the eval drive the real resolver.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -126,14 +131,16 @@ class Roster(BaseModel):
 
     @model_validator(mode="after")
     def _check_unique_employee_ids(self) -> Roster:
-        """Enforce unique employee ids (review fix).
+        """Enforce unique employee ids.
 
-        reconcile_names resolves uniqueness over the SET of candidate employee ids, so
-        two roster rows sharing one UUID would collapse to one candidate and could
-        wrongly resolve an ambiguous name. Real DB rows are PK-protected; this guards
-        the pure-Roster path the eval constructs (D-14 — the eval uses these types).
-        (business_id consistency is intentionally NOT enforced here — callers build a
-        roster with an explicit business_id and the existing contracts allow it.)
+        reconcile_names resolves uniqueness over the SET of candidate employee ids, so two
+        roster rows sharing one UUID would COLLAPSE to a single candidate — and a name that
+        should be flagged as ambiguous would instead resolve cleanly to the wrong person.
+        Real DB rows are PK-protected; this guards the pure-Roster path that the eval and
+        tests construct by hand.
+
+        business_id consistency is deliberately NOT enforced here — callers build a roster
+        with an explicit business_id and the contracts allow it.
         """
         ids = [e.id for e in self.employees]
         if len(ids) != len(set(ids)):
@@ -142,52 +149,55 @@ class Roster(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# NameMatchResult — per-name DETERMINISTIC resolution result (D-21-01 / D-21-04)
+# NameMatchResult — per-name deterministic resolution result
 # ---------------------------------------------------------------------------
 
 
 class NameMatchResult(BaseModel):
     """One per-name deterministic-resolution result returned by reconcile_names.
 
-    Resolution is pure code over roster facts (D-21-01) — no score, no LLM-classified
-    category, just deterministic source attribution. A submitted name resolves one
-    of three ways:
+    Resolution is pure code over roster facts: no score, no model-classified category, just
+    deterministic source attribution. A submitted name resolves one of these ways:
 
-    - ``source="exact"`` — exact normalized match (casefold + whitespace-normalize)
-      to exactly one employee, with no other employee sharing the normalized name.
-    - ``source="alias"`` — matches a stored ``known_alias`` for exactly one
-      employee, no collision (the READ side of the learning loop, D-21-07).
-    - ``source="none"`` — anything else (no match, typo, first-time nickname,
-      garbled, ambiguous) — the name is left unresolved for the clarify path.
+    - ``source="exact"`` — exact normalized match (casefold + whitespace-normalize) to
+      exactly one employee, with no other employee sharing the normalized name.
+    - ``source="alias"`` — matches a stored ``known_alias`` for exactly one employee, with
+      no collision. This is the READ side of the human-confirmation learning loop.
+    - ``source="none"`` — anything else (no match, typo, first-time nickname, garbled name,
+      or ambiguous across employees). The name is left unresolved for the clarify path; the
+      resolver never guesses.
+    - ``source="operator"`` — a human-stated per-run override (see below).
 
-    ``resolved`` is an EXPLICIT bool (not derived from ``source``) for legibility
-    per D-21-04: the dashboard/eval read ``resolved`` directly rather than
-    re-deriving the rule. ``matched_employee_id`` is None whenever ``source`` is
-    "none" (an unresolved name maps to no employee).
+    ``resolved`` is an EXPLICIT bool rather than something derived from ``source``, so the
+    dashboard and eval read the answer directly instead of each re-deriving the rule (and
+    risking a divergent re-derivation). ``matched_employee_id`` is None whenever ``source``
+    is "none" — an unresolved name maps to no employee. The validator below enforces that
+    those three fields can never disagree.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     submitted_name: str
     matched_employee_id: UUID | None  # None when source == "none" (unresolved)
-    # "operator" (D-11-08/Open Question #2, Phase 11 Plan 04): a human-stated
-    # per-run override applied by reconcile_names(overrides=...) BEFORE the
-    # exact/alias tiers. It is still a resolved, non-guessed result — a human
-    # explicitly stated the match — so it carries the same resolution invariant
-    # as "exact"/"alias" below, just with its own distinct provenance tag (the
-    # no-guess guarantee holds: the LLM never decides; a human did here).
+    # "operator": a human-stated per-run override, applied by reconcile_names(overrides=...)
+    # BEFORE the exact/alias tiers. It is still a resolved, non-guessed result — a human
+    # explicitly stated this match — so it carries the same resolution invariant as "exact"
+    # and "alias", just with its own provenance tag. The no-guess guarantee is intact: the
+    # model never decides; here a person did, and the tag records that.
     source: Literal["exact", "alias", "none", "operator"]
     resolved: bool
     reason: str
 
     @model_validator(mode="after")
     def _check_resolution_invariant(self) -> NameMatchResult:
-        """Reject impossible states so decide() can trust ``resolved`` (review fix).
+        """Reject impossible states so decide() can trust ``resolved``.
 
-        ``source`` and ``resolved`` are not independent: a resolved name MUST name a
-        real employee, and an unresolved name MUST name none. Without this, a
-        malformed construction (a test, the eval, or future code) like
-        ``source="none", resolved=True`` would silently sail past the gate.
+        ``source``, ``resolved``, and ``matched_employee_id`` are NOT independent: a
+        resolved name must name a real employee, and an unresolved name must name none.
+        Without this check, a malformed construction from a test, the eval, or future code
+        — ``source="none", resolved=True`` — would sail straight past the decision gate and
+        into a payroll run, which is precisely the "silently pay the wrong person" failure
+        the whole resolver exists to prevent.
         """
         if self.source == "none":
             if self.resolved or self.matched_employee_id is not None:
@@ -204,19 +214,24 @@ class NameMatchResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# ValidationIssue — per-field output of field validation (LLM-06)
+# ValidationIssue — per-field output of the validate stage
 # ---------------------------------------------------------------------------
 
 
 class ValidationIssue(BaseModel):
     """One field-validation issue produced by the validate stage.
 
-    issue_type Literal covers the legal values from LLM-06
-    (Finding #7 — constrained to known value set).
+    issue_type is Literal-constrained to the known legal value set:
 
-    "field_regression" is a forward-compat value added for Phase 7.5 (D-17).
-    Nothing in Phase 7 emits it — it is a harmless no-op scaffold so Phase 7.5
-    can reference it without a mid-plan Literal change.
+    - "missing" — a required field the calc needs is absent. Gates the run to
+      clarification via decide().
+    - "field_regression" — hours that were present in an earlier round vanished from the
+      client's reply. Emitted by validate() from the drops that detect_field_regression
+      found on the RAW reply, before backfill.
+    - "out_of_bounds" / "non_numeric" — legal values, but NOT reachable from the typed
+      pipeline: a negative or non-numeric hours value already fails at the extraction parse
+      boundary (ExtractedEmployee is Decimal|None + ge=0), so by the time validate() runs
+      every present value is a valid non-negative Decimal.
     """
 
     model_config = ConfigDict(extra="forbid")

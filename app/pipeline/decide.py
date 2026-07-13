@@ -1,27 +1,35 @@
-"""Stage 4 — the DECISION stage. PURE CODE over resolution facts (D-21-01). THE THESIS.
+"""The decision stage: whether a payroll run may be processed or must ask the client.
 
-decide() makes NO model call and reads no score. It computes a code-owned
-final_action deterministically from the resolution facts + run-level collision
-checks + missing fields, and that final_action is the SOLE branch source for the
-orchestrator, dashboard, and eval (D-21-03). There is no separate model action to
-diverge from — a prompt-injected extraction cannot reach a money-moving decision
-because resolution is deterministic.
+decide() is PURE CODE over resolution facts — the system's central claim. It computes
+final_action deterministically from the resolved names, run-level collision checks, and
+missing fields; that final_action is the SOLE branch source for the orchestrator, the
+dashboard, and the eval.
 
-A PURE function: typed values in, Decision out. NO DB, NO connection, NO model.
-The eval (Phase 4) imports this same function (D-21-09).
+Invariants (each one is what keeps this stage from guessing with money):
+  - NO model call. There is no model-proposed action to diverge from, so a prompt-injected
+    or hallucinated extraction can never reach a money-moving decision.
+  - NO score, NO probability, NO cutoff. A name either resolves against the roster in
+    code or it does not. Grading a match on a number and paying anything above a cutoff
+    would, by construction, pay somebody on a guess at the margin. (A source-level guard
+    test enforces that this module never acquires such a number.)
+  - Collisions ALWAYS clarify. Picking a winner between two names that map to one employee
+    would be a guess with money; the run stops and asks the client instead.
+  - The gate FAILS CLOSED. Every rule below only ever ADDS a reason to clarify, so any path
+    that produces no facts (empty extraction, mismatched resolution records) must have an
+    explicit rule — otherwise it would silently collapse to "process".
+  - A PURE function: typed values in, Decision out. NO DB, NO connection, NO model. The
+    eval imports this exact function, so the measured decision is the shipped decision.
 
-Gate rules (pure code) — force final_action="request_clarification" if ANY:
-  0. No extractable employees: extracted.employees == [] (CR-01 / D-21-08). The
-     other rules are reason-additive (they iterate matches/issues), so a zero-
-     employee run would otherwise leave the gate empty and collapse to "process".
-  1. Unresolved name: any NameMatchResult with resolved is False -> the name is
-     added to unresolved_names with a gate_reason (D-21-01).
+Gate rules — force final_action="request_clarification" if ANY:
+  0. No extractable employees (extracted.employees == []).
+  1. Unresolved name: any NameMatchResult with resolved is False — the name is added to
+     unresolved_names with a gate_reason.
   2. Missing required field: any ValidationIssue(issue_type="missing").
-  3. Run-level collisions via check_one_to_one() (D-21-02). Collisions are
-     RUN-LEVEL — a name can be resolved=True while the run still clarifies on a
-     cross-name collision (two resolved names mapping to one employee, or a
-     duplicated submitted name). This is kept SEPARATE from per-name resolved so
-     two confidently-resolved names can never silently collapse onto one employee.
+  3. Run-level collisions via check_one_to_one(). Collisions are RUN-LEVEL: a name can be
+     resolved=True while the run still clarifies on a cross-name collision (two resolved
+     names mapping to one employee, or a duplicated submitted name). Kept SEPARATE from
+     per-name resolved so two confidently-resolved names can never silently collapse onto
+     one employee — which would pay one person twice and the other nothing.
 """
 from __future__ import annotations
 
@@ -37,10 +45,10 @@ def check_one_to_one(
 ) -> list[str]:
     """Enforce the submitted-name -> employee one-to-one mapping at the RUN level.
 
-    Returns a list of gate_reasons, one per collision (D-21-02). This is a run-level
-    authority that is independent of per-name resolved: a name can be resolved=True
-    and still participate in a collision, so two confidently-resolved names can
-    never silently collapse onto one employee. Collision shapes:
+    Returns a list of gate_reasons, one per collision. This is a run-level authority that
+    is independent of per-name resolved: a name can be resolved=True and still participate
+    in a collision, so two confidently-resolved names can never silently collapse onto one
+    employee (paying one twice and the other nothing). Collision shapes:
 
       (a) two DISTINCT submitted names resolve to the SAME matched_employee_id
           (even when both are resolved=True);
@@ -64,10 +72,10 @@ def check_one_to_one(
             by_employee[m.matched_employee_id].append(m.submitted_name)
     for _emp_id, names in by_employee.items():
         if len(names) > 1:
-            # NOTE: gate_reasons are CLIENT-FACING (compose_email/clarify copy them
-            # into the clarification email), so this must NOT include the internal
-            # employee UUID (review fix) — the submitted names are what the client
-            # needs to disambiguate.
+            # gate_reasons are CLIENT-FACING: compose_email/clarify copy them verbatim
+            # into the clarification email. Never include the internal employee UUID here —
+            # it leaks a database identifier to the client and tells them nothing. The
+            # submitted names are what they need to disambiguate.
             reasons.append(
                 "two submitted names resolve to one employee: "
                 + " + ".join(sorted(names))
@@ -94,20 +102,20 @@ def decide(
     gate_reasons: list[str] = []
     unresolved: list[str] = []
 
-    # Rule 0 — a run with NO extractable employees is never auto-processable
-    # (CR-01 / D-21-08). Every other rule is reason-ADDITIVE: it fires only by
-    # iterating over `matches` / `issues`. A degenerate run with zero extracted
-    # employees (an empty / junk / injected email yielding "employees": []) would
-    # otherwise leave gate_reasons empty and collapse to "process". This explicit
-    # rule fails the gate CLOSED on that case.
+    # Rule 0 — a run with NO extractable employees is never auto-processable. Every other
+    # rule is reason-ADDITIVE: it fires only by iterating over `matches` / `issues`. A
+    # degenerate run with zero extracted employees (an empty, junk, or injected email
+    # yielding "employees": []) would otherwise leave gate_reasons empty and collapse to
+    # "process" — auto-approving a payroll run with no people in it. This rule fails the
+    # gate CLOSED on that case.
     if not extracted.employees:
         gate_reasons.append("no employees could be extracted from the email")
 
-    # Rule 0b — fail closed if `matches` is not one-for-one with the extracted
-    # employees (review fix). decide() is a PURE public function the eval calls with
-    # arbitrary inputs, so it must not trust that reconcile_names produced exactly one
-    # match per submitted name. A missing/extra/duplicate resolution record means an
-    # employee could be silently dropped from a "process" run — gate closed instead.
+    # Rule 0b — fail closed if `matches` is not one-for-one with the extracted employees.
+    # decide() is a PURE public function that the eval calls with arbitrary inputs, so it
+    # must not trust that reconcile_names produced exactly one match per submitted name.
+    # A missing / extra / duplicate resolution record means an employee could be silently
+    # dropped from a "process" run and go unpaid — gate closed instead.
     submitted_names = sorted(e.submitted_name for e in extracted.employees)
     resolution_names = sorted(m.submitted_name for m in matches)
     if extracted.employees and submitted_names != resolution_names:
@@ -126,13 +134,15 @@ def decide(
     missing = [i.field for i in issues if i.issue_type == "missing"]
     gate_reasons += [f"missing required field: {f}" for f in missing]
 
-    # Rule 2b — field regression detected (D-17, C-1 resolution, MONEY-03).
-    # Regressions feed gate_reasons only — Decision.missing_fields is NOT widened.
+    # Rule 2b — a field that was present in an earlier round has regressed to absent.
+    # Regressions feed gate_reasons ONLY; Decision.missing_fields is deliberately NOT
+    # widened to include them, because missing_fields drives the "what do we still need"
+    # copy and a regressed field is a different question from a never-supplied one.
     regressions = [i.field for i in issues if i.issue_type == "field_regression"]
     gate_reasons += [f"field regression: {f}" for f in regressions]
 
-    # Rule 3 — run-level collisions (D-21-02): kept distinct from Rule 1 so a name
-    # that is resolved=True can still gate the run on a cross-name collision.
+    # Rule 3 — run-level collisions: kept distinct from Rule 1 so a name that is
+    # resolved=True can still gate the run on a cross-name collision.
     gate_reasons += check_one_to_one(matches, extracted)
 
     final_action = "request_clarification" if gate_reasons else "process"

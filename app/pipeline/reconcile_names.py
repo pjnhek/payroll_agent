@@ -1,32 +1,30 @@
-"""Stage 2 — name reconciliation: PURE deterministic resolver (D-21-01).
+"""Name reconciliation: the PURE deterministic resolver that never guesses.
 
-A PURE function: typed values in, list[NameMatchResult] out, NO DB, NO connection,
-and (now) NO model — there is no second layer. The eval (Phase 4) calls this
-identical function with fixture inputs (D-21-09).
+A PURE function: typed values in, list[NameMatchResult] out. NO DB, NO connection, NO
+model — there is no fuzzy second layer, by design. The eval calls this identical function
+with fixture inputs, so the measured resolver is the shipped resolver.
 
-Resolution is pure code over roster facts (D-21-01). Per submitted name:
+Resolution is pure code over roster facts. Per submitted name:
 
-  - exact normalized match (casefold + whitespace-normalize) to EXACTLY ONE
-    employee, with no other employee sharing the normalized name →
-    ``source="exact"``, ``resolved=True``.
-  - a stored ``known_alias`` match for EXACTLY ONE employee, no collision →
-    ``source="alias"``, ``resolved=True``. This is the READ side of the
-    learning loop (D-21-07); the WRITE side (persisting a newly-confirmed alias
-    at the operator-approval gate) lands in Phase 5.
-  - anything else — no match, a typo, a first-time nickname, a garbled name, or a
-    name that maps to 2+ employees — degrades to ``source="none"``,
-    ``resolved=False``, ``matched_employee_id=None``. The resolver NEVER guesses
-    on a money-moving decision.
-  - an optional per-run ``overrides`` mapping (Phase 11 Plan 04, D-11-08) lets a
-    human operator state a name's resolution explicitly at the needs_operator
-    resolve form — ``source="operator"``, ``resolved=True``. Still not a
-    guess: a human, not the LLM, made the call.
+  - exact normalized match (casefold + whitespace-normalize) to EXACTLY ONE employee,
+    with no other employee sharing the normalized name -> ``source="exact"``,
+    ``resolved=True``.
+  - a stored ``known_alias`` match for EXACTLY ONE employee, no collision ->
+    ``source="alias"``, ``resolved=True``. This is the READ side of the human-
+    confirmation learning loop; alias_learning.py owns the WRITE side.
+  - anything else — no match, a typo, a first-time nickname, a garbled name, or a name
+    that maps to 2+ employees — degrades to ``source="none"``, ``resolved=False``,
+    ``matched_employee_id=None``. The resolver NEVER guesses on a money-moving decision:
+    an unresolved name costs one clarifying email, whereas a guessed name pays the wrong
+    person.
+  - an optional per-run ``overrides`` mapping lets a human operator state a name's
+    resolution explicitly at the resolve form -> ``source="operator"``, ``resolved=True``.
+    Still not a guess: a human, not the model, made the call.
 
-Collision safety (D-21-02): if a normalized name (or alias) matches MORE THAN ONE
-employee, the resolver refuses to pick either — it returns unresolved so the name
-can't be silently routed to the wrong person. The run-level collision check in
-decide() is the authority for the "shared by 2+ roster employees" / cross-name
-cases; here the resolver simply declines to uniquely resolve.
+Collision safety: if a normalized name (or alias) matches MORE THAN ONE employee, the
+resolver refuses to pick either and returns unresolved, so the name cannot be silently
+routed to the wrong person. decide() is the authority on run-level / cross-name collisions;
+here the resolver simply declines to uniquely resolve.
 """
 from __future__ import annotations
 
@@ -37,13 +35,16 @@ from app.models.roster import NameMatchResult, Roster
 
 
 def normalize_name(name: str) -> str:
-    """Whitespace-normalize + NFC(casefold(s)) for deterministic Unicode-safe comparison (D-05).
+    """Whitespace-normalize + NFC(casefold(s)) for deterministic Unicode-safe comparison.
 
-    NFC is applied AFTER casefold: casefold can emit a non-NFC sequence for some
-    inputs, so re-normalizing afterward makes NFD/NFC submissions compare equal.
-    A pre-casefold NFC is unnecessary -- a full Unicode scan showed the post-casefold
-    NFC alone is load-bearing. NFC (not NFKC) is deliberate: NFKC over-folds
-    compatibility chars for names (D-06).
+    Order matters: NFC is applied AFTER casefold, because casefold can emit a non-NFC
+    sequence for some inputs. Without the post-casefold NFC, the same name typed as NFD
+    and as NFC would compare UNEQUAL and a roster employee would fail to resolve — the
+    client gets a clarifying email about a name that is actually a perfect match. (A
+    pre-casefold NFC is not needed; a full Unicode scan showed only the post-casefold pass
+    is load-bearing.)
+
+    NFC, not NFKC: NFKC over-folds compatibility characters, which mangles real names.
     """
     return " ".join(unicodedata.normalize("NFC", name.casefold()).split())
 
@@ -51,14 +52,18 @@ def normalize_name(name: str) -> str:
 def deterministic_match(name: str, roster: Roster) -> NameMatchResult | None:
     """Resolve a name to EXACTLY ONE roster employee, or None if it can't.
 
-    Uniqueness is enforced ACROSS BOTH tiers, not within each separately: the name
-    is matched against every employee's normalized full_name AND every stored
-    known_alias, and the set of DISTINCT candidate employees is what must be unique.
+    Uniqueness is enforced ACROSS BOTH TIERS, not within each tier separately: the name is
+    matched against every employee's normalized full_name AND every stored known_alias, and
+    the set of DISTINCT candidate employees is what must be unique.
+
     So a name that is one employee's full_name AND a *different* employee's alias is
-    ambiguous (2 distinct candidates) → None, even though it is a unique exact hit on
-    its own (review fix: cross-tier exact-vs-alias collision, D-21-02). A name shared
-    by 2+ employees in either tier is likewise ambiguous → None. No match → None.
-    When the single resolved employee was reached by full_name the source is "exact";
+    ambiguous (2 distinct candidates) -> None, even though it is a unique hit within the
+    exact tier on its own. Checking the tiers independently — "exact wins, alias is only a
+    fallback" — would resolve that name straight to the exact employee and silently pay
+    them the hours meant for whoever carries it as an alias. A name shared by 2+ employees
+    within either tier is likewise ambiguous -> None. No match -> None.
+
+    When the single resolved employee was reached via full_name the source is "exact";
     otherwise (alias-only) it is "alias".
     """
     norm = normalize_name(name)
@@ -73,8 +78,9 @@ def deterministic_match(name: str, roster: Roster) -> NameMatchResult | None:
     # Distinct candidate employees across BOTH tiers — uniqueness is global.
     candidate_ids = set(exact_ids) | set(alias_ids)
     if len(candidate_ids) != 1:
-        # Zero candidates (no match) or 2+ distinct employees (ambiguous collision,
-        # D-21-02) → not uniquely resolvable; falls through to the unresolved result.
+        # Zero candidates (no match) or 2+ distinct employees (an ambiguous collision):
+        # not uniquely resolvable, so fall through to the unresolved result and let the
+        # run ask the client rather than picking a person.
         return None
 
     matched_id = next(iter(candidate_ids))
@@ -116,26 +122,22 @@ def reconcile_names(
 
     Returns one NameMatchResult per submitted name, in submitted order. A name that
     uniquely resolves via exact/alias is resolved=True; everything else degrades to
-    source="none", resolved=False — there is no model layer and no fuzzy guessing
-    (D-21-01). decide() owns the run-level decision over these facts.
+    source="none", resolved=False. There is no model layer and no fuzzy guessing.
+    decide() owns the run-level decision over these facts.
 
-    overrides (D-11-08/Open Question #2, Phase 11 Plan 04): an optional
-    submitted_name -> employee_id_str mapping supplied by a human operator at
-    the needs_operator resolve form. When present, an override WINS BEFORE the
-    exact/stored-alias tiers for that name — this is still a resolved,
-    non-guessed result (source="operator"): a human explicitly stated the
-    match, so the no-guess guarantee holds (the LLM never decides; here a
-    human did). Default None keeps every existing caller behavior-identical
-    (no override map means every name still resolves via exact/alias/none
-    exactly as before this param existed).
+    overrides: an optional submitted_name -> employee_id_str mapping supplied by a HUMAN
+    operator at the resolve form. When present, an override WINS BEFORE the exact and
+    stored-alias tiers for that name. This does not weaken the no-guess guarantee: a human
+    explicitly stated the match (source="operator"). The model still never decides.
+    Default None leaves every caller behavior-identical — no override map means every name
+    resolves via exact/alias/none exactly as it otherwise would.
 
-    Validation: an override id that does NOT belong to a roster employee is
-    silently ignored for that name (falls through to the normal exact/alias/
-    none resolution) — the caller (the /resolve route) is responsible for
-    rejecting an invalid employee_id at the HTTP boundary (Security V4); this
-    function never invents/accepts an id that isn't actually on the roster,
-    so a malformed or stale override map can never bind a person who isn't on
-    this business's roster.
+    Validation: an override id that does NOT belong to a roster employee is silently
+    ignored for that name and falls through to normal resolution. This function never
+    accepts an id that is not actually on the roster, so a malformed, stale, or tampered
+    override map can never bind hours to a person outside this business's roster. The
+    caller (the resolve route) is responsible for rejecting an invalid employee_id at the
+    HTTP boundary; this is the defense-in-depth layer behind it.
     """
     overrides = overrides or {}
     roster_ids = {emp.id for emp in roster.employees}

@@ -1,23 +1,23 @@
-"""Stage 1 — extraction (LLM-03; review FIX A, FIX 1).
+"""Extraction: the one place the model READS the email. It never decides anything.
 
-A PURE importable function: it takes typed values (InboundEmail, Roster) and a
-code-owned run_id, calls the one LLM client, and returns the Extracted contract.
-It does NO DB I/O and takes no connection (purity = no-DB, NOT no-run_id) so the
-Phase 4 eval can call it with fixture inputs.
+A PURE importable function: it takes typed values (InboundEmail, Roster) plus a code-owned
+run_id, calls the one LLM client, and returns the Extracted contract. It does NO DB I/O and
+takes no connection, so the eval can call it with fixture inputs.
 
-FIX A — run_id is code-owned plumbing, NOT an LLM field:
-  The LLM structured-output schema is ExtractionPayload (employees + pay_period,
-  extra="forbid", NO run_id). extract() validates that payload, then CONSTRUCTS
-  Extracted(run_id=run_id, **payload) stamping the run_id the orchestrator passed
-  in — exactly like `roster` is passed in. The model never invents or echoes a
-  trusted run_id.
-
-FIX 1 — the non_numeric path is an EXTRACTION-stage parse failure:
-  Because ExtractedEmployee hours are Decimal|None + ge=0 + extra="forbid", a
-  non-numeric value ("forty") raises a Pydantic ValidationError INSIDE the
-  client's model_validate_json of ExtractionPayload → the ONE reflective retry →
-  raise if still failing → the orchestrator converts the raise to ERROR. It NEVER
-  reaches validate.py. Absent hours stay None (load-bearing — never coerced to 0).
+Invariants:
+  - run_id is CODE-OWNED plumbing, never a model field. The model's structured-output
+    schema is ExtractionPayload (employees + pay period, extra="forbid", NO run_id).
+    extract() validates that payload and then stamps the run_id the orchestrator passed in.
+    If run_id were part of the model schema, a hallucinated or injected value could point
+    the run's writes at somebody else's payroll.
+  - Absent hours stay None. They are NEVER coerced to 0 — a 0 reads as "worked no hours"
+    and would pay nothing, whereas None means "the client didn't tell us" and gates the run
+    into a clarification.
+  - A non-numeric hours value ("forty") is an EXTRACTION-stage parse failure, not a
+    downstream validation issue: ExtractedEmployee hours are Decimal|None + ge=0 +
+    extra="forbid", so it raises a Pydantic ValidationError inside the client's
+    model_validate_json, goes through the one reflective retry, and if it still fails the
+    orchestrator turns it into an ERROR. It never reaches validate.py.
 """
 from __future__ import annotations
 
@@ -39,16 +39,17 @@ def extract(
 ) -> Extracted:
     """Extract employees + pay period from a cleaned inbound email.
 
-    The LLM returns an ExtractionPayload (no run_id); this stamps the code-owned
-    run_id to build the required Extracted contract (FIX A). A non-numeric hours
-    value raises at parse time of ExtractionPayload, routed through the client's
-    one reflective retry, then propagates (FIX 1).
+    The model returns an ExtractionPayload (which carries no run_id); this function stamps
+    the code-owned run_id onto it to build the Extracted contract. A non-numeric hours
+    value raises while parsing ExtractionPayload, is routed through the client's one
+    reflective retry, and then propagates.
     """
     messages = extract_prompt.build_messages(email, roster)
     payload: ExtractionPayload = llm.call_structured(
         "extraction", messages, ExtractionPayload
     )
-    # FIX A: stamp the code-owned run_id; the model produced only the payload.
+    # Stamp the code-owned run_id. The model produced only the payload and must never
+    # supply the identifier that this run's database writes are keyed on.
     return Extracted(
         run_id=run_id,
         employees=payload.employees,

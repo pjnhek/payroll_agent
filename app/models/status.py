@@ -1,17 +1,20 @@
-"""RunStatus StrEnum — the single source of truth for all 11 pipeline status values.
+"""RunStatus — the single source of truth for every pipeline status value.
 
-Plan 02 mirrors these values verbatim in a CHECK constraint on payroll_runs.status.
-A CI test asserts the SQL CHECK list equals this enum's members so drift fails fast.
+The status column IS the state machine: it is what drives the pipeline, holds the
+human-in-the-loop pause, and survives a restart. These values are mirrored verbatim in a
+CHECK constraint on payroll_runs.status, and a CI test asserts the SQL CHECK list equals
+this enum's members, so any drift between the two fails fast instead of admitting a status
+the code has never heard of.
 """
 import enum
 
 
 class RunStatus(enum.StrEnum):
-    """Eleven-state lifecycle for a payroll run.
+    """The lifecycle states a payroll run can occupy.
 
-    D-02: modeled as TEXT + CHECK in Postgres (not a native ENUM) so adding a value
-    is a one-line CHECK edit that can run inside a transaction.
-    D-03: this Python class is the canonical source; the SQL mirrors it.
+    This Python class is CANONICAL; the SQL mirrors it. In Postgres the column is modeled
+    as TEXT + CHECK rather than a native ENUM, so adding a value is a one-line CHECK edit
+    that runs inside a transaction (altering a native ENUM cannot).
     """
 
     RECEIVED = "received"
@@ -24,11 +27,14 @@ class RunStatus(enum.StrEnum):
     RECONCILED = "reconciled"
     REJECTED = "rejected"
     ERROR = "error"
-    # Phase 11 (D-11-06): a run whose clarification round counter hit the cap
-    # (MAX_CLARIFICATION_ROUNDS, D-11-07) with no resolvable reply. Terminal for
-    # every automated path — NOT in sweep_stranded_runs' scope, NOT in the
-    # retrigger stale_statuses list, and NOT polled by IN_FLIGHT_STATUSES (it is
-    # a settled gate state like awaiting_approval, waiting on a HUMAN operator,
-    # not a dead background task). Only an explicit operator resolve+resume
-    # action (or reject) moves a run out of this state.
+    # A run whose clarification round counter hit MAX_CLARIFICATION_ROUNDS with no
+    # resolvable reply: the system asked as many times as it is allowed to and still cannot
+    # proceed without a human.
+    #
+    # Terminal for every AUTOMATED path. It is deliberately excluded from
+    # sweep_stranded_runs' scope, from the retrigger stale_statuses list, and from
+    # IN_FLIGHT_STATUSES, because it is a SETTLED GATE state (like awaiting_approval)
+    # waiting on a human operator — not a dead background task. Any sweeper that treated it
+    # as stranded would keep resurrecting a run that is correctly parked. Only an explicit
+    # operator resolve+resume (or a reject) moves a run out of this state.
     NEEDS_OPERATOR = "needs_operator"
