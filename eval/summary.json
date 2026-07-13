@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
-  "suite_run_id": "a4516d78-6297-4079-82fe-9a78f9801f08",
-  "generated_at": "2026-06-28T09:34:29.173185+00:00",
+  "suite_run_id": "6395e5ae-4a16-4813-a9fb-c3879559206a",
+  "generated_at": "2026-07-13T17:33:41.784853+00:00",
   "extraction_model_id": "deepseek-v4-flash",
   "false_process_rate": 0.0,
   "confusion_matrix": {
@@ -16,7 +16,7 @@
   "extraction_overall_field_accuracy": 0.9907407407407407,
   "per_category_extraction": {
     "exact": {
-      "f1": 0.96,
+      "f1": 1.0,
       "field_accuracy": 1.0
     },
     "stored-alias": {
@@ -32,7 +32,7 @@
       "field_accuracy": 1.0
     },
     "typo": {
-      "f1": 1.0,
+      "f1": 0.9,
       "field_accuracy": 1.0
     },
     "first-time-alias": {
@@ -104,9 +104,9 @@
   ],
   "per_category_decision": {
     "exact": {
-      "correct": 5,
-      "total": 5,
-      "fraction": "5/5"
+      "correct": 4,
+      "total": 4,
+      "fraction": "4/4"
     },
     "stored-alias": {
       "correct": 2,
@@ -124,9 +124,9 @@
       "fraction": "1/1"
     },
     "typo": {
-      "correct": 1,
-      "total": 1,
-      "fraction": "1/1"
+      "correct": 2,
+      "total": 2,
+      "fraction": "2/2"
     },
     "first-time-alias": {
       "correct": 1,
@@ -475,7 +475,7 @@
     {
       "fixture_id": "f0000010-0000-0000-0000-000000000010",
       "fixture_path": "10_multi_employee_coastal.json",
-      "fixture_category": "exact",
+      "fixture_category": "typo",
       "extraction": {
         "precision": 0.6666666666666666,
         "recall": 1.0,

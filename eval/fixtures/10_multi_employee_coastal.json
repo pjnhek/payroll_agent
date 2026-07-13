@@ -8,7 +8,7 @@
   "to_addr": "agent@payroll-agent.local",
   "body_text": "Hi,\n\nHours for the week starting June 15:\n\nMaria Chen - 38 regular hours, 2 hours overtime\nJame Okafor - salaried, 40 regular hours\n\nLet me know!\nDana",
   "created_at": "2026-06-16T08:30:00Z",
-  "fixture_category": "exact",
+  "fixture_category": "typo",
   "expected": {
     "extracted": {
       "employees": [
