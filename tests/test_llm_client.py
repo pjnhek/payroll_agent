@@ -287,6 +287,46 @@ def test_invalid_then_valid_retries_exactly_once(monkeypatch):
     assert "valid JSON" in retry_messages[-1]["content"]
 
 
+def test_retry_prompt_scrubs_validation_input_values(monkeypatch):
+    """The reflective retry must not echo the model's own output back to the provider.
+
+    The validation failure is derived from untrusted model output, so interpolating the
+    raw error (which carries the offending input value) sends that value straight back out
+    to the provider. The retry prompt keeps the actionable parts — where the failure was and
+    what the schema wanted — and drops the value itself.
+    """
+    _set_tier_env(monkeypatch, prefix="EXTRACTION", model="deepseek-v4-flash")
+    # First response is well-formed JSON but schema-invalid: the offending value is the
+    # thing that must not travel back to the provider. Second response validates.
+    _FakeOpenAI.next_script = [
+        '{"name": "Fay", "score": "SENTINEL_LEAK_XYZ"}',
+        '{"name": "Fay", "score": "0.6"}',
+    ]
+
+    out = call_structured(
+        tier="extraction",
+        messages=[{"role": "user", "content": "json"}],
+        response_model=_Payload,
+    )
+
+    assert out.score == Decimal("0.6")
+    inst = _FakeOpenAI.instances[0]
+    assert len(inst.create_calls) == 2, "must still retry exactly once on first failure"
+    retry_prompt = inst.create_calls[1]["messages"][-1]["content"]
+    assert "SENTINEL_LEAK_XYZ" not in retry_prompt, (
+        "the retry prompt must not echo values taken from the model's own output back "
+        "to the provider"
+    )
+    assert "score" in retry_prompt, (
+        "the retry prompt must still name the field that failed, or the model has nothing "
+        "actionable to correct"
+    )
+    assert "JSON" in retry_prompt, (
+        "the retry prompt must still contain the word JSON — the provider's JSON mode "
+        "depends on it"
+    )
+
+
 def test_empty_content_is_treated_as_failure_and_retried(monkeypatch):
     _set_tier_env(monkeypatch, prefix="EXTRACTION", model="deepseek-v4-flash")
     _FakeOpenAI.next_script = [None, '{"name": "Gus", "score": "0.6"}']
