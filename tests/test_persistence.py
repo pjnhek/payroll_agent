@@ -1,12 +1,8 @@
-"""Calc + persistence round-trip tests (LLM-08, D-A3-05; FIX 2).
+"""Calc + persistence round-trip tests.
 
-Section 1 (always run, DB-free): the full-fidelity gross+FICA+federal calc (Phase 3) —
-federal is real (not zero), SS honors the wage-base cap.
-
-NOTE: PRE_FEDERAL_NET_LABEL was removed in Phase 3 (Plan 03-03) — the net is now real.
-The Phase 2 tests that asserted federal_withholding == 0 and tested PRE_FEDERAL_NET_LABEL
-have been updated to reflect Phase 3 behavior. (Rule 1 auto-fix — Phase 3 retired the
-label and replaced the Decimal("0") federal stub with real Pub 15-T withholding.)
+Section 1 (always run, DB-free): the full-fidelity gross + FICA + federal calc —
+federal withholding is real (never a zero stub), and Social Security honors the
+wage-base cap.
 
 Section 2 (live-DB, two-factor guard): a clean run persisted to payroll_runs
 round-trips BOTH decision AND reconciliation — mirrors tests/test_seed_roundtrip.py
@@ -60,48 +56,43 @@ def _hourly_employee(ytd_ss="12000.00", rate="18.50", pct="0.00") -> Employee:
     )
 
 
-def test_calc_federal_is_real_in_phase3():
-    """Phase 3: federal_withholding is real (non-zero) for a typical earning employee.
+def test_calc_federal_withholding_is_nonzero():
+    """federal_withholding is real (non-zero) for a typical earning employee.
 
-    Phase 2 asserted federal_withholding == Decimal("0") (thin calc, no federal).
-    Phase 3 (Plan 03-03) replaces that stub with real IRS Pub 15-T withholding.
-    This test is updated to reflect Phase 3 behavior (Rule 1 auto-fix).
+    A zero here would mean the Pub 15-T engine silently degraded back to a stub and
+    every paystub is under-withholding — so the floor is asserted explicitly.
     """
     item = calculate({"hours_regular": Decimal("40")}, _hourly_employee())
     assert isinstance(item, PaystubLineItem)
-    # Phase 3: federal_withholding is real for a typical employee (non-zero)
-    assert item.federal_withholding > Decimal("0"), "Phase 3 calc has REAL federal withholding"
+    assert item.federal_withholding > Decimal("0"), (
+        "the calc must produce REAL federal withholding, not a zero stub"
+    )
 
 
 def test_no_net_pay_label_field_on_paystub():
-    """FIX 2 (updated for Phase 3): PaystubLineItem must NOT gain a label field.
+    """PaystubLineItem must NOT gain a label field.
 
-    The Phase 2 'pre-federal' label constant has been retired in Phase 3 (Plan 03-03).
-    This test retains the critical invariant: no net_pay_label field on PaystubLineItem
-    (which is extra='forbid' — such a field would break existing callers).
+    PaystubLineItem is extra='forbid'; adding a display-label field to the money
+    contract would break existing callers and blur the line between computed values
+    and presentation.
     """
     assert "net_pay_label" not in PaystubLineItem.model_fields, (
-        "PaystubLineItem must NOT gain a label field (FIX 2)"
+        "PaystubLineItem must NOT gain a label field — it is a money contract, "
+        "not a presentation model"
     )
 
 
 def test_calc_gross_and_net_hourly():
-    """Phase 3 update: net_pay now includes real federal withholding (Rule 1 auto-fix).
-
-    Phase 2 asserted net_pay == 683.39 (gross - FICA, no federal).
-    Phase 3 adds real Pub 15-T withholding, so net_pay = gross - FICA - federal.
-    The gross and FICA assertions remain unchanged; net_pay is now computed from the item.
-    """
+    """net_pay = gross - FICA - real federal withholding, to the cent."""
     item = calculate({"hours_regular": Decimal("40")}, _hourly_employee(rate="18.50"))
     assert item.gross_pay == Decimal("740.00")  # 40 * 18.50
     # FICA: SS 6.2% (under cap) + Medicare 1.45%; no 401k
     assert item.fica_ss == Decimal("45.88")  # 740 * 0.062
     assert item.fica_medicare == Decimal("10.73")  # 740 * 0.0145
-    # Phase 3: net_pay = gross - fica_ss - fica_medicare - federal_withholding (real)
     expected_net = (
         item.gross_pay - item.fica_ss - item.fica_medicare - item.federal_withholding
     ).quantize(Decimal("0.01"))
-    assert item.net_pay == expected_net  # net is now real (includes federal withholding)
+    assert item.net_pay == expected_net  # net is real: it includes federal withholding
 
 
 def test_ss_honors_wage_base_cap_straddle():
@@ -135,22 +126,24 @@ def test_absent_hours_treated_as_zero_in_calc():
 
 
 # ===========================================================================
-# Section 1b — record_run_error must not clobber a terminal run (WR-04, DB-free)
+# Section 1b — record_run_error must not clobber a terminal run (DB-free)
 # ===========================================================================
 
 
 def test_record_run_error_skips_terminal_run(fake_conn):
-    """WR-04 guard, WR-03 CAS — record_run_error must NOT clobber a terminal run.
+    """record_run_error must NOT clobber a terminal run, and the guard must be a CAS.
 
-    Phase-8 review WR-03: the guard is an atomic CAS folded into the UPDATE's
-    WHERE clause (`status <> ALL(terminal)` + RETURNING, the claim_status idiom),
-    NOT a SELECT-then-UPDATE — a check-then-act pair lets a concurrent
-    transaction commit `sent`/`reconciled` between the read and the write under
-    READ COMMITTED, and the unconditional UPDATE then clobbers the terminal run.
+    The guard is an atomic CAS folded into the UPDATE's WHERE clause
+    (`status <> ALL(terminal)` + RETURNING, the claim_status idiom), NOT a
+    SELECT-then-UPDATE: a check-then-act pair lets a concurrent transaction commit
+    `sent`/`reconciled` between the read and the write under READ COMMITTED, and the
+    unconditional UPDATE then clobbers the terminal run — flipping an already-sent
+    payroll to ERROR.
 
     A terminal run matches no row, so RETURNING yields None (scripted here) and
     set_status(ERROR) must never run. The genuinely terminal statuses are:
-    sent, reconciled, rejected, error ('approved' stays claimable — D-13b).
+    sent, reconciled, rejected, error ('approved' stays claimable — a delivery
+    failure after approval must remain recoverable).
     """
     from app.db import repo
 
@@ -162,11 +155,12 @@ def test_record_run_error_skips_terminal_run(fake_conn):
     # carries the terminal-status predicate + RETURNING (atomic claim).
     assert "SELECT status" not in sql, (
         "the terminal guard must be a CAS in the UPDATE WHERE clause, not a "
-        "separate check-then-act SELECT (WR-03)"
+        "separate check-then-act SELECT — a concurrent commit can land between "
+        "the read and the write"
     )
     assert "status <> ALL(%s)" in sql and "RETURNING" in sql, (
         "the UPDATE must carry the terminal-status predicate and RETURNING "
-        "so the claim is atomic (WR-03 CAS)"
+        "so the claim is atomic"
     )
     # The terminal set is parameterized from _TERMINAL_STATUSES (single source
     # of truth) — never inlined literals.
@@ -175,17 +169,17 @@ def test_record_run_error_skips_terminal_run(fake_conn):
         "the terminal statuses must be passed as a SQL array param sourced "
         "from _TERMINAL_STATUSES"
     )
-    assert "SET status" not in sql, "a terminal run must NOT be flipped to ERROR (WR-04)"
+    assert "SET status" not in sql, "a terminal run must NOT be flipped to ERROR"
 
 
 def test_record_run_error_processes_approved_run(fake_conn):
-    """D-13b — record_run_error MUST write error_reason for an 'approved' run.
+    """record_run_error MUST write error_reason for an 'approved' run.
 
-    'approved' was removed from _TERMINAL_STATUSES in Phase 5 Plan 03 so that a
-    delivery failure after approval can advance the run to ERROR — making it
-    retriggerable. With the WR-03 CAS, 'approved' is claimable because it is not
-    in the parameterized terminal set (test_approved_not_in_terminal_statuses
-    pins that), so the CAS UPDATE matches and RETURNING yields the row id.
+    'approved' is deliberately NOT in _TERMINAL_STATUSES so that a delivery failure
+    after approval can advance the run to ERROR, making it retriggerable rather than
+    silently stuck. Because it is not in the parameterized terminal set
+    (test_approved_not_in_terminal_statuses pins that), the CAS UPDATE matches and
+    RETURNING yields the row id.
     """
     from app.db import repo
 
@@ -195,18 +189,18 @@ def test_record_run_error_processes_approved_run(fake_conn):
 
     sql = fake_conn.all_sql()
     assert "SET error_reason" in sql, (
-        "an approved run with a delivery failure must write error_reason "
-        "(D-13b: approved is non-terminal, delivery failures must be recoverable)"
+        "an approved run with a delivery failure must write error_reason — "
+        "approved is non-terminal, so delivery failures stay recoverable"
     )
     assert "SET status" in sql, (
-        "an approved run with a delivery failure must advance to ERROR "
-        "(D-13b: so the operator can retrigger)"
+        "an approved run with a delivery failure must advance to ERROR so the "
+        "operator can retrigger it"
     )
 
 
 def test_record_run_error_writes_for_non_terminal_run(fake_conn):
-    """WR-04 — a NON-terminal run still records the error and advances to ERROR (the
-    original behavior is preserved for in-flight runs)."""
+    """A NON-terminal run still records the error and advances to ERROR — an in-flight
+    run must never fail silently."""
     from app.db import repo
 
     run_id = uuid.uuid4()
@@ -219,12 +213,13 @@ def test_record_run_error_writes_for_non_terminal_run(fake_conn):
 
 
 def test_record_run_error_two_arg_call_overwrites_detail_with_null(fake_conn):
-    """WR-05 (phase-8 review) — the documented overwrite contract: a legacy
-    two-arg call (no detail_exc/stage) writes error_detail = NULL, ERASING any
-    previously-persisted detail. Deliberate: error_reason and error_detail must
-    always describe the SAME (latest) error — a stale detail next to a fresh
-    reason would mislead the operator. This test pins the contract so the
-    docstring and the SQL cannot drift apart again.
+    """The always-overwrite contract: a two-arg call (no detail_exc/stage) writes
+    error_detail = NULL, ERASING any previously-persisted detail.
+
+    This is deliberate: error_reason and error_detail must always describe the SAME
+    (latest) error — a stale detail sitting next to a fresh reason would mislead the
+    operator into debugging the wrong failure. The test pins the contract so the
+    docstring and the SQL cannot drift apart.
     """
     from app.db import repo
 
@@ -235,17 +230,17 @@ def test_record_run_error_two_arg_call_overwrites_detail_with_null(fake_conn):
     sql, params = fake_conn.executed[0]
     assert "error_detail" in sql, (
         "the UPDATE must always include error_detail in its SET clause "
-        "(always-overwrite contract, WR-05)"
+        "(the always-overwrite contract)"
     )
     assert params[0] == "SomeLaterError"
     assert params[1] is None, (
         "omitting detail_exc/stage must overwrite error_detail with NULL — "
-        "never silently preserve a stale prior detail (WR-05)"
+        "never silently preserve a stale prior detail"
     )
 
 
 # ===========================================================================
-# Section 1c — PII scrub / _build_error_detail (OPS2-01, D-8-01/D-8-01b/D-8-02)
+# Section 1c — PII scrub / _build_error_detail
 # ===========================================================================
 
 
@@ -272,8 +267,11 @@ def _employee(full_name: str, aliases: list[str] | None = None) -> Employee:
 
 
 def test_record_run_error_scrubs_pii_from_error_detail(fake_conn, roster_from_seed):
-    """D-8-04 — error_detail excludes both a roster employee's full_name AND an
-    email address, but retains the surviving non-PII text plus a [REDACTED] marker.
+    """error_detail excludes both a roster employee's full_name AND an email address,
+    while retaining the surviving non-PII text plus a [REDACTED] marker.
+
+    error_detail is rendered on the dashboard, so any PII that survives the scrub is
+    PII on a page with no auth.
     """
     from app.db import repo
 
@@ -302,8 +300,12 @@ def test_record_run_error_scrubs_pii_from_error_detail(fake_conn, roster_from_se
 
 
 def test_record_run_error_scrubs_before_truncate_boundary(fake_conn, roster_from_seed):
-    """D-8-04a — scrub runs on the FULL message BEFORE the 200-char truncate, so a
-    sensitive email straddling the boundary is never left as a partial fragment."""
+    """The scrub runs on the FULL message BEFORE the 200-char truncate, so an email
+    address straddling the boundary is never left behind as a partial fragment.
+
+    Truncating first and scrubbing second would leave the head of an address intact
+    whenever the pattern is cut in half.
+    """
     from app.db import repo
 
     padding = "x" * 185
@@ -332,8 +334,11 @@ def test_record_run_error_scrubs_before_truncate_boundary(fake_conn, roster_from
 
 
 def test_record_run_error_fails_open_when_scrub_raises(fake_conn, roster_from_seed, monkeypatch):
-    """D-8-04b — if the scrub step itself raises, record_run_error still writes the
-    pre-existing error_reason and advances to ERROR; error_detail falls back to None.
+    """If the scrub step itself raises, record_run_error still writes the error_reason
+    and advances to ERROR; error_detail falls back to None.
+
+    The scrub fails open on purpose: a broken redactor must never swallow the error
+    record itself and strand a run with no visible failure.
     """
     import app.db.repo.runs as repo_runs
     from app.db import repo
@@ -341,9 +346,9 @@ def test_record_run_error_fails_open_when_scrub_raises(fake_conn, roster_from_se
     def _boom(message, roster=None):
         raise RuntimeError("scrub exploded")
 
-    # record_run_error's internal call chain to _scrub (via _build_error_detail)
-    # is a same-module bare-name lookup against runs.py's own globals (post-
-    # split), NOT the facade's — patch app.db.repo.runs directly.
+    # record_run_error's internal call chain to _scrub (via _build_error_detail) is a
+    # same-module bare-name lookup against runs.py's own globals, NOT the repo
+    # facade's — so the patch must target app.db.repo.runs directly.
     monkeypatch.setattr(repo_runs, "_scrub", _boom)
 
     fake_conn.script_fetchone(("extracting",))
@@ -365,9 +370,12 @@ def test_record_run_error_fails_open_when_scrub_raises(fake_conn, roster_from_se
 
 
 def test_record_run_error_fails_open_when_no_roster(fake_conn):
-    """D-8-04b — with roster=None, record_run_error does not raise; error_detail is
-    still populated via the regex-only (email) scrub, with no roster-name redaction
-    attempted and no additional DB/roster-loading SQL beyond the terminal-status read.
+    """With roster=None, record_run_error does not raise; error_detail is still
+    populated via the regex-only (email) scrub, with no roster-name redaction attempted
+    and no additional DB/roster-loading SQL beyond the terminal-status read.
+
+    The error path must never load a roster of its own — that would turn a failure
+    into a second failure.
     """
     from app.db import repo
 
@@ -387,9 +395,9 @@ def test_record_run_error_fails_open_when_no_roster(fake_conn):
     assert detail is not None
     assert "[REDACTED]" in detail
     assert "ops@acme.test" not in detail
-    # Exactly the CAS UPDATE plus set_status's UPDATE (WR-03: the terminal guard
-    # is inside the UPDATE's WHERE, no separate status SELECT) — and no extra
-    # roster-loading SELECT appears.
+    # Exactly the CAS UPDATE plus set_status's UPDATE (the terminal guard lives
+    # inside the UPDATE's WHERE clause, so there is no separate status SELECT) —
+    # and no extra roster-loading SELECT appears.
     assert "SELECT" not in fake_conn.all_sql().upper(), (
         "record_run_error must issue no SELECT (no status read, no roster load)"
     )
@@ -400,11 +408,14 @@ def test_record_run_error_fails_open_when_no_roster(fake_conn):
 
 
 def test_scrub_case_and_unicode_form_insensitive_longest_first(roster_from_seed):
-    """R2-1 (constructed, non-skippable) — the scrubber matches roster names
-    case-insensitively and Unicode-form-insensitively across precomposed, NFD-
-    decomposed, AND bare-unaccented renderings, for BOTH a with-alias name and a
-    no-covering-alias name. This test builds its OWN roster (not roster_from_seed)
-    so it never depends on what the seed data happens to contain.
+    """The scrubber matches roster names case-insensitively and
+    Unicode-form-insensitively across precomposed, NFD-decomposed, AND
+    bare-unaccented renderings, for BOTH a with-alias name and a no-covering-alias
+    name.
+
+    This test builds its OWN roster (not roster_from_seed) so it never depends on what
+    the seed data happens to contain — a redaction test that passes only because of a
+    fixture coincidence proves nothing.
     """
     from app.db import repo
 
@@ -441,18 +452,18 @@ def test_scrub_case_and_unicode_form_insensitive_longest_first(roster_from_seed)
             f"raw variant {variant!r} leaked into scrubbed output: {scrubbed!r}"
         )
 
-    # The individual surname fragments must not leak either — the exact
-    # fixture-coincidence gap the original test design left open.
+    # The individual surname fragments must not leak either.
     assert "GARCIA" not in scrubbed
     assert "NUNEZ" not in scrubbed
 
 
 def test_scrub_umlaut_and_grave_names_redacted_in_all_renderings():
-    """WR-02 (phase-8 review) — the accent class map must cover the full Latin-1
-    accented range, not just acute vowels + n-tilde + c-cedilla. For stored
-    "Björn Müller" the pre-fix map left the bare ASCII-ified rendering
-    "Bjorn Muller" (the single most common real-input form) completely
-    unredacted. Same for grave/circumflex names.
+    """The accent class map must cover the full Latin-1 accented range, not just acute
+    vowels + n-tilde + c-cedilla.
+
+    A map limited to acute accents leaves the bare ASCII-ified rendering of a stored
+    "Björn Müller" — "Bjorn Muller", the single most common real-input form —
+    completely unredacted. Same for grave/circumflex names.
     """
     from app.db import repo
 
@@ -476,15 +487,14 @@ def test_scrub_umlaut_and_grave_names_redacted_in_all_renderings():
 
 
 def test_accent_class_map_covers_latin1_and_keeps_original_entries():
-    """WR-02 — the generated map still contains every original hand-transcribed
-    entry (acute vowels, n-tilde, c-cedilla) AND the previously-missing common
-    diacritics (umlaut/grave/circumflex vowels). Letters with no canonical
-    base+mark decomposition stay absent (they fall through to literal escaping).
+    """The generated map contains the acute vowels, n-tilde and c-cedilla AND the
+    common umlaut/grave/circumflex vowels. Letters with no canonical base+mark
+    decomposition stay absent — they fall through to literal escaping.
     """
     from app.db.repo import _ACCENT_CLASS_MAP
 
     for ch in "áéíóúñç" + "äëïöü" + "àèìòù" + "âêîôû":
-        assert ch in _ACCENT_CLASS_MAP, f"map must cover {ch!r} (WR-02)"
+        assert ch in _ACCENT_CLASS_MAP, f"map must cover {ch!r}"
     for ch in "øæßð":  # no canonical two-part decomposition — literal escape path
         assert ch not in _ACCENT_CLASS_MAP, (
             f"{ch!r} has no base+mark decomposition and must not be in the map"
@@ -492,16 +502,15 @@ def test_accent_class_map_covers_latin1_and_keeps_original_entries():
 
 
 def test_scrub_nfd_stored_candidate_still_redacts_all_renderings():
-    """WR-01 (phase-8 review) — the STORED candidate itself is NFD-decomposed
-    (e.g. an alias learned from an NFD-encoded client email), and every message
-    rendering — NFC, NFD, and bare-unaccented — must still be redacted.
+    """When the STORED candidate itself is NFD-decomposed (e.g. an alias learned from
+    an NFD-encoded client email), every message rendering — NFC, NFD, and
+    bare-unaccented — must still be redacted.
 
-    The pre-fix scrubber built the pattern from the raw candidate string, and
-    _ACCENT_CLASS_MAP is keyed by PRECOMPOSED characters only — so an NFD-stored
-    candidate bypassed the map and matched only its own NFD rendering: both the
-    NFC and bare renderings of the full name leaked unredacted (total redaction
-    failure for that name). The existing R2-1 test only varies the MESSAGE, never
-    the stored candidate — this test closes that gap.
+    Building the pattern from the raw candidate string is the trap: _ACCENT_CLASS_MAP
+    is keyed by PRECOMPOSED characters only, so an NFD-stored candidate bypasses the
+    map and matches only its own NFD rendering — both the NFC and bare renderings of
+    the full name then leak unredacted, a total redaction failure for that name. The
+    sibling test above only varies the MESSAGE; this one varies the STORED candidate.
     """
     from app.db import repo
 
@@ -530,9 +539,11 @@ def test_scrub_nfd_stored_candidate_still_redacts_all_renderings():
 
 
 def test_scrub_mark_aware_boundary_trailing_accent_nfd(roster_from_seed):
-    """R3-1 — a name ending in an accented character (no trailing consonant) must
-    still fully consume an NFD-decomposed trailing combining mark; no character in
-    the scrubbed output anywhere may have unicodedata.combining(ch) != 0.
+    """A name ending in an accented character (no trailing consonant) must still fully
+    consume an NFD-decomposed trailing combining mark.
+
+    A leftover combining mark is a visible fragment of a redacted name, so no character
+    anywhere in the scrubbed output may have unicodedata.combining(ch) != 0.
     """
     from app.db import repo
 
@@ -552,9 +563,11 @@ def test_scrub_mark_aware_boundary_trailing_accent_nfd(roster_from_seed):
 
 
 def test_scrub_longest_first_no_offset_drift(roster_from_seed):
-    """R2-1 continued — a short alias contained inside a longer full_name (e.g.
-    "Dave" vs "Dave Reyes") redacts as ONE span, and surrounding text is byte-
-    identical to the input outside the redacted span."""
+    """A short alias contained inside a longer full_name (e.g. "Dave" vs "Dave Reyes")
+    redacts as ONE span, and surrounding text stays byte-identical outside it.
+
+    Matching short-first would redact "Dave" and leave " Reyes" dangling.
+    """
     from app.db import repo
 
     dave = _employee("Dave Reyes", aliases=["Dave"])
@@ -568,8 +581,9 @@ def test_scrub_longest_first_no_offset_drift(roster_from_seed):
 
 
 def test_scrub_mark_aware_lookaround_no_over_redaction(roster_from_seed):
-    """R2-3 — a short alias ("Tom") never matches as a prefix inside an unrelated
-    word ("Tomorrow"); lookarounds are strictly stronger than \\b for plain ASCII."""
+    """A short alias ("Tom") must never match as a prefix inside an unrelated word
+    ("Tomorrow") — over-redaction destroys the diagnostic value of error_detail.
+    The mark-aware lookarounds are strictly stronger than \\b for plain ASCII."""
     from app.db import repo
 
     tom = _employee("Thomas Bergmann", aliases=["Tom Bergmann", "Tom"])
@@ -644,11 +658,12 @@ def test_decision_roundtrip(seeded_db):
     run = cast(dict[str, Any], repo.load_run(run_id))
     assert run["decision"] is not None
     assert run["decision"]["final_action"] == "process"
-    assert run["reconciliation"] is not None, "reconciliation must NOT be NULL (D-A3-05)"
+    assert run["reconciliation"] is not None, "reconciliation must NOT be NULL"
     assert run["reconciliation"][0]["submitted_name"] == "Maria Chen"
     # The deterministic resolution carries source/resolved, NOT a confidence score.
     assert run["reconciliation"][0]["source"] == "exact"
     assert run["reconciliation"][0]["resolved"] is True
     assert "confidence" not in run["reconciliation"][0], (
-        "the deterministic reconciliation JSONB must be confidence-free (D-21-01)"
+        "the reconciliation JSONB must be confidence-free — name resolution is "
+        "pure code (exact / stored-alias / none), so there is no score to persist"
     )

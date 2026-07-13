@@ -1,6 +1,7 @@
-"""Shared test fixtures for the Phase 2 walking skeleton.
+"""Shared test fixtures — the offline doubles that let the whole suite run with no DB
+and no network.
 
-Three reusable pieces every later-wave test imports (the plan's conftest artifact):
+Three reusable pieces most tests import:
 
 1. `fake_conn` / `FakeConnection` — an in-memory psycopg-Connection stand-in that
    records every executed SQL statement + params and replays scripted fetch
@@ -16,7 +17,7 @@ Three reusable pieces every later-wave test imports (the plan's conftest artifac
 
 The mocked-LLM client factory lives with the client tests (tests/test_llm_client.py
 injects a FakeOpenAI over app.llm.client.OpenAI); it is re-exported here as
-`fake_openai_factory` for any later-wave stage test that needs it.
+`fake_openai_factory` for any stage test that needs it.
 """
 from __future__ import annotations
 
@@ -27,22 +28,20 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-
-# Phase 6 Resend SDK mocks — added 06-01
 import resend  # noqa: F401 — imported so the module is available for monkeypatching
 
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
 
 # ---------------------------------------------------------------------------
-# 0. Live-DB two-factor guard + shared seeded_db fixture (Finding #10)
+# 0. Live-DB two-factor guard + shared seeded_db fixture
 #
 # Live-DB integration tests require BOTH DATABASE_URL (a reachable DB) AND
-# ALLOW_DB_RESET=1 (explicit opt-in to the destructive bootstrap --reset). This
-# fixture and the guard constants were copy-pasted into test_seed_roundtrip.py,
-# test_gateway.py, and test_persistence.py; they are promoted here so every test
-# module — including test_dashboard.py's /health/ready check — shares ONE
-# definition (DRY). Module scope means each test module still resets+seeds once.
+# ALLOW_DB_RESET=1 (explicit opt-in to the destructive bootstrap --reset). The
+# guard and the fixture live here so every test module shares ONE definition —
+# duplicating them per module invites the two factors drifting apart, and a
+# reset that fires against a real database is unrecoverable. Module scope means
+# each test module still resets+seeds exactly once.
 # ---------------------------------------------------------------------------
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
@@ -170,27 +169,27 @@ def fake_conn() -> FakeConnection:
 
 @contextlib.contextmanager
 def _fake_get_connection():
-    """Context manager double for app.db.repo.get_connection (09-01, D-9-03).
+    """Context manager double for app.db.repo.get_connection.
 
     Patched onto app.db.repo.get_connection by the fake_repo fixture below so
     that `with repo.get_connection() as conn: with conn.transaction(): ...`
-    code (the seam every Wave 2 orchestrator/main.py plan wires in) runs
-    against a FakeConnection instead of opening a real Supabase pool. Without
-    this seam the very first such block added anywhere would make every
-    fake_repo-driven test try to open a live connection and fail/hang.
+    code (the transaction seam the orchestrator and routes open) runs against a
+    FakeConnection instead of opening a real Supabase pool. Without this seam
+    any such block would make every fake_repo-driven test try to open a live
+    connection and fail/hang.
     """
     yield FakeConnection()
 
 
 def patch_get_connection(monkeypatch, repo_mod) -> None:
-    """Monkeypatch repo_mod.get_connection to the FakeConnection double (09-02).
+    """Monkeypatch repo_mod.get_connection to the FakeConnection double.
 
     For tests that monkeypatch individual app.db.repo.* helpers directly
     (rather than using the fake_repo fixture) and call orchestrator functions
-    that now open `with repo.get_connection() as conn: with conn.transaction():`
-    blocks (09-02 D-9-04..D-9-08 transaction wiring) — without this patch such
-    a test would attempt to open a real pooled Supabase connection and hang /
-    time out. Call this once per test alongside the other repo_mod monkeypatches.
+    that open `with repo.get_connection() as conn: with conn.transaction():`
+    blocks — without this patch such a test would attempt to open a real pooled
+    Supabase connection and hang / time out. Call this once per test alongside
+    the other repo_mod monkeypatches.
     """
     monkeypatch.setattr(repo_mod, "get_connection", _fake_get_connection, raising=False)
 
@@ -244,9 +243,9 @@ def roster_from_seed() -> Roster:
 # persistence, the sole set_status writer, and record_run_error routing.
 
 
-# Mirrors app.db.repo._STRANDED_SCOPE_STATUSES (09-01, D-9-12 scope pin) — kept
-# as a separate local constant (not imported) so this fake never silently
-# inherits a scope change without a corresponding InMemoryRepo test failure.
+# Mirrors app.db.repo._STRANDED_SCOPE_STATUSES — deliberately re-declared here
+# instead of imported, so this fake never silently inherits a scope change to the
+# stranded-run sweep without a corresponding InMemoryRepo test failure.
 _STRANDED_SCOPE_STATUSES = ["received", "extracting", "computed"]
 
 
@@ -258,7 +257,8 @@ class InMemoryRepo:
         self.email_by_id: dict[str, dict[str, Any]] = {}  # email_id -> email row
         self.runs: dict[str, dict[str, Any]] = {}  # run_id -> run row
         self.line_items: dict[str, list[Any]] = {}  # run_id -> list[PaystubLineItem]
-        # Outbound email_messages rows (the FIX 3 anchor): run_id -> list of rows.
+        # Outbound email_messages rows (the Message-ID threading anchor):
+        # run_id -> list of rows.
         self.outbound: dict[str, list[dict[str, Any]]] = {}
         # Seed businesses for sender matching.
         from app.db.seed import seed
@@ -277,10 +277,9 @@ class InMemoryRepo:
         if mid in self.emails:
             return None, False
         eid = uuid.uuid4()
-        # Phase 11 (D-11-01/02): every fake email row carries direction (real
-        # insert_inbound_email always inserts 'inbound' — the real SQL hardcodes
-        # it, so kw never actually passes it), round (default 0), and
-        # consumed_round (default None, meaning unconsumed), so
+        # Every fake email row carries direction (the real insert_inbound_email
+        # hardcodes 'inbound' in its SQL, so kw never passes it), round (default
+        # 0), and consumed_round (default None, meaning unconsumed), so
         # find_stranded_unconsumed_replies / load_consumed_replies /
         # mark_reply_consumed / get_inbound_by_message_id can read/write these
         # exactly like the real repo does on the real email_messages columns.
@@ -302,17 +301,16 @@ class InMemoryRepo:
     def link_email_to_run(
         self, email_id: uuid.UUID, run_id: uuid.UUID, conn: Any = None
     ) -> None:
-        """Mirror repo.link_email_to_run (WR-03 phase-9 review fix).
+        """Mirror repo.link_email_to_run.
 
         Back-fills run_id on an already-inserted inbound row once the ingest
         transaction classifies it as reply_candidate/late_reply, so tests can
         assert real reply rows are linked to their run like the demo path.
 
-        GAP-2/GAP-3 (11-06): also stamps the linked row's epoch key from the
-        CURRENT reply_epoch of the target run at link time (mirrors repo's
-        correlated subquery). Defaults to 0 via .get for both sides so a run
-        or row that predates the epoch mechanism behaves exactly like a real
-        NOT NULL DEFAULT 0 column.
+        Also stamps the linked row's epoch key from the CURRENT reply_epoch of
+        the target run at link time (mirrors repo's correlated subquery), so a
+        reply can never be read back against a later epoch's context. Defaults
+        to 0 via .get on both sides, matching the real NOT NULL DEFAULT 0 column.
         """
         row = self.email_by_id.get(str(email_id))
         if row is not None:
@@ -321,7 +319,7 @@ class InMemoryRepo:
             row["epoch"] = run.get("reply_epoch", 0) if run is not None else 0
 
     def find_run_by_message_id(self, message_id, conn=None):
-        """Mirror repo.find_run_by_message_id (09-01, DATA-02 dedup-loser lookup).
+        """Mirror repo.find_run_by_message_id (the webhook-dedup loser's lookup).
 
         Scans the in-memory email store for a row with this message_id, then
         returns the run whose source_email_id matches that row's id — the
@@ -362,8 +360,8 @@ class InMemoryRepo:
             "pay_period_start": pay_period_start,
             "pay_period_end": pay_period_end,
             "record_only": record_only,
-            # Phase 11 (D-11-01): every run starts at round 0, matching the real
-            # column's NOT NULL DEFAULT 0 — old code never sets this key.
+            # Every run starts at round 0, matching the real column's NOT NULL
+            # DEFAULT 0.
             "clarification_round": 0,
         }
         return rid
@@ -418,7 +416,7 @@ class InMemoryRepo:
     def claim_status(
         self, run_id: uuid.UUID, expected: Any, new: Any, conn: Any = None
     ) -> bool:
-        """Atomic CAS for the in-memory store (mirrors repo.claim_status, D-12).
+        """Atomic CAS for the in-memory store (mirrors repo.claim_status).
 
         Returns True and advances the run's status if the current status matches
         `expected`. Returns False if the run is not in the expected state.
@@ -434,7 +432,7 @@ class InMemoryRepo:
         return True
 
     def sweep_stranded_runs(self, threshold_seconds, conn=None):
-        """Mirror repo.sweep_stranded_runs (09-01, D-9-10/11/12 recovery sweep).
+        """Mirror repo.sweep_stranded_runs (the stuck-run recovery sweep).
 
         Scope is hardcoded to EXACTLY {received, extracting, computed} — matches
         the real repo's scope-pin. error_detail is built from the same static
@@ -463,15 +461,15 @@ class InMemoryRepo:
         from app.db.repo import _TERMINAL_STATUSES
         from app.models.status import RunStatus
 
-        # Mirror the real repo's WR-04 guard: never clobber a terminal run to ERROR.
+        # Mirror the real repo's guard: never clobber a terminal run to ERROR.
         if self.runs[str(run_id)]["status"] in _TERMINAL_STATUSES:
             return
         self.runs[str(run_id)]["error_reason"] = reason
-        # OPS2-01: mirrors the real repo.record_run_error's new keyword-only-extras
-        # shape (conn stays positional-compatible) so orchestrator.py/main.py call
-        # sites that pass detail_exc=/stage=/roster= don't raise TypeError against
-        # this fake. The real scrub logic is unit-tested against the real
-        # repo.record_run_error in Plan 08-02 — this fake only needs to not error.
+        # Mirrors the real repo.record_run_error's keyword-only-extras shape
+        # (conn stays positional-compatible) so call sites passing
+        # detail_exc=/stage=/roster= don't raise TypeError against this fake.
+        # The real PII scrub logic is unit-tested against the real
+        # repo.record_run_error — this fake only needs to not error.
         self.runs[str(run_id)]["error_detail"] = None
         self.set_status(run_id, RunStatus.ERROR)
 
@@ -496,11 +494,11 @@ class InMemoryRepo:
     def load_all_runs(self, conn=None):
         """Return all runs as dicts with business_name (mirrors repo.load_all_runs).
 
-        Review fix #7: also computes the SQL-computed `summary_gate_reason` /
-        `employee_count` aliases the real repo.load_all_runs (Plan 08-02) now
-        projects, so route-level tests that swap in InMemoryRepo keep exercising
-        the real runs_list.html alias contract instead of silently falling
-        through to the template's `--` else-branch.
+        Also computes the SQL-computed `summary_gate_reason` / `employee_count`
+        aliases the real repo.load_all_runs projects, so route-level tests that
+        swap in InMemoryRepo keep exercising the real runs_list.html alias
+        contract instead of silently falling through to the template's `--`
+        else-branch.
         """
         result = []
         for run in self.runs.values():
@@ -530,7 +528,7 @@ class InMemoryRepo:
         return result
 
     def load_business_name(self, business_id, conn=None):
-        """Return business name for the given business_id (CR-03 fix, mirrors repo).
+        """Return business name for the given business_id (mirrors repo).
 
         Returns the seeded business name when available, else a safe fallback.
         """
@@ -546,10 +544,10 @@ class InMemoryRepo:
         return "Test Business"
 
     def set_alias_candidates(self, run_id, candidates, conn=None):
-        """MERGE alias candidates into the in-memory run dict (D-04, WR-1 fix,
-        mirrors repo's JSONB `||` merge — not an overwrite). A confirmed bind
-        for one token, written in an earlier round or an earlier call, must
-        survive a later, unrelated candidate write for a DIFFERENT token."""
+        """MERGE alias candidates into the in-memory run dict (mirrors repo's
+        JSONB `||` merge — not an overwrite). A confirmed bind for one token,
+        written in an earlier round or an earlier call, must survive a later,
+        unrelated candidate write for a DIFFERENT token."""
         run = self.runs.get(str(run_id))
         if run is not None:
             run["alias_candidates"] = {
@@ -559,11 +557,11 @@ class InMemoryRepo:
 
     def update_known_alias(self, employee_id, new_alias, conn=None):
         """Idempotently append new_alias to an in-memory Employee's known_aliases
-        (D-01, mirrors repo.update_known_alias — Phase 11 Plan 04, D-11-17).
+        (mirrors repo.update_known_alias).
 
         Mutates the SAME seeded Employee object(s) held in
         self.business_employees so a later load_roster_for_business call (the
-        BATCH-SAFE roster refresh inside _write_aliases_if_safe, and any
+        batch-safe roster refresh inside _write_aliases_if_safe, and any
         subsequent real run) sees the newly-learned alias — this is the
         load-bearing seam that makes the full-loop stops-asking test's SECOND
         submission actually resolve via the stored alias. Employee is a frozen
@@ -585,10 +583,12 @@ class InMemoryRepo:
         return False
 
     def set_pre_clarify_extracted(self, run_id, extracted, conn=None):
-        """Snapshot pre-clarify extracted (IS NULL write-once guard, D-19 MONEY-03).
+        """Snapshot the pre-clarification extraction (write-once IS NULL guard).
 
         Mirrors repo.set_pre_clarify_extracted. Returns True on first write, False if
-        already set (in-memory IS NULL guard simulated by checking current value).
+        already set (the IS NULL guard simulated by checking the current value). The
+        snapshot must never be overwritten by a later round — it is the only record of
+        what the client originally sent, and the carry-forward backfill reads from it.
         """
         run = self.runs.get(str(run_id))
         if run is None:
@@ -601,7 +601,7 @@ class InMemoryRepo:
         return True
 
     def load_pre_clarify_extracted(self, run_id, conn=None):
-        """Load pre-clarify snapshot (D-19 MONEY-03). Returns None if not set."""
+        """Load the pre-clarification snapshot. Returns None if not set."""
         from app.models.contracts import Extracted
         run = self.runs.get(str(run_id))
         if run is None or run.get("pre_clarify_extracted") is None:
@@ -610,29 +610,29 @@ class InMemoryRepo:
         return Extracted.model_validate(data)
 
     def set_clarified_fields(self, run_id, clarified, conn=None):
-        """Write clarified_fields (D-13 MONEY-03, D-7.5-03b typed-on-write).
+        """Write clarified_fields, validating the shape on the way in.
 
-        Validates through ClarifiedFields before storing (mirrors repo behavior).
+        Validates through ClarifiedFields before storing (mirrors repo behavior) so a
+        malformed outcome map can never reach the JSONB column.
         """
         from app.models.contracts import ClarifiedFields
-        ClarifiedFields(outcomes=clarified)  # D-7.5-03b: validate on write
+        ClarifiedFields(outcomes=clarified)  # typed-on-write: reject a bad shape here
         run = self.runs.get(str(run_id))
         if run is not None:
             run["clarified_fields"] = clarified
 
     def load_clarified_fields(self, run_id, conn=None):
-        """Load clarified_fields (D-13 MONEY-03). Returns {} on NULL."""
+        """Load clarified_fields. Returns {} on NULL."""
         run = self.runs.get(str(run_id))
         if run is None:
             return {}
         return run.get("clarified_fields") or {}
 
     def get_clarification_round(self, run_id, conn=None):
-        """Read the fake run's clarification_round key (D-11-01, mirrors repo).
+        """Read the fake run's clarification_round key (mirrors repo).
 
-        Returns 0 if the run is missing or the key is absent — matches create_run
-        below, which does not set the key (Python dict default via .get, exactly
-        like the real column's NOT NULL DEFAULT 0).
+        Returns 0 if the run is missing or the key is absent (Python dict default
+        via .get, exactly like the real column's NOT NULL DEFAULT 0).
         """
         run = self.runs.get(str(run_id))
         if run is None:
@@ -640,22 +640,23 @@ class InMemoryRepo:
         return run.get("clarification_round", 0)
 
     def set_clarification_round(self, run_id, value, conn=None):
-        """Write the fake run's clarification_round key (D-11-01, mirrors repo)."""
+        """Write the fake run's clarification_round key (mirrors repo)."""
         run = self.runs.get(str(run_id))
         if run is not None:
             run["clarification_round"] = value
 
     def clear_reply_context(self, run_id, conn=None):
-        """Null ALL reply-round context on the fake run (D-11-04, mirrors repo).
+        """Null ALL reply-round context on the fake run (mirrors repo).
 
         "Context lost means ALL of it": clarified_fields, pre_clarify_extracted,
         clarification_round, AND alias_candidates together — matches the real
-        repo's single-statement clear so a hermetic retrigger test can assert
-        every one of these was actually reset, not just some of them.
+        repo's single-statement clear, so a retrigger can never leave a
+        provenance badge on the dashboard that outlives the data behind it.
 
-        GAP-2/GAP-3 (11-06): also increments reply_epoch (default 0 via .get)
-        on the fake run dict, mirroring the real repo's `reply_epoch =
-        reply_epoch + 1` in the same statement.
+        Also increments reply_epoch (default 0 via .get), mirroring the real
+        repo's `reply_epoch = reply_epoch + 1` in the same statement: bumping the
+        epoch is what makes prior-epoch replies invisible without deleting rows
+        from the append-only email_messages log.
         """
         run = self.runs.get(str(run_id))
         if run is not None:
@@ -666,7 +667,7 @@ class InMemoryRepo:
             run["reply_epoch"] = run.get("reply_epoch", 0) + 1
 
     def get_record_only_flag(self, run_id, conn=None):
-        """Return the record_only flag for a run (06-08, mirrors repo.get_record_only_flag).
+        """Return the record_only flag for a run (mirrors repo.get_record_only_flag).
 
         Returns False if the run is not found (safe default: live Resend path).
         All in-memory runs default to record_only=False (they are created via the
@@ -678,7 +679,7 @@ class InMemoryRepo:
         return bool(run.get("record_only", False))
 
     def load_thread_messages(self, run_id, conn=None):
-        """Return thread messages for a run (06-08, mirrors repo.load_thread_messages).
+        """Return thread messages for a run (mirrors repo.load_thread_messages).
 
         For in-memory tests, returns an empty list (no email rows are tracked at this
         granularity). Tests that need thread messages should monkeypatch directly.
@@ -686,7 +687,7 @@ class InMemoryRepo:
         return []
 
     def list_businesses(self, conn=None):
-        """Return all businesses (06-08, mirrors repo.list_businesses).
+        """Return all businesses (mirrors repo.list_businesses).
 
         For in-memory tests, returns the seeded businesses list.
         """
@@ -698,31 +699,30 @@ class InMemoryRepo:
         ]
 
     def get_demo_binding(self, operator_email, conn=None):
-        """Return None (no demo bindings in the in-memory store, 06-08)."""
+        """Return None (no demo bindings in the in-memory store)."""
         return None
 
     def bind_demo_business(self, business_name, operator_email, seed_business_ids, conn=None):
-        """No-op in-memory bind (06-08); returns True for any known business_name."""
+        """No-op in-memory bind; returns True for any known business_name."""
         return business_name in seed_business_ids
 
-    # --- email / threading (the FIX 3 outbound Message-ID anchor) ---
+    # --- email / threading (the outbound Message-ID anchor) ---
     def insert_email_message(self, *, run_id, direction, message_id, conn=None, round=0, **kw):
-        """Mirror repo.insert_email_message, including the D-11-01 round-aware upsert.
+        """Mirror repo.insert_email_message, including the round-aware upsert.
 
         The real repo upserts outbound purpose rows on (run_id, purpose, round) —
         a retry WITHIN a round advances send_state/message_id in place, but a NEW
-        round always appends a NEW row (no upsert-replace of prior-round history,
-        D-11-01). `round` defaults to 0 so pre-Phase-11 callers (none of which pass
-        it yet) are behavior-identical to the old (run_id, purpose) upsert key.
+        round always appends a NEW row, so prior-round history is never
+        upsert-replaced. `round` defaults to 0 so callers that do not pass it
+        behave exactly like the older (run_id, purpose) upsert key.
 
-        GAP-2/GAP-3 (11-06): the OUTBOUND path also stamps epoch from the
-        target run's CURRENT reply_epoch at write time (mirrors repo's
-        correlated subquery in the INSERT). The upsert key is widened to
-        (purpose, round, epoch) — mirrors the widened uq_email_run_purpose_round_epoch
-        constraint and repo's ON CONFLICT (run_id, purpose, round, epoch)
-        arbiter (GAP-2 fix): a retriggered run's fresh round-0 send (new
-        epoch) must always APPEND a new row, never upsert-mutate the stale
-        pre-retrigger round-0 row from a prior epoch.
+        The OUTBOUND path also stamps epoch from the target run's CURRENT
+        reply_epoch at write time (mirrors repo's correlated subquery in the
+        INSERT). The upsert key is (purpose, round, epoch), matching the
+        uq_email_run_purpose_round_epoch constraint and repo's ON CONFLICT
+        arbiter: a retriggered run's fresh round-0 send lands in a new epoch and
+        must APPEND a new row, never upsert-mutate the stale pre-retrigger
+        round-0 row from the prior epoch.
         """
         purpose = kw.get("purpose")
         run = self.runs.get(str(run_id)) if run_id is not None else None
@@ -740,8 +740,8 @@ class InMemoryRepo:
             row["epoch"] = epoch
             rows = self.outbound.setdefault(str(run_id), [])
             if purpose is not None:
-                # Upsert key: (run_id, purpose, round, epoch) — mirrors
-                # uq_email_run_purpose_round_epoch (GAP-2 widened constraint).
+                # Upsert key: (run_id, purpose, round, epoch) — mirrors the
+                # uq_email_run_purpose_round_epoch constraint.
                 for existing in rows:
                     if (
                         existing.get("purpose") == purpose
@@ -758,9 +758,8 @@ class InMemoryRepo:
 
         When purpose is provided, filters by purpose to match the real repo's behavior.
         When purpose is None (legacy test calls without purpose arg), returns the last
-        outbound row for the run — this preserves backward compatibility for
-        test_orchestrator_states and test_demo_fixtures which assert the outbound row
-        exists, not which purpose.
+        outbound row for the run — this keeps callers that only assert an outbound
+        row exists (not which purpose) working unchanged.
         """
         rows = self.outbound.get(str(run_id))
         if not rows:
@@ -775,16 +774,16 @@ class InMemoryRepo:
         return rows[-1]["message_id"]
 
     def get_outbound_for_round(self, run_id, purpose, round, conn=None):
-        """Round-aware sibling of get_outbound_message_id (D-11-01/13, mirrors repo).
+        """Round-aware sibling of get_outbound_message_id (mirrors repo).
 
         Filters direction (implicit — only self.outbound rows are stored),
         purpose, send_state='sent', AND round; returns {"message_id", "round"}
         (not just the message_id) so a caller derives the next round from the
-        FOUND row, never a blind +1 (Pitfall #3).
+        FOUND row rather than a blind +1 off a counter that may have drifted.
 
-        GAP-2 (11-06): also filters on row.get("epoch", 0) == the run's
-        CURRENT reply_epoch — the actual GAP-2 fix, mirroring repo's
-        correlated subquery scope.
+        Also filters on row.get("epoch", 0) == the run's CURRENT reply_epoch,
+        mirroring repo's correlated subquery scope: a prior-epoch send must never
+        satisfy the idempotency check for the current epoch's question.
         """
         rows = self.outbound.get(str(run_id))
         if not rows:
@@ -805,10 +804,11 @@ class InMemoryRepo:
         return {"message_id": found["message_id"], "round": found.get("round", 0)}
 
     def mark_reply_consumed(self, message_id, round, conn=None):
-        """Write-once consumed_round marker on the matching inbound row (D-11-02).
+        """Write-once consumed_round marker on the matching inbound row.
 
         Mirrors the real repo's `consumed_round IS NULL` write-once guard: a
-        second call for an already-consumed message_id is a no-op.
+        second call for an already-consumed message_id is a no-op, so a
+        redelivered reply can never be consumed twice.
         """
         row = self.emails.get(message_id)
         if (
@@ -819,15 +819,16 @@ class InMemoryRepo:
             row["consumed_round"] = round
 
     def load_consumed_replies(self, run_id, conn=None):
-        """Return consumed inbound replies for a run, round-ordered (D-11-10/12/13).
+        """Return consumed inbound replies for a run, round-ordered.
 
         Mirrors repo.load_consumed_replies: filters inbound + consumed_round is
         not None, sorted by consumed_round ascending.
 
-        GAP-3 (11-06): also filters on row.get("epoch", 0) == the run's
-        CURRENT reply_epoch — the actual GAP-3 fix, mirroring repo's
-        correlated subquery scope. A stale consumed reply from a pre-retrigger
-        epoch is invisible here even though the row is never deleted.
+        Also filters on row.get("epoch", 0) == the run's CURRENT reply_epoch,
+        mirroring repo's correlated subquery scope. A stale consumed reply from a
+        pre-retrigger epoch is invisible here even though the row is never
+        deleted — the audit log stays append-only, but its stale rows must not
+        leak into the accumulated reply context.
         """
         run = self.runs.get(str(run_id))
         current_epoch = run.get("reply_epoch", 0) if run is not None else 0
@@ -846,11 +847,12 @@ class InMemoryRepo:
         return sorted(matching, key=lambda r: r["consumed_round"])
 
     def get_inbound_by_message_id(self, message_id, conn=None):
-        """Return the stored inbound row dict, or None (D-11-13, mirrors repo).
+        """Return the stored inbound row dict, or None (mirrors repo).
 
-        WR-04 redelivery reads the PERSISTED row (Pitfall #11a) — this fake
-        returns exactly what insert_inbound_email stored, never a freshly-built
-        InboundEmail from a redelivered request.
+        The redelivery path must read the PERSISTED row: this fake returns exactly
+        what insert_inbound_email stored, never a freshly-built InboundEmail from
+        the redelivered request — otherwise a redelivery would resurrect a reply
+        the DB has already marked consumed.
         """
         row = self.emails.get(message_id)
         if row is None or row.get("direction") != "inbound":
@@ -858,17 +860,16 @@ class InMemoryRepo:
         return row
 
     def find_stranded_unconsumed_replies(self, threshold_seconds, conn=None):
-        """Stale unconsumed inbound replies against awaiting_reply runs (D-11-05).
+        """Stale unconsumed inbound replies against awaiting_reply runs.
 
         Mirrors repo.find_stranded_unconsumed_replies: applies the awaiting_reply
-        + unconsumed + age filter using the row's created_at (every fake row now
+        + unconsumed + age filter using the row's created_at (every fake row
         carries one, from insert_inbound_email/insert_email_message).
 
-        GAP-2/GAP-3 (11-06): also requires row.get("epoch", 0) == the run's
-        CURRENT reply_epoch — mirrors repo's `em.epoch = pr.reply_epoch` JOIN
-        condition. A genuinely stale epoch-0 unconsumed reply must never be
-        auto-resumed against a run that has since been retriggered into a
-        NEW epoch-1 awaiting_reply state.
+        Also requires row.get("epoch", 0) == the run's CURRENT reply_epoch —
+        mirrors repo's `em.epoch = pr.reply_epoch` JOIN condition. A stale
+        epoch-0 unconsumed reply must never be auto-resumed against a run that
+        has since been retriggered into a NEW epoch-1 awaiting_reply state.
         """
         threshold = timedelta(seconds=threshold_seconds)
         now = datetime.now(UTC)
@@ -890,11 +891,12 @@ class InMemoryRepo:
             found.append(row)
         return found
 
-    # --- 06-04 new repo helpers (D-13c crash-safe ordering + D-14 threading) ---
+    # --- crash-safe send ordering + durable threading ---
     def get_outbound_references_chain(self, run_id, conn=None):
         """Return the references_header of the most recent sent outbound for this run.
 
-        Mirrors repo.get_outbound_references_chain (D-14 durable threading rebuild).
+        Mirrors repo.get_outbound_references_chain: the References chain is rebuilt
+        from the DB, not from in-process state, so threading survives a restart.
         Returns None if no sent outbound row exists.
         """
         rows = self.outbound.get(str(run_id))
@@ -908,7 +910,8 @@ class InMemoryRepo:
     def update_email_message_sent(self, message_id, conn=None):
         """Flip send_state to 'sent' for the outbound row with this synthetic message_id.
 
-        Mirrors repo.update_email_message_sent (D-13c success path, HIGH-1 waive).
+        Mirrors repo.update_email_message_sent (the success half of the crash-safe
+        write-then-send ordering).
         """
         self.update_email_message_state(message_id, "sent", conn=conn)
 
@@ -917,7 +920,9 @@ class InMemoryRepo:
     ) -> None:
         """Set send_state on the outbound row with this synthetic message_id.
 
-        Mirrors repo.update_email_message_state (D-13c crash-safe flip, HIGH-3).
+        Mirrors repo.update_email_message_state: the row is written BEFORE the
+        send is attempted, then flipped, so a crash mid-send leaves a visible
+        pending row rather than an invisible lost email.
         """
         for rows in self.outbound.values():
             for row in rows:
@@ -925,7 +930,7 @@ class InMemoryRepo:
                     row["send_state"] = state
                     return
 
-    # --- header-chain reply routing (CLAR-02/03, Plan 04) ---
+    # --- header-chain reply routing ---
     def _header_matches(
         self,
         in_reply_to: str | None,
@@ -933,8 +938,9 @@ class InMemoryRepo:
         row: dict[str, Any],
     ) -> bool:
         """Mirror the repo SQL: outbound Message-ID == in_reply_to OR is a WHOLE
-        whitespace-bounded token in References (WR-02 anchoring — not a bare
-        substring, so `<a@x>` never matches inside `<a@xtra>`)."""
+        whitespace-bounded token in References. It must not be a bare substring
+        match, or `<a@x>` would match inside `<a@xtra>` and route a reply to the
+        wrong run."""
         mid = row["message_id"]
         if in_reply_to is not None and mid == in_reply_to:
             return True
@@ -955,7 +961,7 @@ class InMemoryRepo:
         return None
 
     def find_any_run_for_header(self, *, in_reply_to, references_header, conn=None):
-        """The SAME header match across ANY status (late-reply observability, FIX 10)."""
+        """The SAME header match across ANY status (late-reply observability)."""
         for run_id, rows in self.outbound.items():
             for row in rows:
                 if self._header_matches(in_reply_to, references_header, row):
@@ -993,27 +999,27 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "get_outbound_message_id",
         "find_awaiting_reply_for_header",
         "find_any_run_for_header",
-        # 06-08 additions — record_only + demo routing helpers
+        # record_only + demo routing helpers
         "get_record_only_flag",
         "load_thread_messages",
         "list_businesses",
         "get_demo_binding",
         "bind_demo_business",
-        # 06-04 additions — D-13c crash-safe ordering + D-14 durable threading
+        # crash-safe send ordering + durable threading
         "get_outbound_references_chain",
         "update_email_message_sent",
         "update_email_message_state",
-        # 07.5-03 additions — D-19 MONEY-03 snapshot + D-13 MONEY-03 clarified_fields
+        # field-regression snapshot + clarified_fields outcomes
         "set_pre_clarify_extracted",
         "load_pre_clarify_extracted",
         "set_clarified_fields",
         "load_clarified_fields",
-        # 09-01 additions — DATA-03 stranded-run sweep + DATA-02 dedup-loser lookup
+        # stranded-run sweep + webhook-dedup loser lookup
         "sweep_stranded_runs",
         "find_run_by_message_id",
-        # phase-9 review WR-03 — reply/late-reply rows linked to their run
+        # reply/late-reply rows linked to their run
         "link_email_to_run",
-        # Phase 11 (11-01) additions — round machine data-layer primitives
+        # clarification round-machine data-layer primitives
         "get_clarification_round",
         "set_clarification_round",
         "get_outbound_for_round",
@@ -1026,10 +1032,9 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
 
-    # 09-01 (D-9-03): patch app.db.repo.get_connection to a FakeConnection-backed
-    # context manager so `with repo.get_connection() as conn: with
-    # conn.transaction(): ...` code (every subsequent Phase 9 plan's seam) runs
-    # against the offline double instead of opening a real Supabase pool.
+    # Patch app.db.repo.get_connection to a FakeConnection-backed context manager
+    # so `with repo.get_connection() as conn: with conn.transaction(): ...` code
+    # runs against the offline double instead of opening a real Supabase pool.
     monkeypatch.setattr(repo_mod, "get_connection", _fake_get_connection, raising=False)
 
     # Patch resend.Emails.send to a no-op in the mocked test context so that
@@ -1125,7 +1130,7 @@ def mock_llm(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 6. seed_roster — Roster with the David+Daniel Reyes collision pair (Plan 05-02)
+# 6. seed_roster — Roster with the David+Daniel Reyes collision pair
 # ---------------------------------------------------------------------------
 
 
@@ -1136,10 +1141,8 @@ def seed_roster() -> Roster:
 
     Both David Reyes (e0000003) and Daniel Reyes (e0000007) carry
     known_aliases=["D. Reyes"], so submitting "D. Reyes" always gates to
-    request_clarification (the collision-safety invariant, D-21-02).
-
-    Required by: test_alias_write.py (Plan 05-01 Task 1), test_delivery.py
-    (Plan 05-02 Task 2), and any future test needing the collision pair.
+    request_clarification: a name that could be two people on the roster is never
+    resolved, because resolving it would guess with someone's money.
     """
     from app.db.seed import seed
 
@@ -1158,7 +1161,7 @@ def seed_roster() -> Roster:
 
 
 # ---------------------------------------------------------------------------
-# 7. Phase 6 Resend SDK mock fixtures (06-01) — clean seams for gateway tests
+# 7. Resend SDK mock fixtures — offline seams for the gateway tests
 # ---------------------------------------------------------------------------
 
 
@@ -1169,10 +1172,11 @@ class _FakeResendReceivedEmail:
       - message_id (str): the RFC Message-ID
       - text (str | None): plain-text body
       - html (str | None): HTML body
-      - headers (dict): flat key->value; keys may be mixed-case per provider (A1)
+      - headers (dict): flat key->value; keys may be mixed-case per provider
 
     The `headers` dict uses mixed-case keys matching real provider output, so tests
-    exercise the case-insensitive extraction path (Pitfall 4 / D-18).
+    exercise the case-insensitive header extraction path — a case-sensitive lookup
+    would silently drop In-Reply-To and break reply threading.
     """
 
     def __init__(
@@ -1186,7 +1190,7 @@ class _FakeResendReceivedEmail:
         self.message_id = message_id
         self.text = text
         self.html = html
-        # Default: mixed-case keys to exercise the normalization path (A1 assumption).
+        # Default: mixed-case keys, to exercise the header-normalization path.
         self.headers: dict[str, Any] = headers if headers is not None else {
             "In-Reply-To": "<prev@x.test>",
             "References": "<prev@x.test>",
@@ -1198,8 +1202,8 @@ class _FakeResendReceivedEmail:
 def fake_received_email() -> _FakeResendReceivedEmail:
     """A minimal resend.ReceivedEmail stand-in with mixed-case header keys.
 
-    Exercises the A1 assumption (header key casing from real providers) and the
-    case-insensitive extraction path (Pitfall 4 / D-18 / 06-RESEARCH §1).
+    Real providers do not normalize header key casing, so this fixture keeps the
+    case-insensitive extraction path under test.
     """
     return _FakeResendReceivedEmail()
 
@@ -1222,8 +1226,9 @@ def mock_resend_verify(monkeypatch):
 def mock_resend_verify_reject(monkeypatch):
     """Monkeypatch resend.Webhooks.verify to always raise ValueError('bad sig').
 
-    Use this for the signature-rejection path (OPS-02 / D-17) — the route must
-    return 400 and abort before any pipeline work when verify raises.
+    Use this for the signature-rejection path — the route must return 400 and abort
+    before any pipeline work when verify raises, so an unsigned payload can never
+    create a run.
     """
     def _reject_verify(payload_dict):
         raise ValueError("bad sig")
