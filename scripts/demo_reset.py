@@ -1,18 +1,18 @@
-"""Demo-DB reset helper (D-07) — Phase 6.
+"""Demo-DB reset helper.
 
 Purpose
 -------
-Between recording takes, Beat 3 persists a learned alias into the database.
-A second take of Beat 2 (unknown-shorthand) will therefore resolve instead of
-clarify unless the alias is cleared first. This script resets the demo state
+Between recording takes, the approval beat persists a learned alias into the database.
+A second take of the unknown-shorthand beat will therefore resolve instead of
+clarify unless that alias is cleared first. This script resets the demo state
 so every take starts from the same clean baseline.
 
-Identity model (06-08 additive)
----------------------------------
-Under the 06-08 additive model, demo identity is stored in the
-``demo_sender_bindings`` table (operator_email → business_id).
+Identity model
+--------------
+Demo identity lives in the ``demo_sender_bindings`` table (operator_email → business_id).
 The seed .example contacts in ``businesses.contact_email`` are PERMANENTLY STABLE —
-they are never mutated by any demo flow (HIGH-2 invariant). This script:
+no demo flow may ever mutate them, or the seeded roster stops matching the fixtures.
+This script:
 
   - Deletes run-level state (paystub_line_items, email_messages, payroll_runs)
     in FK-safe order.
@@ -22,7 +22,7 @@ they are never mutated by any demo flow (HIGH-2 invariant). This script:
     email routes to the configured demo business. This is idempotent: the binding
     row is NOT cleared by the delete steps above.
   - Never mutates ``businesses.contact_email`` — the businesses table is only ever
-    written by ``seed()`` which writes back the stable .example contacts (HIGH-2).
+    written by ``seed()``, which writes back the stable .example contacts.
 
 Modes
 -----
@@ -48,7 +48,9 @@ import uuid
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Seed business IDs — stable literals matching app/db/seed.py _BUSINESSES (D-11)
+# Seed business IDs — stable literals that MUST match app/db/seed.py _BUSINESSES.
+# If they drift, the re-arm below binds the operator to a business that does not exist
+# and the demo silently stops routing.
 # ---------------------------------------------------------------------------
 
 _SEED_BUSINESS_IDS: dict[str, uuid.UUID] = {
@@ -158,8 +160,8 @@ def _run_full_reset() -> None:
     # Step 5: seed() to reset known_aliases — must run outside the delete transaction
     # so its own internal transaction can commit cleanly.
     # seed() uses ON CONFLICT DO UPDATE — safe to run on existing data.
-    # seed() touches businesses and employees only (D-11 containment); it never
-    # touches payroll_runs, email_messages, or demo_sender_bindings.
+    # seed() touches businesses and employees only; it never touches payroll_runs,
+    # email_messages, or demo_sender_bindings.
     seed()
     print("Seed restored (known_aliases reset, seed .example contacts verified).")
 

@@ -1,15 +1,19 @@
-"""LLM-as-judge email quality scorer -- local-only, never runs in CI, first to drop under
-time pressure. Scores committed clarification draft text files (one per clarify-category
-fixture) against a one-line rubric. See CONTEXT.md D-15 for scope decisions.
+"""LLM-as-judge email quality scorer for clarification drafts.
 
-Design notes (D-15, D-16):
-- NEVER runs in CI (this file is not referenced by any CI workflow).
-- Gated by allow_live_llm -- raises SystemExit if False.
-- NOT broken out per category: n~=1 per category is not meaningful.
-- Correctness floor (D-16): a draft naming a wrong real employee is capped at score 1
-  regardless of polish -- that "confident-LLM-wrongness" is what the architecture
-  exists to prevent.
-- Uses tier="draft" (Kimi), NOT the extraction tier (DeepSeek), per call_text() contract.
+Scores committed clarification draft text files (one per clarify-category fixture)
+against a one-line rubric. This is a supplementary signal only -- the deterministic
+metrics in run_eval.py carry the thesis.
+
+Invariants:
+- NEVER runs in CI (this file is referenced by no CI workflow) and is gated by
+  ALLOW_LIVE_LLM -- it raises SystemExit if the flag is off, so it can never quietly
+  bill a model run during a routine scoring pass.
+- Scores are NOT broken out per category: n~=1 per category is not meaningful.
+- Correctness floor: a draft naming a wrong real employee is capped at score 1 no matter
+  how polished it reads. That "confident-LLM-wrongness" is precisely what this
+  architecture exists to prevent, so it must never be able to score well.
+- Uses tier="draft" (the drafting model), NOT the extraction tier, per the call_text()
+  contract.
 - Standalone script only; NOT called from run_eval.py main().
 
 Usage (local only, requires ALLOW_LIVE_LLM=true + draft API key):
@@ -33,7 +37,8 @@ from openai.types.chat import ChatCompletionMessageParam
 EVAL_DIR = pathlib.Path(__file__).resolve().parent
 DRAFTS_DIR = EVAL_DIR / "drafts"
 
-# Rubric baked into the judge prompt (D-16).
+# Rubric baked into the judge prompt. The correctness floor clause is load-bearing:
+# without it a fluent email naming the WRONG employee can outscore a plain correct one.
 RUBRIC = (
     "Score the clarification email 1-5 where: "
     "1=generic/names no specific employee; "
@@ -69,7 +74,7 @@ def judge_draft(
         draft_text: The full text of the clarification email draft.
         fixture_id: Identifier of the fixture this draft was generated for.
         expected_employee_full_name: The intended employee for this fixture
-            (used to enforce the D-16 correctness floor). None if not applicable.
+            (used to enforce the correctness floor). None if not applicable.
 
     Returns:
         dict with keys: fixture_id, raw_score, final_score, floor_applied, notes.
@@ -90,7 +95,7 @@ def judge_draft(
         raise SystemExit(
             "judge_draft requires ALLOW_LIVE_LLM=true in the environment. "
             "Set it explicitly to run the LLM judge. "
-            "The judge is local-only and never runs in CI (D-15)."
+            "The judge is local-only and never runs in CI."
         )
 
     # Import call_text inside this function -- keeps it off any non-judge import path.
@@ -128,7 +133,9 @@ def judge_draft(
                     break
 
     # -----------------------------------------------------------------------
-    # D-16 Correctness floor: wrong real employee named in draft -> cap at 1.
+    # Correctness floor: a wrong real employee named in the draft caps the score at 1.
+    # This runs in code, not in the prompt, because the judge model cannot be trusted to
+    # enforce the one rule that matters most.
     # -----------------------------------------------------------------------
     floor_applied = False
     final_score = raw_score
@@ -150,7 +157,7 @@ def judge_draft(
                 final_score = min(raw_score, 1)
                 floor_applied = True
                 print(
-                    f"  [D-16 floor] Draft names '{roster_name}' but intended "
+                    f"  [correctness floor] Draft names '{roster_name}' but intended "
                     f"'{expected_employee_full_name}' -- capping score at 1 "
                     f"(raw={raw_score})"
                 )
@@ -218,9 +225,9 @@ def _load_fixture_expected_employee(fixture_id: str) -> str | None:
             # Malformed fixture or missing key -- skip this fixture only.
             continue
         except Exception as exc:  # noqa: BLE001
-            # Unexpected failure must NOT silently disable the D-16 correctness
-            # floor (WR-02): surface it so a swallowed bug can't let a draft
-            # naming the wrong real employee score above the floor undetected.
+            # An unexpected failure here returns None, which DISABLES the correctness
+            # floor for this draft. Never swallow it silently: a swallowed bug would let
+            # a draft naming the wrong real employee score 5 with nobody the wiser.
             print(
                 f"WARNING: unexpected error loading expected employee from "
                 f"{fixture_path.name}: {exc!r}",
@@ -277,7 +284,7 @@ def main() -> None:
 
     print("\nDone. Judge results above are supplementary -- the 3 deterministic")
     print("metrics (extraction F1, reconciliation accuracy, decision accuracy)")
-    print("carry the thesis. See D-15 for scoping context.")
+    print("carry the thesis.")
 
 
 if __name__ == "__main__":
