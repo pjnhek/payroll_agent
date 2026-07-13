@@ -607,8 +607,7 @@ def test_scrub_mark_aware_lookaround_no_over_redaction(roster_from_seed):
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_decision_roundtrip(seeded_db):
-    """A clean run round-trips BOTH decision AND reconciliation from payroll_runs
-    (LLM-08, D-A3-05)."""
+    """A clean run round-trips BOTH decision AND reconciliation from payroll_runs."""
     from app.db import repo
     from app.db.seed import seed as _seed
 

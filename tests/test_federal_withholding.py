@@ -822,7 +822,7 @@ def test_withholding_never_negative_low_wages() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HoH reject-guard test (review Fix 5)
+# HoH reject-guard test
 # ---------------------------------------------------------------------------
 
 def test_hoh_reject_guard() -> None:

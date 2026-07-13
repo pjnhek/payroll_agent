@@ -95,7 +95,7 @@ def _paystub_kwargs(**overrides: Any) -> dict[str, Any]:
 
 
 def test_imports() -> None:
-    """All 10 public names import from app.models without error (Finding #6)."""
+    """All 10 public names import from app.models without error."""
     # The import at the top of this file already exercises this; an explicit
     # assertion makes the intent clear in the test output.
     for name in (
@@ -281,12 +281,12 @@ def test_decision_rejects_legacy_kwargs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ExtractedEmployee nullable hours (Finding #3)
+# ExtractedEmployee nullable hours
 # ---------------------------------------------------------------------------
 
 
 def test_extracted_employee_nullable_hours() -> None:
-    """ExtractedEmployee with all hours=None validates without error (Finding #3).
+    """ExtractedEmployee with all hours=None validates without error.
 
     If hours were non-nullable, a client email with missing hours would raise
     ValidationError before decide() can inspect missing_fields and gate the run.

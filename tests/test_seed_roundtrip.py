@@ -9,8 +9,8 @@ Two sections:
 
 2. LIVE-DB (requires DATABASE_URL + ALLOW_DB_RESET=1): Integration round-trip —
    seed then read back through Employee contract using explicit column select +
-   dict_row (Finding #4 — no SELECT *, no extra-column collision with
-   extra="forbid").  Two-factor guard per Finding #10: both env vars must be
+   dict_row — never SELECT *, which would collide with the contract's
+   extra="forbid". A two-factor guard applies: both env vars must be
    set or the live-DB tests skip individually.
 """
 import os
@@ -304,14 +304,15 @@ def test_seed_employees_have_stable_fixed_uuids() -> None:
 
 # ---------------------------------------------------------------------------
 # Section 2 — Live-DB integration tests
-# Two-factor skip guard (Finding #10): require DATABASE_URL + ALLOW_DB_RESET=1
+# Two-factor skip guard: require DATABASE_URL + ALLOW_DB_RESET=1, so that merely
+# having a database configured can never silently reset it.
 # ---------------------------------------------------------------------------
 
 _SKIP_LIVE_DB = pytest.mark.skipif(
     not (_HAS_DB and _HAS_RESET),
     reason=(
         "Live-DB tests require DATABASE_URL and ALLOW_DB_RESET=1 "
-        "(Finding #10 two-factor guard)"
+        "(two-factor guard against an accidental reset)"
     ),
 )
 
@@ -375,7 +376,7 @@ def test_high_earner_fields(seeded_db) -> None:
 def test_employee_roundtrip(seeded_db) -> None:
     """Every employee row round-trips through Employee(**row) without ValidationError.
 
-    Uses explicit column list (NOT SELECT *) + dict_row factory (Finding #4).
+    Uses an explicit column list (NOT SELECT *) + the dict_row factory.
     Employee has extra='forbid' — SELECT * would pass created_at/updated_at
     which are not Employee fields, causing ValidationError.
     """
