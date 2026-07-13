@@ -1,14 +1,15 @@
-"""Persistent contract tests — CI gate with no DB connection required.
+"""Persistent contract tests — a CI gate that needs no DB connection.
 
-Finding #6: these tests run in CI on every push.  They are the living proof that:
+These run on every push and are the living proof that:
 - All 10 public types import from app.models
-- RunStatus has exactly 10 members with the right values (mirrors Plan 02 CHECK)
-- Decimal serializes to JSON strings (D-06 guard at the DB jsonb boundary)
-- Decision is purely code-owned: final_action is the sole branch source and
-  resolutions carries per-name detail (D-21-01 / D-21-04) — no model_action,
-  no confidence, no gate_triggered
-- ExtractedEmployee hours are nullable so missing-hours cases don't parse-crash (Finding #3)
-- Employee enforces the pay_type compensation invariant at construction (D-10/FOUND-06)
+- RunStatus matches the DB CHECK constraint verbatim (drift here means a status the
+  code can set but the database will reject)
+- Decimal serializes to JSON strings, never floats, at the DB jsonb boundary
+- Decision is purely code-owned: final_action is the sole branch source and resolutions
+  carries the per-name detail — no model_action, no confidence, no gate_triggered
+- ExtractedEmployee hours are nullable, so a missing-hours email doesn't parse-crash
+  before the validation stage can gate it
+- Employee enforces the pay_type compensation invariant at construction
 """
 import uuid
 from decimal import Decimal
@@ -118,12 +119,16 @@ def test_imports() -> None:
 
 
 def test_run_status_count() -> None:
-    """RunStatus has exactly 11 members (D-02 / D-03; Phase 11 adds needs_operator)."""
+    """RunStatus has exactly 11 members."""
     assert len(RunStatus) == 11
 
 
 def test_run_status_values() -> None:
-    """RunStatus values match the 11-value set verbatim (mirrors Plan 02 CHECK + Phase 11)."""
+    """RunStatus values match the DB CHECK constraint's 11-value set verbatim.
+
+    The status column IS the state machine, so a value the enum allows but the CHECK
+    rejects turns a stage transition into a runtime DB error.
+    """
     expected = {
         "received",
         "extracting",
@@ -141,17 +146,17 @@ def test_run_status_values() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Decimal JSON serialization (D-06)
+# Decimal JSON serialization
 # ---------------------------------------------------------------------------
 
 
 def test_decimal_json_serialization() -> None:
-    """gross_pay serializes to the string '1234.56', not the float 1234.56 (D-06).
+    """gross_pay serializes to the string '1234.56', never the float 1234.56.
 
-    This is the behavioral guard for WR-04: with the hand-rolled
-    @field_serializer machinery removed, Pydantic v2's default Decimal -> str
-    JSON serialization must still hold across all monetary fields, including a
-    nullable one (state_withholding) which the old serializer special-cased.
+    Money crosses the jsonb boundary as a string or it loses precision. This pins
+    Pydantic v2's default Decimal -> str JSON serialization across every monetary
+    field, including the nullable one (state_withholding), so no hand-rolled
+    @field_serializer is needed to preserve the invariant.
     """
     item = PaystubLineItem(
         **_paystub_kwargs(gross_pay=Decimal("1234.56"), state_withholding=None)
@@ -163,22 +168,22 @@ def test_decimal_json_serialization() -> None:
     assert dumped["gross_pay"] == "1234.56"
     # A nullable Decimal still round-trips to JSON null (default behavior).
     assert dumped["state_withholding"] is None
-    # fica_ss is another Decimal-bearing field that must serialize to a string
-    # (Decision no longer carries a Decimal field — confidence is gone, D-21-01).
+    # fica_ss is another Decimal-bearing field that must serialize to a string.
+    # (Decision carries no Decimal at all — there is no confidence score anywhere.)
     assert dumped["fica_ss"] == "76.54"
 
 
 # ---------------------------------------------------------------------------
-# Decision deterministic shape (D-21-01 / D-21-04)
+# Decision deterministic shape
 # ---------------------------------------------------------------------------
 
 
 def test_decision_process_shape() -> None:
     """A clean process Decision validates with the deterministic field set.
 
-    final_action is the sole branch source; there is no model_action to diverge
-    from (D-21-01). resolutions carries per-name detail folded into the decision
-    JSONB (D-21-04 / D-21-06).
+    final_action is the sole branch source, so there is no model action for the code
+    to diverge from. resolutions carries the per-name detail folded into the decision
+    JSONB, which is what the dashboard and the eval read.
     """
     resolution = NameMatchResult(
         submitted_name="Maria Chen",
@@ -228,8 +233,8 @@ def test_decision_clarify_shape() -> None:
 def test_decision_resolutions_serialize_to_json() -> None:
     """Decision.model_dump(mode='json')['resolutions'] is a list of resolution dicts.
 
-    This is what gets persisted in the decision JSONB (D-21-06) so the dashboard
-    and eval can read why each name resolved/didn't.
+    This is what gets persisted in the decision JSONB, so the dashboard and the eval
+    can both read why each name did or did not resolve.
     """
     d = Decision(
         final_action="process",
@@ -256,7 +261,8 @@ def test_decision_resolutions_serialize_to_json() -> None:
 
 
 def test_decision_rejects_legacy_kwargs() -> None:
-    """Legacy confidence-era kwargs raise ValidationError (extra='forbid', D-21-04)."""
+    """Confidence-era kwargs raise ValidationError — the model is extra='forbid', so a
+    resurrected confidence/model_action field cannot silently reappear."""
     base = dict(
         final_action="process",
         gate_reasons=[],
@@ -375,7 +381,7 @@ def test_roster_valid() -> None:
 
 
 def test_name_match_result_exact_resolved() -> None:
-    """An exact deterministic resolution validates with source/resolved (D-21-04)."""
+    """An exact deterministic resolution validates with source/resolved."""
     emp_id = uuid.uuid4()
     result = NameMatchResult(
         submitted_name="Maria Chen",
@@ -404,19 +410,24 @@ def test_name_match_result_unresolved_none() -> None:
 
 
 def test_name_match_result_rejects_bad_source() -> None:
-    """source only accepts exact|alias|none — any other value raises (D-21-04)."""
+    """source only accepts exact|alias|none — any other value raises.
+
+    These three are the complete set of ways a name may resolve. A fourth source (an
+    LLM guess, a fuzzy match) would be a resolution the code never made.
+    """
     with pytest.raises(ValidationError):
         NameMatchResult(
             submitted_name="Dave",
             matched_employee_id=None,
-            source="llm_typo",  # dead value from the confidence era
+            source="llm_typo",  # not a deterministic resolution source
             resolved=False,
             reason="bad source",
         )
 
 
 def test_name_match_result_rejects_confidence_kwarg() -> None:
-    """A leftover confidence= kwarg raises ValidationError (extra='forbid', D-21-01)."""
+    """A confidence= kwarg raises ValidationError — the model is extra='forbid', so a
+    score can never reattach itself to a name resolution."""
     with pytest.raises(ValidationError):
         NameMatchResult.model_validate(
             {"submitted_name": "Maria Chen", "matched_employee_id": uuid.uuid4(),
@@ -426,7 +437,8 @@ def test_name_match_result_rejects_confidence_kwarg() -> None:
 
 
 def test_name_match_result_rejects_match_type_kwarg() -> None:
-    """A leftover match_type= kwarg raises ValidationError (extra='forbid', D-21-01)."""
+    """A match_type= kwarg raises ValidationError — extra='forbid' keeps the resolution
+    shape to source/resolved, with no parallel classification field."""
     with pytest.raises(ValidationError):
         NameMatchResult.model_validate(
             {"submitted_name": "Maria Chen", "matched_employee_id": uuid.uuid4(),
@@ -451,18 +463,19 @@ def test_validation_issue() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Employee compensation invariant (FIX A — D-10/FOUND-06)
+# Employee compensation invariant — pay_type determines which rate field is required
 # ---------------------------------------------------------------------------
 
 
 def test_employee_hourly_requires_hourly_rate() -> None:
-    """An hourly Employee without hourly_rate raises ValidationError (D-10)."""
+    """An hourly Employee without hourly_rate raises ValidationError — the calc would
+    otherwise have no rate to multiply hours by."""
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(pay_type="hourly", hourly_rate=None))
 
 
 def test_employee_salary_requires_annual_salary() -> None:
-    """A salaried Employee without annual_salary raises ValidationError (D-10)."""
+    """A salaried Employee without annual_salary raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(
             **_employee_kwargs(pay_type="salary", hourly_rate=None, annual_salary=None)
@@ -483,12 +496,15 @@ def test_employee_salary_valid() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Employee compensation mutual exclusivity (WR-07)
+# Employee compensation mutual exclusivity — an employee has ONE pay basis
+#
+# Carrying both fields would leave the calc's branch free to pick either one, so an
+# hourly employee could silently be paid a salary (or vice versa).
 # ---------------------------------------------------------------------------
 
 
 def test_employee_hourly_rejects_stray_annual_salary() -> None:
-    """An hourly Employee carrying a stray annual_salary raises ValidationError (WR-07)."""
+    """An hourly Employee carrying a stray annual_salary raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(
             **_employee_kwargs(
@@ -500,7 +516,7 @@ def test_employee_hourly_rejects_stray_annual_salary() -> None:
 
 
 def test_employee_salary_rejects_stray_hourly_rate() -> None:
-    """A salaried Employee carrying a stray hourly_rate raises ValidationError (WR-07)."""
+    """A salaried Employee carrying a stray hourly_rate raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(
             **_employee_kwargs(
@@ -512,18 +528,18 @@ def test_employee_salary_rejects_stray_hourly_rate() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Numeric field bounds (WR-01)
+# Numeric field bounds — a negative money field produces a paystub that still reconciles
 # ---------------------------------------------------------------------------
 
 
 def test_employee_rejects_negative_hourly_rate() -> None:
-    """A negative hourly_rate raises ValidationError (WR-01)."""
+    """A negative hourly_rate raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(hourly_rate=Decimal("-50.00")))
 
 
 def test_employee_rejects_negative_annual_salary() -> None:
-    """A negative annual_salary raises ValidationError (WR-01)."""
+    """A negative annual_salary raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(
             **_employee_kwargs(
@@ -535,13 +551,16 @@ def test_employee_rejects_negative_annual_salary() -> None:
 
 
 def test_employee_rejects_retirement_pct_above_one() -> None:
-    """retirement_contribution_pct > 1 (e.g. 50 == 5000%) raises ValidationError (WR-01)."""
+    """retirement_contribution_pct > 1 raises ValidationError.
+
+    The field is a fraction, not a percentage: 50 would mean 5000% and zero out net pay.
+    """
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("50")))
 
 
 def test_employee_rejects_negative_retirement_pct() -> None:
-    """A negative retirement_contribution_pct raises ValidationError (WR-01)."""
+    """A negative retirement_contribution_pct raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(retirement_contribution_pct=Decimal("-0.01")))
 
@@ -555,84 +574,87 @@ def test_employee_accepts_retirement_pct_bounds() -> None:
 
 
 def test_extracted_employee_rejects_negative_hours() -> None:
-    """ExtractedEmployee with negative hours raises ValidationError (WR-01)."""
+    """ExtractedEmployee with negative hours raises ValidationError — negative hours
+    produce a negative gross that ties out perfectly under the reconciliation check."""
     with pytest.raises(ValidationError):
         ExtractedEmployee(submitted_name="Bob", hours_regular=Decimal("-10"))
 
 
 # ---------------------------------------------------------------------------
-# PaystubLineItem confidence-free shape (D-21-01)
+# PaystubLineItem carries no confidence score
 # ---------------------------------------------------------------------------
 
 
 def test_paystub_line_item_rejects_match_confidence_kwarg() -> None:
-    """A leftover match_confidence= kwarg raises ValidationError (extra='forbid').
+    """A match_confidence= kwarg raises ValidationError (extra='forbid').
 
-    Confidence is gone everywhere (D-21-01); provenance on a paystub is carried
-    by employee_id + submitted_name, not a score.
+    There is no confidence anywhere in the system: provenance on a paystub is carried
+    by employee_id + submitted_name — the name either resolved in code or it did not.
     """
     with pytest.raises(ValidationError):
         PaystubLineItem(**_paystub_kwargs(match_confidence=Decimal("0.99")))
 
 
 # ---------------------------------------------------------------------------
-# NameReconciliationResponse is deleted (D-21-05 — no layer-2 LLM wrapper)
+# There is no LLM name-reconciliation wrapper model
 # ---------------------------------------------------------------------------
 
 
 def test_name_reconciliation_response_module_gone() -> None:
-    """app.models.reconcile no longer exists (the layer-2 LLM wrapper is dead)."""
+    """app.models.reconcile must not exist — name resolution is pure code, so there is
+    no LLM response model for it to parse."""
     with pytest.raises(ModuleNotFoundError):
         __import__("app.models.reconcile")
 
 
 # ---------------------------------------------------------------------------
-# W-4 / YTD dollar-field non-negativity (WR-08)
+# W-4 / YTD dollar-field non-negativity
 # ---------------------------------------------------------------------------
 
 
 def test_employee_rejects_negative_ytd_ss_wages() -> None:
-    """A negative ytd_ss_wages raises ValidationError (WR-08).
+    """A negative ytd_ss_wages raises ValidationError.
 
-    A negative YTD makes remaining_cap = 184500 - ytd_ss_wages exceed the wage
-    base, breaking the SS-cap straddle logic.
+    A negative YTD makes remaining_cap = 184500 - ytd_ss_wages exceed the wage base,
+    breaking the SS-cap straddle logic and over-withholding Social Security.
     """
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(ytd_ss_wages=Decimal("-99999")))
 
 
 def test_employee_rejects_negative_step_3_dependents() -> None:
-    """A negative step_3_dependents raises ValidationError (WR-08).
+    """A negative step_3_dependents raises ValidationError.
 
-    step_3_dependents is *subtracted* in the Pub 15-T worksheet; a negative
-    value nonsensically inflates withholding.
+    step_3_dependents is *subtracted* in the Pub 15-T worksheet, so a negative value
+    inflates withholding instead of reducing it.
     """
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(step_3_dependents=Decimal("-5000")))
 
 
 def test_employee_rejects_negative_step_4a_other_income() -> None:
-    """A negative step_4a_other_income raises ValidationError (WR-08)."""
+    """A negative step_4a_other_income raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(step_4a_other_income=Decimal("-1")))
 
 
 def test_employee_rejects_negative_step_4b_deductions() -> None:
-    """A negative step_4b_deductions raises ValidationError (WR-08)."""
+    """A negative step_4b_deductions raises ValidationError."""
     with pytest.raises(ValidationError):
         Employee(**_employee_kwargs(step_4b_deductions=Decimal("-1")))
 
 
 # ---------------------------------------------------------------------------
-# pay_periods_per_year drift guard (WR-02)
+# pay_periods_per_year drift guard
 # ---------------------------------------------------------------------------
 
 
 def test_employee_rejects_invalid_pay_periods() -> None:
-    """A pay_periods_per_year not in {12,24,26,52} raises ValidationError (WR-02).
+    """A pay_periods_per_year not in {12,24,26,52} raises ValidationError.
 
-    Mirrors schema.sql CHECK (pay_periods_per_year IN (12,24,26,52)) so a value
-    like 13 cannot pass the contract and silently drift toward the DB boundary.
+    Mirrors schema.sql's CHECK (pay_periods_per_year IN (12,24,26,52)) so a value like
+    13 is rejected at the contract, not at the DB boundary — and never reaches the
+    annualization step, where it would silently misprice every bracket lookup.
     """
     for bad in (0, -1, 13, 1):
         with pytest.raises(ValidationError):
@@ -640,7 +662,7 @@ def test_employee_rejects_invalid_pay_periods() -> None:
 
 
 def test_employee_accepts_all_legal_pay_periods() -> None:
-    """All four legal pay_periods_per_year values construct (WR-02)."""
+    """All four legal pay_periods_per_year values construct."""
     for good in (12, 24, 26, 52):
         e = Employee(**_employee_kwargs(pay_periods_per_year=good))
         assert e.pay_periods_per_year == good

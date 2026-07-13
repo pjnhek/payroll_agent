@@ -1,79 +1,81 @@
 """Golden-value tests for the Pub 15-T 2026 Worksheet 1A federal withholding engine.
 
-This module implements the full D-04 golden test matrix with three complementary layers:
+The withholding engine is the highest-bug-risk unit in the repo, so every expected value
+here comes from a source OUTSIDE the engine. Three complementary layers:
 
 PRIMARY ORACLE (under-ceiling fixtures):
-  The independently-transcribed Wage Bracket Method tables (RESEARCH.md Deliverable 5,
-  Pub 15-T 2026 pages 13-27, sourced from irs.gov/pub/irs-pdf/p15t.pdf, retrieved 2026-06-22).
-  A transcription error in tax_tables_2026.py causes the wage-bracket cross-check to disagree
-  with the independently-transcribed wage-bracket cells -- structural enforcement of the
-  D-01 self-derivation ban for all under-ceiling fixtures.
+  The independently-transcribed Wage Bracket Method tables (Pub 15-T 2026 pages 13-27,
+  sourced from irs.gov/pub/irs-pdf/p15t.pdf, retrieved 2026-06-22). A transcription error
+  in tax_tables_2026.py makes the wage-bracket cross-check disagree with these cells --
+  that disagreement is the whole point of the layer.
 
-STRUCTURAL INDEPENDENCE:
-  NO expected value in the parametrize tables was derived by calling tax_tables_2026 or
-  federal_withholding_2026. All golden values are either:
-  (a) Verbatim cells from Deliverable 5 (wage-bracket cross-check), or
-  (b) Hand-computed step-by-step from RESEARCH.md Deliverable 1 bracket tables
-      (independently transcribed from the same PDF, different section).
+STRUCTURAL INDEPENDENCE (the load-bearing rule):
+  NO expected value in the parametrize tables may be derived by calling tax_tables_2026 or
+  federal_withholding_2026. A test that computes its own expectation from the code under
+  test proves only that the code is self-consistent, not that it is correct. All golden
+  values are either:
+  (a) Verbatim published wage-bracket cells, or
+  (b) Hand-computed step-by-step from the bracket tables (independently transcribed from
+      the same IRS PDF, a different section).
 
 SECONDARY ORACLE (over-ceiling):
   For fixtures whose adjusted per-period wage exceeds the wage-bracket ceiling (~$100k
-  annualized), expected values are confirmed by independent layer-B online calculators.
+  annualized), expected values are confirmed against an independent online calculator.
 
-  Layer-B Oracle Verification (2026-06-22, operator-run) -- RESOLVED:
-  Thomas Bergmann biweekly MFJ over-ceiling (~$9,230.77/period, above $3,875 ceiling):
-  - Calibration: paycheckcity.com returned $54.08 for Single/Standard/Weekly/$800 ->
-    confirms IRS Pub 15-T 2026 percentage-method mode. usapaycheck.org was DISCARDED
-    (rounds inputs/outputs -- cannot serve as a penny-exact oracle).
-  - Over-ceiling: paycheckcity.com (8% entered as TRADITIONAL pre-tax 401k) returned
-    Federal Withholding = $881.39 -- a PENNY-EXACT match with this engine. (An initial
-    run without the 401k applied to the federal base returned $1,043.85; re-running with
-    the pre-tax 401k reconciled it exactly to $881.39.)
-  Provenance: ONE penny-exact online oracle (paycheckcity.com) + a full Worksheet 1A
-  hand trace (see test_federal_withholding_thomas_bergmann_over_ceiling). usapaycheck.org
-  was unusable, so only one online oracle corroborates -- but it agrees exactly and the
-  independent trace agrees, so the value is adopted (not skipped).
-  NOTE: The SS wage-base straddle test for Thomas Bergmann (CALC-04) is a SEPARATE
-  under-ceiling FICA assertion tested via calculate() and is implemented normally below.
+  Thomas Bergmann, biweekly MFJ, over-ceiling (~$9,230.77/period, above the $3,875 ceiling):
+  - Calibration: paycheckcity.com returned $54.08 for Single/Standard/Weekly/$800, which
+    confirms it is running the IRS Pub 15-T 2026 percentage method. usapaycheck.org was
+    DISCARDED -- it rounds inputs and outputs, so it cannot serve as a penny-exact oracle.
+  - Over-ceiling: paycheckcity.com (8% entered as a TRADITIONAL pre-tax 401k) returned
+    Federal Withholding = $881.39 -- a PENNY-EXACT match with this engine. (An initial run
+    that did NOT apply the 401k to the federal base returned $1,043.85; re-running with the
+    pre-tax 401k reconciled it exactly to $881.39.)
+  So one penny-exact online oracle plus a full Worksheet 1A hand trace (see
+  test_federal_withholding_thomas_bergmann_over_ceiling) corroborate the value; both agree,
+  so it is adopted rather than skipped.
+  NOTE: the SS wage-base straddle case for Thomas Bergmann is a SEPARATE under-ceiling FICA
+  assertion driven through calculate(), implemented normally below.
 
 ROUNDING:
-  Whole-dollar comparison uses quantize(Decimal("1"), rounding=ROUND_HALF_UP), NOT Python
+  Whole-dollar comparison uses quantize(Decimal("1"), rounding=ROUND_HALF_UP), NOT Python's
   round() (which is ROUND_HALF_EVEN / banker's rounding). This matches the IRS's own
-  whole-dollar convention per RESEARCH.md Finding 5 [ASSUMED].
+  whole-dollar convention.
 
-  Per-step cent quantization in federal_withholding.py is a CHOSEN ENGINE CONVENTION --
-  IRS whole-dollar rounding is optional per Pub 15-T Deliverable 2; ROUND_HALF_UP is the
-  project pin per D-03/WR-06. This is NOT IRS-mandated per-step behavior.
+  Per-step cent quantization in federal_withholding.py is a CHOSEN ENGINE CONVENTION: IRS
+  whole-dollar rounding is optional under Pub 15-T, and ROUND_HALF_UP is this project's pin.
+  It is not IRS-mandated per-step behavior.
 
-  DEFAULT ASSERTION in wage-bracket cross-check: EXACT EQUALITY (R2-1).
-  engine_whole_dollar == published_cell. +-$1 tolerance ONLY on a row with a documented
-  NAMED EXCEPTION comment. A blanket tolerance would mask a real $1 bracket-table bug.
+  DEFAULT ASSERTION in the wage-bracket cross-check: EXACT EQUALITY.
+  engine_whole_dollar == published_cell. A +-$1 tolerance is allowed ONLY on a row carrying
+  a documented, named exception comment. A blanket tolerance would mask a real $1
+  bracket-table transcription bug -- the exact class of error this file exists to catch.
 
-WAGE-BRACKET CEILINGS (Finding 3):
+WAGE-BRACKET CEILINGS:
   Weekly (52): $1,925 / Biweekly (26): $3,875 / Semimonthly (24): $4,185 / Monthly (12): $8,395
   Thomas Bergmann (~$9,230.77 biweekly) is ABOVE the $3,875 biweekly ceiling.
 
 COVERAGE:
-  All 6 Worksheet 1A schedule combinations: 3 filing statuses x 2 Step-2 branches.
-  The wage-bracket sweep covers 4 unique column datasets (single==married_separately share
-  one column per RESEARCH) and exercises all 6 routing combinations (R2-8).
-  HoH schedule is NOT covered by the sweep -- HoH is rejected with a ValueError (reject-guard).
+  All 6 Worksheet 1A schedule combinations: 3 filing statuses x 2 Step-2 branches. The
+  wage-bracket sweep covers 4 unique column datasets (single and married_separately share
+  one published column) and exercises all 6 routing combinations. The HoH schedule is not
+  covered by the sweep -- HoH is rejected with a ValueError (reject-guard).
 
-ADDITIONAL MEDICARE (User Decision 1, FIX B):
+ADDITIONAL MEDICARE:
   The 0.9% surtax over $200k YTD is NOT modeled. The engine flags it as a known limitation
   (additional_medicare_not_modeled=True on PaystubLineItem). Tests use REALISTIC SS-capped
-  YTD values (ytd_ss_wages <= 184500, the 2026 SS wage base cap) -- see R2-2.
+  YTD values (ytd_ss_wages <= 184500, the 2026 SS wage base cap) -- an impossible YTD would
+  exercise a state the system can never reach.
 
 OBBBA DISCLAIMER:
   Qualified-tips and qualified-overtime above-the-line deductions (OBBBA) are NOT modeled.
   Standard percentage method only.
 
-python-taxes ABSENCE (FIX F + R2-7):
-# python-taxes (PyPI 0.7.0, MIT) was considered but not installed or used in this suite.
-# Reason (FIX F + R2-7): the engine is keyed to 2026 tables; python-taxes ships 2023-2025 only.
-# A structural comparison requires injectable year tables not in scope.
-# The wage-bracket PRIMARY oracle (Deliverable 5) already provides the structural independence.
-# Supply-chain/lockfile churn with no verification value (R2-7) -- see 03-REVIEWS.md Round 2.
+WHY python-taxes IS NOT USED HERE:
+  python-taxes (PyPI 0.7.0, MIT) implements this same percentage method, but ships 2023-2025
+  tables only, while this engine is keyed to 2026. A structural comparison would require
+  injectable year tables that are out of scope. The published wage-bracket cells already
+  provide the structural independence, so taking the dependency would add supply-chain and
+  lockfile churn with no verification value.
 """
 from __future__ import annotations
 
@@ -93,7 +95,6 @@ from app.pipeline.tax_tables_2026 import STANDARD_BRACKETS
 
 # ---------------------------------------------------------------------------
 # _make_employee() helper — constructs a minimal Employee for golden tests
-# (PATTERNS.md §"Synthetic Employee Fixtures")
 # ---------------------------------------------------------------------------
 
 def _make_employee(
@@ -192,7 +193,7 @@ def priya_nair():
 
 
 # ---------------------------------------------------------------------------
-# WAGE-BRACKET PRIMARY ORACLE CROSS-CHECK (R2-1, R2-8)
+# WAGE-BRACKET PRIMARY ORACLE CROSS-CHECK
 # ---------------------------------------------------------------------------
 # Source: Pub 15-T 2026 Wage Bracket Method Tables, Section 2, pages 13-27.
 # irs.gov/pub/irs-pdf/p15t.pdf, retrieved 2026-06-22.
@@ -201,24 +202,21 @@ def priya_nair():
 # using ROUND_HALF_UP (NOT Python round()), assert EXACT EQUALITY (==) against the
 # published wage-bracket cell.
 #
-# R2-1: Exact equality (engine_whole_dollar == published_cell) is the DEFAULT.
-# +-$1 tolerance is ONLY permitted on a specifically-named fixture row with a
-# documented extraction/rounding-anomaly reason. A blanket +-$1 tolerance
-# would mask a real $1 bracket-table or line-1g transcription bug in the
-# PRIMARY oracle -- defeating the independence guarantee.
-# Rounding note: quantize(Decimal("1"), ROUND_HALF_UP) (not Python round()
-# which is half-even/banker's rounding) matches the IRS's own whole-dollar
-# convention per Finding 5 [ASSUMED].
+# Exact equality (engine_whole_dollar == published_cell) is the DEFAULT. A +-$1
+# tolerance is permitted ONLY on a specifically-named fixture row carrying a
+# documented extraction/rounding-anomaly reason. A blanket +-$1 tolerance would
+# mask a real $1 bracket-table or line-1g transcription bug -- which is precisely
+# what this oracle exists to catch, so the tolerance would defeat it.
+# Rounding note: quantize(Decimal("1"), ROUND_HALF_UP) (not Python round(), which
+# is half-even/banker's rounding) matches the IRS's own whole-dollar convention.
 # Per-step cent quantization in federal_withholding.py is a CHOSEN ENGINE
-# CONVENTION (IRS whole-dollar rounding is optional per Pub 15-T Deliverable 2;
-# ROUND_HALF_UP is the project pin per D-03/WR-06). This is NOT IRS-mandated
-# per-step behavior.
+# CONVENTION -- IRS whole-dollar rounding is optional under Pub 15-T, and
+# ROUND_HALF_UP is this project's pin. It is not IRS-mandated per-step behavior.
 #
 # HoH columns are NOT covered: HoH is rejected by the engine with ValueError.
-# This covers all 6 project-relevant columns (R2-8 / round-3 N3 wording):
-#   MFJ Standard, MFJ Step-2, Single/MFS Standard, Single/MFS Step-2 --
-#   and their frequency variants. The Step-2 variants count as separate columns
-#   per the 6-column structure, backed by 4 unique column datasets (single==MFS).
+# The sweep covers all 6 project-relevant columns -- MFJ Standard, MFJ Step-2,
+# Single/MFS Standard, Single/MFS Step-2, and their frequency variants -- backed
+# by 4 unique published column datasets (single and MFS share one).
 #
 # WAGE_BRACKET_CEILINGS: defines the max per-period adjusted wage in each table.
 # All intervals below use wages well under these ceilings (no over-ceiling rows).
@@ -237,7 +235,7 @@ _WAGE_BRACKET_FIXTURES = [
     # -----------------------------------------------------------------------
     # Column 1: Weekly (52) Single/MFS Standard
     # Source: Pub 15-T 2026 p.14, weekly table, Single/MFS Standard column
-    # VERBATIM from RESEARCH.md Deliverable 5 Finding 6 sample block.
+    # (cells transcribed verbatim from the published table).
     # -----------------------------------------------------------------------
     (52, Decimal("625"), Decimal("635"), "single", False, Decimal("34")),
     # Source: Pub 15-T 2026 p.14, weekly, Single/MFS Standard, row [$625-$635] -> $34
@@ -259,13 +257,13 @@ _WAGE_BRACKET_FIXTURES = [
     # Source: Pub 15-T 2026 p.14, weekly, Single/MFS Standard, row [$695-$705] -> $42
 
     # -----------------------------------------------------------------------
-    # Column 2: Weekly (52) MFJ Standard — INDEPENDENTLY TRANSCRIBED (WR-01 resolved).
-    # Round-1 removed the prior cells because they were engine-computed (circular). These
-    # replacements are copied VERBATIM from the published Pub 15-T 2026 Wage Bracket Method
-    # table (weekly, Married Filing Jointly, Standard / Step-2 NOT checked) by the operator
-    # on 2026-06-22, then cross-checked: each cell matches the engine's midpoint output to
-    # the whole dollar (ROUND_HALF_UP), restoring a genuine independent oracle for this
-    # column. All under the $1,925 weekly ceiling.
+    # Column 2: Weekly (52) MFJ Standard — INDEPENDENTLY TRANSCRIBED.
+    # These cells are copied VERBATIM from the published Pub 15-T 2026 Wage Bracket Method
+    # table (weekly, Married Filing Jointly, Standard / Step-2 NOT checked) on 2026-06-22,
+    # then cross-checked: each matches the engine's midpoint output to the whole dollar
+    # (ROUND_HALF_UP). Engine-computed cells would make this column a circular oracle that
+    # can never disagree with the code — the transcription is what gives it teeth.
+    # All under the $1,925 weekly ceiling.
     # -----------------------------------------------------------------------
     (52, Decimal("795"), Decimal("805"), "married_jointly", False, Decimal("18")),
     # Source: Pub 15-T 2026 wage-bracket, weekly, MFJ Standard, row [$795-$805] -> $18
@@ -368,18 +366,18 @@ def test_wage_bracket_cross_check(
     step2: bool,
     published_cell: Decimal,
 ) -> None:
-    """Wage-bracket PRIMARY oracle cross-check (R2-1, R2-8).
+    """Wage-bracket PRIMARY oracle cross-check.
 
     For each wage-bracket interval, evaluate the engine at the interval midpoint,
     quantize to whole dollar using ROUND_HALF_UP, assert EXACT EQUALITY against
     the independently-transcribed published cell.
 
     Independence guarantee: a transcription error in tax_tables_2026.py cannot
-    simultaneously corrupt both the percentage-table rows (Deliverable 1, used by
-    the engine) and the separately-transcribed wage-bracket cells (Deliverable 5,
-    used here as the oracle) -- they come from different PDF sections.
+    simultaneously corrupt both the percentage-table rows (which the engine uses)
+    and the separately-transcribed wage-bracket cells (which this test uses as its
+    oracle) -- they were transcribed from different sections of the IRS PDF.
 
-    R2-1: exact equality is the DEFAULT. No blanket +-$1 tolerance.
+    Exact equality is the DEFAULT. No blanket +-$1 tolerance.
     """
     # Midpoint of the wage interval (exact Decimal arithmetic)
     midpoint = (interval_lower + interval_upper) / Decimal("2")
@@ -394,15 +392,15 @@ def test_wage_bracket_cross_check(
     )
 
     engine_result = federal_withholding_2026(midpoint, emp)
-    # FIX E: whole-dollar comparison uses quantize(ROUND_HALF_UP), NOT Python round()
-    # Python round() is ROUND_HALF_EVEN (banker's rounding); ROUND_HALF_UP matches
-    # the IRS's own whole-dollar convention (Deliverable 2 / Finding 5 [ASSUMED]).
+    # Whole-dollar comparison uses quantize(ROUND_HALF_UP), NOT Python round():
+    # Python round() is ROUND_HALF_EVEN (banker's rounding), which would disagree with
+    # the IRS's own whole-dollar convention on exact-half cells.
     engine_whole_dollar = engine_result.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
-    # R2-1: EXACT EQUALITY is the default assertion.
-    # +-$1 tolerance is only permitted on a SPECIFICALLY-NAMED fixture row with
-    # a documented inline comment stating the extraction/rounding anomaly reason.
-    # No such anomaly is documented for any row in this suite -- exact equality everywhere.
+    # EXACT EQUALITY is the default assertion. A +-$1 tolerance is only permitted on a
+    # SPECIFICALLY-NAMED fixture row carrying an inline comment stating the
+    # extraction/rounding anomaly. No such anomaly exists in this suite -- exact
+    # equality everywhere.
     assert engine_whole_dollar == published_cell, (
         f"Wage-bracket cross-check FAILED: "
         f"{filing_status}/{'step2' if step2 else 'std'}/p={frequency} "
@@ -413,24 +411,20 @@ def test_wage_bracket_cross_check(
     )
 
 
-# WR-01 RESOLVED (2026-06-22): the MFJ Standard independence gap is closed. Five MFJ
-# Standard cells were transcribed verbatim from the published Pub 15-T 2026 wage-bracket
-# table by the operator and added to _WAGE_BRACKET_FIXTURES above (Column 2); they are
-# now exercised by test_wage_bracket_cross_check as a genuine independent oracle. The
-# prior strict-xfail placeholder is removed.
-
-
 # ---------------------------------------------------------------------------
-# BRACKET BOUNDARY TESTS -- DIRECT _find_bracket() (R2-4)
+# BRACKET BOUNDARY TESTS -- DIRECT _find_bracket()
 # ---------------------------------------------------------------------------
-# R2-4 boundary tests: _find_bracket() is lower-bound-driven (>= row.lower).
-# Prior approach constructing per-period wages via (B + STEP1_STANDARD) / 52
-# may not land on the exact annual boundary B after _money(line_1a * p) rounding.
-# These tests call _find_bracket() DIRECTLY with adjusted-annual-wage inputs
-# at exactly B, B - $0.01, and B + $0.01 -- no annualization rounding confound.
-# A >= vs > regression in _find_bracket() passes all midpoint checks but fails here.
+# _find_bracket() is lower-bound-driven (>= row.lower). Constructing per-period wages
+# via (B + STEP1_STANDARD) / 52 may not land on the exact annual boundary B once
+# _money(line_1a * p) rounds, so these tests call _find_bracket() DIRECTLY with
+# adjusted-annual-wage inputs at exactly B, B - $0.01, and B + $0.01 -- no
+# annualization rounding to confound the boundary.
 #
-# Boundary B chosen: $19,900 (the 10%->12% boundary in Single/Standard table).
+# This is the only place a >= vs > regression in _find_bracket() shows up: such a bug
+# passes every midpoint check in the sweep above and only misprices wages sitting
+# exactly on a bracket boundary.
+#
+# Boundary B chosen: $19,900 (the 10%->12% boundary in the Single/Standard table).
 # Source: STANDARD_BRACKETS["single"] in tax_tables_2026.py (read directly).
 
 _BOUNDARY_B = Decimal("19900")  # Single/Standard 10%->12% boundary (column A lower bound)
@@ -438,12 +432,13 @@ _STEP1_SINGLE = Decimal("8600")  # STEP1_STANDARD["single"]
 
 
 def test_bracket_boundary_at_B() -> None:
-    """R2-4(a): annual_wage = B exactly -> _find_bracket returns row whose lower == B."""
+    """annual_wage = B exactly -> _find_bracket returns the row whose lower == B."""
     row = _find_bracket(_BOUNDARY_B, STANDARD_BRACKETS["single"])
     assert row.lower == _BOUNDARY_B, (
-        f"R2-4: at B={_BOUNDARY_B} exactly, _find_bracket must return the row starting AT B "
-        f"(lower-bound INCLUSIVE). Got row.lower={row.lower}. "
-        "A >  instead of >= in _find_bracket would return the row BELOW B."
+        f"at B={_BOUNDARY_B} exactly, _find_bracket must return the row starting AT B "
+        f"(lower bound INCLUSIVE). Got row.lower={row.lower}. "
+        "A > instead of >= in _find_bracket would return the row BELOW B and "
+        "under-withhold everyone sitting exactly on the boundary."
     )
     assert row.base == Decimal("1240.00"), f"Expected base=$1240 (12% bracket), got {row.base}"
     assert row.rate == Decimal("0.12"), f"Expected rate=12%, got {row.rate}"
@@ -474,19 +469,19 @@ def test_bracket_boundary_at_B() -> None:
     wh = federal_withholding_2026(per_period_at_B, emp)
     # 1240/52 = 23.84615... -> ROUND_HALF_UP to cents -> 23.85
     assert wh == Decimal("23.85"), (
-        f"R2-4: at B={_BOUNDARY_B} withholding should be 23.85, got {wh}"
+        f"at B={_BOUNDARY_B} withholding should be 23.85, got {wh}"
     )
 
 
 def test_bracket_boundary_below_B() -> None:
-    """R2-4(b): annual_wage = B - $0.01 -> _find_bracket returns row whose lower < B
-    (lower bracket)."""
+    """annual_wage = B - $0.01 -> _find_bracket returns the row whose lower < B."""
     wage_below = _BOUNDARY_B - Decimal("0.01")  # 19899.99
     row = _find_bracket(wage_below, STANDARD_BRACKETS["single"])
     assert row.lower < _BOUNDARY_B, (
-        f"R2-4: at B-$0.01={wage_below}, _find_bracket must return the row BELOW B "
-        f"(lower-bound exclusive at B). Got row.lower={row.lower}. "
-        "A  <= instead of < exit-condition would leak into the wrong bracket."
+        f"at B-$0.01={wage_below}, _find_bracket must return the row BELOW B "
+        f"(the boundary is exclusive from below). Got row.lower={row.lower}. "
+        "A <= instead of < exit condition would leak a wage one cent short of the "
+        "boundary into the higher bracket."
     )
     # Should be in the 10% bracket ($7,500-$19,900)
     assert row.lower == Decimal("7500"), (
@@ -496,24 +491,25 @@ def test_bracket_boundary_below_B() -> None:
 
 
 def test_bracket_boundary_above_B() -> None:
-    """R2-4(c): annual_wage = B + $0.01 -> _find_bracket returns same row as B
-    (stable just above boundary)."""
+    """annual_wage = B + $0.01 -> _find_bracket returns the same row as B (stable
+    just above the boundary)."""
     wage_above = _BOUNDARY_B + Decimal("0.01")  # 19900.01
     row = _find_bracket(wage_above, STANDARD_BRACKETS["single"])
     assert row.lower == _BOUNDARY_B, (
-        f"R2-4: at B+$0.01={wage_above}, _find_bracket must return the same row as B "
-        f"(>= inclusive on the boundary; stable just above). Got row.lower={row.lower}."
+        f"at B+$0.01={wage_above}, _find_bracket must return the same row as B "
+        f"(>= is inclusive on the boundary, so the row is stable just above it). "
+        f"Got row.lower={row.lower}."
     )
 
 
 # ---------------------------------------------------------------------------
-# FULL D-04 GOLDEN MATRIX (penny-exact, hand-computed)
+# FULL GOLDEN MATRIX (penny-exact, hand-computed)
 # ---------------------------------------------------------------------------
-# All expected values are hand-computed from RESEARCH.md Deliverable 1 bracket tables
-# (independently transcribed from irs.gov/pub/irs-pdf/p15t.pdf, 2026-06-22).
+# All expected values are hand-computed from the bracket tables (independently
+# transcribed from irs.gov/pub/irs-pdf/p15t.pdf, 2026-06-22).
 # NO expected value was derived by calling tax_tables_2026 or federal_withholding_2026.
 #
-# Hand-computation key examples (see module docstring of Wave 1 version for all 12 traces):
+# Hand-computation key examples:
 #
 # (1) Single/Standard/Weekly/$800 (RESEARCH.md §"Hand-Computation Worked Example"):
 #   1c = $800 * 52 = $41,600 / 1g = $8,600 / 1i = $33,000
@@ -943,30 +939,30 @@ def test_module_importable_with_no_db() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ADDITIONAL MEDICARE LIMITATION FLAG TESTS (User Decision 1, R2-2)
+# ADDITIONAL MEDICARE LIMITATION FLAG TESTS
 # ---------------------------------------------------------------------------
 # The Additional Medicare 0.9% surtax over $200k YTD is NOT modeled.
 # The engine flags it via additional_medicare_not_modeled=True on PaystubLineItem.
-# Test uses REALISTIC SS-capped YTD values (R2-2):
-#   ytd_ss_wages CANNOT legitimately exceed $184,500 (the 2026 SS wage base cap).
-#   A value like 196000 or 197000 is IMPOSSIBLE in a real run -- SS wages are capped.
-#   The prior plan used impossible values; R2-2 requires realistic ones.
 #
-# User Decision 1 (FIX B): proxy trigger fires on (ytd_ss_wages + gross) > $200,000.
-# ytd_ss_wages is a lower-bound proxy for YTD Medicare wages (Medicare has no cap,
-# so Medicare YTD >= SS YTD always). Under-flags high earners whose true Medicare
-# YTD already exceeds their capped SS YTD -- accepted limitation of the static-seed model.
-# Keep it flag-only -- no 0.9% modeling.
+# These tests must use REALISTIC SS-capped YTD values: ytd_ss_wages CANNOT legitimately
+# exceed $184,500 (the 2026 SS wage base cap), so a fixture at 196000 or 197000 is
+# IMPOSSIBLE in a real run. Testing the flag from an impossible YTD exercises the Boolean
+# expression against a state the system can never reach -- a test of dead code.
+#
+# The proxy fires on (ytd_ss_wages + gross) > $200,000. ytd_ss_wages is a LOWER-BOUND
+# proxy for YTD Medicare wages (Medicare has no cap, so Medicare YTD >= SS YTD always).
+# It therefore under-flags high earners whose true Medicare YTD already exceeds their
+# capped SS YTD -- an accepted limitation of the static-seed model. The flag stays
+# flag-only: the 0.9% is never modeled.
 
 def test_additional_medicare_limitation_is_flagged() -> None:
-    """R2-2: Additional Medicare limitation flag fires with realistic SS-capped YTD values.
+    """The Additional Medicare limitation flag fires at realistic SS-capped YTD values.
 
-    Flag-FIRES case: ytd_ss_wages=184500 (AT the SS wage base -- maximum possible real
-    value) + high current gross ($20,000) -> proxy = 204500 > 200000. Flag must fire.
+    Flag-FIRES case: ytd_ss_wages=184500 (AT the SS wage base -- the maximum possible
+    real value) + a high current gross ($20,000) -> proxy = 204500 > 200000.
     """
-    # R2-2: ytd_ss_wages=$184,500 is the MAXIMUM possible SS YTD (the 2026 SS wage base cap).
-    # Any value above $184,500 is IMPOSSIBLE in a real run -- SS wages are capped.
-    # Using a high current-period gross ($20,000) to push (ytd + gross) above $200k.
+    # A high current-period gross ($20,000) is what pushes (ytd + gross) above $200k --
+    # the YTD itself cannot legitimately go any higher than the cap.
     emp_at_cap = _make_employee(
         filing_status="single",
         step_2_checkbox=False,
@@ -974,7 +970,7 @@ def test_additional_medicare_limitation_is_flagged() -> None:
         step_4a_other_income=Decimal("0"),
         step_4b_deductions=Decimal("0"),
         pay_periods_per_year=52,
-        ytd_ss_wages=Decimal("184500"),  # AT SS wage base cap -- maximum realistic value (R2-2)
+        ytd_ss_wages=Decimal("184500"),  # AT the SS wage base cap -- the max real value
         hourly_rate=Decimal("500.00"),   # 40h * $500 = $20,000/period
     )
     item_cap = calculate(
@@ -990,16 +986,16 @@ def test_additional_medicare_limitation_is_flagged() -> None:
     # 184500 + 20000 = 204500 > 200000 -- MUST fire
     assert item_cap.additional_medicare_not_modeled is True, (
         f"Flag must fire when (ytd_ss_wages=184500 + gross={item_cap.gross_pay}) > 200000. "
-        "R2-2: ytd_ss_wages=184500 is the realistic SS-cap maximum, not an impossible value."
+        "184500 is the realistic SS-cap maximum, not an impossible value."
     )
 
 
 def test_additional_medicare_flag_does_not_fire_for_normal_employee() -> None:
-    """R2-2: Additional Medicare limitation flag does NOT fire for a normal employee.
+    """The Additional Medicare limitation flag does NOT fire for a normal employee.
 
     Flag-DOES-NOT-fire case: ytd_ss_wages=0, normal gross ($4,000) -> proxy=$4,000 << $200k.
     """
-    # R2-2: normal employee -- (ytd_ss_wages + gross) well below $200k threshold.
+    # A normal employee: (ytd_ss_wages + gross) sits well below the $200k threshold.
     emp_normal = _make_employee(
         filing_status="single",
         step_2_checkbox=False,
@@ -1142,15 +1138,16 @@ def test_federal_withholding_thomas_bergmann_over_ceiling(thomas_bergmann) -> No
 
 
 # ---------------------------------------------------------------------------
-# CALC-03: 401k reduces federal not FICA (interaction test via calculate())
+# 401k reduces the federal base but NOT the FICA base (interaction via calculate())
 # ---------------------------------------------------------------------------
 # Traditional (pre-tax) 401k:
 #   - REDUCES the federal income tax withholding base (federal uses gross - pretax_401k)
 #   - Does NOT reduce the FICA base (FICA uses gross)
-# This is the highest-risk 401k interaction per RESEARCH.md Pitfall 1.
+# Applying the deferral to both bases is the single easiest way to under-withhold a
+# contributing employee, which makes this the highest-risk 401k interaction in the calc.
 
 def test_401k_reduces_federal_not_fica(james_okafor) -> None:
-    """CALC-03: FICA SS uses gross base; federal withholding uses gross - pretax_401k.
+    """FICA SS uses the gross base; federal withholding uses gross - pretax_401k.
 
     James Okafor: salary=$62,400, pay_periods=52, 401k=4%, step_3=$4,000.
     period_gross = 62400/52 = 1200.00
