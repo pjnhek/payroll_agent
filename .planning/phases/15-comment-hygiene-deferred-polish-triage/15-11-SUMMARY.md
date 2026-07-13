@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 11
+requirements-completed: [POLISH-01]
 subsystem: dashboard + llm-client
 tags: [security, path-traversal, information-disclosure, tdd]
 requires:

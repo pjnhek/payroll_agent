@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 01
+requirements-completed: [POLISH-01]
 subsystem: testing / CI
 tags: [threading, retrigger, epoch-arbiter, append-only-audit-log, ci-gate]
 requires:

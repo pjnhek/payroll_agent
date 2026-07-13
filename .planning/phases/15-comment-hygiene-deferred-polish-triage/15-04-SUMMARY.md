@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 04
+requirements-completed: [COMM-01, COMM-03]
 subsystem: pipeline + models
 tags: [comment-hygiene, money-core, docstrings, COMM-01, COMM-03]
 requires:

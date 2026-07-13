@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 06
+requirements-completed: [COMM-01, COMM-03]
 subsystem: tests
 tags: [comment-hygiene, test-naming, D-06, COMM-01, COMM-03]
 requires:

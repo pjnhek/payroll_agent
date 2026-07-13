@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 02
+requirements-completed: [COMM-01, COMM-03, POLISH-02]
 subsystem: eval-harness
 tags: [comment-hygiene, eval, fixtures, polish]
 requires: []

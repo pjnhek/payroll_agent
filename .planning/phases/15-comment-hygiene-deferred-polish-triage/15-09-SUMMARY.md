@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 09
+requirements-completed: [COMM-01, COMM-03]
 subsystem: web-layer (routes, llm, email, config, templates, tests)
 tags: [comment-hygiene, docstrings, provenance-sweep, text-only]
 requires:

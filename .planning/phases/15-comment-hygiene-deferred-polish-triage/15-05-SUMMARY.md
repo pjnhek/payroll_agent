@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 05
+requirements-completed: [COMM-01, COMM-02, COMM-03]
 subsystem: db
 tags: [comment-hygiene, docstrings, schema, comm-01, comm-02, comm-03]
 requires:

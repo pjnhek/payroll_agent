@@ -1,6 +1,7 @@
 ---
 phase: 15-comment-hygiene-deferred-polish-triage
 plan: 10
+requirements-completed: [COMM-01, POLISH-01]
 subsystem: test-guard + planning-hygiene
 tags: [comment-provenance, ci-guard, static-scanner, todo-closure, milestone-closeout]
 status: complete
