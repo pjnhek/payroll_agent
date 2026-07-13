@@ -1,18 +1,24 @@
-"""The code-gate tests (LLM-07, D-21-01/02/03/08) — THE THESIS. Pure, no model.
+"""The code-gate tests (LLM-07) — THE THESIS. Pure, no model.
 
-decide() is now PURE CODE over resolution facts — there is no model call and no
-score. final_action is computed deterministically and is the SOLE branch source:
+decide() is PURE CODE over resolution facts: no model call, no confidence score. There
+is no model action for the code to disagree with, so the system cannot be talked into
+paying the wrong person. final_action is computed deterministically and is the SOLE
+branch source:
 
   - every name resolved + one-to-one holds + no missing field -> 'process'
   - any unresolved name (resolved is False) -> 'request_clarification'
-  - any run-level collision (two distinct names -> same employee; a duplicated
-    submitted name) -> 'request_clarification' EVEN when both names are resolved
-    (D-21-02 — collisions are run-level, NOT folded into per-name resolved)
+  - any run-level collision (two distinct names -> the same employee; a duplicated
+    submitted name) -> 'request_clarification', EVEN when both names resolved
+    individually. Collisions are a property of the RUN, not of any one name, so
+    folding them into per-name `resolved` would let a colliding pair look clean.
   - any missing required field -> 'request_clarification'
-  - zero extracted employees -> 'request_clarification' (CR-01 / D-21-08)
+  - ZERO extracted employees -> 'request_clarification'. The degenerate run must fail
+    CLOSED: every "all names resolved" and "no missing fields" check is vacuously true
+    over an empty list, so without an explicit guard an empty extraction sails straight
+    through to 'process'.
 
-gate_reasons lists exactly what triggered the clarify. No confidence, no 0.8, no
-model_action anywhere.
+gate_reasons lists exactly what triggered the clarify, so the operator can always see
+why. No confidence value and no model action exist anywhere in this module.
 """
 from __future__ import annotations
 
@@ -77,7 +83,8 @@ def test_clean_run_processes():
     assert decision.gate_reasons == []
     assert decision.unresolved_names == []
     assert decision.missing_fields == []
-    # The per-name resolution detail is persisted on the decision (D-21-04).
+    # The per-name resolution detail is persisted on the decision, so the operator can
+    # always see HOW each name was resolved, not just what the gate concluded.
     assert decision.resolutions == matches
 
 
@@ -125,14 +132,17 @@ def test_missing_field_clarifies():
 
 
 # ---------------------------------------------------------------------------
-# empty extraction (CR-01 / D-21-08) -> clarify
+# empty extraction -> clarify (the gate must fail CLOSED)
 # ---------------------------------------------------------------------------
 
 
 def test_empty_extraction_clarifies():
-    """CR-01 — a run that extracts ZERO employees must NOT auto-process. The other
-    rules are reason-additive (they iterate matches/issues), so an explicit Rule 0
-    fails the gate closed on the degenerate run (D-21-08)."""
+    """A run that extracts ZERO employees must NOT auto-process.
+
+    Every other rule is reason-additive — each iterates over matches or issues — so all
+    of them are vacuously satisfied by an empty list, and an empty extraction would sail
+    through to 'process'. An explicit guard is what makes the degenerate run fail CLOSED.
+    """
     decision = decide(_extracted(), [], [])
 
     assert decision.final_action == "request_clarification"
@@ -140,15 +150,19 @@ def test_empty_extraction_clarifies():
 
 
 # ---------------------------------------------------------------------------
-# run-level collisions (D-21-02) — the money shot: two RESOLVED names that map to
-# the SAME employee still clarify. Collisions are run-level, NOT per-name resolved.
+# Run-level collisions — two RESOLVED names mapping to the SAME employee still clarify.
+# A collision is a property of the RUN, never folded into per-name `resolved`.
 # ---------------------------------------------------------------------------
 
 
 def test_two_resolved_names_same_employee_still_clarifies():
-    """The thesis money shot: BOTH names are resolved=True, yet they collapse onto
-    one employee, so the run still clarifies (D-21-02 — a resolved name can sit in
-    a run that clarifies on a cross-name collision)."""
+    """The thesis in one test: both names resolve, yet the run STILL clarifies.
+
+    "David Reyes" and "D. Reyes" each resolve cleanly and individually — but they
+    collapse onto ONE employee, so the submitted hours are ambiguous: pay one line, the
+    other, or the sum? A per-name view sees nothing wrong here. Only a RUN-LEVEL check
+    catches it, and getting it wrong pays someone twice.
+    """
     shared = uuid.uuid4()
     matches = [
         _resolved("David Reyes", emp_id=shared, source="exact"),
@@ -176,8 +190,8 @@ def test_duplicate_submitted_name_clarifies():
 
 
 # ---------------------------------------------------------------------------
-# check_one_to_one stays a named RUN-LEVEL function (D-21-02) and is called by
-# decide(); a clean mapping returns [] so it never gates a legitimately clean run.
+# check_one_to_one stays a NAMED run-level function called by decide(). A clean mapping
+# returns [], so the collision guard never gates a legitimately clean run.
 # ---------------------------------------------------------------------------
 
 
@@ -230,8 +244,13 @@ def test_decide_is_pure_no_llm():
 
 
 def test_decide_source_has_no_confidence_or_model_action():
-    """Source-level guard: the deterministic decision carries no score, no model
-    action, and no 0.8 threshold anywhere (D-21-01)."""
+    """Source-level guard: no score, no model action, no threshold anywhere in decide.
+
+    This greps the module rather than testing behavior, because the invariant is about
+    what decide is ALLOWED to contain: the moment a confidence value or a model-supplied
+    action appears in this file, the decision has stopped being deterministic — even if
+    every existing test still passes.
+    """
     src = pathlib.Path(decide_mod.__file__).read_text()
     lowered = src.lower()
     assert "confidence" not in lowered
@@ -246,10 +265,13 @@ def test_decide_source_has_no_confidence_or_model_action():
 
 
 def test_decide_clarifies_when_a_match_record_is_missing():
-    """Review fix: decide() is a pure public function the eval calls with arbitrary
-    inputs, so it must not trust that reconcile produced one match per employee. A
-    MISSING resolution record (here: 2 extracted, only 1 resolved) must gate the run
-    closed rather than silently drop the unmatched employee from a 'process' run."""
+    """A MISSING resolution record must gate the run closed.
+
+    decide() is a pure public function the eval calls with arbitrary inputs, so it cannot
+    assume reconcile produced exactly one match per employee. With 2 extracted and only 1
+    resolved, trusting the input would silently DROP the unmatched employee from a
+    'process' run — they simply would not get paid, and nothing would say so.
+    """
     matches = [_resolved("Maria Chen")]  # James Okafor has NO resolution record
     decision = decide(_extracted("Maria Chen", "James Okafor"), matches, [])
     assert decision.final_action == "request_clarification"
@@ -265,14 +287,18 @@ def test_decide_clarifies_when_a_match_record_is_extra():
 
 
 # ---------------------------------------------------------------------------
-# NameMatchResult semantic invariant (review fix)
+# NameMatchResult semantic invariant
 # ---------------------------------------------------------------------------
 
 
 def test_name_match_result_rejects_impossible_states():
-    """source/resolved/matched_employee_id are not independent — a resolved match
-    must name a real employee and an unresolved one must name none. Impossible
-    combinations must raise at construction so decide() can trust `resolved`."""
+    """source, resolved, and matched_employee_id are NOT independent fields.
+
+    A resolved match must name a real employee; an unresolved one must name none.
+    Rejecting the impossible combinations at CONSTRUCTION is what lets decide() trust
+    `resolved` as a single boolean — otherwise every gate check would have to re-derive
+    the truth from all three fields, and one that forgot would gate open.
+    """
     import pytest
     from pydantic import ValidationError
 

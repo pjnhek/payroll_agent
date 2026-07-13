@@ -1,17 +1,20 @@
-"""UAT #4: multi-employee confirmation — one email, per-employee PDFs.
+"""Multi-employee confirmation — ONE email, one PDF per employee.
 
-Proves two properties of the multi-employee path in _deliver:
+A payroll run usually covers several people, and the two ways to get that wrong are
+symmetric: send one email per employee (the client is spammed and the run looks broken),
+or send one email that quietly covers only the first employee (someone's paystub is
+simply missing). Both properties are therefore pinned:
 
-1. compose_confirmation with 2+ PaystubLineItems produces a body that mentions
-   BOTH employees' submitted_names (template floor, deterministic — no LLM needed).
+1. compose_confirmation with 2+ PaystubLineItems produces a body mentioning EVERY
+   employee's submitted_name — asserted on the deterministic template floor, so it holds
+   with no LLM involved and cannot be a lucky draft.
 
-2. _deliver with a run that has 2+ line items generates 2+ PDF attachments
-   (one per employee) and sends exactly ONE confirmation email.
-
-   Asserts:
-   - gateway.send_outbound called exactly once
-   - attachments list has len == number of employees
-   - each PDF attachment starts with b'%PDF'
+2. delivery of a run with 2+ line items generates one PDF attachment per employee and
+   sends exactly ONE confirmation email:
+   - gateway.send_outbound called exactly once,
+   - len(attachments) == number of employees,
+   - each attachment really is a PDF (starts with b'%PDF'), so an empty or error-page
+     payload cannot pass as a paystub.
 """
 from __future__ import annotations
 
@@ -60,7 +63,7 @@ def _paystub(
 
 
 # ---------------------------------------------------------------------------
-# Test 1: compose_confirmation body mentions all employees (UAT #4 body check)
+# The confirmation body must mention every employee, not just the first
 # ---------------------------------------------------------------------------
 
 
@@ -213,10 +216,12 @@ def test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs(
 def test_deliver_multi_employee_subject_uses_start_only_period(
     fake_repo, monkeypatch
 ):
-    """UAT #7 regression guard for multi-employee runs: when pay_period_end is None,
-    the confirmation subject must use str(pay_period_start), not an empty string.
+    """A run with only a start date must not produce a malformed confirmation subject.
 
-    This test exercises the UAT #7 fix inside the multi-employee code path.
+    When pay_period_end is None, the subject must fall back to str(pay_period_start)
+    rather than emitting an empty string or a dangling separator. Guarded here inside the
+    MULTI-employee path specifically, because the single-employee path has its own
+    subject-building call site and fixing one does not fix the other.
     """
     biz_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
 
@@ -234,7 +239,7 @@ def test_deliver_multi_employee_subject_uses_start_only_period(
         business_id=biz_id,
         source_email_id=email_id,
         pay_period_start="2026-06-15",
-        pay_period_end=None,  # only start date — the UAT #7 scenario
+        pay_period_end=None,  # only a start date — the case that can yield a bad subject
     )
     fake_repo.set_status(run_id, RunStatus.APPROVED)
 
@@ -262,18 +267,18 @@ def test_deliver_multi_employee_subject_uses_start_only_period(
 
     assert len(captured_subjects) == 1
     subject = captured_subjects[0]
-    # P6 threading: this run has an original inbound subject ("Payroll"), so the
-    # confirmation threads as a reply — `Re: Payroll` — which is what groups it into
-    # the client's conversation. The pay-period detail lives in the email body + the
-    # paystub PDF (not lost); the subject's job here is thread-grouping, not metadata.
+    # This run has an original inbound subject ("Payroll"), so the confirmation threads as
+    # a reply — `Re: Payroll` — which is what groups it into the client's conversation.
+    # The pay-period detail is not lost: it lives in the email body and the paystub PDF.
+    # The subject's job here is thread-grouping, not carrying metadata.
     assert subject == "Re: Payroll", (
         f"confirmation must thread on the original inbound subject; got: {subject!r}"
     )
 
-    # UAT #7 guard still holds for the STANDALONE subject (no original to thread on):
-    # when pay_period_end is None it uses str(pay_period_start), never a trailing ' — '.
-    # _deliver computes pay_period_label from pay_period_start before calling
-    # confirmation_subject; replicate that enrichment to test the standalone form.
+    # The STANDALONE subject (no original to thread on) is the form that can go wrong:
+    # with pay_period_end None it must use str(pay_period_start) and never a dangling
+    # separator. delivery computes pay_period_label from pay_period_start before calling
+    # confirmation_subject; replicate that enrichment to exercise the standalone form.
     from app.pipeline.compose_email import confirmation_subject
     enriched = {"business_name": "Coastal Cleaning Co.", "pay_period_label": "2026-06-15"}
     standalone = confirmation_subject(enriched)  # no original_subject → standalone form

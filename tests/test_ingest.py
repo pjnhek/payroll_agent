@@ -1,9 +1,12 @@
-"""Inbound body-cleaning tests (INGEST-02, review FIX C, threat T-02-10).
+"""Inbound body-cleaning and dedup tests (INGEST-02).
 
-The webhook cleans the inbound body via the in-house clean_body() code-strip
-BEFORE the email_messages insert, so the persisted body_text is the cleaned text
-(the single cleaned-body source of truth load_source_email returns unchanged for
-the Plan 04 resume). No third-party reply-parser is involved — no new dependency.
+The webhook cleans the inbound body with the in-house clean_body() code-strip BEFORE the
+email_messages insert, so the persisted body_text IS the cleaned text. That row is the
+single source of truth: load_source_email returns it unchanged, and a resume re-extracts
+over it. Cleaning once on the way in — rather than on every read — is what guarantees the
+body the operator sees at the gate is byte-for-byte the body extraction actually read.
+
+No third-party reply-parser is involved, so there is no new dependency to keep current.
 """
 from __future__ import annotations
 
@@ -57,15 +60,18 @@ def test_clean_is_idempotent():
 
 
 # ---------------------------------------------------------------------------
-# INGEST-02 / FIX C — the webhook persists the CLEANED body to body_text
+# INGEST-02 — the webhook persists the CLEANED body to body_text
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def client(fake_repo, monkeypatch):
-    """TestClient with ALLOW_UNSIGNED_FIXTURES=true so the route's prod-auth
-    gate does not block canonical InboundEmail dict POSTs in mocked tests.
-    (WARNING-1 remediation — 06-04 Task 2)"""
+    """TestClient with ALLOW_UNSIGNED_FIXTURES=true.
+
+    Without the flag the route's production auth gate rejects canonical InboundEmail dict
+    POSTs (correctly — they carry no svix-* signature), and no mocked test could reach
+    the pipeline at all.
+    """
     from app.config import get_settings
     from app.main import app
 
@@ -77,9 +83,12 @@ def client(fake_repo, monkeypatch):
 
 
 def _script_clean_run(mock_llm) -> None:
-    """The clean happy path makes ONE LLM call — extraction. reconcile/decide are
-    pure deterministic code (D-21-01) and need no scripted response; both names
-    resolve exactly so the run processes without a clarify draft."""
+    """The clean happy path makes exactly ONE LLM call — extraction.
+
+    reconcile and decide are pure deterministic code and consume no scripted response;
+    both names resolve exactly, so the run processes without a clarification draft. If
+    this script ever needs a second entry, a judgment stage has grown an LLM call.
+    """
     extraction = json.dumps(
         {
             "employees": [
@@ -94,8 +103,8 @@ def _script_clean_run(mock_llm) -> None:
 
 
 def test_body_cleaned(client, fake_repo, mock_llm):
-    """The fixture carries a quoted reply block + a signature; the row persisted to
-    email_messages.body_text is the CLEANED text (FIX C)."""
+    """The fixture carries a quoted reply block and a signature; only the cleaned text
+    is persisted to email_messages.body_text."""
     _script_clean_run(mock_llm)
     payload = json.loads(_FIXTURE.read_text())
 
@@ -119,29 +128,29 @@ def test_body_cleaned(client, fake_repo, mock_llm):
 
 
 # ===========================================================================
-# Phase 6 Wave 0 — dedup gate tests (06-01 Task 2)
+# The dedup gate — one payroll run per inbound message_id, however many deliveries
 # ===========================================================================
 
-import os  # noqa: E402 — Phase 6 Wave 0 dedup gate tests appended after existing imports
-import uuid as _uuid_module  # noqa: E402 — Phase 6 Wave 0 dedup gate tests appended after existing imports
+import os  # noqa: E402 — the dedup tests below were appended after the module's imports
+import uuid as _uuid_module  # noqa: E402 — the dedup tests below were appended after the module's imports
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
 
 
 def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
-    """D-13 dedup gate: a duplicate delivery must NOT start a second pipeline run.
+    """A duplicate delivery must NOT start a second pipeline run.
 
-    Mocked unit test (no live DB). The first POST inserts the email and queues
-    run_pipeline. The second POST with the same message_id returns immediately
-    (the repo returns inserted=False) and run_pipeline is NOT queued a second time.
+    Email providers retry webhook deliveries. Without the dedup gate, one client email
+    would produce two payroll runs — and the operator could approve both.
 
-    This test has NO @pytest.mark.integration and NO xfail — the existing route +
-    repo already handle dedup correctly, so this must pass immediately.
+    Mocked unit test (no live DB): the first POST inserts the email and queues
+    run_pipeline; the second POST with the same message_id short-circuits (the repo
+    returns inserted=False) and run_pipeline is NOT queued again.
 
-    WARNING-1 (06-04 Task 2 remediation): Route now requires ALLOW_UNSIGNED_FIXTURES=true
-    to accept canonical InboundEmail dict POSTs without svix-* signature headers. Set here
-    via monkeypatch so the dedup-unit test stays non-integration and non-xfail. (OPS-02 / D-13)
+    ALLOW_UNSIGNED_FIXTURES is set here so the route accepts a canonical InboundEmail
+    dict POST with no svix-* signature headers, which keeps this a fast hermetic unit
+    test rather than an integration one.
     """
     from fastapi.testclient import TestClient
 
@@ -247,24 +256,24 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     # run_pipeline must be queued at most once (the duplicate short-circuits before queuing).
     assert len(pipeline_runs) <= 1, (
         f"run_pipeline must be queued at most ONCE for duplicate deliveries; "
-        f"got {len(pipeline_runs)} calls (D-13 dedup gate)"
+        f"got {len(pipeline_runs)} calls"
     )
 
-    # Clean up settings cache after env monkeypatching (WARNING-1 remediation).
+    # Clean up the settings cache after env monkeypatching.
     get_settings.cache_clear()
 
 
 @pytest.mark.integration
 def test_duplicate_delivery_pipeline_runs_once():
-    """D-13 dedup gate (integration): two deliveries with the same message_id → one run.
+    """The dedup gate against a LIVE DB: two deliveries, same message_id → one run.
 
-    Hits the live DB: the second delivery must return 200 and NOT create a second run.
-    Asserts only one email_messages row exists for the message_id (ON CONFLICT DO NOTHING).
-    Also asserts that decide.py is NOT called on the duplicate (no second run).
+    The mocked twin above can only prove the route short-circuits when the repo SAYS
+    inserted=False. This one proves the DB itself enforces it: the second delivery
+    returns 200, creates no second run, and leaves exactly one email_messages row for
+    the message_id (the ON CONFLICT DO NOTHING clause doing its job).
 
-    Requires DATABASE_URL + ALLOW_DB_RESET=1 (same two-factor guard as other integration
-    tests). Marked @pytest.mark.integration — excluded from the mocked suite.
-    (OPS-02 / D-13 end-to-end dedup)
+    Requires DATABASE_URL + ALLOW_DB_RESET=1 (the same two-factor guard as the other
+    integration tests) and is excluded from the mocked suite by its marker.
     """
     if not (_HAS_DB and _HAS_RESET):
         pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB dedup test")
@@ -315,5 +324,5 @@ def test_duplicate_delivery_pipeline_runs_once():
         ).fetchone()
     assert row is not None and row[0] == 1, (
         f"Only ONE email_messages row must exist for the duplicate message_id "
-        f"(got {row[0] if row else 'None'}) — ON CONFLICT DO NOTHING must deduplicate (D-13)"
+        f"(got {row[0] if row else 'None'}) — ON CONFLICT DO NOTHING must deduplicate"
     )
