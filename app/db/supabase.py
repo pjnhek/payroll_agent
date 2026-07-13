@@ -2,11 +2,14 @@
 
 Uses psycopg (psycopg3) with a ConnectionPool that emits connections with
 prepare_threshold=None — required for Supavisor transaction-mode pooling
-(port 6543).  Without this, psycopg3's auto-prepare kicks in after a query
-repeats (default threshold = 5) and the server-side prepared statement is
-lost when the backend connection is recycled, causing errors during the seed
-upsert loop and pipeline runs.  (D-04 gotcha, verified against psycopg 3.3
-docs + pgbouncer/Supabase transaction-mode caveat, Jun 2026.)
+(port 6543).  Without it, psycopg3's auto-prepare kicks in once a query repeats
+(default threshold = 5), but transaction-mode pooling hands the next statement to
+a DIFFERENT backend connection, where that server-side prepared statement does not
+exist.  The result is intermittent "prepared statement does not exist" failures in
+the seed upsert loop and in pipeline runs — failures that only appear after a
+statement has run a few times, which is why they never show up in a quick smoke
+test.  (Verified against the psycopg 3.3 docs and the pgbouncer/Supabase
+transaction-mode caveat.)
 
 Public API:
     get_pool()       → ConnectionPool singleton (min=1, max=5)
@@ -25,10 +28,10 @@ from app.config import get_settings
 
 # Module-level pool singleton — initialised lazily on first call to get_pool().
 _pool: ConnectionPool | None = None
-# WR-02: guards the double-checked-locking construction below so two concurrent
-# first-callers (e.g. FastAPI's threadpool executor running sync routes /
-# BackgroundTasks) cannot both observe `_pool is None` and each construct their
-# own ConnectionPool, leaking one (08-RESEARCH.md Open Question 1).
+# Guards the double-checked-locking construction below. Without it, two concurrent
+# first-callers (e.g. FastAPI's threadpool executor running sync routes, or two
+# BackgroundTasks) can both observe `_pool is None` and each construct their own
+# ConnectionPool — one of which is then orphaned, leaking its connections.
 _pool_lock = threading.Lock()
 
 
@@ -39,10 +42,12 @@ def get_pool() -> ConnectionPool:
     process.  Each connection in the pool has prepare_threshold=None so that
     Supavisor transaction-mode (port 6543) works correctly.
 
-    Thread-safe via double-checked locking (WR-02): the outer check avoids
-    taking the lock on the common (already-initialized) path; the inner
-    re-check under the lock closes the race where two threads could both pass
-    the outer check before either constructs the pool.
+    Thread-safe via double-checked locking. The OUTER `_pool is None` check keeps
+    the common (already-initialized) path lock-free. The INNER re-check, under the
+    lock, is the part that actually closes the race: two threads can both pass the
+    outer check before either takes the lock, so without the second check the loser
+    would overwrite the winner's pool with a fresh one — leaking the first pool's
+    open connections. Both checks are required; neither alone is correct.
     """
     global _pool
     if _pool is None:
@@ -54,8 +59,9 @@ def get_pool() -> ConnectionPool:
                     min_size=1,
                     max_size=5,
                     open=True,  # explicit; avoids DeprecationWarning about default changing
-                    # D-04: disable server-side prepared statements on every connection
-                    # so they do not break under Supavisor transaction-mode pooling.
+                    # Disable server-side prepared statements on every connection so
+                    # they cannot break under Supavisor transaction-mode pooling
+                    # (see the module docstring for the failure mode).
                     kwargs={"prepare_threshold": None},
                     # Short wait timeout so tests and health checks that run without a live
                     # DB fail fast (5s) rather than blocking for the default 30s.
