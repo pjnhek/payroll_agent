@@ -18,7 +18,7 @@
 - [x] **Phase 12: CI Quality Gates** - `ci.yml` runs `ruff check` and the full hermetic test suite on every push, backed by a committed ruff config, so every subsequent refactor phase in this milestone is protected by CI from the start (CI-01, CI-02, CI-03) (completed 2026-07-09)
 - [x] **Phase 13: Module Structure & Boundaries** - The three god-files (`main.py`, `repo.py`, `orchestrator.py`) split into right-sized, per-concern modules with a stable import surface and zero behavior change, and cross-module `_private` imports are promoted to deliberate public names (STRUCT-01, STRUCT-02, STRUCT-03, STRUCT-04, BOUND-01) (completed 2026-07-10)
 - [x] **Phase 14: Full Type-Checking (mypy)** - mypy with the pydantic plugin runs clean over the entire codebase (`app/`, `eval/`, `scripts/`, `tests/`) and is wired in as a blocking CI check (TYPE-01, TYPE-02, TYPE-03) (completed 2026-07-10)
-- [ ] **Phase 15: Comment Hygiene & Deferred-Polish Triage** - Ticket-ID/provenance comments are stripped in favor of plain maintainer-facing constraint comments, the hand-maintained `repo.py` function-index docstring is replaced across the split DB modules, and the two remaining v2 deferred-polish todos are closed (COMM-01, COMM-02, COMM-03, POLISH-01, POLISH-02)
+- [x] **Phase 15: Comment Hygiene & Deferred-Polish Triage** - Ticket-ID/provenance comments are stripped in favor of plain maintainer-facing constraint comments, the hand-maintained `repo.py` function-index docstring is replaced across the split DB modules, and the two remaining v2 deferred-polish todos are closed (COMM-01, COMM-02, COMM-03, POLISH-01, POLISH-02) (completed 2026-07-13)
 
 ## Phase Details
 
@@ -137,7 +137,7 @@ Plans:
   4. Todo 260623-01 (Phase 05 review warnings) is resolved or explicitly dispositioned — WR-01 threading-after-retrigger is verified, and WR-02's Phase-8 pool-singleton fix is confirmed and the todo closed.
   5. Todo 260623-05 (fixture 10's `fixture_category` label) is corrected, and the eval chart's per-category grouping is verified unaffected by the fix.
 
-**Plans**: 10/11 plans executed
+**Plans**: 11/11 plans complete
 Plans:
 **Wave 1**
 
@@ -157,7 +157,7 @@ Plans:
 
 **Wave 3** *(blocked on all prior plans)*
 
-- [ ] 15-10-PLAN.md — Comment-provenance guard test (D-07..D-09, rides existing CI test job) + straggler fixes + POLISH-01 seven-item disposition record, todo 260623-01 closure, STATE.md deferred-items update
+- [x] 15-10-PLAN.md — Comment-provenance guard test (D-07..D-09, rides existing CI test job) + straggler fixes + POLISH-01 seven-item disposition record, todo 260623-01 closure, STATE.md deferred-items update
 
 ## Backlog
 
@@ -189,4 +189,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 12. CI Quality Gates | v3 | 4/4 | Complete    | 2026-07-09 |
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
-| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 10/11 | In Progress|  |
+| 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete   | 2026-07-13 |

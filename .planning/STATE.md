@@ -156,7 +156,7 @@ Recent decisions affecting current work:
 
 [From .planning/todos/pending/ — ideas captured during sessions]
 
-5 pending (see `.planning/todos/pending/`) — all low/medium post-demo polish, carried as Deferred Items (below). The two high-priority design todos that drove Phase 11 (260705-01 alias-learning bind + 260705-02 clarify round machine) are **DONE** — they became Phase 11 (CLAR2-01…07, shipped 2026-07-07). Remaining pending todos: Phase 05 code-review warnings (medium), frontend progressive enhancement, paystub YTD columns, eval-chart restyle, Fixture-10 category-label note (all low).
+3 pending (see `.planning/todos/pending/`) — all low post-demo polish, carried as Deferred Items (below). Phase 15 closed two: **260623-01** (Phase 05 code-review Warnings + Info) and **260623-05** (Fixture-10 category-label mismatch — which turned out to be a real eval-chart defect, not cosmetics: the mislabel was reporting exact-match extraction as failing at 0.96 when it had never failed). Remaining pending todos: frontend progressive enhancement, paystub YTD columns, eval-chart restyle (all low).
 
 ### Blockers/Concerns
 
@@ -195,11 +195,11 @@ as non-blocking tech debt.
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
 | quick_task | 260621-11x-fix-order-dependent-test-test-no-db-conn | done (stale pointer) | v1.0 / v2 |
-| todo | Phase 05 code-review: deferred Warnings + Info | deferred | v1.0 / v2 |
+| todo | Phase 05 code-review: deferred Warnings + Info | **resolved (Phase 15)** | v1.0 / v2 |
 | todo | Frontend progressive enhancement (no build step) — post-demo polish | deferred | v1.0 / v2 |
 | todo | Paystub YTD columns | deferred | v1.0 / v2 |
 | todo | Eval chart restyle (away from matplotlib look) | deferred | v1.0 / v2 |
-| todo | Fixture 10 category-label vs expected-clarification note | deferred | v1.0 / v2 |
+| todo | Fixture 10 category-label vs expected-clarification note | **resolved (Phase 15)** | v1.0 / v2 |
 | uat | Phase 03 HUMAN-UAT | passed (no open scenarios) | v1.0 |
 | uat | Phase 05 HUMAN-UAT | passed (no open scenarios) | v1.0 |
 
