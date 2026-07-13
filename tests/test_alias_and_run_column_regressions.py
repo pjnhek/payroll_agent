@@ -47,7 +47,7 @@ def client(fake_repo):
 # ---------------------------------------------------------------------------
 
 
-def test_cr01_update_known_alias_sql_uses_text_array_ops(fake_conn):
+def test_update_known_alias_sql_uses_text_array_ops(fake_conn):
     """CR-01: update_known_alias must issue TEXT[]-compatible SQL.
 
     employees.known_aliases is TEXT[] (schema.sql line 32).  The old
@@ -99,7 +99,7 @@ def test_cr01_update_known_alias_sql_uses_text_array_ops(fake_conn):
     )
 
 
-def test_cr01_update_known_alias_returns_false_when_alias_absent(fake_conn):
+def test_update_known_alias_returns_false_when_alias_absent(fake_conn):
     """CR-01 behavior: returns False when no row returned (alias absent or id missing).
 
     FakeConnection returns None from fetchone → the UPDATE RETURNING yields no row
@@ -115,7 +115,7 @@ def test_cr01_update_known_alias_returns_false_when_alias_absent(fake_conn):
     )
 
 
-def test_cr01_update_known_alias_returns_true_when_row_returned(fake_conn):
+def test_update_known_alias_returns_true_when_row_returned(fake_conn):
     """CR-01 behavior: returns True when RETURNING yields a row (alias was appended).
 
     Scripts FakeConnection to return a row from fetchone, simulating the UPDATE
@@ -137,7 +137,7 @@ def test_cr01_update_known_alias_returns_true_when_row_returned(fake_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_cr02_run_cols_contains_updated_at():
+def test_run_cols_contains_updated_at():
     """CR-02: RUN_COLS must include 'updated_at'.
 
     Without this column, load_run() never returns updated_at, so the retrigger
@@ -155,7 +155,7 @@ def test_cr02_run_cols_contains_updated_at():
     )
 
 
-def test_cr02_load_run_select_includes_updated_at(fake_conn):
+def test_load_run_select_includes_updated_at(fake_conn):
     """CR-02: load_run() SELECT must include updated_at in the column list.
 
     Scripts FakeConnection to return a stub row and asserts the executed SQL
@@ -182,7 +182,7 @@ def test_cr02_load_run_select_includes_updated_at(fake_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_cr01_run_cols_contains_alias_candidates():
+def test_run_cols_contains_alias_candidates():
     """Phase-8 review CR-01: RUN_COLS must include 'alias_candidates'.
 
     Two orchestrator paths read alias_candidates from load_run():
@@ -203,7 +203,7 @@ def test_cr01_run_cols_contains_alias_candidates():
     )
 
 
-def test_cr01_alias_candidates_roundtrips_through_real_load_run(fake_conn):
+def test_alias_candidates_roundtrips_through_real_load_run(fake_conn):
     """Phase-8 review CR-01: a scripted DB row with alias_candidates set flows
     through the REAL RUN_COLS-based load_run SQL and comes back on the run dict.
 
@@ -250,7 +250,7 @@ def test_cr01_alias_candidates_roundtrips_through_real_load_run(fake_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_cr03_confirmation_subject_with_real_business_name():
+def test_confirmation_subject_with_real_business_name():
     """CR-03: confirmation_subject must render the real business name.
 
     confirmation_subject(run) reads run.get("business_name", "Payroll Run").
@@ -275,7 +275,7 @@ def test_cr03_confirmation_subject_with_real_business_name():
     )
 
 
-def test_cr03_confirmation_subject_with_pay_period():
+def test_confirmation_subject_with_pay_period():
     """CR-03: confirmation_subject must include the pay period label."""
     run = {
         "business_name": "Metro Deli Group",
@@ -289,7 +289,7 @@ def test_cr03_confirmation_subject_with_pay_period():
     )
 
 
-def test_cr03_confirmation_subject_fallback_when_empty_dict():
+def test_confirmation_subject_fallback_when_empty_dict():
     """CR-03: the fallback values must fire when keys are absent (not raise).
 
     This verifies the pre-fix behavior (fallback "Payroll Run" / empty period)
@@ -302,7 +302,7 @@ def test_cr03_confirmation_subject_fallback_when_empty_dict():
     )
 
 
-def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
+def test_deliver_enriches_run_dict_with_business_name(monkeypatch):
     """CR-03: _deliver must enrich the run dict with business_name from the DB.
 
     Uses monkeypatching to stub repo.load_business_name and captures the subject
@@ -403,7 +403,7 @@ def test_cr03_deliver_enriches_run_dict_with_business_name(monkeypatch):
     )
 
 
-def test_cr03_load_business_name_sql_uses_businesses_table(fake_conn):
+def test_load_business_name_sql_uses_businesses_table(fake_conn):
     """CR-03: load_business_name must query the businesses table by id.
 
     Verifies the SQL shape (parameterized — business_id in params, not f-string)
@@ -458,7 +458,7 @@ def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
     return run_id
 
 
-def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
+def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     """CLAR2-07: retrigger clears clarified_fields, pre_clarify_extracted,
     clarification_round, AND alias_candidates after the winning claim — and
     still dispatches the re-run (D-11-04, WR-06)."""
@@ -491,7 +491,7 @@ def test_clar207_retrigger_clears_all_reply_context(client, fake_repo, monkeypat
     )
 
 
-def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
+def test_retrigger_clears_context_on_stale_inflight_claim(
     client, fake_repo, monkeypatch
 ):
     """CLAR2-07: the SAME clear must fire on the stale-in-flight CAS branch
@@ -530,7 +530,7 @@ def test_clar207_retrigger_clears_context_on_stale_inflight_claim(
     )
 
 
-def test_clar207_stale_provenance_cannot_reproduce_after_retrigger(client, fake_repo, monkeypatch):
+def test_stale_provenance_cannot_reproduce_after_retrigger(client, fake_repo, monkeypatch):
     """CLAR2-07: after retrigger wipes clarified_fields, `is_round_2 =
     bool(clarified)` for the re-run must see an EMPTY clarified_fields — the
     persisted/derived state a fresh run would see — not the pre-retrigger

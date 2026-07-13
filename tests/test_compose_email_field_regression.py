@@ -106,7 +106,7 @@ def test_field_regression_line_dotted_submitted_name():
     )
 
 
-def test_field_regression_line_d7509_wording():
+def test_field_regression_line_exact_wording_in_template_path():
     """D-7.5-09 wording lock: exact phrasing in _template_body path (LLM returns empty)."""
     decision = _decision(
         gate_reasons=["field regression: Alice Johnson.hours_overtime"],
@@ -121,7 +121,7 @@ def test_field_regression_line_d7509_wording():
     ), "D-7.5-09 wording lock: exact question must appear in the template path"
 
 
-def test_d7509_wording_present_even_when_llm_draft_nonempty():
+def test_field_regression_wording_present_even_when_llm_draft_nonempty():
     """Finding 4 fix: deterministic D-7.5-09 line is APPENDED after any LLM draft body.
 
     When the LLM returns non-empty content, compose_clarification previously returned

@@ -98,7 +98,7 @@ def _extracted(submitted_name: str, hours_overtime: Decimal | None) -> Extracted
 # ---------------------------------------------------------------------------
 
 
-def test_cr01_restated_name_classify_resolves_to_correct_employee():
+def test_restated_name_classify_resolves_to_correct_employee():
     """CR-01: 'Maria Chen' in reply restates 'M. Chen' from snapshot.
 
     The union lookup (current_matches_for_classify + prior_matches) must resolve
@@ -143,7 +143,7 @@ def test_cr01_restated_name_classify_resolves_to_correct_employee():
     )
 
 
-def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
+def test_restated_name_zeroed_field_classified_as_confirmed_dropped():
     """CR-01 full scenario: restated name + OT explicitly zeroed → confirmed_dropped.
 
     Setup:
@@ -270,7 +270,7 @@ def test_cr01_restated_name_zeroed_field_classified_as_confirmed_dropped():
 # ---------------------------------------------------------------------------
 
 
-def test_wr01_unresolvable_asked_field_added_to_backfill_skip():
+def test_unresolvable_asked_field_added_to_backfill_skip():
     """WR-01: if an asked employee is absent from the raw reply even after the union
     lookup, (emp_id_str, field) is staged in _unresolvable_asked and absorbed into
     backfill_skip in STEP 2. The snapshot's positive value is NOT restored.
@@ -379,7 +379,7 @@ def test_wr01_unresolvable_asked_field_added_to_backfill_skip():
 # ---------------------------------------------------------------------------
 
 
-def test_in03_field_regression_lines_skips_malformed_reason():
+def test_field_regression_lines_skips_malformed_reason():
     """IN-03: _field_regression_lines must not crash on a gate_reason with no '.'.
 
     A gate_reason without '.' in the qualified part (after the prefix) is
@@ -402,7 +402,7 @@ def test_in03_field_regression_lines_skips_malformed_reason():
     )
 
 
-def test_in03_field_regression_lines_normal_case_still_works():
+def test_field_regression_lines_normal_case_still_works():
     """IN-03 guard must not regress the normal (correctly-dotted) case."""
     from app.pipeline.compose_email import _field_regression_lines
 

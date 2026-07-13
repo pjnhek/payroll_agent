@@ -344,7 +344,7 @@ def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resum
 SPOOFED_FROM_ADDR = "attacker@evil.example"
 
 
-def test_redelivery_never_resumes_fix5_failed_reply(client, fake_repo, resume_spy):
+def test_redelivery_never_resumes_sender_mismatched_reply(client, fake_repo, resume_spy):
     """GAP-5/CR-5 regression: a reply linked to a run via the RFC header chain,
     whose from_addr does NOT match the run's business (i.e. it already failed
     FIX-5 sender revalidation on first delivery and was left linked+unconsumed),
@@ -385,7 +385,7 @@ def test_redelivery_never_resumes_fix5_failed_reply(client, fake_repo, resume_sp
     assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
 
 
-def test_stranded_sweep_never_resumes_fix5_failed_reply(client, fake_repo, resume_spy):
+def test_stranded_sweep_never_resumes_sender_mismatched_reply(client, fake_repo, resume_spy):
     """GAP-5/CR-5 regression: the SAME mismatched-sender, unconsumed,
     awaiting_reply, STALE reply must NEVER be auto-resumed by the D-11-05
     stranded-reply sweep on a GET /runs dashboard load either.

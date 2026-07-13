@@ -886,7 +886,7 @@ def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeyp
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
-def test_deliver_finalize_crash_preserves_wr04_payroll_roster_attribute(seeded_db, monkeypatch):
+def test_deliver_finalize_crash_preserves_payroll_roster_attribute(seeded_db, monkeypatch):
     """Checker WARNING 1: a forced exception inside the NEW finalize `with
     conn.transaction():` block still results in the raised exception carrying
     `payroll_roster` — proving the finalize transaction is nested INSIDE the

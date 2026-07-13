@@ -241,10 +241,10 @@ def test_snapshot_once_not_overwritten(fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — test_n1_single_run_stages_call (N1)
+# Test 2 — test_resume_calls_run_stages_exactly_once (N1)
 # ---------------------------------------------------------------------------
 
-def test_n1_single_run_stages_call(fake_repo, mock_llm, monkeypatch):
+def test_resume_calls_run_stages_exactly_once(fake_repo, mock_llm, monkeypatch):
     """N1: resume_pipeline calls _run_stages exactly once per invocation.
 
     The Round-1 and Round-2 _run_stages calls are in mutually-exclusive
@@ -284,10 +284,10 @@ def test_n1_single_run_stages_call(fake_repo, mock_llm, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — test_n2_asked_written_before_send (N2 — asked-before-send ordering)
+# Test 3 — test_asked_written_before_clarification_send (N2 — asked-before-send ordering)
 # ---------------------------------------------------------------------------
 
-def test_n2_asked_written_before_send(fake_repo, mock_llm, monkeypatch):
+def test_asked_written_before_clarification_send(fake_repo, mock_llm, monkeypatch):
     """N2: clarified_fields has 'asked' BEFORE the clarification email is sent.
 
     The orchestrator must call set_clarified_fields (writing 'asked') before
@@ -1188,10 +1188,10 @@ def test_answered_positive_uses_client_value(fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# Test 16 — test_cr02_round2_new_regression_reaches_awaiting_reply (CR-02 fix)
+# Test 16 — test_round2_new_regression_reaches_awaiting_reply (CR-02 fix)
 # ---------------------------------------------------------------------------
 
-def test_cr02_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
+def test_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
     """CR-02 fix: Round-2 reply that introduces a NEW field regression sends a
     clarification and reaches AWAITING_REPLY — NOT stuck at 'extracting'.
 
@@ -1304,10 +1304,10 @@ def test_cr02_round2_new_regression_reaches_awaiting_reply(fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# Test 17 — test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock
+# Test 17 — test_explicit_zero_overpay_guard_with_prompt_inspecting_mock
 # ---------------------------------------------------------------------------
 
-def test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
+def test_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
     fake_repo, mock_llm, monkeypatch
 ):
     """CR-01 fix: classify uses REPLY-ONLY extraction, not combined body.
@@ -1430,10 +1430,10 @@ def test_cr01_explicit_zero_overpay_guard_with_prompt_inspecting_mock(
 
 
 # ---------------------------------------------------------------------------
-# Test 18 — test_cr01_divergence_confirmed_dropped_paystub_value
+# Test 18 — test_extraction_divergence_confirmed_dropped_paystub_value
 # ---------------------------------------------------------------------------
 
-def test_cr01_divergence_confirmed_dropped_paystub_value(fake_repo, mock_llm, monkeypatch):
+def test_extraction_divergence_confirmed_dropped_paystub_value(fake_repo, mock_llm, monkeypatch):
     """CR-01 divergence regression pin: confirmed_dropped case — paystub must pay OT=0, not 2.
 
     Drives resume_pipeline with a prompt-inspecting mock where the TWO extractions
@@ -1516,10 +1516,10 @@ def test_cr01_divergence_confirmed_dropped_paystub_value(fake_repo, mock_llm, mo
 
 
 # ---------------------------------------------------------------------------
-# Test 19 — test_cr01_divergence_client_supplied_paystub_value
+# Test 19 — test_extraction_divergence_client_supplied_paystub_value
 # ---------------------------------------------------------------------------
 
-def test_cr01_divergence_client_supplied_paystub_value(fake_repo, mock_llm, monkeypatch):
+def test_extraction_divergence_client_supplied_paystub_value(fake_repo, mock_llm, monkeypatch):
     """CR-01 divergence regression pin: client_supplied case — paystub must pay OT=5, not 2.
 
     Drives resume_pipeline with a prompt-inspecting mock where the TWO extractions
@@ -1601,10 +1601,10 @@ def test_cr01_divergence_client_supplied_paystub_value(fake_repo, mock_llm, monk
 
 
 # ---------------------------------------------------------------------------
-# Test 20 — test_cr01_divergence_unresolvable_asked_money_safe
+# Test 20 — test_extraction_divergence_unresolvable_asked_money_safe
 # ---------------------------------------------------------------------------
 
-def test_cr01_divergence_unresolvable_asked_money_safe(fake_repo, mock_llm, monkeypatch):
+def test_extraction_divergence_unresolvable_asked_money_safe(fake_repo, mock_llm, monkeypatch):
     """CR-01 divergence regression pin: _unresolvable_asked case — combined OT=2 must NOT be paid.
 
     Drives resume_pipeline with a prompt-inspecting mock where:
