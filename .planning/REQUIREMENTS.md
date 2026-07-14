@@ -139,4 +139,30 @@ limitation honestly is itself the differentiator.
 
 ## Traceability
 
-_Filled by the roadmapper._
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| QUEUE-01 | Phase 16 | Pending |
+| QUEUE-02 | Phase 16 | Pending |
+| QUEUE-03 | Phase 16 | Pending |
+| QUEUE-05 | Phase 16 | Pending |
+| PUMP-01 | Phase 17 | Pending |
+| PUMP-02 | Phase 17 | Pending |
+| FAIL-01 | Phase 18 | Pending |
+| FAIL-02 | Phase 18 | Pending |
+| FAIL-03 | Phase 18 | Pending |
+| QUEUE-04 | Phase 19 | Pending |
+| SEND-01 | Phase 20 | Pending |
+| SEND-02 | Phase 20 | Pending |
+| SEND-03 | Phase 20 | Pending |
+| PROOF-01 | Phase 21 | Pending |
+| PROOF-02 | Phase 21 | Pending |
+| PROOF-03 | Phase 21 | Pending |
+| PROOF-04 | Phase 21 | Pending |
+| PROOF-05 | Phase 21 | Pending |
+| OPS-01 | Phase 21 | Pending |
+
+**Coverage: 19/19 v4 requirements mapped, no orphans, no duplicates.**
+
+Note: this milestone's header count ("the 17 REQ-IDs") undercounts by 2 against the actual enumerated
+requirements below (QUEUE ×5, PUMP ×2, FAIL ×3, SEND ×3, PROOF ×5, OPS ×1 = 19). The roadmap maps all 19
+IDs actually present in this file.

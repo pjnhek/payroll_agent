@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 status: planning
-last_updated: "2026-07-14T03:44:33.725Z"
+last_updated: "2026-07-14T04:10:00.000Z"
 last_activity: 2026-07-14
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,17 +17,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
+See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
 
-**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v3 makes the codebase read as production-quality: enforced CI, right-sized modules, full type-checking, constraint-documenting comments.**
-**Current focus:** v3 SHIPPED (archived + tagged 2026-07-13). No active milestone — start the next with `/gsd-new-milestone`.
+**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
+**Current focus:** v4 roadmap created (2026-07-14) — 6 phases (16–21), 19/19 requirements mapped. Ready to plan Phase 16.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-07-14 — Milestone v4 started
+Phase: Phase 16 of 21 (Queue Substrate & Unblocked Webhook) — ready to plan
+Plan: — (not yet planned)
+Status: Ready to plan
+Last activity: 2026-07-14 — ROADMAP.md created for v4 (6 phases, 16–21); REQUIREMENTS.md traceability filled (19/19 mapped, no orphans)
 
 ## Performance Metrics
 
@@ -91,6 +91,7 @@ Last activity: 2026-07-14 — Milestone v4 started
 
 ### Roadmap Evolution
 
+- **v4 roadmap created (2026-07-14):** 6 phases (16–21), continuing global phase numbering from v3's Phase 15. Phase 16 Queue Substrate & Unblocked Webhook (merges research's Phase 1 "unblock the event loop" — zero schema, no forced-order dependency — into the queue-substrate phase, since granularity is "standard" and a single-requirement standalone phase for QUEUE-01 alone would fragment unnecessarily) -> Phase 17 The Pump -> Phase 18 Failure Policy & Sweep Deletion -> Phase 19 Webhook Cutover & Durable Ingest -> Phase 20 Exactly-Once Send -> Phase 21 Durability Proofs & Ops View. Hard-ordered per the milestone's non-negotiable constraint (from `.planning/research/ARCHITECTURE.md`): the pump (17) and the failure policy (18) MUST precede the webhook cutover (19), or the cutover ships a regression window where a worker records SUCCESS on a FAILED payroll while the old sweep races the new queue. Phase 20 (send) is independent of Phase 19 and could ship in parallel, but is sequenced after for planning clarity. Phase 21 (proofs) is last by definition — it proves all 5 preceding phases, and explicitly encodes the two cross-cutting hazards flagged in REQUIREMENTS.md (concurrency-proof.yml's hard-coded test-file list; the precedent of a vacuous "concurrency proof" from Phase 10 of v2 that passed while proving nothing). 19/19 v4 requirements mapped, no orphans (note: the milestone's own header text says "17 REQ-IDs," which undercounts the actual enumerated set by 2 — traceability was built against the real 19).
 - v3 roadmap created (2026-07-08): 4 phases (12-15), continuing global phase numbering from v2's Phase 11. Phase 12 CI Quality Gates -> Phase 13 Module Structure & Boundaries -> Phase 14 Full Type-Checking (mypy) -> Phase 15 Comment Hygiene & Deferred-Polish Triage. Hard-ordered per the milestone's ordering constraint: CI first (protects every later refactor), STRUCT (incl. BOUND-01) before COMM (comments rewritten once, in final file locations), TYPE its own phase after STRUCT (smaller split modules are easier to annotate; user explicitly ruled out squeezing full mypy adoption into a shared phase). 16/16 v3 requirements mapped, no orphans.
 - Phase 11 added (2026-07-05): Clarification Round Machine & Alias Learning — clarify-cluster design phase from phase-9 review findings (WR-04/05/06, CX-01) + conversation-traced findings (alias-learning bind unreachable, ambiguous-reply attribution); sources: todos 260705-01, 260705-02, 260623-08
 
@@ -99,6 +100,9 @@ Last activity: 2026-07-14 — Milestone v4 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [Roadmap]: v4 — `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine (INVARIANT J-1, enforced by a CI drift guard analogous to the existing `RunStatus`↔CHECK test).
+- [Roadmap]: v4 — Forced phase order 16→17→18→19 (queue substrate → pump → failure policy → webhook cutover) is non-negotiable; deleting `sweep_stranded_runs` happens in the SAME phase the failure policy lands (Phase 18), not deferred until "the queue is proven."
+- [Roadmap]: v4 — Every durability proof (Phase 21) must ship with a demonstrated red run, per the Phase-10 (v2) precedent of a vacuous concurrency proof that passed while proving nothing.
 - [Roadmap]: Vertical MVP shape — thin foundation (P1), then walking skeleton as the FIRST end-to-end proof (P2), then deepening rings ordered by risk.
 - [Roadmap]: Calc is deliberately thin in P2 (gross + FICA only; federal LEFT OUT; net labeled "pre-federal" — never a fake federal number). Full Pub 15-T penny-accuracy is P3, before any correctness claim.
 - [Roadmap]: The DRY seam — judgment stages are pure functions; hard gates live INSIDE `decide.py` computing a code-owned `final_action` that is the SOLE branch source (orchestrator/dashboard/eval never branch on `model_action`).
@@ -159,12 +163,18 @@ Recent decisions affecting current work:
 
 [Issues that affect future work]
 
-_None open._ All v1/v2 research flags and checkpoints were resolved as their phases shipped:
+_None open._ All v1/v2/v3 research flags and checkpoints were resolved as their phases shipped:
 
 - 2026 Pub 15-T brackets — transcribed + unit-tested against the IRS PDF (Phase 3, v1.0).
 - DeepSeek/Kimi model IDs — confirmed + pinned (Phase 2, v1.0).
 - Real gateway payload/signing/reply-field — resolved with Resend at deploy (Phase 6, v1.0).
 - Phase 02.1 name_matches DROP + `.env` decision-tier removal — applied + human-verified at the blocking checkpoint (v1.0).
+
+Open items surfaced by v4 research, to resolve during phase planning (not blocking the roadmap):
+
+- `operator_resume`'s `dedup_key` needs a discriminator (an operator may legitimately re-resolve a `needs_operator` run with a different mapping without an epoch bump) — resolve during Phase 19 planning.
+- Resend's exact `Idempotency-Key` retention window (24h stated by research, flagged as not independently re-verified in this pass) — re-confirm before finalizing Phase 20's retry-ladder cap.
+- The precise current Render 750-instance-hour/month cap should be re-confirmed against live Render docs before Phase 17 is planned in detail — the arithmetic is certain, the exact number should be pinned to a dated citation.
 
 ### Quick Tasks Completed
 
@@ -182,6 +192,9 @@ _None open._ All v1/v2 research flags and checkpoints were resolved as their pha
 - **[P3 — golden-test independence] The oracle must not be computed from the tables it checks.** If CALC-06's golden values are derived from the same transcribed `tax_tables_2026` module, a transcription error makes code and test wrong in the same direction and they tie out — the CALC-08 trap recreated in the oracle. **Action:** hand-compute golden paystubs from the IRS worksheet, or cross-check against an independent payroll calculator / the IRS's own worked examples, so the oracle is genuinely independent of the tables.
 - **[P2 — internal sequencing] 19 reqs is the heaviest phase; "skeleton" hides that it's 18 thin pieces integrated.** Sequence INSIDE the phase: (a) clean happy path end-to-end first (POST fixture → all-clean match → process → thin calc → done — this alone lands the one-third end-to-end proof), then (b) the gate-block case, then (c) the clarify-reply-resume loop LAST (CLAR-03 re-entrancy is the trickiest sub-piece). The phase exit criteria must name all three behaviors so it can't be called done with resume half-wired.
 - **[Slack management] Phase 3 is the safest place to absorb a slip.** The three core eval metrics (extraction, name-reconciliation, decision accuracy) measure the judgment layer and do NOT depend on P3 — only computed-payroll-correctness does. If Pub 15-T runs long, the spine (working slice + thesis metrics) still stands. Absorb schedule slip in P3, not P2 or P4.
+- **[v4 — Phase 17 planning] Pump cadence vs. the 750h budget is a human decision already made in the design** (30-minute cadence, ~365 h/month, chosen over the 10-minute/at-the-cap option) — plan Phase 17 with that decision as a given, and write the duty-cycle arithmetic into the README as part of the phase's own deliverable, not as a follow-up.
+- **[v4 — Phase 19 planning] The two-layer dedup argument (Svix event ID vs. RFC Message-ID) is subtle enough to need its own callout in the phase plan** — both layers are required (the ingest job's own retry is exactly the case that needs both), and that reasoning should survive into the eventual PR description, not just live in ARCHITECTURE.md.
+- **[v4 — Phase 16 planning] Pull the `concurrency-proof.yml` generalization forward if convenient.** Research flags that generalizing the workflow (removing the hard-coded single test file) is a prerequisite for Phase 21 and "probably deserves to be pulled forward into Phase 2" (this roadmap's Phase 16) so the queue's own tests run in CI from the start rather than accumulating ungated until Phase 21.
 
 ## Deferred Items
 
@@ -204,10 +217,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-11T02:23:33.355Z
-Stopped at: Phase 15 context gathered
-Resume file: .planning/phases/15-comment-hygiene-deferred-polish-triage/15-CONTEXT.md
+Last session: 2026-07-14T04:10:00.000Z
+Stopped at: v4 ROADMAP.md created (Phases 16–21) and REQUIREMENTS.md traceability filled
+Resume file: None
 
 ## Operator Next Steps
 
-- Discuss the next phase with /gsd-discuss-phase 15 (comment hygiene and deferred-polish triage)
+- Discuss the first v4 phase with `/gsd-discuss-phase 16` (Queue Substrate & Unblocked Webhook)

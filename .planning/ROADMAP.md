@@ -5,10 +5,144 @@
 - ✅ **v1.0 — MVP** (shipped 2026-06-25) — Email-driven payroll agent: messy email in, correct human-approved payroll out, every money-moving decision code-gated (deterministic, auditable, never guesses). 7 phases, deployed live on a free stack with a recorded demo. → [full archive](milestones/v1.0-ROADMAP.md) · [requirements](milestones/v1.0-REQUIREMENTS.md)
 - ✅ **v2 — Production Hardening** (shipped 2026-07-07) — Took the working v1.0 MVP and made its money-logic and data layer genuinely production-grade — correct under real, messy, concurrent load, not just the demo path. 6 phases (7, 7.5, 8, 9, 10, 11), 16 requirements, scope discovered via an adversarial audit. → [full archive](milestones/v2-ROADMAP.md) · [requirements](milestones/v2-REQUIREMENTS.md) · [audit](milestones/v2-MILESTONE-AUDIT.md)
 - ✅ **v3 — Production-Ready Codebase** (shipped 2026-07-13) — Made the codebase itself read as production-quality without changing a line of money behavior: enforced CI (ruff + full suite + `mypy --strict`, all blocking), the three god-files split into right-sized modules, the entire repo type-clean across 117 files, and provenance comments replaced with constraint-documenting ones behind a CI guard. 4 phases (12–15), 16/16 requirements, 227 commits. Found 3 real defects on the way — a lying eval chart, a path traversal, and a prompt-echo leak. → [full archive](milestones/v3-ROADMAP.md) · [requirements](milestones/v3-REQUIREMENTS.md) · [audit](v3-MILESTONE-AUDIT.md)
+- 🚧 **v4 — Durable Execution** (started 2026-07-13) — No accepted email is ever lost; every failure recovers automatically within ~30 minutes without a human noticing; a client is sent at most one confirmation per approved run, per epoch. Origin: an adversarial audit found the pipeline's `BackgroundTask` handoff is durable in memory only, and the webhook blocks the event loop on a synchronous Resend fetch + a multi-query psycopg transaction. 6 phases (16–21), 19 requirements. Design: `docs/superpowers/specs/2026-07-13-durable-execution-design.md`.
 
-## Active Milestone
+## Active Milestone: v4 — Durable Execution
 
-_None — v3 shipped 2026-07-13. Start the next with `/gsd-new-milestone`._
+**Goal:** No accepted email is ever lost. Every failure recovers automatically within ~30 minutes,
+best-effort, without a human noticing. A client is sent at most one confirmation per approved run, per
+epoch. Exactly-once delivery is not claimed — it's the Two Generals problem, not a library gap; the
+honest, narrower claim is published instead.
+
+**Shape:** A durability-and-reliability milestone bolted onto a shipped, working pipeline — zero new
+dependencies, all schema/worker/queue machinery on top of primitives already installed and already in
+production use (`pgcrypto`/`gen_random_uuid()`, `SKIP LOCKED`-capable Postgres 15+, `psycopg[binary,pool]`,
+`resend`'s `Idempotency-Key`). Research (4 parallel researchers + a Codex review) validated the approved
+design and found 5 defects in its first draft — corrected before this roadmap was cut. The build order below
+is research-derived, not imposed, with one **non-negotiable ordering constraint**: the pump and the failure
+policy MUST precede the webhook cutover to the queue, or the cutover ships a regression window in which a
+worker records SUCCESS on a payroll that actually FAILED (the orchestrator today writes `ERROR` and returns
+normally), while the old `sweep_stranded_runs` races the new queue with both firing at ~15 minutes. Phase 1
+of the original 7-phase research plan (unblock the event loop) carries zero schema risk and no forced-order
+dependency, so it is folded into Phase 16 alongside the queue substrate rather than standing alone.
+
+**Two cross-cutting hazards this milestone must not repeat:** (1) `concurrency-proof.yml` is the only CI
+workflow with a real Postgres and hard-codes its test files by name — a durability proof landed outside that
+line never runs; (2) this repo has already shipped a "concurrency proof" that passed while proving nothing
+(its threads serialized through an async route and never actually raced) — every proof here must ship with a
+demonstrated red run. Both are enforced as explicit success criteria in Phase 21.
+
+### Phases
+
+**Phase Numbering:** v4 continues the global phase sequence from v3 (last phase: 15). Integer phases
+(16–21) are planned milestone work; decimal phases (e.g. 16.1) are reserved for urgent insertions.
+
+- [ ] **Phase 16: Queue Substrate & Unblocked Webhook** - The webhook stops blocking the event loop and a durable Postgres job queue exists, proven on one already-manual, low-risk producer (operator retrigger) before the money path touches it.
+- [ ] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present.
+- [ ] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism.
+- [ ] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue.
+- [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch.
+- [ ] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact.
+
+## Phase Details
+
+### Phase 16: Queue Substrate & Unblocked Webhook
+
+**Goal**: The webhook stops blocking the event loop, and a durable Postgres job queue exists — proven on
+one already-manual, low-risk producer (operator retrigger) before the money path ever touches it.
+**Depends on**: Nothing (first v4 phase)
+**Requirements**: QUEUE-01, QUEUE-02, QUEUE-03, QUEUE-05
+**Success Criteria** (what must be TRUE):
+
+  1. Firing two concurrent inbound webhook requests against a slow Resend fetch completes in wall-clock time roughly equal to the slowest one, not their sum — the event loop is never blocked by the body-fetch or the ingest transaction.
+  2. Clicking "Retrigger" on a stuck run enqueues a durable `jobs` row; killing the worker process mid-run and draining again (a second worker, or a manual drain) completes the retrigger without the operator re-clicking anything.
+  3. A job whose worker died while holding the lease is reclaimed and re-run by another worker once the lease expires — it is never stuck in `leased` state forever.
+  4. A routine redeploy (graceful worker shutdown) releases any held leases immediately, so an in-flight retrigger resumes within seconds rather than stalling for the full lease duration.
+  5. A CI-enforced guard fails the build if a `jobs.kind` value ever collides with a `payroll_runs.status` value or drifts from the `JobKind` enum — the job row can never encode "what payroll status comes next."
+
+**Plans**: TBD
+
+### Phase 17: The Pump
+
+**Goal**: Durable storage becomes durable execution — a job scheduled for later actually fires even when
+nothing is knocking on the front door.
+**Depends on**: Phase 16
+**Requirements**: PUMP-01, PUMP-02
+**Success Criteria** (what must be TRUE):
+
+  1. Calling the authenticated `/internal/pump` endpoint claims and drains due jobs and returns real counts (claimed/done/retried/dead/queue depth) — not just a bare 200.
+  2. A job scheduled with a future `available_at`, on an instance that has just cold-started with no live worker threads yet, still executes once the pump's cron fires — proving the pump, not the in-process workers, is the actual guarantee.
+  3. The README states the chosen pump cadence, the resulting worst-case recovery-latency bound, and the 750-instance-hour/month arithmetic that forces that cadence, in plain checkable numbers.
+  4. `.github/workflows/pump.yml` is the only cron hitting the service — the old twice-weekly keepalive workflow is gone, absorbed into the pump. **Absorbed means BOTH of keepalive.yml's jobs carry over, not just the wake-up ping:** the pump workflow must still fail RED on `/health/schema` returning 503 (live-DB schema drift) and on `/health/ready` failing. Deleting `keepalive.yml` without carrying the schema-parity check forward would silently drop drift detection that a prior milestone shipped deliberately — and it is the only monitor that catches a manual Supabase edit bypassing the deploy-migrate workflow.
+
+**Plans**: TBD
+
+### Phase 18: Failure Policy & Sweep Deletion
+
+**Goal**: A pipeline failure is classified honestly — ok, retryable, or terminal — instead of being
+swallowed into a silent success, and the queue's own lease-based recovery becomes the sole recovery
+mechanism.
+**Depends on**: Phase 17 (the pump must exist before a retryable job can be trusted to actually fire)
+**Requirements**: FAIL-01, FAIL-02, FAIL-03
+**Success Criteria** (what must be TRUE):
+
+  1. A transient LLM/provider timeout during extraction is retried automatically with backoff and eventually completes — it is never left as a permanent, un-retried ERROR.
+  2. A run whose deterministic decision is `request_clarification` is never retried as though it failed — the client is never emailed the same clarification question more than once because a worker misread a correct decision as an error.
+  3. A job that exhausts its attempt cap lands in a visible dead-letter state an operator can see and act on, rather than stalling silently.
+  4. `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the runs-list sweep block are removed from the codebase — there is exactly one recovery mechanism left, not two racing ones.
+  5. Viewing the list of runs no longer has any side effect on any run's status — it is a read, not an accidental cron trigger.
+
+**Plans**: TBD
+
+### Phase 19: Webhook Cutover & Durable Ingest
+
+**Goal**: An accepted inbound email is durable the instant the webhook returns 200 — no client email is
+ever lost to a restart, a crash, or a sleeping instance again.
+**Depends on**: Phase 18 (and, transitively, Phase 17) — cutting the webhook over to the queue before the
+pump and the failure policy exist would ship a durability regression, not an improvement.
+**Requirements**: QUEUE-04
+**Success Criteria** (what must be TRUE):
+
+  1. All 8 background-task producers (the webhook, both demo triggers, and the five in the runs routes — including the one hiding inside the runs-list page render) are migrated to the durable queue; none schedule pipeline work into process memory anymore.
+  2. Redelivering the same inbound webhook event (same Svix event ID) never creates a second job or a second run, even though the Resend body-fetch now happens later, inside a worker, not at ingest time.
+  3. Killing the process immediately after the webhook returns 200 — before any pipeline work starts — does not lose the email; the accepted event is durably recorded and the run completes once a worker or the pump picks it up.
+  4. A clarification reply from an unauthorized sender is still rejected exactly as it is today — moving the ingest transaction into a worker did not weaken the sender-revalidation guard.
+
+**Plans**: TBD
+
+### Phase 20: Exactly-Once Send
+
+**Goal**: A client is sent at most one payroll confirmation per approved run, per epoch — a retry never
+redrafts, never regenerates non-deterministic bytes, and never silently orphans a reply into a phantom run.
+**Depends on**: Phase 18 (the retry/backoff infrastructure) — independent of Phase 19, could ship in
+parallel with it.
+**Requirements**: SEND-01, SEND-02, SEND-03
+**Success Criteria** (what must be TRUE):
+
+  1. Retrying a send after a crash reuses the exact same reserved `message_id` from the first attempt — it is never overwritten by a freshly minted id.
+  2. Retrying a send replays the exact persisted subject, body, and PDF bytes from the first attempt — it never re-drafts through the LLM and never regenerates non-deterministic PDF bytes.
+  3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
+  4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
+
+**Plans**: TBD
+
+### Phase 21: Durability Proofs & Ops View
+
+**Goal**: Every durability and exactly-once claim made above is demonstrated able to fail, not just shown
+passing — and an operator can check "is the queue healthy" as a fact, not a vibe.
+**Depends on**: Phase 16, Phase 17, Phase 18, Phase 19, Phase 20 (this phase proves all of them)
+**Requirements**: PROOF-01, PROOF-02, PROOF-03, PROOF-04, PROOF-05, OPS-01
+**Success Criteria** (what must be TRUE):
+
+  1. Killing a worker mid-run and draining again completes the run; the same test, with the lease-reclaim clause or the attempts-increment removed, demonstrably goes red — a pasted red run proves the proof isn't vacuous.
+  2. Redelivering the same inbound event produces exactly one `jobs` row, one run, and one email, proven against a real Postgres — and the same test would fail if dedup were keyed on the RFC `Message-ID` alone (unavailable until after the fetch).
+  3. Crashing between Resend accepting a send and the local `sent` commit results in zero second emails, with the persisted `message_id` asserted byte-identical across both attempts — and the same test fails if run against the pre-Phase-20 send path.
+  4. An expired lease is reclaimed by a second, genuinely concurrent (real OS thread) worker, and the original worker's late `mark_failed`/reschedule write — not just its `mark_done` — is rejected by the fencing token; the same test fails against the original (pre-fix) claim SQL that cannot reclaim a `leased` row at all.
+  5. All four proofs above are registered in `concurrency-proof.yml` and demonstrably run in CI against a real Postgres container — none are silently skipped by the workflow's hard-coded file list.
+  6. An operator can view queue depth, oldest-pending-job age, attempts distribution, and the dead-letter list on one page, which surfaces an alarm when job success looks ~100% while `payroll_runs.status='error'` count is nonzero.
+
+**Plans**: TBD
+**UI hint**: yes
 
 ## Backlog
 
@@ -19,6 +153,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 - Custom email domain (send FROM a real address) — documented upgrade path in README
 - Additional Medicare 0.9% surtax modeling; SS wage-base straddle exactness (per-employee YTD Medicare ledger) — accepted limitations, tax-completeness features not hardening
 - Schema-parity backlog: versioned/ordered migrations + migration-history table, hard deploy gate blocking Render deploy on drift — separate future milestone, needs paid plan or self-managed release step
+- v4 out-of-scope, schema-shaped for later if traffic ever changes: per-tenant fairness lanes, priority lanes, adaptive backpressure, circuit breakers (LLM/Resend), an N-concurrent-email load chart, operator authentication (`jobs.business_id`/`priority` are written but unread — each stays a future `ORDER BY` change, not a migration)
 
 ## Progress
 
@@ -41,3 +176,9 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
+| 16. Queue Substrate & Unblocked Webhook | v4 | 0/TBD | Not started | - |
+| 17. The Pump | v4 | 0/TBD | Not started | - |
+| 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
+| 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
+| 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
+| 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
