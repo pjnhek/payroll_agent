@@ -175,3 +175,9 @@ None — no external service configuration required. A live Postgres connection 
 ---
 *Phase: 16-queue-substrate-unblocked-webhook*
 *Completed: 2026-07-14*
+
+## Self-Check: PASSED
+
+All claimed files found on disk (app/models/job.py, app/db/schema.sql, app/db/bootstrap.py,
+tests/test_status_drift.py, this SUMMARY.md). All claimed commit hashes (e17e632, 8391053,
+193da56, 080fcd0, f6e64f1) found in `git log --oneline --all`. No missing items.
