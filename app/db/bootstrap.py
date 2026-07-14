@@ -70,10 +70,23 @@ STATEMENT_TIMEOUT_MS = 60000   # 60s: abort a single runaway statement
 # it is dropped FIRST on a --reset to clear it from an existing DB. The default
 # (non-reset) apply path ALSO drops it unconditionally below, because
 # CREATE TABLE IF NOT EXISTS cannot remove a table that already exists on a live DB.
+#
+# "jobs" is positioned immediately after "eval_results" — i.e. BEFORE ALL THREE of
+# its FK targets: payroll_runs, email_messages (via email_id), and businesses (via
+# business_id). Placing it merely "before payroll_runs" would still land it AFTER
+# email_messages, backwards relative to this file's own reverse-dependency-order
+# convention. Without "jobs" in this list at all, the seeded_db fixture's --reset
+# path (the sole hermetic reset owner, gated by ALLOW_DB_RESET) would silently
+# orphan job rows referencing dropped-and-recreated run_ids across every test run
+# that resets the DB — poisoning isolation for any live-DB test that asserts
+# durability across resets. Each DROP TABLE IF EXISTS ... CASCADE below
+# already cascades, so exact ordering is defensive-not-required for correctness —
+# but a comment that documents the dependency direction wrongly is worse than none.
 _DROP_ORDER = [
     "name_matches",
     "paystub_line_items",
     "eval_results",
+    "jobs",
     "email_messages",
     "payroll_runs",
     "employees",
