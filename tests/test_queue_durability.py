@@ -572,3 +572,84 @@ def test_rewind_for_reclaim_leaves_reply_epoch_untouched(seeded_db) -> None:
     assert _read_reply_epoch(run_id) == before_epoch
     assert repo.load_clarified_fields(run_id) == {}
     assert repo.load_pre_clarify_extracted(run_id) is None
+
+
+def test_skip_locked_steps_over_a_row_another_worker_is_holding(seeded_db) -> None:
+    """SKIP LOCKED is load-bearing, and exactly-one-winner is NOT the property it
+    buys. Plain `FOR UPDATE` already delivers mutual exclusion: a second claimant
+    blocks on the held row, re-evaluates it under READ COMMITTED once the holder
+    commits, finds it leased, and walks away. So the claim-race proof above stays
+    green with SKIP LOCKED deleted — it cannot see this regression.
+
+    What SKIP LOCKED buys is LIVENESS. Without it, `LIMIT 1` has already committed
+    to the locked row; Postgres discards it rather than advancing to the next
+    candidate, so the claimant returns empty-handed while a perfectly claimable job
+    sits one row over. With two daemon workers that is a silent collapse to one
+    effective worker under exactly the contention the queue exists to absorb.
+
+    Hold a genuine row lock on the oldest claimable job in a separate live
+    transaction, then claim. The claim must (1) return promptly instead of blocking
+    behind the held row, and (2) come back holding the OTHER job.
+    """
+    import psycopg as _psycopg
+
+    from app.config import get_settings
+    from app.db import repo
+    from app.models.job import Job, JobKind
+
+    claim_timeout_s = 5.0
+
+    run_id = _seed_run_for_queue_proof()
+    # Two separate transactions => strictly increasing available_at, so `first` is
+    # unambiguously the row that ORDER BY (priority, available_at) selects. Without
+    # that, which row gets locked below would be a coin flip and the proof would
+    # only bite intermittently.
+    first = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-skiplocked-a:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    second = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-skiplocked-b:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    assert first is not None and second is not None and first != second
+
+    claimed: list[Job | None] = []
+    thread = threading.Thread(target=lambda: claimed.append(repo.claim_job()))
+
+    holder = _psycopg.connect(get_settings().database_url)
+    try:
+        with holder.transaction():
+            holder.execute(
+                "SELECT id FROM jobs WHERE id = %s FOR UPDATE", (first,)
+            ).fetchone()
+            # The row lock on `first` is held for as long as this transaction stays
+            # open — this is the "another worker is mid-claim" condition, made
+            # deterministic instead of raced.
+            thread.start()
+            thread.join(timeout=claim_timeout_s)
+            blocked = thread.is_alive()
+    finally:
+        # Release the lock unconditionally, so a claimer that DID block can finish
+        # and never leaks past this test. Do this before asserting.
+        holder.close()
+    thread.join(timeout=claim_timeout_s)
+
+    assert not blocked, (
+        f"claim_job() was still blocked after {claim_timeout_s}s on a row another "
+        "transaction was holding, instead of skipping over it — this is FOR UPDATE "
+        "without SKIP LOCKED. A second worker stalls behind the first rather than "
+        "picking up the next free job."
+    )
+    assert len(claimed) == 1
+    winner = claimed[0]
+    assert winner is not None, (
+        "claim_job() returned nothing while a claimable job was sitting right "
+        "there — LIMIT 1 discarded the locked row instead of skipping to the next."
+    )
+    assert winner.id == second, (
+        "the claimer must step OVER the held row and take the other job, not "
+        "return the locked one"
+    )
