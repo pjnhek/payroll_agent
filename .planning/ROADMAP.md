@@ -60,7 +60,7 @@ one already-manual, low-risk producer (operator retrigger) before the money path
   4. A routine redeploy (graceful worker shutdown) releases any held leases immediately, so an in-flight retrigger resumes within seconds rather than stalling for the full lease duration.
   5. A CI-enforced guard fails the build if a `jobs.kind` value ever collides with a `payroll_runs.status` value or drifts from the `JobKind` enum — the job row can never encode "what payroll status comes next."
 
-**Plans**: 10 plans, 5 waves
+**Plans**: 3/10 plans executed
 *(Replanned 2026-07-14 after a cross-AI plan review. Two scope-level decisions were locked: **D-13** —
 forward-port the send-idempotency fix into this phase, because this phase is where live workers and
 lease-expiry reclaim actually ship, so this is where the double-send window actually opens; and
@@ -71,9 +71,9 @@ start the first live workers.)*
 
 **Wave 1**
 
-- [ ] 16-01-PLAN.md — Unblock the inbound webhook: `run_in_threadpool` around the Resend fetch, the ingest transaction, and the response-shaping branches (D-11) + Proof 1 + the cross-thread `BackgroundTasks` proof *(wave 1)*
-- [ ] 16-02-PLAN.md — Proof surface + config knobs: the `queueproof` marker and a NARROW second CI gate (D-14) and `WORKER_COUNT`/`LEASE_SECONDS`/`MAX_ATTEMPTS` with derivations (D-03/D-08) *(wave 1)*
-- [ ] 16-03-PLAN.md — The `jobs` table, `JobKind`/`JobState`/`Job` (6 fields), `_DROP_ORDER`, and the D-05 inventory-pinned index guard *(wave 1)*
+- [x] 16-01-PLAN.md — Unblock the inbound webhook: `run_in_threadpool` around the Resend fetch, the ingest transaction, and the response-shaping branches (D-11) + Proof 1 + the cross-thread `BackgroundTasks` proof *(wave 1)*
+- [x] 16-02-PLAN.md — Proof surface + config knobs: the `queueproof` marker and a NARROW second CI gate (D-14) and `WORKER_COUNT`/`LEASE_SECONDS`/`MAX_ATTEMPTS` with derivations (D-03/D-08) *(wave 1)*
+- [x] 16-03-PLAN.md — The `jobs` table, `JobKind`/`JobState`/`Job` (6 fields), `_DROP_ORDER`, and the D-05 inventory-pinned index guard *(wave 1)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -209,7 +209,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
-| 16. Queue Substrate & Unblocked Webhook | v4 | 0/TBD | Not started | - |
+| 16. Queue Substrate & Unblocked Webhook | v4 | 3/10 | In Progress|  |
 | 17. The Pump | v4 | 0/TBD | Not started | - |
 | 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
