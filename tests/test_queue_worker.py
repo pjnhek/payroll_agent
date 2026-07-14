@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import threading
+import time
 import uuid
 from collections.abc import Sequence
 
@@ -513,3 +514,64 @@ def test_a_stale_generation_thread_winds_itself_down(
     worker._stop = None
     worker.stop()  # idempotent: confirms the module is left in a clean state
     assert _live_worker_threads() == []
+
+
+def test_a_wake_arriving_during_the_drain_is_not_erased(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer that commits its job and wakes WHILE this worker is inside
+    `drain_once()` must not have that signal thrown away.
+
+    The lost-wakeup shape: `drain_once()` scans, finds nothing, and returns
+    False. A producer commits a job and calls `wake()` in the window before the
+    worker reaches `wake.clear()`. A `clear()` placed AFTER the drain erases
+    that brand-new signal, and the worker then sleeps the FULL poll interval
+    with a claimable job already sitting in the table — an operator clicks
+    Retrigger and watches nothing happen for `queue_poll_seconds`.
+
+    Clearing BEFORE the drain is what makes this safe, and it is safe precisely
+    because a producer commits its job before it wakes: a signal that lands
+    during a drain always refers to work the NEXT drain can already see.
+
+    The assertion is deliberately a WALL-CLOCK bound, not a spy on `wake.wait`:
+    a worker that merely *calls* wait() with the right timeout is still broken
+    if the signal it should have observed was already erased. What has to be
+    true is that the second drain happens PROMPTLY, and only real elapsed time
+    can say so. QUEUE_POLL_SECONDS is set well above the bound below, so the
+    buggy ordering cannot pass by luck.
+    """
+    monkeypatch.setenv("QUEUE_POLL_SECONDS", "30")
+    get_settings.cache_clear()
+
+    drain_times: list[float] = []
+    second_drain = threading.Event()
+
+    def _drain_and_signal_midway() -> bool:
+        drain_times.append(time.monotonic())
+        if len(drain_times) == 1:
+            # Stand in for a producer that commits a job and wakes while this
+            # worker is still inside the drain. A trailing clear() would erase it.
+            wake.wake()
+            return False
+        second_drain.set()
+        return False
+
+    monkeypatch.setattr(drain, "drain_once", _drain_and_signal_midway)
+
+    try:
+        worker.start(1)
+        assert second_drain.wait(timeout=_TIMEOUT), (
+            "the worker never ran a second drain — the wake that arrived during the "
+            "first drain was erased by a trailing clear(), so it slept the full "
+            "poll interval instead of observing the signal"
+        )
+    finally:
+        worker.stop(grace_seconds=_TIMEOUT)
+
+    assert len(drain_times) >= 2
+    gap = drain_times[1] - drain_times[0]
+    assert gap < 1.0, (
+        f"second drain came {gap:.2f}s after the first; a wake delivered during the "
+        "first drain must be observed immediately, not slept through "
+        "(QUEUE_POLL_SECONDS=30 here, so a trailing clear() shows up as a ~30s gap)"
+    )

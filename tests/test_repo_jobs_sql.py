@@ -88,21 +88,42 @@ def test_claim_sql_shape(fake_conn) -> None:
 
 def test_complete_and_fail_both_fence_on_lease_token(fake_conn) -> None:
     """A cheap static tripwire for the double-fence mutation: both
-    complete_job and fail_job's WHERE clauses must reference lease_token."""
+    complete_job and fail_job's WHERE clauses must reference lease_token.
+
+    The assertions target the WHERE CLAUSE SPECIFICALLY, never the substring
+    "lease_token = " anywhere in the statement. Both statements also SET
+    lease_token = NULL to release the lease as they close the row out — so a
+    bare whole-statement substring check stays GREEN with the entire WHERE
+    fence deleted. It would be asserting the RELEASE and calling it the FENCE,
+    and a zombie worker's write would sail straight through it. Splitting on
+    WHERE is what makes this tripwire able to fail at all.
+    """
     from app.db.repo import jobs
+
+    def _where_of(sql: object) -> str:
+        squeezed = " ".join(str(sql).split())
+        assert "WHERE" in squeezed, f"statement has no WHERE clause at all: {squeezed}"
+        return squeezed.split("WHERE", 1)[1]
 
     job_id, token = uuid.uuid4(), uuid.uuid4()
 
     fake_conn.script_fetchone((job_id,))
     jobs.complete_job(job_id, token, conn=fake_conn)
-    complete_sql, _ = fake_conn.last()
+    complete_where = _where_of(fake_conn.last()[0])
 
     fake_conn.script_fetchone(("pending",))
     jobs.fail_job(job_id, token, error="boom", backoff_seconds=1.0, conn=fake_conn)
-    fail_sql, _ = fake_conn.last()
+    fail_where = _where_of(fake_conn.last()[0])
 
-    assert "lease_token = " in str(complete_sql)
-    assert "lease_token" in str(fail_sql) and "%(token)s" in str(fail_sql)
+    assert "lease_token = %s" in complete_where, (
+        "complete_job's WHERE clause must fence on lease_token; without it a zombie "
+        "worker whose lease already expired can still mark the job done. "
+        f"WHERE was: {complete_where}"
+    )
+    assert "lease_token = %(token)s" in fail_where, (
+        "fail_job's WHERE clause must fence on lease_token too — this is the fence "
+        f"people remember on complete and forget on fail. WHERE was: {fail_where}"
+    )
 
 
 def test_enqueue_sql_uses_on_conflict_do_nothing(fake_conn) -> None:

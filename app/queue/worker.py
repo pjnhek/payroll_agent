@@ -171,14 +171,32 @@ def _loop(gen: int, stop_evt: threading.Event) -> None:
     immediately after `clear()` and before `wait()` closes exactly that gap,
     so a stop is never slower than the current `drain_once()`/`clear()` pair
     plus a lock acquisition — never a full poll interval.
+
+    A QUEUED JOB loses the identical race, and the fix is the same clear-first
+    discipline rather than another recheck: a producer that commits its job and
+    wakes in the window between `drain_once()` reporting "no work" and a
+    trailing `clear()` would have had its signal erased, and this thread would
+    sleep the full poll interval with a claimable job already in the table.
+    `clear()` therefore runs BEFORE the drain, never after — safe precisely
+    because the producer commits before it wakes, so any signal arriving during
+    a drain refers to work the NEXT drain can already see.
     """
     while True:
         if stop_evt.is_set() or gen != _generation:
             return
         try:
+            # Clear BEFORE draining, never after. A producer commits its job and only
+            # THEN calls wake(), so any signal that lands while drain_once() is running
+            # necessarily refers to a job the next drain can already see — losing it is
+            # harmless. Clearing AFTER the drain instead would erase a signal that
+            # arrived in the window between drain_once() returning "no work" and the
+            # clear, and this thread would then sleep out the whole poll interval with a
+            # claimable job already sitting in the table. That is the same lost-wakeup
+            # shape the stop_evt recheck below closes for a stop request; a queued job
+            # deserves the same treatment.
+            wake.clear()
             if drain.drain_once():
                 continue
-            wake.clear()
             if stop_evt.is_set():
                 return
             wake.wait(timeout=get_settings().queue_poll_seconds)
