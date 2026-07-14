@@ -41,6 +41,11 @@ class TestQueueKnobDefaults:
     def test_four_defaults_exact(self, monkeypatch: pytest.MonkeyPatch) -> None:
         get_settings.cache_clear()
         monkeypatch.setenv("DATABASE_URL", "postgresql://queue-config-test/stub")
+        # tests/conftest.py hard-pins WORKER_COUNT=0 in the real process
+        # environment for the whole suite (so a TestClient's lifespan can
+        # never spawn a real worker); unset it here so this test observes
+        # the field's OWN default rather than that suite-wide pin.
+        monkeypatch.delenv("WORKER_COUNT", raising=False)
         s = Settings()
         assert (
             s.worker_count,

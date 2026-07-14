@@ -18,8 +18,20 @@ from app.models.contracts import (
     PaystubLineItem,
 )
 from app.models.roster import NameMatchResult
+from app.models.status import RunStatus
 
 logger = logging.getLogger("payroll_agent.repo")
+
+# The single column-clearing fragment both clear_reply_context and
+# rewind_for_reclaim build their UPDATE from. "Context lost means ALL of it"
+# is the rule these two functions share; maintaining two independently-typed
+# copies of this column list is exactly how one of them silently drifts and
+# leaves a stale field behind. The ONLY difference between the two callers is
+# whether they also bump reply_epoch.
+_REPLY_CONTEXT_CLEAR_COLUMNS = (
+    "clarified_fields = NULL, pre_clarify_extracted = NULL,"
+    " clarification_round = 0, alias_candidates = NULL, hours_changes = NULL"
+)
 
 
 def persist_extracted(
@@ -345,8 +357,9 @@ def set_clarification_round(
 
 def clear_reply_context(
     run_id: uuid.UUID, conn: psycopg.Connection | None = None
-) -> None:
-    """Null ALL reply-round context on a run in one statement.
+) -> int:
+    """Null ALL reply-round context on a run in one statement, and return the
+    run's NEW reply_epoch.
 
     Context lost means ALL of it: the pre-clarify snapshot, the field-regression
     outcomes, the round counter, the recorded cross-round hours CHANGES AND the
@@ -358,7 +371,7 @@ def clear_reply_context(
     retrigger route can clear strictly AFTER a winning claim_status, in the transaction
     that commits before the pipeline is re-scheduled.
 
-    The statement ALSO bumps reply_epoch = reply_epoch + 1, and that bump is
+    The statement ALSO increments reply_epoch by one, and that bump is
     load-bearing. This function does NOT touch email_messages — the audit log is
     append-only by design — so after a retrigger the run's PRIOR round-0 'sent'
     outbound row and any consumed reply rows are still sitting there, while
@@ -374,15 +387,101 @@ def clear_reply_context(
     load_consumed_replies, find_stranded_unconsumed_replies) a scope boundary that
     the retrigger crosses but no stale row can. The historical rows stay fully
     queryable — just invisible to the CURRENT epoch's reads.
+
+    This is a deliberate, reviewed, human-triggered residual risk (an operator
+    retrigger CAN send the client a second confirmation if the earlier one
+    already reached them undetectably) — the epoch bump is exactly the
+    mechanism that grants that licence. The AUTOMATIC counterpart
+    (`rewind_for_reclaim`, below) must never grant it: see that function's
+    docstring.
+
+    Returns the run's incremented reply_epoch, so the caller can key a
+    dedup_key on it — e.g. `run_pipeline:{run_id}:{epoch}` — without a
+    separate round trip. Raises RuntimeError if the run does not exist (the
+    UPDATE matched no row).
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
-        c.execute(
-            "UPDATE payroll_runs SET clarified_fields = NULL, pre_clarify_extracted = NULL,"
-            " clarification_round = 0, alias_candidates = NULL, hours_changes = NULL,"
-            " reply_epoch = reply_epoch + 1, updated_at = now()"
-            " WHERE id = %s",
+        row = c.execute(
+            "UPDATE payroll_runs SET "
+            + _REPLY_CONTEXT_CLEAR_COLUMNS
+            + ", reply_epoch = reply_epoch + 1, updated_at = now()"
+            " WHERE id = %s RETURNING reply_epoch",
             (str(run_id),),
-        )
+        ).fetchone()
+    if row is None:
+        raise RuntimeError(f"clear_reply_context: run {run_id} not found")
+    return int(row[0])
+
+
+def rewind_for_reclaim(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> bool:
+    """Rewind a run stranded mid-pipeline by a crashed worker back to RECEIVED,
+    so a fresh claim of its `run_pipeline` job re-runs it from the top.
+
+    MUST NOT bump reply_epoch — this is the first thing to know about this
+    function, not a footnote. `clear_reply_context`'s epoch bump is a licence
+    to send the client a second confirmation; granting that licence to an
+    *operator's* deliberate retrigger is a reviewed, accepted residual risk.
+    Granting it to *the machine*, automatically, on every lease-expiry
+    reclaim, would mean the milestone's own guarantee — at most one
+    confirmation per approved run, per epoch — is no longer something the
+    database can enforce, because the reclaim path would mint a fresh epoch
+    on every crash regardless of whether the client was already emailed.
+
+    Leaving reply_epoch untouched is what keeps a rewound run inside the
+    reach of BOTH client-protecting guards on a re-run: the existing
+    send-state='sent' guard (which suppresses a resend when the first send
+    demonstrably completed), and the unconfirmed-reservation guard in
+    app/pipeline/send_guard.py (which fail-closes and escalates to ERROR when
+    the first send may have reached the client but that cannot be proven).
+    Neither guard is sufficient alone against a crash between provider-
+    acceptance and the local sent-commit — write the narrowed claim, not
+    "harmless": a worker killed in that exact window leaves no 'sent' row
+    while the client already has the email, so ONLY the epoch-scoped
+    unconfirmed-reservation guard closes it. Bumping the epoch here would make
+    that guard blind on the automatic path, because it is scoped to the
+    CURRENT epoch.
+
+    A single conditional UPDATE (the same CAS-over-a-status-SET idiom
+    claim_status uses): sets status back to RECEIVED plus the shared
+    context-clearing fragment, scoped to `WHERE status IN ('extracting',
+    'computed', 'sent')`. That scope is exactly three values, and every OTHER
+    status is excluded on purpose:
+
+    - received — nothing to rewind; the handler's own RECEIVED -> EXTRACTING
+      CAS will simply succeed on its own next claim.
+    - awaiting_reply / needs_operator / awaiting_approval — the pipeline
+      reached a LEGITIMATE pause waiting on a human. Rewinding one would
+      destroy a live client conversation or a pending operator decision.
+    - reconciled / rejected / approved — terminal, or owned by the operator.
+      Not this function's to touch.
+    - error — the pipeline genuinely ran and failed; auto-re-running it here
+      would be a silent automatic retry, which is a different, explicitly
+      separate concern. The run stays visibly in ERROR for a human to look
+      at, and the job that reclaims it goes 'done' with nothing left to do.
+      This exclusion is also what gives the unconfirmed-reservation guard its
+      teeth: a run that escalates to ERROR can never be auto-rewound back
+      into a re-send by this function.
+    - sent IS included, matching the operator retrigger's own stale scope: a
+      run stranded between SENT and RECONCILED must be re-runnable, and it is
+      SAFE to re-run here specifically because the epoch stays put — both
+      guards above still see it.
+
+    Returns True if a row was rewound, False if the run was outside this
+    scope (not an error — the caller's subsequent RECEIVED -> EXTRACTING CAS
+    will then simply fail, and a failed CAS is a completed job, not a retry).
+    """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            "UPDATE payroll_runs SET status = %s, "
+            + _REPLY_CONTEXT_CLEAR_COLUMNS
+            + ", updated_at = now()"
+            " WHERE id = %s AND status IN ('extracting', 'computed', 'sent')"
+            " RETURNING id",
+            (RunStatus.RECEIVED.value, str(run_id)),
+        ).fetchone()
+    return row is not None
 
 
 def update_known_alias(
