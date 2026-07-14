@@ -25,13 +25,13 @@ constraint — and none could supply the failure contract, which is the actual w
   while the route keeps `async def` because HMAC verification needs `await request.body()` over the raw bytes.
   **Zero new schema — independently shippable.**
 
-- [ ] **QUEUE-02**: A `jobs` table provides durable transport state — a UNIQUE `dedup_key` (enqueue is
+- [x] **QUEUE-02**: A `jobs` table provides durable transport state — a UNIQUE `dedup_key` (enqueue is
   `ON CONFLICT DO NOTHING`), `lease_token` + `leased_until` fencing, and `attempts` incremented **at claim** so
   a poison job that kills its worker before it can report failure is still bounded. The claim query
   (`FOR UPDATE SKIP LOCKED`, in a short transaction that commits before any real work) **reclaims an expired
   lease** — `state = 'pending' OR (state = 'leased' AND leased_until < now())`.
 
-- [ ] **QUEUE-03**: A bounded worker pool drains the queue — 2 daemon threads managed by FastAPI `lifespan`,
+- [x] **QUEUE-03**: A bounded worker pool drains the queue — 2 daemon threads managed by FastAPI `lifespan`,
   sized against the **connection** budget (`workers + 2 ≤ max_size=5`), never the 40-thread AnyIO pool. Workers
   **release their leases on graceful shutdown**, so a routine redeploy does not strand every in-flight job for
   a full lease duration.
@@ -40,7 +40,7 @@ constraint — and none could supply the failure contract, which is the actual w
   `webhook.py`, `demo.py` (×2), and `runs.py` (×5, including one hiding inside the `runs_list()` page render).
   No pipeline work is ever again scheduled into process memory.
 
-- [ ] **QUEUE-05**: `jobs` carries transport state ONLY, never a business status. **Invariant J-1:** a
+- [x] **QUEUE-05**: `jobs` carries transport state ONLY, never a business status. **Invariant J-1:** a
   handler's first durable action is a `claim_status(expected → next)` CAS, and **a failed CAS is a DONE job,
   not a retry** — converting at-least-once job delivery into at-most-once state advance. Enforced by a CI guard
   in the shape the repo already uses (`RunStatus`↔CHECK drift test, BOUND-01 AST guard).
@@ -156,9 +156,9 @@ limitation honestly is itself the differentiator.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | QUEUE-01 | Phase 16 | Complete |
-| QUEUE-02 | Phase 16 | Pending |
-| QUEUE-03 | Phase 16 | Pending |
-| QUEUE-05 | Phase 16 | Pending |
+| QUEUE-02 | Phase 16 | Complete |
+| QUEUE-03 | Phase 16 | Complete |
+| QUEUE-05 | Phase 16 | Complete |
 | PUMP-01 | Phase 17 | Pending |
 | PUMP-02 | Phase 17 | Pending |
 | FAIL-01 | Phase 18 | Pending |

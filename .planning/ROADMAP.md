@@ -209,7 +209,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
-| 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete   | 2026-07-14 |
+| 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 0/TBD | Not started | - |
 | 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
