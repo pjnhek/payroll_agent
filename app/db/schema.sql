@@ -1,4 +1,4 @@
--- Payroll Agent — DDL source of truth
+-- Pyrl — DDL source of truth
 -- Apply with: python -m app.db.bootstrap
 -- Reset with: python -m app.db.bootstrap --reset
 --

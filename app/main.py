@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.queue import worker
 from app.routes import dashboard, demo, health, runs, webhook
 
-app = FastAPI(title="Payroll Agent", lifespan=worker.lifespan)
+app = FastAPI(title="Pyrl", lifespan=worker.lifespan)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(health.router)
