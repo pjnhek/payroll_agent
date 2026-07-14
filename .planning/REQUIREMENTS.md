@@ -20,22 +20,26 @@ constraint — and none could supply the failure contract, which is the actual w
 
 ### QUEUE — Durable job substrate
 
-- [ ] **QUEUE-01**: The webhook never blocks the event loop. Blocking ingest I/O (the synchronous Resend fetch
+- [x] **QUEUE-01**: The webhook never blocks the event loop. Blocking ingest I/O (the synchronous Resend fetch
   at `webhook.py:96` and the psycopg transaction at `webhook.py:139`) runs off-loop via `run_in_threadpool`,
   while the route keeps `async def` because HMAC verification needs `await request.body()` over the raw bytes.
   **Zero new schema — independently shippable.**
+
 - [ ] **QUEUE-02**: A `jobs` table provides durable transport state — a UNIQUE `dedup_key` (enqueue is
   `ON CONFLICT DO NOTHING`), `lease_token` + `leased_until` fencing, and `attempts` incremented **at claim** so
   a poison job that kills its worker before it can report failure is still bounded. The claim query
   (`FOR UPDATE SKIP LOCKED`, in a short transaction that commits before any real work) **reclaims an expired
   lease** — `state = 'pending' OR (state = 'leased' AND leased_until < now())`.
+
 - [ ] **QUEUE-03**: A bounded worker pool drains the queue — 2 daemon threads managed by FastAPI `lifespan`,
   sized against the **connection** budget (`workers + 2 ≤ max_size=5`), never the 40-thread AnyIO pool. Workers
   **release their leases on graceful shutdown**, so a routine redeploy does not strand every in-flight job for
   a full lease duration.
+
 - [ ] **QUEUE-04**: Every producer is migrated — all **8** `BackgroundTasks` route-signature producers across
   `webhook.py`, `demo.py` (×2), and `runs.py` (×5, including one hiding inside the `runs_list()` page render).
   No pipeline work is ever again scheduled into process memory.
+
 - [ ] **QUEUE-05**: `jobs` carries transport state ONLY, never a business status. **Invariant J-1:** a
   handler's first durable action is a `claim_status(expected → next)` CAS, and **a failed CAS is a DONE job,
   not a retry** — converting at-least-once job delivery into at-most-once state advance. Enforced by a CI guard
@@ -46,6 +50,7 @@ constraint — and none could supply the failure contract, which is the actual w
 - [ ] **PUMP-01**: An authenticated pump endpoint claims and drains due jobs, sharing **one** `drain_once()`
   implementation with the worker threads. It is the **primary** execution trigger, not a redundancy: on a
   cold-started Render instance the worker threads may not exist when a retried job's `available_at` matures.
+
 - [ ] **PUMP-02**: Cron drives the pump every **30 minutes**, and the README documents the duty-cycle math
   (`awake ≈ 15 ÷ cadence`), the **750 instance-hour/month** ceiling that forces it, and the deliberately
   best-effort wording (GitHub Actions cron can be delayed and auto-disables after 60 quiet days; operator retry
@@ -58,10 +63,12 @@ constraint — and none could supply the failure contract, which is the actual w
   `ERROR`, and **returns normally** (`orchestrator.py:235-247`), so any worker wrapping it would record
   success. Critically, **`request_clarification` is `ok`, not a failure** — a worker retrying a deterministic
   gate's decision to clarify would email the client the same question five times.
+
 - [ ] **FAIL-02**: Retries use exponential backoff + jitter via `available_at`; an attempt cap moves the job to
   a `dead` state surfaced to the operator. Infrastructure failures stay in `error` with a durable retrigger —
   **not** `needs_operator`, which the resolve route cannot service without `decision.unresolved_names`
   (`runs.py:203-213`).
+
 - [ ] **FAIL-03**: `sweep_stranded_runs` is **DELETED**, replaced by the dead-letter transition. Keeping it
   alongside the queue *is* the hazard: two status writers, both firing at ~15 minutes, with the sweep winning by
   flipping a run to `ERROR` exactly as the queue reclaims it — defeating the headline claim with its own safety
@@ -77,10 +84,12 @@ constraint — and none could supply the failure contract, which is the actual w
   it **orphans the client's reply into a brand-new payroll run**. `failed` must reuse the key too — it is not
   proof of non-delivery (`gateway.py:341-345` flips to `failed` on *any* Resend exception, including a timeout
   after the mail was accepted).
+
 - [ ] **SEND-02**: A retry **replays the persisted payload** (`subject`/`body_text`/`to_addr`, already on the
   reserved row) and **never re-derives it** — no re-draft through the LLM (`delivery.py:120`), and deterministic
   PDF bytes (reportlab stamps a fresh `/CreationDate` and `/ID` per document). Resend binds the idempotency key
   to the **payload**, so any drift turns a safe retry into a **409 `invalid_idempotent_request`** hard error.
+
 - [ ] **SEND-03**: Resend's `Idempotency-Key` is passed on send (`resend==2.32.2` supports it —
   `SendOptions.idempotency_key` → the header at `resend/request.py:65-66`), and the retry ladder is **bounded
   below the provider's 24-hour retention window** (verified against Resend's docs). Past that window there is no
@@ -95,17 +104,22 @@ constraint — and none could supply the failure contract, which is the actual w
 
 - [ ] **PROOF-01**: Kill the worker mid-run → the run completes on the next drain. Vacuous if the job never
   actually leased; must assert the reclaim path fired and `attempts` incremented.
+
 - [ ] **PROOF-02**: Redeliver the same Svix event → exactly one job, one run, one email. Vacuous if dedup is
   keyed on something available only post-fetch; must assert exactly one `jobs` row survives the `ON CONFLICT`.
+
 - [ ] **PROOF-03**: Crash between Resend-accept and the `sent` commit → **no second email**. Vacuous if it
   passes against a fake gateway while SEND-01 is unfixed; must assert the persisted `message_id` is
   **byte-identical** across attempts.
+
 - [ ] **PROOF-04**: An expired lease is reclaimed by a second worker, and the zombie's write is fenced —
   including `mark_failed`/`reschedule`, which is the fence people forget (not just `mark_done`).
+
 - [ ] **PROOF-05**: Every new integration test is registered in `concurrency-proof.yml` — the **only** workflow
   with a real Postgres, and it hard-codes its test files by name (`concurrency-proof.yml:89`). Three of the four
   proofs need a real database; land them outside that line and **they never run**. Races drive the **sync seam**
   under a `threading.Barrier`, never an HTTP route.
+
 - [ ] **OPS-01**: An ops view surfaces queue depth, oldest-pending age, attempts, and the dead-letter list —
   making "it's healthy" a checkable claim rather than a vibe. Includes the alarm for the swallowing bug:
   *job success ≈100% while `status='error' > 0`.*
@@ -141,7 +155,7 @@ limitation honestly is itself the differentiator.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| QUEUE-01 | Phase 16 | Pending |
+| QUEUE-01 | Phase 16 | Complete |
 | QUEUE-02 | Phase 16 | Pending |
 | QUEUE-03 | Phase 16 | Pending |
 | QUEUE-05 | Phase 16 | Pending |
