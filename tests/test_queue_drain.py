@@ -1,0 +1,619 @@
+"""Hermetic proofs for the queue's execution layer.
+
+Covers `drain_once()`'s claim/dispatch/complete-or-fail cycle,
+`handle_run_pipeline`'s reclaim rewind and INVARIANT J-1's CAS, the static
+J-1 CAS-only guard, and the pre-existing swallowed-catastrophic-start-failure
+pin. Everything here runs against `fake_repo` (the in-memory mirror) — the
+live-DB durability proofs live in `tests/test_queue_durability.py`.
+
+THE J-1 CAS-ONLY GUARD (`test_queue_tier_status_writers_are_cas_only`) FAILS
+CLOSED. A guard that only collects `repo.<name>(...)` calls by matching the
+literal bound name "repo" is trivially bypassable: an alias (`r = repo`), a
+`getattr` indirection, or — the sneakiest bypass, and the reason this guard
+resolves the whole first-party import graph rather than just the names bound
+to the repo module — a chain that never binds a name to `repo` at all
+(`import app.db as db; db.repo.set_status(...)`, or the plain, unaliased
+`import app.db.repo`, which binds only the ROOT name `app`). The resolver
+below (`_module_bindings`, `_resolve_call_chain`, `_scan_file`) walks every
+`ast.Import`/`ast.ImportFrom` in a file to build a LOCAL NAME -> DOTTED
+MODULE map, treats any name bound to `app`, `app.db`, `app.db.repo`, or any
+`app.db.repo.*` submodule as RESTRICTED (every module name a dotted chain
+could use to arrive at the repo facade), and then REFUSES — fails the file,
+by name and line — any restricted name that appears anywhere other than as
+the root of a fully-resolved, actually-called attribute chain. Two
+`app/queue/`-specific shapes are deliberately UNRESTRICTED and must stay
+green: `dispatch.py` storing the `pipeline` module object inside its
+`HANDLERS` table (the module is not repo-reaching), and `dispatch.handle`'s
+`getattr(module, name)(job)` (both `module` and `name` are local variables,
+never bound import names).
+
+A resolver that silently matched nothing would pass every assertion in
+`test_queue_tier_status_writers_are_cas_only` while inspecting zero calls —
+the guard's own Pass 3 check is written NEGATIVE/subset-based specifically so
+it is vacuously true on an empty result, which is exactly why
+`test_the_guard_actually_resolves_the_queue_tiers_real_calls` exists as a
+SEPARATE, POSITIVE proof that the resolver actually saw the real code.
+"""
+from __future__ import annotations
+
+import ast
+import logging
+import pathlib
+import uuid
+from typing import Any
+
+import pytest
+
+from app.db import repo
+from app.models.job import Job, JobKind
+from app.models.status import RunStatus
+from app.queue import dispatch, drain
+from app.queue.handlers import pipeline
+from app.routes import pipeline_glue
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+QUEUE_ROOT = REPO_ROOT / "app" / "queue"
+
+
+# ── seeding helpers ──────────────────────────────────────────────────────
+
+
+def _coastal_business_id(fake_repo: Any) -> uuid.UUID:
+    business_id: uuid.UUID = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    return business_id
+
+
+def _seed_run(fake_repo: Any, *, status: RunStatus) -> uuid.UUID:
+    """A run with no source email — none of these tests ever run a real
+    extraction, so there is nothing for that email row to be read by."""
+    run_id: uuid.UUID = fake_repo.create_run(
+        business_id=_coastal_business_id(fake_repo), source_email_id=None
+    )
+    fake_repo.set_status(run_id, status)
+    return run_id
+
+
+def _job(
+    *,
+    run_id: uuid.UUID | None,
+    attempts: int = 1,
+    max_attempts: int = 5,
+    kind: JobKind = JobKind.RUN_PIPELINE,
+) -> Job:
+    return Job(
+        id=uuid.uuid4(),
+        kind=kind,
+        run_id=run_id,
+        attempts=attempts,
+        max_attempts=max_attempts,
+        lease_token=uuid.uuid4(),
+    )
+
+
+# ── handle_run_pipeline: the five behaviors ─────────────────────────────
+
+
+def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    calls: list[uuid.UUID] = []
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+
+    pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
+
+    assert calls == [run_id]
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
+def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.COMPUTED)
+    calls: list[uuid.UUID] = []
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+
+    pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
+
+    assert calls == []
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.COMPUTED.value
+
+
+def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    calls: list[uuid.UUID] = []
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+
+    pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
+
+    assert calls == [run_id]
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
+def test_handler_attempts_2_reconciled_rewind_is_a_noop_cas_loses(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.RECONCILED)
+    calls: list[uuid.UUID] = []
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+
+    pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
+
+    assert calls == []
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECONCILED.value
+
+
+def test_reply_epoch_unchanged_across_every_handler_path(fake_repo, monkeypatch):
+    """Neither the forward CAS nor the reclaim rewind ever bumps reply_epoch
+    — only a human retrigger, through clear_reply_context, may grant the
+    licence to email the client a second time."""
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: None)
+
+    for status, attempts in (
+        (RunStatus.RECEIVED, 1),
+        (RunStatus.COMPUTED, 1),
+        (RunStatus.EXTRACTING, 2),
+        (RunStatus.RECONCILED, 2),
+    ):
+        run_id = _seed_run(fake_repo, status=status)
+        before = fake_repo.runs[str(run_id)].get("reply_epoch", 0)
+        pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=attempts))
+        after = fake_repo.runs[str(run_id)].get("reply_epoch", 0)
+        assert after == before, f"reply_epoch moved for status={status!r} attempts={attempts}"
+
+
+def test_handler_raises_on_missing_run_id(fake_repo):
+    with pytest.raises(ValueError, match="no run_id"):
+        pipeline.handle_run_pipeline(_job(run_id=None, attempts=1))
+
+
+def test_first_durable_action_is_a_cas_on_both_branches(fake_repo, monkeypatch):
+    """The restated INVARIANT J-1 makes 'first durable action' a conditional,
+    not a fixed step — this proves both branches are internally consistent by
+    recording the ORDERED sequence of business-status calls, not merely which
+    ones fired. A set assertion would pass even with the calls reversed,
+    which is exactly the bug (rewinding AFTER the CAS is a no-op and leaves
+    the run stranded)."""
+    order: list[str] = []
+    orig_claim_status = repo.claim_status
+    orig_rewind = repo.rewind_for_reclaim
+
+    def _spy_claim_status(*args: Any, **kwargs: Any) -> bool:
+        order.append("claim_status")
+        result: bool = orig_claim_status(*args, **kwargs)
+        return result
+
+    def _spy_rewind(*args: Any, **kwargs: Any) -> bool:
+        order.append("rewind_for_reclaim")
+        result: bool = orig_rewind(*args, **kwargs)
+        return result
+
+    monkeypatch.setattr(repo, "claim_status", _spy_claim_status)
+    monkeypatch.setattr(repo, "rewind_for_reclaim", _spy_rewind)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: None)
+
+    run_id_first_attempt = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    pipeline.handle_run_pipeline(_job(run_id=run_id_first_attempt, attempts=1))
+    assert order == ["claim_status"], order
+
+    order.clear()
+    run_id_reclaim = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    pipeline.handle_run_pipeline(_job(run_id=run_id_reclaim, attempts=2))
+    assert order == ["rewind_for_reclaim", "claim_status"], order
+
+
+def test_swallowed_start_failure_marks_the_job_done_KNOWN_GAP_FAIL01(fake_repo, monkeypatch):
+    """This test PINS a KNOWN GAP; it does not endorse it. A future fix that
+    turns a swallowed catastrophic START failure into a real retry must
+    INVERT this assertion, never delete this test — it is that fix's
+    red-to-green target.
+
+    `run_pipeline_bg` already catches a catastrophic START failure (e.g. the
+    orchestrator module itself failing to import) and returns normally
+    rather than raising, so a background task can never crash the process
+    that scheduled it. This handler's own forward CAS has already moved the
+    run to EXTRACTING by the time `run_pipeline_bg` is even called, so the
+    run does not literally stay at RECEIVED — but it advances no FURTHER,
+    because the stubbed failure below prevents any real pipeline stage from
+    ever running. The job is nonetheless marked done: nothing here can tell
+    the difference between "ran and produced no further progress" and "never
+    truly started".
+    """
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+
+    def _swallowing_run_pipeline_bg(rid: uuid.UUID) -> None:
+        try:
+            raise RuntimeError("simulated catastrophic import/start failure")
+        except Exception:  # noqa: BLE001 — mirrors run_pipeline_bg's own safety net
+            logging.getLogger("payroll_agent.queue.test_pin").exception(
+                "pipeline failed to start for run_id=%s", rid
+            )
+
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", _swallowing_run_pipeline_bg)
+
+    dedup_key = f"run_pipeline:{run_id}:0"
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id
+    )
+    assert job_id is not None
+
+    assert drain.drain_once() is True
+
+    job_row = fake_repo.get_job(job_id)
+    assert job_row is not None
+    # KNOWN GAP — a future fix must flip this to something other than 'done'
+    # (or must guarantee the run reaches a further status), never delete
+    # this assertion outright.
+    assert job_row["state"] == "done"
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
+# ── drain_once: the five behaviors ──────────────────────────────────────
+
+
+def test_drain_once_empty_queue_returns_false_and_dispatches_nothing(fake_repo, monkeypatch):
+    calls: list[Job] = []
+    monkeypatch.setattr(dispatch, "handle", calls.append)
+
+    assert drain.drain_once() is False
+    assert calls == []
+
+
+def test_drain_once_claims_dispatches_and_completes_with_the_same_token(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    dedup_key = f"run_pipeline:{run_id}:0"
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id
+    )
+    assert job_id is not None
+
+    handled: list[Job] = []
+    monkeypatch.setattr(dispatch, "handle", handled.append)
+
+    seen_complete_tokens: list[uuid.UUID] = []
+    orig_complete = repo.complete_job
+
+    def _spy_complete(job_id_arg: uuid.UUID, lease_token: uuid.UUID, conn: Any = None) -> bool:
+        seen_complete_tokens.append(lease_token)
+        result: bool = orig_complete(job_id_arg, lease_token, conn=conn)
+        return result
+
+    monkeypatch.setattr(repo, "complete_job", _spy_complete)
+
+    assert drain.drain_once() is True
+
+    assert len(handled) == 1
+    claimed_job = handled[0]
+    assert claimed_job.id == job_id
+    # The exact lease_token object the claim returned — not merely "was called".
+    assert seen_complete_tokens == [claimed_job.lease_token]
+    assert fake_repo.jobs[str(job_id)]["state"] == "done"
+
+
+def test_held_tokens_populated_during_handler_and_cleared_after(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    dedup_key = f"run_pipeline:{run_id}:0"
+    fake_repo.enqueue_job(kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id)
+
+    captured: dict[str, Any] = {}
+
+    def _stub_handle(job: Job) -> None:
+        # Asserted FROM INSIDE the handler, not by inspection after the fact —
+        # held_tokens() must be non-empty WHILE the handler is running.
+        captured["token"] = job.lease_token
+        captured["held_during"] = list(drain.held_tokens())
+
+    monkeypatch.setattr(dispatch, "handle", _stub_handle)
+
+    assert drain.held_tokens() == []
+    assert drain.drain_once() is True
+    assert captured["held_during"] == [captured["token"]]
+    assert drain.held_tokens() == []
+
+
+def test_drain_once_handler_raises_calls_fail_job_not_complete_job(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    dedup_key = f"run_pipeline:{run_id}:0"
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id
+    )
+    assert job_id is not None
+
+    def _raising_handle(job: Job) -> None:
+        raise RuntimeError("simulated dispatch failure")
+
+    monkeypatch.setattr(dispatch, "handle", _raising_handle)
+
+    fail_calls: list[dict[str, Any]] = []
+    complete_calls: list[Any] = []
+    orig_fail = repo.fail_job
+    orig_complete = repo.complete_job
+
+    def _spy_fail(
+        job_id_arg: uuid.UUID,
+        lease_token: uuid.UUID,
+        *,
+        error: BaseException | str,
+        backoff_seconds: float,
+        conn: Any = None,
+    ) -> Any:
+        fail_calls.append(
+            {"job_id": job_id_arg, "lease_token": lease_token, "backoff_seconds": backoff_seconds}
+        )
+        return orig_fail(
+            job_id_arg, lease_token, error=error, backoff_seconds=backoff_seconds, conn=conn
+        )
+
+    def _spy_complete(*args: Any, **kwargs: Any) -> Any:
+        complete_calls.append(args)
+        return orig_complete(*args, **kwargs)
+
+    monkeypatch.setattr(repo, "fail_job", _spy_fail)
+    monkeypatch.setattr(repo, "complete_job", _spy_complete)
+
+    assert drain.drain_once() is True
+
+    assert complete_calls == []
+    assert len(fail_calls) == 1
+    assert fail_calls[0]["backoff_seconds"] > 0
+    assert fake_repo.jobs[str(job_id)]["state"] == "pending"  # attempts=1 < max_attempts=5
+
+
+def test_backoff_seconds_exponential_capped_jittered_and_deterministic() -> None:
+    assert drain._backoff_seconds(1, rand=lambda lo, hi: 1.0) == pytest.approx(
+        drain._BACKOFF_BASE_SECONDS
+    )
+    assert drain._backoff_seconds(2, rand=lambda lo, hi: 1.0) == pytest.approx(
+        drain._BACKOFF_BASE_SECONDS * 2
+    )
+    assert drain._backoff_seconds(3, rand=lambda lo, hi: 1.0) == pytest.approx(
+        drain._BACKOFF_BASE_SECONDS * 4
+    )
+    # Grows past the cap, but never exceeds it.
+    assert drain._backoff_seconds(20, rand=lambda lo, hi: 1.0) == pytest.approx(
+        drain._BACKOFF_CAP_SECONDS
+    )
+    # The injected rand source's bounds are exactly (0.5, 1.5) — the jitter contract.
+    seen_bounds: list[tuple[float, float]] = []
+
+    def _recording_rand(lo: float, hi: float) -> float:
+        seen_bounds.append((lo, hi))
+        return 0.5
+
+    value = drain._backoff_seconds(1, rand=_recording_rand)
+    assert seen_bounds == [(0.5, 1.5)]
+    assert value == pytest.approx(drain._BACKOFF_BASE_SECONDS * 0.5)
+
+
+# ── the J-1 CAS-only static guard ────────────────────────────────────────
+
+_REPO_FACADE_MODULE = "app.db.repo"
+
+
+def _is_repo_reaching(module_dotted: str) -> bool:
+    """True for `app`, `app.db`, `app.db.repo`, and any `app.db.repo.*` —
+    every module name a dotted attribute chain could use to arrive at the
+    repo facade. A plain, un-aliased `import app.db.repo` binds only the
+    ROOT name `app` (that is Python's own import semantics, not a scanner
+    choice), so `app` itself must be treated as repo-reaching or that whole
+    import shape would walk straight through unresolved.
+    """
+    return module_dotted in ("app", "app.db", _REPO_FACADE_MODULE) or module_dotted.startswith(
+        _REPO_FACADE_MODULE + "."
+    )
+
+
+def _is_first_party_module(dotted: str) -> bool:
+    """Filesystem truth, not a guess: does `dotted` name a real `.py` file or
+    a package (`__init__.py`) under the repository root?"""
+    rel = pathlib.Path(*dotted.split("."))
+    return (REPO_ROOT / rel).with_suffix(".py").is_file() or (
+        REPO_ROOT / rel / "__init__.py"
+    ).is_file()
+
+
+def _module_bindings(tree: ast.AST) -> dict[str, str]:
+    """Pass 1: resolve EVERY first-party module binding in a file — local
+    name -> dotted module path — for both `ast.Import` and `ast.ImportFrom`,
+    including the root-name-only binding a plain dotted `import a.b.c`
+    creates."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bindings[alias.asname] = alias.name
+                else:
+                    root = alias.name.split(".")[0]
+                    bindings[root] = root
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module
+            if base is None:
+                continue
+            for alias in node.names:
+                dotted = f"{base}.{alias.name}"
+                if _is_first_party_module(dotted):
+                    bindings[alias.asname or alias.name] = dotted
+    return bindings
+
+
+def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
+
+
+def _resolve_call_chain(
+    chain_attr: ast.Attribute, bindings: dict[str, str]
+) -> tuple[str, str] | None:
+    """Walk a fully-formed attribute chain rooted at a bound module name and
+    resolve it, one hop at a time, against the filesystem. Returns
+    (target_module, function_name) on success, or None when the chain
+    dead-ends with attributes still left to consume — the caller must treat
+    None as a resolution FAILURE, not as "nothing to see here"."""
+    parts: list[str] = []
+    current: ast.expr = chain_attr
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.reverse()
+    current_module = bindings[current.id]
+    for i, attr in enumerate(parts):
+        candidate = f"{current_module}.{attr}"
+        if _is_first_party_module(candidate):
+            current_module = candidate
+            continue
+        if i != len(parts) - 1:
+            return None
+        return current_module, attr
+    return None  # every hop resolved to a module — no terminal function name
+
+
+def _scan_file(py_file: pathlib.Path) -> tuple[list[str], list[tuple[str, str, int]]]:
+    """Scan one file for J-1 CAS-only violations and resolved repo-targeted
+    calls. Returns (violations, resolved_calls); each resolved call is
+    (target_module, function_name, lineno)."""
+    source = py_file.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(py_file))
+    bindings = _module_bindings(tree)
+    parents = _parent_map(tree)
+
+    violations: list[str] = []
+    resolved: list[tuple[str, str, int]] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "importlib":
+                    violations.append(f"{py_file}:{node.lineno}: 'importlib' is forbidden")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] == "importlib":
+                violations.append(f"{py_file}:{node.lineno}: 'importlib' is forbidden")
+        elif (
+            isinstance(node, ast.Name)
+            and node.id == "__import__"
+            and isinstance(node.ctx, ast.Load)
+        ):
+            violations.append(f"{py_file}:{node.lineno}: '__import__' is forbidden")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        base = node.module
+        if base is None:
+            continue
+        if base != _REPO_FACADE_MODULE and not base.startswith(_REPO_FACADE_MODULE + "."):
+            continue
+        for alias in node.names:
+            dotted = f"{base}.{alias.name}"
+            if not _is_first_party_module(dotted):
+                violations.append(
+                    f"{py_file}:{node.lineno}: imports {alias.name!r} directly out of "
+                    f"repo-reaching module {base!r} — import the module object instead"
+                )
+
+    resolved_chain_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)):
+            continue
+        target = bindings.get(node.id)
+        if target is None or not _is_repo_reaching(target):
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            chain_node: ast.expr = parent
+            while True:
+                grandparent = parents.get(chain_node)
+                if isinstance(grandparent, ast.Attribute) and grandparent.value is chain_node:
+                    chain_node = grandparent
+                else:
+                    break
+            call_parent = parents.get(chain_node)
+            if isinstance(call_parent, ast.Call) and call_parent.func is chain_node:
+                if id(chain_node) in resolved_chain_ids:
+                    continue
+                resolved_chain_ids.add(id(chain_node))
+                assert isinstance(chain_node, ast.Attribute)
+                result = _resolve_call_chain(chain_node, bindings)
+                if result is None:
+                    violations.append(
+                        f"{py_file}:{call_parent.lineno}: restricted name {node.id!r} "
+                        f"(bound to {target!r}) is called through an attribute chain "
+                        f"that cannot be fully resolved against the filesystem"
+                    )
+                else:
+                    target_module, func_name = result
+                    resolved.append((target_module, func_name, call_parent.lineno))
+                continue
+            violations.append(
+                f"{py_file}:{node.lineno}: restricted name {node.id!r} (bound to "
+                f"{target!r}) escapes into a value outside a resolved, called "
+                f"attribute chain — the chain is never invoked"
+            )
+            continue
+        violations.append(
+            f"{py_file}:{node.lineno}: restricted name {node.id!r} (bound to "
+            f"{target!r}) appears outside an attribute-chain root — as an "
+            f"assignment target/value, a call argument (including getattr), "
+            f"a container element, or a return value"
+        )
+
+    return violations, resolved
+
+
+def _scan_queue_tier() -> tuple[list[str], list[tuple[str, str, pathlib.Path, int]]]:
+    violations: list[str] = []
+    resolved: list[tuple[str, str, pathlib.Path, int]] = []
+    for py_file in sorted(QUEUE_ROOT.rglob("*.py")):
+        file_violations, file_resolved = _scan_file(py_file)
+        violations.extend(file_violations)
+        resolved.extend((mod, fn, py_file, line) for (mod, fn, line) in file_resolved)
+    return violations, resolved
+
+
+def test_queue_tier_status_writers_are_cas_only() -> None:
+    """The J-1 CAS-only guard. This must run GREEN against the real,
+    unmutated `app/queue/` — see this module's docstring for why `pipeline`
+    living inside `dispatch.HANDLERS` and `getattr(module, name)(job)` are
+    both deliberately unrestricted rather than a false positive.
+
+    LIMITATION, stated so nobody trusts this guard further than it goes: it
+    covers ONLY direct repo access from `app/queue/`. It does not, and
+    cannot, see a status write performed by code the queue calls INTO —
+    `pipeline_glue.run_pipeline_bg` -> `orchestrator.run_pipeline`, whose own
+    unconditional status write at the start of a run is explicitly permitted
+    and untouched by this phase. This tier's invariant constrains the
+    transport layer, not the pipeline it invokes; this guard is not, and
+    must never be read as, a whole-application status-write inventory.
+    """
+    violations, resolved = _scan_queue_tier()
+    assert not violations, "J-1 CAS-only guard violation(s):\n" + "\n".join(violations)
+
+    func_names = {fn for (_module, fn, _file, _line) in resolved}
+    status_writer_candidates = {
+        "set_status",
+        "claim_status",
+        "record_run_error",
+        "rewind_for_reclaim",
+    }
+    observed_status_writers = func_names & status_writer_candidates
+    permitted = {"claim_status", "rewind_for_reclaim"}
+    assert observed_status_writers <= permitted, (
+        "payroll_runs.status may be written from app/queue/ ONLY via "
+        f"claim_status/rewind_for_reclaim; found: {sorted(observed_status_writers)}"
+    )
+
+
+def test_the_guard_actually_resolves_the_queue_tiers_real_calls() -> None:
+    """Anti-vacuity proof: a resolver that silently matched nothing would
+    satisfy every assertion in `test_queue_tier_status_writers_are_cas_only`
+    (both are negative/subset checks, true on an empty set) while inspecting
+    zero calls. This is the SEPARATE, positive proof that the resolver
+    actually sees the real code it is supposed to be guarding.
+    """
+    _violations, resolved = _scan_queue_tier()
+    func_names = {fn for (_module, fn, _file, _line) in resolved}
+    assert func_names, (
+        "the resolver found zero repo-targeted calls under app/queue/ — it has "
+        "stopped seeing the code it is supposed to guard"
+    )
+    assert "claim_status" in func_names
+    assert "rewind_for_reclaim" in func_names

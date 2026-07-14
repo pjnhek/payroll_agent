@@ -199,7 +199,24 @@ class TestNoDbConnectionNeeded:
         )
 
 
-# ── Placeholder: dispatch-table half of Proof 5 ─────────────────────────────
-# The plan that creates app/queue/dispatch.py appends the CI guard
-# `set(JobKind) == set(dispatch.HANDLERS)` (set EQUALITY) to THIS file, as a
-# new test in a new class below this marker — not a second drift-test file.
+class TestDispatchTableMatchesJobKind:
+    """The dispatch-table half of the collision/enum-drift/dispatch-drift
+    guard: every `JobKind` member must have exactly one registered handler,
+    and every registered handler must correspond to a real `JobKind` member.
+
+    Set EQUALITY, never a subset/superset check in either direction — a
+    pre-loosened `<=`/`>=` guard would silently permit exactly the
+    phantom-kind-with-no-handler this assertion exists to catch: a job whose
+    kind can be enqueued and claimed but never dispatched, or a handler
+    nobody can ever reach. Importing `app.queue.dispatch` here pulls in
+    `app.db.repo` transitively, but nothing in this test opens a connection
+    or reads `DATABASE_URL` — it only inspects `dispatch.HANDLERS`, a plain
+    module-level dict, so this file's "no DB import" contract (see
+    `TestNoDbConnectionNeeded` above) still holds: no *connection* is ever
+    made.
+    """
+
+    def test_job_kind_equals_dispatch_table(self) -> None:
+        from app.queue import dispatch
+
+        assert {m.value for m in JobKind} == set(dispatch.HANDLERS.keys())
