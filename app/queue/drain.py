@@ -141,6 +141,15 @@ def drain_once() -> bool:
     if job is None:
         return False
 
+    # Forget the token ONLY once the lease is genuinely settled — i.e. the database has
+    # told us, in a write that actually landed, that this worker no longer owns it
+    # (completed, failed, or fenced out because someone else already reclaimed it).
+    # An unconditional discard is the bug: the failure that reaches the handler is very
+    # often a DATABASE OUTAGE, and the fail_job write below fails for the same reason.
+    # The row then stays `leased` in Postgres while this process has forgotten the token
+    # — so a graceful shutdown cannot hand it back, and the job sits unclaimable for the
+    # full lease (900s) even though we shut down cleanly.
+    lease_settled = False
     try:
         dispatch.handle(job)
         if not repo.complete_job(job.id, job.lease_token):
@@ -149,21 +158,35 @@ def drain_once() -> bool:
                 "while this worker was still running it; dropping cleanly",
                 job.id,
             )
+        # Fenced out counts as settled: the lease demonstrably belongs to someone else
+        # now, so there is nothing left for THIS worker to hand back.
+        lease_settled = True
     except Exception as exc:  # noqa: BLE001 — every dispatch failure must route
         # through the fenced fail_job write below, never escape and crash the
         # worker loop; a poison job must dead-letter, not take the process down.
-        if not repo.fail_job(
-            job.id,
-            job.lease_token,
-            error=exc,
-            backoff_seconds=_backoff_seconds(job.attempts),
-        ):
-            logger.warning(
-                "queue: fail_job fenced out job=%s — lease was reclaimed "
-                "while this worker was still running it; dropping cleanly",
+        try:
+            if not repo.fail_job(
+                job.id,
+                job.lease_token,
+                error=exc,
+                backoff_seconds=_backoff_seconds(job.attempts),
+            ):
+                logger.warning(
+                    "queue: fail_job fenced out job=%s — lease was reclaimed "
+                    "while this worker was still running it; dropping cleanly",
+                    job.id,
+                )
+            lease_settled = True
+        except Exception:  # noqa: BLE001 — the failure write ITSELF failed
+            logger.exception(
+                "queue: fail_job itself failed for job=%s — the row is still `leased` "
+                "and this worker still owns it. KEEPING the lease token so a graceful "
+                "shutdown can still hand it back; discarding it here is what would "
+                "strand the job for the full lease.",
                 job.id,
             )
     finally:
-        with _held_tokens_lock:
-            _held_tokens.discard(job.lease_token)
+        if lease_settled:
+            with _held_tokens_lock:
+                _held_tokens.discard(job.lease_token)
     return True

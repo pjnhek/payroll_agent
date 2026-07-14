@@ -65,13 +65,21 @@ on:**
   another actor already owns this run's next state; the correct response is
   to log and return, letting the caller mark the job done.
 
-**A CATASTROPHIC START FAILURE IS A RETRY, NOT A COMPLETION — and the one-word
-choice that makes it so.** This handler calls `pipeline_glue.run_pipeline_now`,
-which lets a catastrophic start failure (the orchestrator failing to import, the
-database unreachable at the very first read) PROPAGATE. `drain_once` catches it,
-routes it into a fenced `fail_job` write with backoff, and the job is retried up
-to `max_attempts` before dead-lettering. That is the entire point of putting the
-pipeline on a durable queue.
+**AN UNRECORDABLE FAILURE IS A RETRY; A RECORDED ONE IS A COMPLETION — and the
+one-word choice that makes it so.** This handler calls
+`pipeline_glue.run_pipeline_now`, which lets whatever escapes the orchestrator
+PROPAGATE; `drain_once` then routes it into a fenced `fail_job` write with backoff
+and retries up to `max_attempts` before dead-lettering.
+
+Be precise about WHICH failures those are, because the honest contract is narrower
+than "catastrophic failures retry". `run_pipeline` catches its own failures,
+persists ERROR on the run, and returns NORMALLY — including a transient database
+error on its first read. Those do NOT reach here and do NOT retry: the run carries
+a visible ERROR, an operator can see it and retrigger, and the job has genuinely
+finished its work. What escapes is only what the orchestrator's boundary could not
+RECORD — the module failing to import, or `record_run_error` itself failing. The
+rule: **a failure a human can see completes the job; a failure nobody can see must
+retry, or the run is lost with no trace.**
 
 Do NOT "tidy" this back to `run_pipeline_bg`. That wrapper swallows and returns
 normally — correct for a fire-and-forget BackgroundTask on the inbound webhook,

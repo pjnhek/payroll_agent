@@ -208,23 +208,35 @@ def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
 
 
 def run_pipeline_now(run_id: uuid.UUID) -> None:
-    """Run the orchestrator for a run and let a catastrophic START failure PROPAGATE.
+    """Run the orchestrator and let whatever escapes it PROPAGATE to the caller.
 
-    This is the entrypoint for a caller that can actually DO something with a start
-    failure — today, the queue's worker, whose `drain_once` routes any exception into a
-    fenced `fail_job` write with backoff and retries the job up to `max_attempts`.
+    WHAT ACTUALLY ESCAPES — be precise here, because the useful contract is much narrower
+    than "catastrophic failures retry", and an over-broad promise in this docstring reads
+    as a guarantee the code does not make. `run_pipeline` owns a catch-all that persists
+    ERROR on the run and then returns NORMALLY. So a stage failure never reaches here — and
+    neither does a transient database error on the pipeline's first read, which is caught,
+    recorded as ERROR, and returned. The ONLY things that escape are the failures the
+    orchestrator's own boundary could not RECORD: the orchestrator module failing to
+    import, or `record_run_error` itself failing (usually the same outage that caused the
+    original failure).
+
+    That line is the right one, and it is worth stating as the rule it is: **if the
+    orchestrator managed to write ERROR, a human can SEE the run and retrigger it — the job
+    did its work and completes. If it could write nothing at all, the failure is invisible
+    to everyone (no ERROR on the run, no operator prompt), so the job MUST retry rather
+    than complete, or the run is lost with no trace.** Retry is the fallback for failures
+    nobody can see, not a general retry policy. Auto-retrying a recorded transient DB error
+    into a genuine re-run is a SEPARATE design decision and is deliberately not made here.
+
+    This is the entrypoint for the caller that can act on that: the queue's `drain_once`,
+    which routes an escaping exception into a fenced `fail_job` write with backoff and
+    retries up to `max_attempts`.
 
     Never route a queued job through `run_pipeline_bg` instead. That wrapper's swallow is
-    correct for a fire-and-forget BackgroundTask and catastrophic for a queued job: the
-    handler would return normally, `drain_once` would mark the job `done`, the durable row
-    would disappear as a success, and the run would strand mid-flight with nothing left to
-    retry it. A payroll run would be silently lost. The whole point of putting the pipeline
-    on a durable queue is that a start failure becomes a retry — but only if it is allowed
-    to reach the code that retries.
-
-    The orchestrator still owns its own try/except error-wrap and persists ERROR on any
-    STAGE failure, so those never reach here. What reaches here is the catastrophic kind:
-    the orchestrator failing to import, the database being unreachable at start.
+    right for a fire-and-forget BackgroundTask and fatal for a queued job: the handler would
+    return normally, `drain_once` would read that as success and mark the job `done`, and
+    the durable row that was the run's only chance of ever executing would be deleted. A
+    payroll run, silently lost.
     """
     from app.pipeline.orchestrator import run_pipeline
 

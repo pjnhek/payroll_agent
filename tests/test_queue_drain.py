@@ -266,8 +266,11 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
     """
     run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
 
+    invocations: list[uuid.UUID] = []
+
     def _stage_failure_handled_internally(rid: uuid.UUID) -> None:
         # Mirrors the orchestrator's own error-wrap: it persists ERROR and RETURNS.
+        invocations.append(rid)
         fake_repo.set_status(rid, RunStatus.ERROR)
 
     monkeypatch.setattr(
@@ -287,6 +290,12 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
         "did its work and must complete, not retry a run that already recorded ERROR"
     )
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.ERROR.value
+    # EXACTLY once. Without this, a handler that invoked the pipeline twice would
+    # still land the run on ERROR and the job on done, and this test would call a
+    # double-executed payroll a pass.
+    assert invocations == [run_id], (
+        f"the pipeline must be invoked exactly once per drained job; got {invocations}"
+    )
 
 
 # ── drain_once: the five behaviors ──────────────────────────────────────
@@ -667,45 +676,55 @@ def test_the_guard_actually_resolves_the_queue_tiers_real_calls() -> None:
 
 
 def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
-    """A shutdown must not be able to look at a worker that the DATABASE has already
-    handed a lease to and conclude that it holds nothing.
+    """A shutdown must not be able to look at a worker the DATABASE has already handed a
+    lease to and conclude that it holds nothing.
 
-    The window: `repo.claim_job()` RETURNS — the lease is now held by this process as
-    far as Postgres is concerned — and the worker is descheduled before the next line
-    records the token. `stop()` snapshots `held_tokens()` right there, sees an empty
-    set, and `release_leases` never hands the lease back. The app exits with a live
-    lease outstanding, and that job is unclaimable for the full `lease_seconds`
-    (15 minutes) — on a platform that redeploys routinely.
+    The window: `repo.claim_job()` RETURNS — Postgres now considers the lease held by this
+    process — and the worker is descheduled before the next line records the token.
+    `stop()` snapshots `held_tokens()` right there, sees an empty set, `release_leases()`
+    never hands the lease back, and the app exits with a live lease outstanding. That job
+    is then unclaimable for the full `lease_seconds` (900s) — on a platform that redeploys
+    routinely. ROADMAP criterion 4 forbids exactly this.
 
-    This drives the window directly rather than hoping to hit it: the claim is held
-    open on an Event, and the snapshot is taken while the worker sits inside it.
-    `held_tokens()` must BLOCK there (the claim is in flight) and come back with the
-    token, not race past it with an empty list.
+    TWO THINGS THIS DELIBERATELY DOES NOT DO, both of which would make it a false proof:
+
+    It does NOT pass `settle_timeout`. An explicit generous value would exercise an
+    argument no production caller passes — `worker.stop()` calls `held_tokens()` bare — so
+    shrinking the real default to something uselessly small (0.1s) would leave the test
+    green while production resumed missing any claim slower than 100ms. The default is the
+    thing under test, so the default is what gets used.
+
+    It does NOT sleep-and-hope. The claim is held open for a fixed window and the drain
+    signals when it is genuinely INSIDE the claim, so the snapshot provably lands in the
+    window rather than probably landing there.
     """
+    # Long enough that a shrunken default would time out and miss the lease; far shorter
+    # than the real 2.0s default, so the honest path never comes close to its ceiling.
+    claim_held_s = 0.5
+
     token = uuid.uuid4()
-    claimed_job = _job(run_id=uuid.uuid4(), attempts=1)
+    base = _job(run_id=uuid.uuid4(), attempts=1)
     claimed_job = Job(
-        id=claimed_job.id,
-        kind=claimed_job.kind,
-        run_id=claimed_job.run_id,
+        id=base.id,
+        kind=base.kind,
+        run_id=base.run_id,
         attempts=1,
         max_attempts=5,
         lease_token=token,
     )
 
     claim_entered = threading.Event()
-    release_claim = threading.Event()
     snapshot_taken = threading.Event()
 
     def _slow_claim():
-        # The DB is about to hand over the lease; the worker is descheduled here.
+        # The DB is handing over the lease; the worker is descheduled right here.
         claim_entered.set()
-        assert release_claim.wait(timeout=5.0)
+        time.sleep(claim_held_s)
         return claimed_job
 
     def _blocking_handle(job):
-        # Keep the job in flight until the snapshot has landed, so the drain's own
-        # finally-discard cannot race the assertion below.
+        # Hold the job in flight until the snapshot lands, so the drain's own
+        # finally-discard cannot race the assertion.
         assert snapshot_taken.wait(timeout=5.0)
 
     monkeypatch.setattr(repo, "claim_job", _slow_claim)
@@ -714,27 +733,109 @@ def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
 
     snapshot: list[list[uuid.UUID]] = []
     drainer = threading.Thread(target=drain.drain_once, name="f6-drainer")
+    # NOTE: held_tokens() called BARE — exactly as worker.stop() calls it.
     snapshotter = threading.Thread(
-        target=lambda: snapshot.append(drain.held_tokens(settle_timeout=5.0)),
-        name="f6-snapshotter",
+        target=lambda: snapshot.append(drain.held_tokens()), name="f6-snapshotter"
     )
 
     drainer.start()
     assert claim_entered.wait(timeout=5.0), "the drain never reached the claim"
 
-    # Shutdown snapshots RIGHT NOW — the worker is inside the claim.
+    # The worker is provably inside the claim right now. Shutdown snapshots.
     snapshotter.start()
-    time.sleep(0.05)  # let the snapshotter actually reach held_tokens() and block
-
-    release_claim.set()  # the DB hands the lease over; the worker records the token
     snapshotter.join(timeout=5.0)
-    snapshot_taken.set()  # let the drain finish
+    snapshot_taken.set()
     drainer.join(timeout=5.0)
 
     assert not snapshotter.is_alive() and not drainer.is_alive()
     assert snapshot == [[token]], (
         "held_tokens() snapshotted a lease into oblivion: the database had already "
         f"granted lease {token} to this process, but the snapshot came back {snapshot} "
-        "— release_leases would never have handed it back, and the job would sit "
-        "unclaimable for the full 15-minute lease expiry after the app exits"
+        "— release_leases() would never have handed it back, and the job would sit "
+        "unclaimable for the full 900s lease after the app exits"
     )
+
+
+def test_run_pipeline_now_actually_runs_the_orchestrator_and_propagates(monkeypatch):
+    """The retry proofs above stub `run_pipeline_now` wholesale, so NOTHING in them would
+    notice if its body were replaced with a bare `return`. That mutation is catastrophic in
+    production — every queued payroll would be marked `done` without the pipeline ever
+    running — and it would leave the whole suite green. This is the test that dies on it.
+
+    Two properties, both load-bearing:
+      1. `run_pipeline_now` genuinely invokes `orchestrator.run_pipeline`.
+      2. It does NOT swallow — the exception reaches the caller, which is the entire
+         reason the queue calls this instead of `run_pipeline_bg`.
+
+    The companion assertion on `run_pipeline_bg` pins the other half of the contract: it
+    MUST still swallow, because the inbound webhook schedules it as a fire-and-forget
+    BackgroundTask after already returning 200 and has no caller left to raise to.
+    """
+    import app.pipeline.orchestrator as orchestrator_mod
+
+    calls: list[uuid.UUID] = []
+
+    def _spy_run_pipeline(rid: uuid.UUID) -> None:
+        calls.append(rid)
+        raise RuntimeError("simulated catastrophic failure")
+
+    monkeypatch.setattr(orchestrator_mod, "run_pipeline", _spy_run_pipeline)
+
+    run_id = uuid.uuid4()
+    with pytest.raises(RuntimeError, match="simulated catastrophic failure"):
+        pipeline_glue.run_pipeline_now(run_id)
+    assert calls == [run_id], (
+        "run_pipeline_now must actually invoke the orchestrator — a body that just "
+        "returns would mark every queued payroll done without running it"
+    )
+
+    # The other half: _bg still swallows, so the webhook's BackgroundTask cannot crash.
+    calls.clear()
+    pipeline_glue.run_pipeline_bg(run_id)  # must NOT raise
+    assert calls == [run_id], "run_pipeline_bg must still invoke the orchestrator too"
+
+
+def test_a_failed_fail_job_keeps_the_lease_recorded(monkeypatch):
+    """When `fail_job` ITSELF raises, the lease token must stay recorded.
+
+    The realistic failure that reaches the handler is a DATABASE OUTAGE — and `fail_job`
+    is another database write, so it fails for the same reason. The row is left `leased`
+    in Postgres. An unconditional `finally: _held_tokens.discard(...)` then forgets the
+    token, so a graceful shutdown can no longer discover the lease to release it, and the
+    job sits unclaimable for the FULL 900s lease even though the process shut down
+    cleanly. That silently undermines both the retry guarantee and ROADMAP criterion 4.
+
+    Keeping the token is safe even if the lease is later reclaimed by another worker:
+    `release_leases` is fenced on the token itself (`WHERE lease_token = ANY(...) AND
+    state = 'leased'`), so handing back a token that is no longer the row's current lease
+    is a no-op, not a theft.
+    """
+    token = uuid.uuid4()
+    base = _job(run_id=uuid.uuid4(), attempts=1)
+    leased_job = Job(
+        id=base.id,
+        kind=base.kind,
+        run_id=base.run_id,
+        attempts=1,
+        max_attempts=5,
+        lease_token=token,
+    )
+
+    def _outage(*args, **kwargs):
+        raise RuntimeError("simulated database outage")
+
+    monkeypatch.setattr(repo, "claim_job", lambda: leased_job)
+    monkeypatch.setattr(dispatch, "handle", _outage)   # the handler fails: DB is down
+    monkeypatch.setattr(repo, "fail_job", _outage)     # ...and so does the failure write
+
+    try:
+        # drain_once must not let the outage escape and kill the worker loop.
+        assert drain.drain_once() is True
+
+        assert drain.held_tokens() == [token], (
+            "fail_job raised, so the row is still `leased` in the database — but the "
+            "lease token was discarded anyway. A graceful shutdown can no longer hand "
+            "it back, and the job is stranded for the full 900s lease."
+        )
+    finally:
+        drain._held_tokens.clear()  # module state: never leak into the next test

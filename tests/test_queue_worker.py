@@ -522,53 +522,70 @@ def test_a_wake_arriving_during_the_drain_is_not_erased(
     """A producer that commits its job and wakes WHILE this worker is inside
     `drain_once()` must not have that signal thrown away.
 
-    The lost-wakeup shape: `drain_once()` scans, finds nothing, and returns
-    False. A producer commits a job and calls `wake()` in the window before the
-    worker reaches `wake.clear()`. A `clear()` placed AFTER the drain erases
-    that brand-new signal, and the worker then sleeps the FULL poll interval
-    with a claimable job already sitting in the table — an operator clicks
-    Retrigger and watches nothing happen for `queue_poll_seconds`.
+    The lost-wakeup shape: `drain_once()` scans, finds nothing, returns False. A
+    producer commits a job and calls `wake()` in the window before the worker
+    reaches `wake.clear()`. A `clear()` placed AFTER the drain erases that
+    brand-new signal, and the worker sleeps the FULL poll interval with a
+    claimable job already in the table — the operator clicks Retrigger and
+    watches nothing happen for `queue_poll_seconds`.
 
-    Clearing BEFORE the drain is what makes this safe, and it is safe precisely
-    because a producer commits its job before it wakes: a signal that lands
-    during a drain always refers to work the NEXT drain can already see.
-
-    The assertion is deliberately a WALL-CLOCK bound, not a spy on `wake.wait`:
-    a worker that merely *calls* wait() with the right timeout is still broken
-    if the signal it should have observed was already erased. What has to be
-    true is that the second drain happens PROMPTLY, and only real elapsed time
-    can say so. QUEUE_POLL_SECONDS is set well above the bound below, so the
-    buggy ordering cannot pass by luck.
+    WHAT THIS ASSERTS, AND WHY A WALL-CLOCK BOUND ALONE WOULD BE A FALSE PROOF.
+    "The second drain came quickly" is NOT the property. A `wake.wait()` that
+    never blocks (say it were changed to `return True`) would also redrain
+    promptly — by hot-spinning — and a purely temporal assertion would sail
+    straight through that. The actual property is that THE SIGNAL SURVIVED THE
+    DRAIN, so this inspects the wake event's own state at the instant the loop
+    enters `wait()`: it must be SET, which is why `wait()` returns immediately.
+    The drain count is pinned at exactly 2 for the same reason — a hot-spinning
+    loop would drain many more times than that.
     """
     monkeypatch.setenv("QUEUE_POLL_SECONDS", "30")
     get_settings.cache_clear()
 
     drain_times: list[float] = []
+    set_at_wait_entry: list[bool] = []
     second_drain = threading.Event()
+    real_wait = wake.wait
 
     def _drain_and_signal_midway() -> bool:
         drain_times.append(time.monotonic())
         if len(drain_times) == 1:
-            # Stand in for a producer that commits a job and wakes while this
+            # Stand in for a producer committing a job and waking while this
             # worker is still inside the drain. A trailing clear() would erase it.
             wake.wake()
             return False
         second_drain.set()
         return False
 
+    def _spy_wait(timeout: float) -> bool:
+        # The load-bearing observation: is the signal that arrived mid-drain STILL
+        # set as we go to sleep, or did a trailing clear() eat it?
+        set_at_wait_entry.append(wake._event.is_set())
+        return real_wait(timeout)
+
     monkeypatch.setattr(drain, "drain_once", _drain_and_signal_midway)
+    monkeypatch.setattr(wake, "wait", _spy_wait)
 
     try:
         worker.start(1)
         assert second_drain.wait(timeout=_TIMEOUT), (
             "the worker never ran a second drain — the wake that arrived during the "
-            "first drain was erased by a trailing clear(), so it slept the full "
-            "poll interval instead of observing the signal"
+            "first drain was erased by a trailing clear(), so it slept the full poll "
+            "interval instead of observing the signal"
         )
     finally:
         worker.stop(grace_seconds=_TIMEOUT)
 
-    assert len(drain_times) >= 2
+    assert set_at_wait_entry and set_at_wait_entry[0] is True, (
+        "the worker entered wait() with the wake event CLEARED — the signal that "
+        "arrived during the first drain was erased by a trailing clear(). It would "
+        "now sleep the full poll interval with a claimable job already in the table."
+    )
+    assert len(drain_times) == 2, (
+        f"expected exactly 2 drains, got {len(drain_times)} — more than that means the "
+        "loop is hot-spinning rather than genuinely sleeping on the wake signal, and a "
+        "purely temporal assertion would have called that a pass"
+    )
     gap = drain_times[1] - drain_times[0]
     assert gap < 1.0, (
         f"second drain came {gap:.2f}s after the first; a wake delivered during the "
