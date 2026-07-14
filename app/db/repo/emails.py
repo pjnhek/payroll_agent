@@ -218,6 +218,86 @@ def get_outbound_for_round(
     return {"message_id": row[0], "round": row[1]}
 
 
+def get_unconfirmed_outbound(
+    run_id: uuid.UUID,
+    *,
+    purpose: str,
+    round: int = 0,
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any] | None:
+    """Epoch-scoped read of an UNCONFIRMED outbound reservation for this send slot.
+
+    Complementary to get_outbound_message_id / get_outbound_for_round, never a
+    replacement for either. Those two answer "was this message PROVEN sent?" — only a
+    send_state='sent' row counts, and finding one means the send is safe to skip and the
+    run can finalize. This function answers a DIFFERENT question: "might this message
+    already have reached the provider?" A 'reserved' row means a caller wrote
+    intent-to-send, called the provider, and has not yet recorded the outcome — the
+    provider may have already accepted the message. A 'failed' row means the send raised
+    an exception, but that exception can be a timeout AFTER the provider already
+    accepted the mail, so 'failed' is not proof of non-delivery either. Neither state
+    tells the caller the message was NOT delivered, so a caller that finds a row here
+    must not send again — it must refuse and let a human decide.
+
+    Do not widen get_outbound_message_id / get_outbound_for_round to also match
+    'reserved'/'failed' instead of adding a function like this one. That would make a
+    crashed send look identical to a completed one and skip a required email entirely.
+    The two guards are deliberately asymmetric and fail in OPPOSITE directions: the
+    proven-sent guards skip on a false-negative risk (a sent row missed means an
+    unwanted duplicate); this one blocks on a false-positive risk (an unconfirmed row
+    found means a possible duplicate is refused). Merging the two collapses that
+    asymmetry and reintroduces the bug either guard alone exists to close.
+
+    EPOCH SCOPING IS THE SAFETY PROPERTY THIS FUNCTION EXISTS TO EXPRESS, not an
+    incidental filter. An automatic reclaim of a stranded run never bumps the run's
+    reply epoch, so a rewound run stays inside the epoch this function reads — the
+    unconfirmed row stays visible and the rerun stays blocked. Only a human-triggered
+    context clear bumps the epoch, opening a fresh send slot this function cannot see
+    the stale reservation through. That asymmetry is intentional: the machine may never
+    grant itself a licence to send a possible duplicate; a human, having inspected the
+    situation, may. Dropping the epoch filter here would make every escalated run
+    permanently stuck with no way for a human to clear it — trading one bug for a worse
+    one.
+
+    The (run_id, purpose, round, epoch) filter is not an arbitrary key: it is exactly
+    the send-slot identity insert_email_message's own upsert arbitrates on, and exactly
+    the columns the table's own uniqueness constraint declares. Keep this function's
+    filter and that arbiter in agreement — the same invariant insert_email_message's own
+    docstring pins for itself.
+
+    A caller of this function is expected to keep the detection predicate stable and
+    only widen what it DOES about a match — from unconditional refusal today, to a
+    provably-safe replay of the same reservation when a replay window still allows it,
+    falling back to refusal outside that window. This function's job stays "detect a
+    possible duplicate", never "decide what to do about it".
+
+    Raises ValueError on an unrecognised purpose value — same guard as its two siblings,
+    so a purpose-blind lookup can never accidentally match the wrong kind of email (a
+    confirmation blocked by a crashed clarification, or the reverse).
+    """
+    if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
+        raise ValueError(
+            "purpose must be 'clarification', 'confirmation', or "
+            f"'clarification_field_regression', got {purpose!r}"
+        )
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT message_id, send_state, round, created_at FROM email_messages
+            WHERE run_id = %s AND direction = 'outbound'
+              AND purpose = %s AND round = %s
+              AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
+              AND send_state IN ('reserved', 'failed')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (str(run_id), purpose, round, str(run_id)),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"message_id": row[0], "send_state": row[1], "round": row[2], "created_at": row[3]}
+
+
 def mark_reply_consumed(
     message_id: str,
     round: int,

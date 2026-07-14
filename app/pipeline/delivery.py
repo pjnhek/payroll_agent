@@ -29,7 +29,7 @@ from typing import Any
 from app.db import repo
 from app.email import gateway
 from app.models.status import RunStatus
-from app.pipeline import alias_learning
+from app.pipeline import alias_learning, send_guard
 from app.pipeline.compose_email import compose_confirmation, confirmation_subject
 from app.pipeline.pdf import generate_paystub_pdf
 
@@ -112,6 +112,20 @@ def deliver(run_id: uuid.UUID, run: dict[str, Any]) -> None:
             repo.set_status(run_id, RunStatus.SENT, conn=conn)
             repo.set_status(run_id, RunStatus.RECONCILED, conn=conn)
         return
+
+    # An unconfirmed reservation from an earlier, possibly-crashed send attempt means
+    # the provider may already hold this confirmation. Refuse to send again and let the
+    # caller's error boundary escalate rather than risk a second payroll confirmation
+    # reaching the client. round=0 is correct here: a confirmation send never carries a
+    # round, so send_outbound's own default (0) is what its reservation row would carry.
+    #
+    # This is a DIFFERENT asymmetry from Step 1's guard above, and deliberately kept:
+    # a PROVEN confirmation (Step 1) is never re-sent, not even after a human retrigger
+    # opens a new epoch — the run simply finalizes without emailing again. A POSSIBLE
+    # confirmation (this guard) is not re-sent by the machine, but MAY be, once, by a
+    # human who opens a new epoch — because the alternative is an escalated run the
+    # operator could never resolve.
+    send_guard.assert_no_unconfirmed_send(run_id, purpose="confirmation", round=0)
 
     # Step 2 — Load line items (explicit column list, no SELECT *).
     paystubs = repo.load_line_items(run_id)

@@ -476,6 +476,13 @@ def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
         "app.pipeline.delivery.repo.get_outbound_message_id",
         lambda rid, purpose, conn=None: None,
     )
+    # The unconfirmed-send guard (app/pipeline/send_guard.py) reads the same shared
+    # repo module, so a real DATABASE_URL-backed call would otherwise fire here too —
+    # stub it alongside the proven-sent guard above.
+    monkeypatch.setattr(
+        "app.pipeline.delivery.repo.get_unconfirmed_outbound",
+        lambda rid, *, purpose, round=0, conn=None: None,
+    )
     monkeypatch.setattr(
         "app.pipeline.delivery.repo.load_line_items", lambda rid, conn=None: [item]
     )
@@ -522,6 +529,12 @@ def test_deliver_failure_before_roster_load_carries_no_roster(monkeypatch):
     monkeypatch.setattr(
         "app.pipeline.delivery.repo.get_outbound_message_id",
         lambda rid, purpose, conn=None: None,
+    )
+    # Same stub as the sibling test above: the unconfirmed-send guard reads the same
+    # shared repo module and would otherwise reach a real, unconfigured DB connection.
+    monkeypatch.setattr(
+        "app.pipeline.delivery.repo.get_unconfirmed_outbound",
+        lambda rid, *, purpose, round=0, conn=None: None,
     )
 
     def _items_boom(rid, conn=None):

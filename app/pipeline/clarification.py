@@ -32,6 +32,7 @@ from app.email import gateway
 from app.models.contracts import Decision, Extracted, InboundEmail
 from app.models.roster import Roster
 from app.models.status import RunStatus
+from app.pipeline import send_guard
 from app.pipeline.compose_email import clarification_subject, compose_clarification
 from app.pipeline.reconcile_names import normalize_name
 from app.pipeline.suggest import suggest_employees
@@ -321,6 +322,14 @@ def clarify(
             )
             repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
         return
+
+    # The guard above answers "was it PROVEN sent?" (skip and finalize); this one
+    # answers "might it have been sent?" (do not send -- escalate instead). The two
+    # checks fail in OPPOSITE directions on purpose and neither can replace the other.
+    # It runs immediately after the proven-sent guard and strictly before any
+    # LLM/suggestion call or send_outbound, so an unconfirmed prior reservation can
+    # never let a second provider call happen.
+    send_guard.assert_no_unconfirmed_send(run_id, purpose=purpose, round=current_round)
 
     # Capture the alias-learning candidate token. This runs AFTER the idempotency guard
     # and BEFORE send_outbound, so the original token is always captured in the same
