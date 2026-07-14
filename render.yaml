@@ -61,3 +61,23 @@ services:
       # Override this value in the Render dashboard to match your own inbound .resend.app address.
       - key: RESEND_REPLY_TO
         value: payroll@jiodnel.resend.app    # Not a secret — the inbound .resend.app address; must match the address wired to the Resend inbound webhook
+
+      # ── Durable job queue — non-secret, see app/config.py for derivations ──────
+      # WORKER_COUNT + 2 (the request-handling headroom) must stay within the psycopg
+      # pool's max_size (5) — app/queue/worker.py's lifespan hard-asserts this at
+      # boot. Raising WORKER_COUNT past 3 will refuse to start rather than silently
+      # starve requests of a pooled connection. Starting 2 workers in production is
+      # safe today: the only producer on the queue is the operator Retrigger button,
+      # so with no jobs pending the workers simply block on the wake Event / the 20s
+      # poll.
+      - key: WORKER_COUNT
+        value: "2"
+
+      - key: LEASE_SECONDS
+        value: "900"
+
+      - key: MAX_ATTEMPTS
+        value: "5"
+
+      - key: QUEUE_POLL_SECONDS
+        value: "20"
