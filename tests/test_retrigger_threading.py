@@ -37,6 +37,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.queue import drain
+
 # The seeded business whose roster the run is scored against.
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -187,11 +189,24 @@ def _crash_after_send_then_retrigger(
     assert pre_crash_row["round"] == 0
     assert pre_crash_row["epoch"] == 0
 
-    # The recovery pass: the operator's real button. The test client runs the
-    # background pipeline the route schedules before this call returns.
+    # The recovery pass: the operator's real button. QUEUE-02: retrigger no longer
+    # schedules a BackgroundTask — it enqueues a durable jobs row inside the same
+    # transaction as the winning claim. Workers are off in this suite, so drain the
+    # queue explicitly to run the real pipeline the route enqueued — deterministic,
+    # no sleeps, no flakes, and it exercises the exact function a live worker calls.
     response = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
     assert response.status_code == 303, (
         f"the retrigger route must redirect back to the run; got {response.status_code}"
+    )
+    matching = [j for j in fake_repo.jobs.values() if j["run_id"] == run_id]
+    assert len(matching) == 1, (
+        f"retrigger must enqueue exactly one run_pipeline job for {run_id}; "
+        f"found {len(matching)}"
+    )
+    assert matching[0]["state"] == "pending" and matching[0]["kind"] == "run_pipeline"
+
+    assert drain.drain_once() is True, (
+        "drain_once must claim and dispatch the job retrigger enqueued"
     )
 
     return run_id, send_calls, pre_crash_row

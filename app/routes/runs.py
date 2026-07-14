@@ -273,8 +273,11 @@ def _claim_stale_in_flight(run_id: uuid.UUID, conn: psycopg.Connection) -> bool:
     is that every repo call below threads `conn=conn` into retrigger()'s caller-owned
     transaction instead of each opening its own.
 
-    Returns False (no-op) if the run is missing, not stale, outside the stale scope, or
-    loses its claim — a failed claim here is a completed retrigger, not a retry.
+    Returns False (no-op) if the run is missing, not stale, or outside the stale scope.
+    Returns True when the caller may proceed to clear_reply_context + enqueue_job — for
+    EXTRACTING/COMPUTED/SENT that means this call ALSO won a real status CAS; for
+    RECEIVED it means the staleness check passed with no status write at all (see the
+    branch's own comment for why a write there would be actively wrong under QUEUE-02).
     """
     run = repo.load_run(run_id, conn=conn)
     if run is None:
@@ -303,25 +306,46 @@ def _claim_stale_in_flight(run_id: uuid.UUID, conn: psycopg.Connection) -> bool:
     }
     if not (stale and run["status"] in stale_statuses):
         return False
-    # The claim target MUST differ from the current status:
-    # RECEIVED→EXTRACTING (never the RECEIVED→RECEIVED no-op), and every
-    # other stale status (EXTRACTING/COMPUTED/SENT)→RECEIVED. This
-    # guarantees the conditional UPDATE actually changes the row, so two
-    # concurrent retrigger clicks cannot both win and run the pipeline twice.
+
+    if run["status"] == RunStatus.RECEIVED.value:
+        # QUEUE-02: a stale RECEIVED run has no other real state to claim FROM —
+        # RECEIVED->RECEIVED is a no-op UPDATE and grants no exclusivity (a second,
+        # concurrently-blocked UPDATE re-evaluates its WHERE clause against the
+        # post-commit row and ALSO succeeds). Pre-Phase-16 that forced a jump straight
+        # to EXTRACTING purely to get a real, differing status write. Under the queue,
+        # that jump actively breaks the enqueued job: the drained handler's OWN sole
+        # forward transition is claim_status(RECEIVED -> EXTRACTING) — INVARIANT J-1's
+        # one permitted forward writer — and it would find the run already sitting at
+        # EXTRACTING and lose its claim, completing the job without ever calling
+        # run_pipeline_bg. A "lost job" for exactly the run this retrigger was meant to
+        # revive. So this branch performs NO status write and leaves the run genuinely
+        # at RECEIVED, exactly the state the handler's forward claim expects to find.
+        # Exclusivity between two concurrent retrigger clicks is provided one layer
+        # down instead: both may pass this check and both may enqueue a job (a
+        # harmless extra row, with its own epoch bump), but the handler's forward CAS
+        # is itself a genuine single-winner claim on drain — only the job that drains
+        # first ever advances the run past RECEIVED; every later one loses its claim
+        # and completes as a no-op, exactly like any other lost forward CAS.
+        logger.info("stale RECEIVED run %s eligible for retrigger re-enqueue", run_id)
+        return True
+
+    # The claim target MUST differ from the current status: every stale status here
+    # (EXTRACTING/COMPUTED/SENT) claims back to RECEIVED. This guarantees the
+    # conditional UPDATE actually changes the row, so two concurrent retrigger clicks
+    # cannot both win and run the pipeline twice — and it leaves the run at RECEIVED,
+    # exactly what the drained job's own forward claim_status(RECEIVED -> EXTRACTING)
+    # expects to find.
     # NOTE: COMPUTING is NOT a RunStatus member — the valid post-calc
     # in-flight state is COMPUTED.
-    target = (
-        RunStatus.EXTRACTING
-        if run["status"] == RunStatus.RECEIVED.value
-        else RunStatus.RECEIVED
+    claimed = repo.claim_status(
+        run_id, RunStatus(run["status"]), RunStatus.RECEIVED, conn=conn
     )
-    claimed = repo.claim_status(run_id, RunStatus(run["status"]), target, conn=conn)
     if claimed:
         logger.info(
             "stale run %s (%s) claimed to %s",
             run_id,
             run["status"],
-            target.value,
+            RunStatus.RECEIVED.value,
         )
     return claimed
 

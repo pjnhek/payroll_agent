@@ -39,6 +39,7 @@ import app.db.repo as repo_mod
 from app.db.repo import RUN_COLS, load_business_name, update_known_alias
 from app.models.status import RunStatus
 from app.pipeline.compose_email import confirmation_subject
+from app.queue import drain
 
 
 @pytest.fixture
@@ -464,7 +465,8 @@ def _run_at_error_with_stale_reply_context(fake_repo) -> uuid.UUID:
 def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     """Retrigger clears clarified_fields, pre_clarify_extracted,
     clarification_round, AND alias_candidates after the winning claim — and
-    still dispatches the re-run."""
+    still dispatches the re-run once the enqueued job is drained (QUEUE-02:
+    retrigger no longer schedules a BackgroundTask, it enqueues a durable job)."""
     import app.routes.pipeline_glue as app_main
 
     dispatched: list[uuid.UUID] = []
@@ -487,6 +489,22 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     )
     assert run.get("alias_candidates") is None, (
         f"retrigger must clear alias_candidates; got {run.get('alias_candidates')!r}"
+    )
+
+    # New coverage: a durable jobs row exists BEFORE the drain, and the pipeline
+    # has not yet run.
+    matching = [j for j in fake_repo.jobs.values() if j["run_id"] == run_id]
+    assert len(matching) == 1, (
+        f"retrigger must enqueue exactly one run_pipeline job for {run_id}; "
+        f"found {len(matching)}"
+    )
+    assert matching[0]["state"] == "pending" and matching[0]["kind"] == "run_pipeline"
+    assert dispatched == [], (
+        "the pipeline must not run before the enqueued job is drained"
+    )
+
+    assert drain.drain_once() is True, (
+        "drain_once must claim and dispatch the job retrigger enqueued"
     )
     assert dispatched == [run_id], (
         "retrigger must still dispatch the pipeline re-run for the claimed run "
@@ -527,6 +545,22 @@ def test_retrigger_clears_context_on_stale_inflight_claim(
     assert run_after.get("pre_clarify_extracted") is None
     assert run_after.get("clarification_round") == 0
     assert run_after.get("alias_candidates") is None
+
+    # New coverage: the stale in-flight branch also enqueues a durable job,
+    # visible BEFORE any drain, and the pipeline has not yet run.
+    matching = [j for j in fake_repo.jobs.values() if j["run_id"] == run_id]
+    assert len(matching) == 1, (
+        f"retrigger must enqueue exactly one run_pipeline job for {run_id}; "
+        f"found {len(matching)}"
+    )
+    assert matching[0]["state"] == "pending" and matching[0]["kind"] == "run_pipeline"
+    assert dispatched == [], (
+        "the pipeline must not run before the enqueued job is drained"
+    )
+
+    assert drain.drain_once() is True, (
+        "drain_once must claim and dispatch the job retrigger enqueued"
+    )
     assert dispatched == [run_id], (
         "the stale in-flight retrigger branch must also dispatch the pipeline "
         f"re-run after clearing reply context; got {dispatched}"
