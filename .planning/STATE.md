@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 current_phase: 16
-current_phase_name: Queue Substrate & Unblocked Webhook
+current_phase_name: queue-substrate-unblocked-webhook
 status: executing
 stopped_at: Phase 16 context gathered
-last_updated: "2026-07-14T15:52:22.275Z"
+last_updated: "2026-07-14T18:00:01.140Z"
 last_activity: 2026-07-14
-last_activity_desc: ROADMAP.md created for v4 (6 phases, 16–21); REQUIREMENTS.md traceability filled (19/19 mapped, no orphans)
+last_activity_desc: Phase 16 execution started
 progress:
   total_phases: 6
   completed_phases: 0
-  total_plans: 0
+  total_plans: 10
   completed_plans: 0
   percent: 0
 ---
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** v4 roadmap created (2026-07-14) — 6 phases (16–21), 19/19 requirements mapped. Ready to plan Phase 16.
+**Current focus:** Phase 16 — queue-substrate-unblocked-webhook
 
 ## Current Position
 
-Phase: Phase 16 of 21 (Queue Substrate & Unblocked Webhook) — ready to plan
-Plan: — (not yet planned)
-Status: Ready to execute
-Last activity: 2026-07-14 — ROADMAP.md created for v4 (6 phases, 16–21); REQUIREMENTS.md traceability filled (19/19 mapped, no orphans)
+Phase: 16 (queue-substrate-unblocked-webhook) — EXECUTING
+Plan: 1 of 10
+Status: Executing Phase 16
+Last activity: 2026-07-14 — Phase 16 execution started
 
 ## Performance Metrics
 
