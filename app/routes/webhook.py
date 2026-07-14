@@ -234,7 +234,11 @@ def _parse_and_ingest_sync(raw_body: bytes) -> IngestResult:
 def _duplicate_redelivery_sync(
     message_id: str,
 ) -> tuple[uuid.UUID, InboundEmail] | None:
-    """The duplicate-branch redelivery-reschedule check (D-11) — runs in a worker thread.
+    """The duplicate-branch redelivery-reschedule check — runs in a worker thread.
+
+    Every blocking repo read the response-shaping "duplicate" branch performs is
+    moved off the event loop here, not just the main ingest transaction — otherwise
+    "the webhook never blocks the event loop" would be true only on the happy path.
 
     A redelivered webhook carrying a reply is normally just a no-op duplicate — but if
     the PERSISTED reply row is still unconsumed AND its run is still awaiting_reply, the
@@ -366,7 +370,7 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
 
     if outcome == "duplicate":
         logger.info("duplicate inbound message_id=%s — no second run", email.message_id)
-        # D-11: the redelivery-reschedule check performs its own blocking repo reads
+        # The redelivery-reschedule check performs its own blocking repo reads
         # (get_inbound_by_message_id, load_run) plus the reply_sender_ok spoof-guard
         # (which itself calls find_business_by_sender) — all moved off-loop into
         # _duplicate_redelivery_sync via the same run_in_threadpool mechanism as the
