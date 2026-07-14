@@ -37,7 +37,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 **Phase Numbering:** v4 continues the global phase sequence from v3 (last phase: 15). Integer phases
 (16–21) are planned milestone work; decimal phases (e.g. 16.1) are reserved for urgent insertions.
 
-- [ ] **Phase 16: Queue Substrate & Unblocked Webhook** - The webhook stops blocking the event loop and a durable Postgres job queue exists, proven on one already-manual, low-risk producer (operator retrigger) before the money path touches it.
+- [x] **Phase 16: Queue Substrate & Unblocked Webhook** - The webhook stops blocking the event loop and a durable Postgres job queue exists, proven on one already-manual, low-risk producer (operator retrigger) before the money path touches it. (completed 2026-07-14)
 - [ ] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present.
 - [ ] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism.
 - [ ] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue.
@@ -60,7 +60,7 @@ one already-manual, low-risk producer (operator retrigger) before the money path
   4. A routine redeploy (graceful worker shutdown) releases any held leases immediately, so an in-flight retrigger resumes within seconds rather than stalling for the full lease duration.
   5. A CI-enforced guard fails the build if a `jobs.kind` value ever collides with a `payroll_runs.status` value or drifts from the `JobKind` enum — the job row can never encode "what payroll status comes next."
 
-**Plans**: 9/10 plans executed
+**Plans**: 10/10 plans complete
 *(Replanned 2026-07-14 after a cross-AI plan review. Two scope-level decisions were locked: **D-13** —
 forward-port the send-idempotency fix into this phase, because this phase is where live workers and
 lease-expiry reclaim actually ship, so this is where the double-send window actually opens; and
@@ -92,7 +92,7 @@ start the first live workers.)*
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 16-09-PLAN.md — Proof 2: a retrigger survives a worker death and completes on the next drain; plus the phase's residual-risk table *(wave 5)*
+- [x] 16-09-PLAN.md — Proof 2: a retrigger survives a worker death and completes on the next drain; plus the phase's residual-risk table *(wave 5)*
 
 ### Phase 17: The Pump
 
@@ -209,7 +209,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
-| 16. Queue Substrate & Unblocked Webhook | v4 | 9/10 | In Progress|  |
+| 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete   | 2026-07-14 |
 | 17. The Pump | v4 | 0/TBD | Not started | - |
 | 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
