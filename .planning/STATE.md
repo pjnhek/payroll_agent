@@ -4,9 +4,9 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 16
 current_phase_name: Queue Substrate & Unblocked Webhook
-status: planning
+status: executing
 stopped_at: Phase 16 context gathered
-last_updated: "2026-07-14T14:52:28.395Z"
+last_updated: "2026-07-14T15:52:22.275Z"
 last_activity: 2026-07-14
 last_activity_desc: ROADMAP.md created for v4 (6 phases, 16–21); REQUIREMENTS.md traceability filled (19/19 mapped, no orphans)
 progress:
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 
 Phase: Phase 16 of 21 (Queue Substrate & Unblocked Webhook) — ready to plan
 Plan: — (not yet planned)
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-07-14 — ROADMAP.md created for v4 (6 phases, 16–21); REQUIREMENTS.md traceability filled (19/19 mapped, no orphans)
 
 ## Performance Metrics

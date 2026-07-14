@@ -84,8 +84,8 @@ success criterion #2 forbids.
   add proofs with zero workflow edits. Research recommended this pull-forward independently
   (`ARCHITECTURE.md` §8 Q3).
 
-- **D-05: Replace the magic-number guards in `tests/test_status_drift.py` with inventory-pinned
-  assertions.** The `jobs` table will detonate two of them on contact:
+- **D-05: Replace the magic-number guards in `tests/test_status_drift.py` with inventory-pinned assertions.**
+  The `jobs` table will detonate two of them on contact:
   `test_exactly_three_new_indexes` asserts `sql.count("CREATE INDEX IF NOT EXISTS") == 3`
   (`test_status_drift.py:329`), and `test_do_block_constraint_drops_are_column_anchored` asserts
   `sql.count("ANY (c.conkey)") == 2` (`:228`). Do **not** just bump 3→4 and 2→3 — pin against a
