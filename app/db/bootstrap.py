@@ -78,8 +78,8 @@ STATEMENT_TIMEOUT_MS = 60000   # 60s: abort a single runaway statement
 # convention. Without "jobs" in this list at all, the seeded_db fixture's --reset
 # path (the sole hermetic reset owner, gated by ALLOW_DB_RESET) would silently
 # orphan job rows referencing dropped-and-recreated run_ids across every test run
-# that resets the DB — poisoning isolation for the durability proofs this phase
-# adds (16-RESEARCH.md Pitfall 4). Each DROP TABLE IF EXISTS ... CASCADE below
+# that resets the DB — poisoning isolation for any live-DB test that asserts
+# durability across resets. Each DROP TABLE IF EXISTS ... CASCADE below
 # already cascades, so exact ordering is defensive-not-required for correctness —
 # but a comment that documents the dependency direction wrongly is worse than none.
 _DROP_ORDER = [

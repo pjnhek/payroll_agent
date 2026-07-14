@@ -450,65 +450,64 @@ CREATE TABLE IF NOT EXISTS eval_results (
 );
 
 -- ── 7. jobs (NEW — durable queue transport substrate) ───────────────────────
--- Transcribed from .planning/research/ARCHITECTURE.md §4 (adversarially validated
--- by four researchers), WITH FOUR DOCUMENTED DEVIATIONS from that canonical DDL —
--- each a correction, not an improvisation. See the inline comments below for the
--- reasoning behind each one.
+-- The durable transport layer the async worker claims work from. The
+-- authoritative external design for this table has FOUR DOCUMENTED DEVIATIONS
+-- applied below — each a correction, not an improvisation. See the inline
+-- comments for the reasoning behind each one.
 --
--- INVARIANT J-1, made structural: this table carries IDENTIFIERS ONLY. There is
--- physically nowhere to store a payroll status or business data — no payload
--- column, no "next status" column. The queue's vocabulary (JobKind/JobState,
--- app/models/job.py) is transport state; payroll_runs.status is the SOLE
--- business state machine. A job row can never say "advance this run to
--- APPROVED" because there is no column that could hold such a thing.
+-- Carries IDENTIFIERS ONLY. There is physically nowhere to store a payroll
+-- status or business data — no payload column, no "next status" column. The
+-- queue's vocabulary (JobKind/JobState, app/models/job.py) is transport state;
+-- payroll_runs.status is the SOLE business state machine. A job row can never
+-- say "advance this run to APPROVED" because there is no column that could
+-- hold such a thing.
 CREATE TABLE IF NOT EXISTS jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- DEVIATION 1: the canonical DDL's CHECK lists all four eventual kinds
+    -- DEVIATION 1: an earlier full design lists four eventual kinds
     -- ('ingest','run_pipeline','resume_reply','operator_resume'). Only
-    -- 'run_pipeline' has a real handler in Phase 16 (16-RESEARCH.md Pitfall 7),
-    -- and QUEUE-05's CI guard is set(JobKind) == set(dispatch.HANDLERS) — set
-    -- EQUALITY. Declaring three kinds with no handler makes that guard
-    -- permanently unsatisfiable. Widening this CHECK in Phase 17/19 (once
-    -- `jobs` holds live rows) must use the idempotent DO-block DROP+RE-ADD
-    -- idiom already proven twice in this file (payroll_runs.status,
-    -- email_messages.purpose) — NOT a second inline edit, because by then a
-    -- bare CREATE TABLE-time CHECK edit would be a no-op against a live table.
-    -- Today jobs has zero rows, so an inline CHECK is correct and deliberately
-    -- adds NO third conkey-anchored DO-block (test_do_block_constraint_drops_
-    -- are_column_anchored's count of 2 stays correct).
+    -- 'run_pipeline' has a real handler today, and the CI drift guard for this
+    -- table asserts set(JobKind) == set(dispatch.HANDLERS) — set EQUALITY.
+    -- Declaring three kinds with no handler makes that guard permanently
+    -- unsatisfiable. Widening this CHECK later (once `jobs` holds live rows)
+    -- must use the idempotent DO-block DROP+RE-ADD idiom already proven twice
+    -- in this file (payroll_runs.status, email_messages.purpose) — NOT a
+    -- second inline edit, because by then a bare CREATE TABLE-time CHECK edit
+    -- would be a no-op against a live table. Today jobs has zero rows, so an
+    -- inline CHECK is correct and deliberately adds NO third conkey-anchored
+    -- DO-block (test_do_block_constraint_drops_are_column_anchored's count of
+    -- 2 stays correct).
     kind          TEXT        NOT NULL CHECK (kind IN ('run_pipeline')),
     dedup_key     TEXT        NOT NULL,
-    -- DEVIATION 3: the canonical DDL cascades this FK on delete. CONTEXT.md's
-    -- Claude's-Discretion section overrides it: NO cascading delete, matching
-    -- the deliberate email_messages precedent (append-only audit log). A
-    -- cascading delete would silently vaporize a run's attempt history — the
-    -- one thing this queue exists to make auditable. Runs are never deleted
-    -- today, so this is theoretical either way; choose the direction that
-    -- cannot lose the audit trail.
+    -- DEVIATION 3: an earlier full design cascades this FK on delete. This
+    -- table deliberately does NOT cascade, matching the email_messages
+    -- precedent (append-only audit log). A cascading delete would silently
+    -- vaporize a run's attempt history — the one thing this queue exists to
+    -- make auditable. Runs are never deleted today, so this is theoretical
+    -- either way; choose the direction that cannot lose the audit trail.
     run_id        UUID        REFERENCES payroll_runs(id),
-    -- Reserved for Phase 19 (durable ingest / resume_reply kinds). Nullable and
-    -- unused in Phase 16; its FK target (email_messages) already exists, so
+    -- Reserved for a future durable-ingest / resume-reply kind. Nullable and
+    -- unused today; its FK target (email_messages) already exists, so
     -- declaring it now is free — CREATE TABLE IF NOT EXISTS is a no-op against
     -- a live table, so adding it later would cost an explicit ALTER block.
     email_id      UUID        REFERENCES email_messages(id),
-    -- DEVIATION 2: the canonical DDL also declares an `event_id` column with a
-    -- REFERENCES clause pointing at a durable-ingest events table. OMITTED
-    -- ENTIRELY — that table does NOT EXIST in this schema yet (grep CREATE
-    -- TABLE: businesses, employees, payroll_runs, paystub_line_items,
+    -- DEVIATION 2: an earlier full design also declares an `event_id` column
+    -- with a REFERENCES clause pointing at a durable-ingest events table.
+    -- OMITTED ENTIRELY — that table does NOT EXIST in this schema yet (grep
+    -- CREATE TABLE: businesses, employees, payroll_runs, paystub_line_items,
     -- email_messages, eval_results, demo_sender_bindings, jobs). A FK to a
-    -- non-existent relation fails the bootstrap outright. Phase 19 (durable
-    -- ingest) creates that events table AND adds this column together, via the
-    -- ALTER TABLE ... ADD COLUMN IF NOT EXISTS idiom this file already
+    -- non-existent relation fails the bootstrap outright. A future durable
+    -- ingest effort creates that events table AND adds this column together,
+    -- via the ALTER TABLE ... ADD COLUMN IF NOT EXISTS idiom this file already
     -- documents (see the comments above payroll_runs's and email_messages's
     -- idempotent column-add blocks).
     --
-    -- Reserved for Phase 19. Nullable and unused in Phase 16; its FK target
-    -- (businesses) already exists, so declaring it now is free for the same
-    -- reason as email_id above.
+    -- Reserved for the same future ingest work. Nullable and unused today; its
+    -- FK target (businesses) already exists, so declaring it now is free for
+    -- the same reason as email_id above.
     business_id   UUID        REFERENCES businesses(id),
-    -- Written, never read in v4 — exists so per-tenant fairness stays a later
-    -- ORDER BY change rather than a migration. Fairness lanes are explicitly
-    -- Out of Scope (REQUIREMENTS.md).
+    -- Written, never read today — exists so per-tenant fairness stays a later
+    -- ORDER BY change rather than a migration. Fairness lanes are out of
+    -- scope for the current build.
     priority      INT         NOT NULL DEFAULT 100,
     state         TEXT        NOT NULL DEFAULT 'pending'
                               CHECK (state IN ('pending','leased','done','dead')),
@@ -517,7 +516,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     available_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     lease_token   UUID,
     leased_until  TIMESTAMPTZ,
-    last_error    TEXT,       -- PII-scrubbed through the existing repo._scrub/_build_error_detail (OPS2-01)
+    last_error    TEXT,       -- PII-scrubbed through the existing repo._scrub/_build_error_detail
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_jobs_dedup_key UNIQUE (dedup_key),
@@ -530,19 +529,19 @@ CREATE TABLE IF NOT EXISTS jobs (
         (state =  'leased' AND lease_token IS NOT NULL AND leased_until IS NOT NULL) OR
         (state <> 'leased' AND lease_token IS NULL     AND leased_until IS NULL)
     ),
-    -- DEVIATION 4 (D-17, cross-AI review round 2) — ADDS a constraint the
-    -- canonical DDL does NOT have. run_id stays NULLABLE at the column level
-    -- (Phase 19's `ingest` kind genuinely has no run yet), but 'run_pipeline'
-    -- is the ONLY kind that exists today, and it is meaningless without a run.
-    -- Trace what a null-run run_pipeline job does today: it is claimed,
-    -- dispatched to handle_run_pipeline, which calls claim_status(None, ...) —
-    -- a no-op — and returns normally, so drain_once() marks it 'done'. A job
-    -- that processed no payroll, recorded as a SUCCESS — silent loss, in the
-    -- money path, with no error anywhere. This is a DATABASE constraint, not
-    -- only a Python check, because the guarantee must hold against every
-    -- FUTURE caller — a Phase-19 producer, a raw SQL insert, an ops script —
+    -- DEVIATION 4 — ADDS a constraint an earlier full design does NOT have.
+    -- run_id stays NULLABLE at the column level (a future `ingest` kind
+    -- genuinely has no run yet), but 'run_pipeline' is the ONLY kind that
+    -- exists today, and it is meaningless without a run. Trace what a
+    -- null-run run_pipeline job does today: it is claimed, dispatched to
+    -- handle_run_pipeline, which calls claim_status(None, ...) — a no-op —
+    -- and returns normally, so drain_once() marks it 'done'. A job that
+    -- processed no payroll, recorded as a SUCCESS — silent loss, in the money
+    -- path, with no error anywhere. This is a DATABASE constraint, not only a
+    -- Python check, because the guarantee must hold against every FUTURE
+    -- caller — a future ingest producer, a raw SQL insert, an ops script —
     -- not merely against enqueue_job's signature. enqueue_job ALSO rejects
-    -- this in Python (16-04) because a legible ValueError beats a driver
+    -- this in Python because a legible ValueError beats a driver
     -- IntegrityError; the two are independent guards, each proven by its own
     -- test. This is an INLINE table constraint (jobs has no live rows to
     -- migrate on first deploy), so it deliberately adds NO third
@@ -554,8 +553,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 -- Partial index matching the claim query's WHERE predicate EXACTLY. done/dead
 -- rows (the overwhelming majority over time) are never indexed, so the claim
--- stays O(1) forever with no purge job. No index on run_id: nothing in this
--- phase queries jobs by run_id — the ops view that would is OPS-01 (Phase 21).
+-- stays O(1) forever with no purge job. No index on run_id today: nothing in
+-- the current scope queries jobs by run_id — an ops view that would is a
+-- future addition.
 CREATE INDEX IF NOT EXISTS idx_jobs_claimable
     ON jobs (priority, available_at)
     WHERE state IN ('pending','leased');

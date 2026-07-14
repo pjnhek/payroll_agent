@@ -25,17 +25,16 @@ import uuid
 class JobKind(enum.StrEnum):
     """The kind of work a `jobs` row represents — a FUNCTION NAME, never a status.
 
-    Exactly ONE member this phase: `RUN_PIPELINE`. The full design (see
-    `.planning/research/ARCHITECTURE.md` §4) eventually names four kinds
-    (`ingest`, `run_pipeline`, `resume_reply`, `operator_resume`), but Phase 16
-    ships a real handler for only one of them. `app/queue/dispatch.py`'s CI
-    guard asserts `set(JobKind) == set(HANDLERS)` — set EQUALITY. Pre-declaring
-    the other three kinds now would make that guard permanently unsatisfiable
-    (three kinds with no registered handler), and the only way to "fix" an
-    unsatisfiable `==` guard is to weaken it to `⊇`, which would silently
-    permit exactly the phantom-kind-with-no-handler the guard exists to catch.
-    Widen this enum deliberately in a later phase, in the SAME commit that adds
-    the new kind's handler — never ahead of it.
+    Exactly ONE member today: `RUN_PIPELINE`. The full eventual design names
+    four kinds (`ingest`, `run_pipeline`, `resume_reply`, `operator_resume`),
+    but only one of them ships with a real handler right now.
+    `app/queue/dispatch.py`'s CI guard asserts `set(JobKind) == set(HANDLERS)`
+    — set EQUALITY. Pre-declaring the other three kinds now would make that
+    guard permanently unsatisfiable (three kinds with no registered handler),
+    and the only way to "fix" an unsatisfiable `==` guard is to weaken it to
+    `⊇`, which would silently permit exactly the phantom-kind-with-no-handler
+    the guard exists to catch. Widen this enum deliberately in a later build,
+    in the SAME commit that adds the new kind's handler — never ahead of it.
     """
 
     RUN_PIPELINE = "run_pipeline"
@@ -69,11 +68,11 @@ class Job:
     SIX fields, in this order: `id`, `kind`, `run_id`, `attempts`,
     `max_attempts`, `lease_token`. Nothing else — no `email_id`, no payload, no
     next-state field. `jobs.email_id` still exists as a table COLUMN (reserved
-    for Phase 19), but no field for it lives here: nothing in Phase 16 reads
-    it, and a dataclass field with no consumer is a lie about the contract this
-    docstring states — that `Job` mirrors `RETURNING`.
+    for a future ingest kind), but no field for it lives here: nothing today
+    reads it, and a dataclass field with no consumer is a lie about the
+    contract this docstring states — that `Job` mirrors `RETURNING`.
 
-    This bijection is machine-enforced, not left to care: plan 16-04's
+    This bijection is machine-enforced, not left to care:
     `tests/test_repo_jobs_sql.py` parses `claim_job`'s `RETURNING` clause and
     asserts every returned column maps EXACTLY ONCE onto a `Job` field, and
     every `Job` field has EXACTLY ONE returned column — set equality, both
