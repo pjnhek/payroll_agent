@@ -26,6 +26,7 @@ dev = [
     "numpy>=1.26.0",
     "pytest",
     "ruff",
+    "types-pyyaml>=6.0.12.20260518",
 ]
 
 [build-system]
@@ -41,6 +42,7 @@ include = ["app*"]
 markers = [
     "integration: marks tests as requiring a live database (deselect with -m 'not integration')",
     "live_llm: marks tests as hitting real DeepSeek/Kimi APIs (deselect with -m 'not live_llm')",
+    "queueproof: a durability proof for the v4 job queue; MUST execute in CI against a real Postgres",
 ]
 
 [tool.ruff]
