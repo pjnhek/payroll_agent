@@ -65,24 +65,23 @@ success criterion #2 forbids.
   Rewinding makes the CAS always succeed, so the lease becomes the only thing standing between a
   *slow-but-alive* worker and a genuine double-run. Set it well above the pipeline's observed worst
   case (the pipeline is ~1–2 LLM calls + a PDF), and write down, as a constraint comment: the chosen
-  number, the measured runtime it is derived from, and the double-run-is-harmless argument
-  (delivery's already-sent guard + `replace_line_items`' delete-then-insert idempotence — the same
-  argument `retrigger`'s own docstring already makes for allowing stale `SENT` claims). **No lease
+  number, and the measured runtime it is derived from. **No lease
   heartbeat** — it would burn a connection per extension against the `max_size=5` budget and add a
   failure mode (heartbeat thread dies, work continues) worse than the one it prevents.
+  > **⚠ NARROWED BY D-13 (2026-07-14, cross-AI review).** D-03 originally also asked the comment to
+  > carry a "double-run-is-harmless argument". **That argument was FALSE for the send path** and must
+  > not be written down as stated. A double-run is harmless for *pipeline state* only. See D-13 for
+  > the accurate, narrowed claim and for the fix that makes the send path safe.
+
+- **D-04: Generalize `concurrency-proof.yml`.** ~~Change line 89 from a hard-coded file list to
+  collection over the whole suite (`pytest tests/ -m integration`).~~
+  > **⚠ SUPERSEDED BY D-14 (2026-07-14, cross-AI review).** Codex + an independent re-trace CONFIRMED
+  > that whole-suite `-m integration` collection is **not** behavior-preserving: **12** files in
+  > `tests/` already carry an `integration` marker, so generalizing collection would wake **10
+  > dormant live-DB modules** at once against a shared Postgres with a destructive module-scope reset
+  > (`tests/conftest.py:74-93`). See **D-14** for the locked replacement.
 
 ### CI proof surface
-
-- **D-04: Generalize `concurrency-proof.yml` NOW, in this phase.** Change line 89 from a hard-coded
-  file list (`tests/test_concurrency_proof.py tests/test_email_epoch_arbiter_integration.py`) to
-  collection over the whole suite (`pytest tests/ -m integration`), so **any** `@pytest.mark.integration`
-  test is picked up automatically, forever. **Keep the existing skip-guard** (lines 90–97) — it reds
-  the build on any skip, which turns a mis-collected test into a loud failure instead of a silent
-  one. Note `deselected` ≠ `skipped`, so the guard does not false-positive on hermetic tests.
-  Rationale: this is the milestone's own named cross-cutting hazard #1, Phase 16 is the first phase
-  to trip it (criteria 2, 3, and 4 all need a real Postgres), and fixing it here means Phases 17–21
-  add proofs with zero workflow edits. Research recommended this pull-forward independently
-  (`ARCHITECTURE.md` §8 Q3).
 
 - **D-05: Replace the magic-number guards in `tests/test_status_drift.py` with inventory-pinned assertions.**
   The `jobs` table will detonate two of them on contact:
@@ -151,6 +150,87 @@ success criterion #2 forbids.
   `jobs` table that silently fails to apply on Render would go undetected. Also fixes the related gap
   research found: **`bootstrap.py`'s `_DROP_ORDER` omits `jobs`** (Pitfall 4), which breaks hermetic
   test isolation on the `ALLOW_DB_RESET` fixture path.
+
+### Cross-AI review resolutions (locked 2026-07-14, after the Codex plan review)
+
+- **D-13: FORWARD-PORT THE SEND-IDEMPOTENCY FIX INTO PHASE 16.**
+
+  **Why it is not optional.** Phase 16 ships LIVE daemon workers (16-07: two lifespan-managed threads
+  that poll and claim) AND expired-lease reclaim (ROADMAP criterion #3; plan 16-09 is literally "a
+  retrigger survives a worker death and completes on the next drain"). The reclaim path is live in
+  **this** phase, not a future one — so the double-send window it opens must close in **this** phase.
+
+  **The defect, traced against live source.** `gateway.send_outbound` reserves an outbound row with a
+  freshly-minted synthetic `message_id` (`gateway.py:271-289`), calls the provider
+  (`gateway.py:339-345`), and only THEN flips the row to `'sent'` (`gateway.py:355-359`). Every
+  existing duplicate guard counts **only** `send_state='sent'` rows — `get_outbound_message_id`
+  (`emails.py:140-171`, delivery's confirmation guard) and `get_outbound_for_round`
+  (`emails.py:174-218`, clarify's round guard). A worker killed between provider-acceptance and the
+  sent-commit therefore leaves **no `'sent'` row while the client already has the email**. A reclaim
+  re-runs the pipeline, the guard sees nothing, and the client gets a **SECOND email** under a brand
+  new `message_id` — which, because that synthetic id is the sole reply-routing anchor, would also
+  orphan the client's reply.
+
+  **The rule (fail-closed).** An **unconfirmed** outbound row — `send_state IN ('reserved','failed')`
+  — for this run's `(run_id, purpose, round, epoch)` slot means *the message may already have reached
+  the provider*. `'failed'` counts too: `send_outbound` flips to `'failed'` on **any** Resend
+  exception, including a timeout **after** the mail was accepted (REQUIREMENTS.md SEND-01 says this
+  in as many words). So a rerun **MUST NOT send again**. It escalates to the operator instead.
+
+  **The escalation mechanism, and why it composes.** The guard raises; the pipeline's existing
+  catch-all error boundary lands the run in **`ERROR`**. `ERROR` is deliberately **outside**
+  `rewind_for_reclaim`'s three-status scope (D-01/D-02), so **the machine never auto-retries it**.
+  Only a **human** Retrigger can move it — and a human Retrigger bumps `reply_epoch`, which moves the
+  run into a new epoch where the guard (epoch-scoped) sees no reservation and permits the send. That
+  is exactly REQUIREMENTS.md's already-reviewed **"Accepted residual risk"**: *an operator retrigger
+  can legitimately send a second email.* A human may take that risk; the machine may not.
+
+  **This makes D-02's argument TRUE rather than aspirational.** D-02 says the automatic rewind must
+  not bump the epoch *so that* delivery's already-sent guard still suppresses the second email. As
+  shipped today that is FALSE for the crash-mid-send case, because the guard counts only `'sent'`.
+  D-13 is the missing half of D-02.
+
+  **It is a forward-port of Phase 20, not a divergent fix.** REQUIREMENTS.md **SEND-03** already
+  specifies the end state: *"Past that window there is no provider dedup at all: a stale reservation
+  **escalates to a human and is never auto-resent**."* Phase 20 keeps D-13's detection predicate and
+  its repo query, and only **widens the action**: within Resend's 24-hour idempotency retention
+  window it will REPLAY the reservation (same `message_id`, persisted payload, `Idempotency-Key` —
+  SEND-01/02/03) instead of escalating; escalation is retained for the past-the-window case. Phase 20
+  has nothing to undo.
+
+  **Scope fence.** D-13 does NOT implement SEND-01/02/03. No `Idempotency-Key`, no payload replay, no
+  `message_id` reuse, and it does NOT delete the dead `send_outbound(send_state=...)` parameter (that
+  pre-flight belongs to SEND-01). It adds exactly one repo read, one shared guard, and two call sites.
+
+  **Every claim in the plans that "double-runs are harmless" is DELETED and replaced** with the
+  narrowed statement: a double-run is harmless for *pipeline state* (`claim_status`' CAS makes each
+  advance at-most-once; `replace_line_items` is DELETE-then-INSERT, idempotent by value) — and it is
+  harmless for the *client-facing send* **only because D-13's guard is fail-closed**.
+
+- **D-14: KEEP THE CI GATE NARROW — a dedicated `queueproof` marker.**
+
+  Do NOT generalize CI collection to the whole suite (that was D-04, now superseded). Give the
+  queue/durability proofs their **own** marker and select on **that**:
+
+  - Register `queueproof` in `pyproject.toml`'s `[tool.pytest.ini_options] markers`.
+  - `concurrency-proof.yml`'s existing "Run the real-Postgres invariant proofs" step stays
+    **byte-identical** — same two files, same `-m integration`, same skip-guard. Zero blast radius.
+  - A **second, new** step runs `pytest tests/ -m queueproof` with an **identical** skip-guard
+    (any skip → red; nothing passed → red). Phases 17–21 add durability proofs by marking them
+    `queueproof` — zero workflow edits, forever, which is what D-04 actually wanted.
+
+  **Why not whole-suite `-m integration`:** **12** files in `tests/` already carry an `integration`
+  marker (`test_atomic_persist`, `test_claim_status`, `test_concurrency_proof`, `test_dashboard`,
+  `test_email_epoch_arbiter_integration`, `test_gateway`, `test_ingest`, `test_persistence`,
+  `test_seed_roundtrip`, `test_stuck_run_recovery`, `test_threading`, `test_webhook_dedup_race`).
+  Only **2** run in CI today. Generalizing would wake **10 dormant live-DB modules** at once against a
+  shared Postgres with a destructive module-scope reset (`tests/conftest.py:74-93`) — a large,
+  unbudgeted, unrelated change hiding inside a durability phase. Plan 16-02's original
+  "behavior-preserving" acceptance criterion was **false as written**.
+
+  **The 10 dormant modules are a PRE-EXISTING gap.** This phase must neither silently widen it nor
+  pretend to fix it. It is recorded as a **backlog item** (see `.planning/ROADMAP.md` → Backlog) and
+  acted on in a later, dedicated piece of work — not here.
 
 ### Claude's Discretion
 

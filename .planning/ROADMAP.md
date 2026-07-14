@@ -60,30 +60,39 @@ one already-manual, low-risk producer (operator retrigger) before the money path
   4. A routine redeploy (graceful worker shutdown) releases any held leases immediately, so an in-flight retrigger resumes within seconds rather than stalling for the full lease duration.
   5. A CI-enforced guard fails the build if a `jobs.kind` value ever collides with a `payroll_runs.status` value or drifts from the `JobKind` enum — the job row can never encode "what payroll status comes next."
 
-**Plans**: 9 plans, 5 waves
+**Plans**: 10 plans, 5 waves
+*(Replanned 2026-07-14 after a cross-AI plan review. Two scope-level decisions were locked: **D-13** —
+forward-port the send-idempotency fix into this phase, because this phase is where live workers and
+lease-expiry reclaim actually ship, so this is where the double-send window actually opens; and
+**D-14** — keep the CI gate narrow (a dedicated `queueproof` marker), superseding D-04's whole-suite
+`-m integration` collection, which would have woken 10 dormant live-DB modules at once. Plan **16-10**
+is the new plan; it is numbered 10 but **runs in wave 3** — deliberately BEFORE the wave-4 plans that
+start the first live workers.)*
+
 **Wave 1**
 
-- [ ] 16-01-PLAN.md — Unblock the inbound webhook: `run_in_threadpool` around the Resend fetch, the ingest transaction, and the response-shaping branches (D-11) + Proof 1 *(wave 1)*
-- [ ] 16-02-PLAN.md — Proof surface + config knobs: generalize `concurrency-proof.yml` to marker collection (D-04) and add `WORKER_COUNT`/`LEASE_SECONDS`/`MAX_ATTEMPTS` with derivations (D-03/D-08) *(wave 1)*
-- [ ] 16-03-PLAN.md — The `jobs` table, `JobKind`/`JobState`, `_DROP_ORDER`, and the D-05 inventory-pinned index guard *(wave 1)*
+- [ ] 16-01-PLAN.md — Unblock the inbound webhook: `run_in_threadpool` around the Resend fetch, the ingest transaction, and the response-shaping branches (D-11) + Proof 1 + the cross-thread `BackgroundTasks` proof *(wave 1)*
+- [ ] 16-02-PLAN.md — Proof surface + config knobs: the `queueproof` marker and a NARROW second CI gate (D-14) and `WORKER_COUNT`/`LEASE_SECONDS`/`MAX_ATTEMPTS` with derivations (D-03/D-08) *(wave 1)*
+- [ ] 16-03-PLAN.md — The `jobs` table, `JobKind`/`JobState`/`Job` (6 fields), `_DROP_ORDER`, and the D-05 inventory-pinned index guard *(wave 1)*
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 16-04-PLAN.md — `app/db/repo/jobs.py`: the claim/lease/fencing protocol, `clear_reply_context -> epoch`, `rewind_for_reclaim` (D-02), the fakes, and Proof 3 *(wave 2)*
+- [ ] 16-04-PLAN.md — `app/db/repo/jobs.py`: the claim/lease/fencing protocol, the `RETURNING`↔`Job` bijection test, `clear_reply_context -> epoch`, `rewind_for_reclaim` (D-02), the fakes + the universal fake-repo pairing guard, and Proof 3 *(wave 2)*
 - [ ] 16-05-PLAN.md — `/health/schema` covers `jobs` (D-12) + Proof 5's collision and enum-drift guards *(wave 2)*
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 16-06-PLAN.md — `app/queue/`: wake (D-09), dispatch, the `run_pipeline` handler (D-01 rewind + INVARIANT J-1), and `drain_once()` *(wave 3)*
+- [ ] 16-06-PLAN.md — `app/queue/`: wake (D-09), dispatch, the `run_pipeline` handler (D-01 rewind + the restated INVARIANT J-1 + its CAS-only static guard), `drain_once()`, and the pre-FAIL-01 pin test *(wave 3)*
+- [ ] 16-10-PLAN.md — **D-13: the fail-closed send-idempotency guard.** A `reserved`/`failed` outbound row in the run's current epoch means the provider MAY already hold the message → do NOT re-send, escalate to the operator. Lands BEFORE the first live worker. *(wave 3)*
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 16-07-PLAN.md — Worker threads + the app's first `lifespan`, the D-07 pool-budget refusal, and Proof 4 *(wave 4)*
+- [ ] 16-07-PLAN.md — Worker threads + the app's first `lifespan`, the D-07 pool-budget refusal, the second-start/generation guard, and Proof 4 *(wave 4)*
 - [ ] 16-08-PLAN.md — Retrigger cutover: one caller-owned transaction, `enqueue_job`, post-commit wake, no UI change (D-10) *(wave 4)*
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 16-09-PLAN.md — Proof 2: a retrigger survives a worker death and completes on the next drain *(wave 5)*
+- [ ] 16-09-PLAN.md — Proof 2: a retrigger survives a worker death and completes on the next drain; plus the phase's residual-risk table *(wave 5)*
 
 ### Phase 17: The Pump
 
@@ -176,6 +185,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 - Custom email domain (send FROM a real address) — documented upgrade path in README
 - Additional Medicare 0.9% surtax modeling; SS wage-base straddle exactness (per-employee YTD Medicare ledger) — accepted limitations, tax-completeness features not hardening
 - Schema-parity backlog: versioned/ordered migrations + migration-history table, hard deploy gate blocking Render deploy on drift — separate future milestone, needs paid plan or self-managed release step
+- **10 dormant `integration`-marked test modules never execute in CI.** `concurrency-proof.yml` is the only workflow with a real Postgres and selects test files BY NAME (2 files); **12** files under `tests/` carry `@pytest.mark.integration`. Phase 16 (D-14) deliberately did NOT widen the gate to fix this — collecting all 12 at once would wake 10 live-DB modules against a shared Postgres with a destructive module-scope reset (`tests/conftest.py:74-93`), which is a large, unbudgeted change to smuggle inside a durability phase. Phase 16 instead adds a NARROW `queueproof` gate for new durability proofs. **The 10 dormant modules are a pre-existing gap and need their own dedicated work:** inventory and classify each, make it reliable under a shared Postgres (or isolate it), then bring it into CI. Files: `test_atomic_persist`, `test_claim_status`, `test_dashboard`, `test_gateway`, `test_ingest`, `test_persistence`, `test_seed_roundtrip`, `test_stuck_run_recovery`, `test_threading`, `test_webhook_dedup_race`.
 - v4 out-of-scope, schema-shaped for later if traffic ever changes: per-tenant fairness lanes, priority lanes, adaptive backpressure, circuit breakers (LLM/Resend), an N-concurrent-email load chart, operator authentication (`jobs.business_id`/`priority` are written but unread — each stays a future `ORDER BY` change, not a migration)
 
 ## Progress
