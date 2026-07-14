@@ -10,7 +10,13 @@ from typing import Any, cast
 import psycopg
 
 from app.db.repo._shared import _conn_ctx, _nulltx
-from app.models.contracts import ClarifiedFields, Decision, Extracted, PaystubLineItem
+from app.models.contracts import (
+    ClarifiedFields,
+    Decision,
+    Extracted,
+    HoursChange,
+    PaystubLineItem,
+)
 from app.models.roster import NameMatchResult
 
 logger = logging.getLogger("payroll_agent.repo")
@@ -273,6 +279,32 @@ def load_clarified_fields(
     )
 
 
+def set_hours_changes(
+    run_id: uuid.UUID,
+    changes: list[HoursChange],
+    conn: psycopg.Connection | None = None,
+) -> None:
+    """Write the hours_changes JSONB column. DATA-ONLY — it never writes status.
+
+    The cross-round paid->paid hours CHANGES the operator must see before approving the
+    money (regular 20 -> 40, overtime 10 -> 2). The orchestrator calls this
+    UNCONDITIONALLY inside its persist transaction — including with an empty list — so a
+    stale value from a dead attempt cannot survive into a run the operator is looking at.
+    "No changes" is a fact worth writing, not an absence of one.
+
+    DISPLAY-ONLY by type: HoursChange has no `issue_type`, so nothing written here can be
+    promoted to a ValidationIssue or reach decide(). See app/models/contracts.HoursChange.
+    """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        c.execute(
+            "UPDATE payroll_runs SET hours_changes = %s, updated_at = now() WHERE id = %s",
+            (
+                json.dumps([ch.model_dump(mode="json") for ch in changes]),
+                str(run_id),
+            ),
+        )
+
+
 def get_clarification_round(
     run_id: uuid.UUID, conn: psycopg.Connection | None = None
 ) -> int:
@@ -317,12 +349,14 @@ def clear_reply_context(
     """Null ALL reply-round context on a run in one statement.
 
     Context lost means ALL of it: the pre-clarify snapshot, the field-regression
-    outcomes, the round counter AND the suggestion/candidate state are cleared
-    together. A retrigger that wiped only some of these would leave the round
-    machine (or the alias-suggestion state) referencing a conversation that no
-    longer exists. Caller-joinable transaction, so the retrigger route can clear
-    strictly AFTER a winning claim_status, in the transaction that commits before
-    the pipeline is re-scheduled.
+    outcomes, the round counter, the recorded cross-round hours CHANGES AND the
+    suggestion/candidate state are cleared together. A retrigger that wiped only some of
+    these would leave the round machine (or the alias-suggestion state) referencing a
+    conversation that no longer exists — and hours_changes IS reply-round context: it is a
+    diff BETWEEN rounds, so a surviving record would show the operator a change belonging
+    to a conversation the retrigger just destroyed. Caller-joinable transaction, so the
+    retrigger route can clear strictly AFTER a winning claim_status, in the transaction
+    that commits before the pipeline is re-scheduled.
 
     The statement ALSO bumps reply_epoch = reply_epoch + 1, and that bump is
     load-bearing. This function does NOT touch email_messages — the audit log is
@@ -344,7 +378,7 @@ def clear_reply_context(
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         c.execute(
             "UPDATE payroll_runs SET clarified_fields = NULL, pre_clarify_extracted = NULL,"
-            " clarification_round = 0, alias_candidates = NULL,"
+            " clarification_round = 0, alias_candidates = NULL, hours_changes = NULL,"
             " reply_epoch = reply_epoch + 1, updated_at = now()"
             " WHERE id = %s",
             (str(run_id),),

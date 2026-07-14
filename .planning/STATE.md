@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 Phase: 15 — Comment Hygiene & Deferred-Polish Triage (COMPLETE)
 Plan: 11/11 complete
 Status: v3 milestone COMPLETE — all 4 phases (12, 13, 14, 15) shipped
-Last activity: 2026-07-13 — v3 archived and tagged
+Last activity: 2026-07-14 — Completed quick task 260713-oi6: clarify-round hours safety (drop-detection blind spot + operator-visible hours changes)
 
 ## Performance Metrics
 
@@ -175,6 +175,7 @@ _None open._ All v1/v2 research flags and checkpoints were resolved as their pha
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260621-11x | Fix order-dependent test test_no_db_connection_needed + add close_pool() for clean pool shutdown (IN-04) | 2026-06-21 | dc7ce86 | [260621-11x-fix-order-dependent-test-test-no-db-conn](./quick/260621-11x-fix-order-dependent-test-test-no-db-conn/) |
+| 260713-oi6 | Harden clarify-round hours safety: fix drop-detection blind spot for the clarified employee, and surface cross-round hours changes to the operator | 2026-07-14 | 43ed368 | [260713-oi6-harden-clarify-round-hours-safety-fix-dr](./quick/260713-oi6-harden-clarify-round-hours-safety-fix-dr/) |
 | 260709-uvz | Ignore personal system-design audit files and commit Phase 13 governance artifacts | 2026-07-10 | 56afd4f | [260709-uvz-ignore-personal-system-design-audit-file](./quick/260709-uvz-ignore-personal-system-design-audit-file/) |
 | 260710-iw0 | Rewrite README for recruiter-first clarity and correct inaccurate claims | 2026-07-10 | 5b9eda1 | [260710-iw0-rewrite-readme-for-recruiter-first-clari](./quick/260710-iw0-rewrite-readme-for-recruiter-first-clari/) |
 

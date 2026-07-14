@@ -54,6 +54,7 @@ from app.db.repo.pipeline_state import (
     set_alias_candidates,
     set_clarification_round,
     set_clarified_fields,
+    set_hours_changes,
     set_pre_clarify_extracted,
     update_known_alias,
 )
@@ -117,6 +118,7 @@ __all__ = [
     "set_alias_candidates",
     "set_clarification_round",
     "set_clarified_fields",
+    "set_hours_changes",
     "set_pre_clarify_extracted",
     "update_known_alias",
     "load_roster_for_business",

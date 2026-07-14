@@ -37,7 +37,7 @@ logger = logging.getLogger("payroll_agent.repo")
 # Add the column here whenever you add a load_run consumer for it.
 RUN_COLS = (
     "id, business_id, source_email_id, status, extracted_data, decision,"
-    " reconciliation, error_reason, error_detail, alias_candidates,"
+    " reconciliation, error_reason, error_detail, alias_candidates, hours_changes,"
     " pay_period_start, pay_period_end, updated_at"
 )
 

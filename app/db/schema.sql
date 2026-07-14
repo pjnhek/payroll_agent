@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS payroll_runs (
     alias_candidates JSONB,
     pre_clarify_extracted JSONB,    -- write-once snapshot taken at awaiting_reply
     clarified_fields      JSONB,    -- {employee_id: {field: outcome}} field-regression outcomes
+    -- list[HoursChange] — cross-round paid->paid hours CHANGES (20 -> 40 regular). Written
+    -- UNCONDITIONALLY (as [] when there are none) by every run and every resume, so a stale
+    -- value from a dead attempt is structurally impossible. DISPLAY-ONLY: rendered to the
+    -- operator at the approval gate, never read by decide().
+    hours_changes         JSONB,
     -- Counts clarification / clarification_field_regression sends for this run. Drives
     -- the round-aware send guard and the cap-to-needs_operator escalation. NOT NULL
     -- DEFAULT 0, so a run that has never clarified reads as round 0 rather than NULL.
@@ -129,6 +134,7 @@ ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS alias_candidates  JSONB;
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS record_only       BOOLEAN NOT NULL DEFAULT FALSE;  -- compose-created demo runs skip the real provider send
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS pre_clarify_extracted JSONB;
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarified_fields      JSONB;
+ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS hours_changes         JSONB;   -- display-only cross-round paid->paid hours changes
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS error_detail          TEXT;   -- PII-scrubbed, stage-prefixed, truncated exception detail
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS clarification_round   INT NOT NULL DEFAULT 0;
 ALTER TABLE payroll_runs ADD COLUMN IF NOT EXISTS reply_epoch            INT NOT NULL DEFAULT 0;

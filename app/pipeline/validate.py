@@ -17,13 +17,29 @@ What validate does NOT do: it does not (and structurally cannot) emit `non_numer
 parse boundary (ExtractedEmployee is Decimal|None + ge=0 + extra="forbid"), and is routed
 through the client's one reflective retry. By the time a typed Extracted exists, every
 present hours value is already a valid non-negative Decimal.
+
+This module also hosts TWO pure cross-round hours-diff detectors over ONE shared pairing
+(_pair_by_employee_id), and the split between them is deliberate:
+
+  detect_field_regression  paid -> UNPAID (dropped, or explicitly zeroed). Its RawFieldDrops
+                           become ValidationIssues and DO GATE the run — the client is asked.
+  detect_hours_changes     paid -> PAID, different value. Its HoursChanges are DISPLAY-ONLY:
+                           never passed to validate(), never passed to decide(), rendered to
+                           the human operator at the approval gate. HoursChange has no
+                           `issue_type`, so it cannot become a ValidationIssue — the type is
+                           the enforcement, not the convention.
+
+Do not merge them. Their triggers are disjoint on purpose (a zeroed line is a REGRESSION,
+not a change, because is_paid(Decimal('0')) is False), so no money event is ever
+double-reported through two mechanisms. Every cross-round change a client makes is either
+gated by code or visible to the human; neither is silently swallowed.
 """
 from __future__ import annotations
 
 from decimal import Decimal
 from uuid import UUID
 
-from app.models.contracts import Extracted, ExtractedEmployee, RawFieldDrop
+from app.models.contracts import Extracted, ExtractedEmployee, HoursChange, RawFieldDrop
 from app.models.roster import NameMatchResult, Roster, ValidationIssue
 
 HOURS_FIELDS = (
@@ -80,6 +96,55 @@ def _employee_pay_periods_per_year(
     return None
 
 
+def _id_keyed(
+    extracted: Extracted,
+    matches: list[NameMatchResult],
+) -> dict[UUID, ExtractedEmployee]:
+    """Reduce one Extracted to {employee_id: ExtractedEmployee} via its match list.
+
+    Only `resolved` matches with a non-None matched_employee_id contribute. Last entry
+    wins if one employee appears twice under two names.
+    """
+    name_to_id: dict[str, UUID] = {
+        m.submitted_name: m.matched_employee_id
+        for m in matches
+        if m.resolved and m.matched_employee_id is not None
+    }
+    id_keyed: dict[UUID, ExtractedEmployee] = {}
+    for emp in extracted.employees:
+        emp_id = name_to_id.get(emp.submitted_name)
+        if emp_id is not None:
+            id_keyed[emp_id] = emp
+    return id_keyed
+
+
+def _pair_by_employee_id(
+    original: Extracted,
+    resumed: Extracted,
+    prior_matches: list[NameMatchResult],
+    current_matches: list[NameMatchResult],
+) -> list[tuple[ExtractedEmployee, ExtractedEmployee]]:
+    """Pair the SAME PERSON across the round boundary. The one identity map, shared.
+
+    Keyed by EMPLOYEE ID, never by submitted name: 'M. Chen' in the original and 'Maria
+    Chen' in the reply are one person, and a name-keyed pairing would see two strangers —
+    the drop (or the change) would go unnoticed.
+
+    Both hours-diff detectors in this module call THIS helper. Exactly one implementation
+    of the pairing may exist here: two copies could drift on the resolved-filter, the
+    last-entry-wins rule, or the ordering, and the two detectors would then disagree about
+    who the snapshot employee is — over the same money.
+
+    Sorted by employee id string so BOTH detectors' output order is deterministic (the
+    regression reasons become client-facing email copy; the changes become operator-facing
+    page copy — unstable ordering churns both).
+    """
+    id_to_orig = _id_keyed(original, prior_matches)
+    id_to_resumed = _id_keyed(resumed, current_matches)
+    common_ids = sorted(set(id_to_orig) & set(id_to_resumed), key=str)
+    return [(id_to_orig[i], id_to_resumed[i]) for i in common_ids]
+
+
 def detect_field_regression(
     original: Extracted,
     resumed: Extracted,
@@ -98,10 +163,7 @@ def detect_field_regression(
     PUBLIC function: the orchestrator imports and calls it directly. It is NOT called
     internally by validate().
 
-    The diff is keyed by EMPLOYEE ID, not by submitted name: both Extracted objects are
-    reduced to {employee_id: ExtractedEmployee} using the match results before comparing.
-    Otherwise 'M. Chen' in the original and 'Maria Chen' in the reply — the same person —
-    would look like two different people and the drop would go unnoticed.
+    The diff is keyed by EMPLOYEE ID, not by submitted name (see _pair_by_employee_id).
 
     Returns [] immediately when prior_matches is None (an honest, documented no-op).
     Production always threads prior_matches from the pre-resume reconciliation, so this
@@ -111,37 +173,10 @@ def detect_field_regression(
     if prior_matches is None:
         return []
 
-    # Build id_to_orig: {employee_id: ExtractedEmployee} from original + prior_matches.
-    name_to_id_prior: dict[str, UUID] = {
-        m.submitted_name: m.matched_employee_id
-        for m in prior_matches
-        if m.resolved and m.matched_employee_id is not None
-    }
-    id_to_orig: dict[UUID, ExtractedEmployee] = {}
-    for emp in original.employees:
-        emp_id = name_to_id_prior.get(emp.submitted_name)
-        if emp_id is not None:
-            id_to_orig[emp_id] = emp  # last entry wins if one employee appears twice
-
-    # Build id_to_resumed: {employee_id: ExtractedEmployee} from resumed + current_matches.
-    name_to_id_current: dict[str, UUID] = {
-        m.submitted_name: m.matched_employee_id
-        for m in current_matches
-        if m.resolved and m.matched_employee_id is not None
-    }
-    id_to_resumed: dict[UUID, ExtractedEmployee] = {}
-    for emp in resumed.employees:
-        emp_id = name_to_id_current.get(emp.submitted_name)
-        if emp_id is not None:
-            id_to_resumed[emp_id] = emp  # last entry wins if one employee appears twice
-
-    # Diff the employees present in BOTH maps. Sorted so the issue order is deterministic
-    # (the reasons are client-facing copy; unstable ordering would churn the email text).
     drops: list[RawFieldDrop] = []
-    common_ids = sorted(set(id_to_orig) & set(id_to_resumed), key=str)
-    for emp_id in common_ids:
-        orig_emp = id_to_orig[emp_id]
-        resumed_emp = id_to_resumed[emp_id]
+    for orig_emp, resumed_emp in _pair_by_employee_id(
+        original, resumed, prior_matches, current_matches
+    ):
         current_name = resumed_emp.submitted_name  # name the client used in the reply
 
         for field in HOURS_FIELDS:
@@ -162,6 +197,65 @@ def detect_field_regression(
                 )
 
     return drops
+
+
+def detect_hours_changes(
+    original: Extracted,
+    resumed: Extracted,
+    prior_matches: list[NameMatchResult] | None,
+    current_matches: list[NameMatchResult],
+) -> list[HoursChange]:
+    """Detect hours values the client CHANGED (paid -> paid, different) across a round.
+
+    PUBLIC pure function, DISPLAY-ONLY. The orchestrator calls it, persists the result to
+    payroll_runs.hours_changes, and the operator sees it on the approval page. It is NEVER
+    passed to validate() and NEVER reaches decide(): `HoursChange` has no `issue_type`, so
+    it structurally cannot become a `ValidationIssue`. That type wall is the guarantee.
+
+    Why it is not a gate: the accumulation design stands — a client's corrected value WINS
+    and is PAID without re-asking (tests/test_multiround_context_edge.py). The gap this
+    closes is that the human APPROVING the payroll could not see the change had happened.
+    Every money-moving change a client makes across a clarification round is now either
+    GATED BY CODE (a drop -> clarify) or VISIBLE TO THE HUMAN (a change -> banner).
+    Neither is silently swallowed.
+
+    The trigger is DISJOINT from detect_field_regression's, and that is load-bearing: a
+    drop (10 -> None) and an explicit zeroing (10 -> Decimal('0')) are both paid -> UNPAID
+    (is_paid(Decimal('0')) is False), so they belong to the regression detector and are
+    silent here. Otherwise one money event would be reported twice through two mechanisms.
+    An ADDED line (None -> 40) is an explicit non-goal: paid->paid only.
+
+    Like detect_field_regression: runs on the RAW pre-backfill extraction (post-backfill
+    the change is papered over), and returns [] when prior_matches is None — the same
+    honest no-op.
+    """
+    if prior_matches is None:
+        return []
+
+    changes: list[HoursChange] = []
+    for orig_emp, resumed_emp in _pair_by_employee_id(
+        original, resumed, prior_matches, current_matches
+    ):
+        current_name = resumed_emp.submitted_name  # name the client used in the reply
+
+        for field in HOURS_FIELDS:
+            original_val = getattr(orig_emp, field)
+            resumed_val = getattr(resumed_emp, field)
+            if (
+                is_paid(original_val)
+                and is_paid(resumed_val)
+                and original_val != resumed_val
+            ):
+                changes.append(
+                    HoursChange(
+                        submitted_name=current_name,
+                        field=field,
+                        original_value=original_val,
+                        resumed_value=resumed_val,
+                    )
+                )
+
+    return changes
 
 
 def validate(
