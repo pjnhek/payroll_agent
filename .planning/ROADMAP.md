@@ -60,7 +60,17 @@ one already-manual, low-risk producer (operator retrigger) before the money path
   4. A routine redeploy (graceful worker shutdown) releases any held leases immediately, so an in-flight retrigger resumes within seconds rather than stalling for the full lease duration.
   5. A CI-enforced guard fails the build if a `jobs.kind` value ever collides with a `payroll_runs.status` value or drifts from the `JobKind` enum — the job row can never encode "what payroll status comes next."
 
-**Plans**: TBD
+**Plans**: 9 plans, 5 waves
+
+- [ ] 16-01-PLAN.md — Unblock the inbound webhook: `run_in_threadpool` around the Resend fetch, the ingest transaction, and the response-shaping branches (D-11) + Proof 1 *(wave 1)*
+- [ ] 16-02-PLAN.md — Proof surface + config knobs: generalize `concurrency-proof.yml` to marker collection (D-04) and add `WORKER_COUNT`/`LEASE_SECONDS`/`MAX_ATTEMPTS` with derivations (D-03/D-08) *(wave 1)*
+- [ ] 16-03-PLAN.md — The `jobs` table, `JobKind`/`JobState`, `_DROP_ORDER`, and the D-05 inventory-pinned index guard *(wave 1)*
+- [ ] 16-04-PLAN.md — `app/db/repo/jobs.py`: the claim/lease/fencing protocol, `clear_reply_context -> epoch`, `rewind_for_reclaim` (D-02), the fakes, and Proof 3 *(wave 2)*
+- [ ] 16-05-PLAN.md — `/health/schema` covers `jobs` (D-12) + Proof 5's collision and enum-drift guards *(wave 2)*
+- [ ] 16-06-PLAN.md — `app/queue/`: wake (D-09), dispatch, the `run_pipeline` handler (D-01 rewind + INVARIANT J-1), and `drain_once()` *(wave 3)*
+- [ ] 16-07-PLAN.md — Worker threads + the app's first `lifespan`, the D-07 pool-budget refusal, and Proof 4 *(wave 4)*
+- [ ] 16-08-PLAN.md — Retrigger cutover: one caller-owned transaction, `enqueue_job`, post-commit wake, no UI change (D-10) *(wave 4)*
+- [ ] 16-09-PLAN.md — Proof 2: a retrigger survives a worker death and completes on the next drain *(wave 5)*
 
 ### Phase 17: The Pump
 
