@@ -87,20 +87,40 @@ dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
 
 - **Phase 11 (Clarification Round Machine & Alias Learning), 2026-07-07:** The multi-round clarification state machine is correct and unstrandable, and the alias-learning loop actually learns. **CLAR2-01:** `_clarify`'s idempotency guard re-keyed from purpose-only to `(purpose, round)` via `get_outbound_for_round`, so a genuinely-new round-2+ question always sends (no run silently parks at `awaiting_reply` with no email out) while a true re-trigger stays suppressed. **CLAR2-02:** a 3-round cap escalates to a first-class `needs_operator` status/badge with an operator resolve+resume surface (server-side roster validation) or reject. **CLAR2-03/05:** `resume_pipeline` writes the consumed marker at its own CAS claim and `_combined_context_email` accumulates ORIGINAL + all consumed replies in round order behind a code-owned "questions we asked" anchor — the known-edge fixture flips from documenting a silent-mispay to asserting it closed (Round-1 "30, not 40" pays 30). **CLAR2-04:** the unreachable count-diff alias bind is replaced with deterministic bind-on-confirmation against a persisted `{suggested, bound}` candidate shape, requiring same-record evidence (`_bind_evidence_for_token`) so the misname guard's never-learn-from-inference intent survives; a full-loop hermetic test drives REAL name resolution and proves the system stops asking. **CLAR2-06/07:** a redelivered/stranded unconsumed reply re-drives the CAS-gated resume (no permanently-dropped replies), and a per-run `reply_epoch` counter + retrigger context-wipe ensure no provenance badge outlives its data — without ever mutating the append-only `email_messages` audit log. Cross-AI review (Codex + internal) of the initially-passing phase found 5 CONFIRMED critical money/security bugs; all 5 + a warning were fixed via gap plans 11-06/07/09/10 and re-verified (exploits traced dead in merged source). Verified 9/9; full suite 596 passing, 0 regressions. CLAR2-01…CLAR2-07.
 
-## Current Milestone
+## Current Milestone: v4 — Durable Execution
 
-_None — v3 shipped 2026-07-13._
+**Goal:** No accepted email is ever lost; every failure recovers automatically within minutes without a human
+noticing; and no client is ever emailed twice.
 
-**Next milestone goals (candidates, not yet scoped):** see `backlog.md` and STATE.md Deferred Items.
-The standing candidates are the schema-parity backlog (versioned/ordered migrations + a hard deploy gate
-blocking on drift), the three deferred polish todos (frontend progressive enhancement, paystub YTD columns,
-eval-chart restyle), and tax-completeness features that were explicitly out of scope for hardening
-(Additional Medicare surtax, per-employee YTD Medicare ledger). Start with `/gsd-new-milestone`.
+**Target features:**
+
+- **Durable handoff** — a Postgres `jobs` table (`FOR UPDATE SKIP LOCKED`, lease token + expiry) replaces the
+  in-memory `BackgroundTask`; the webhook stops blocking the event loop; the Resend body-fetch moves out of the
+  request path into the worker; ingress dedup re-keys on the Svix event ID (the RFC `Message-ID` is no longer
+  known at ingest once the fetch moves).
+- **The pump** — an authenticated `/internal/pump` endpoint driven by frequent cron. This is the piece that turns
+  durable *storage* into durable *execution*: Render free has no worker service type and wakes only on inbound
+  HTTP, so a job retried with a future `available_at` would otherwise never fire.
+- **Failure policy** — an explicit `ok`/`retryable`/`terminal` result contract out of the orchestrator (today it
+  swallows stage failures into `ERROR` and returns normally, so a worker would record success), backoff + jitter,
+  a dead-letter state, and **exactly-once send** via Resend's `Idempotency-Key` keyed on the already-reserved
+  synthetic `message_id`.
+- **Proof** — kill-the-worker-mid-run durability, redelivery idempotency, send-crash-sends-no-second-email, and
+  stale-lease reclaim safety.
+
+**Origin:** an adversarial audit flagged that the system breaks under pressure two ways — a lost in-memory
+`BackgroundTask` on restart, and a webhook that blocks the event loop on a synchronous Resend fetch plus a
+multi-query psycopg transaction inside an `async def`. **A queue fixes the first and does nothing for the
+second**; both are in scope. Design: `docs/superpowers/specs/2026-07-13-durable-execution-design.md` (`3ed7db9`),
+Codex-reviewed.
+
+**Scope was cut down, not up.** The milestone is deliberately *not* "survive 100× traffic" — real traffic is ~1
+payroll email per client per week, and throughput machinery would be building for load that never arrives. See
+Out of Scope.
 
 ### Active
 
-None — no active milestone. `REQUIREMENTS.md` is deleted at milestone close and a fresh one is created by
-`/gsd-new-milestone`.
+Requirements for v4 are defined in `REQUIREMENTS.md` (created by this milestone).
 
 Prior milestones: **v1.0** (email-driven pipeline, archived in `milestones/v1.0-REQUIREMENTS.md`),
 **v2 Production Hardening** (16 reqs: MONEY/OPS2/DATA/CLAR2, `milestones/v2-REQUIREMENTS.md`), and
@@ -118,6 +138,8 @@ Prior milestones: **v1.0** (email-driven pipeline, archived in `milestones/v1.0-
 - **Auth on the dashboard** — it's a demo.
 - **Spreadsheet-attachment parsing** — noted as a "later" stretch in the source plan; deferred from v1.
 - **OBBBA tax provisions** — qualified-tips/overtime above-the-line deductions and the expanded 15-line W-4 Step-4(b) worksheet (new in the 2026 Pub 15-T) are explicitly disclaimed in the README; the engine implements the standard percentage method only. (Surfaced by research; resolved.)
+- **v4: Throughput machinery** — per-tenant fairness lanes, priority lanes, adaptive backpressure, circuit breakers, and an N-concurrent-email load chart are all explicitly OUT. At ~1 payroll email per client per week these are machinery for load that will never arrive; the honest claim is *durability*, not throughput. The `jobs` schema still carries `business_id` / `priority` / `available_at` so each remains a later `ORDER BY` change rather than a migration. (Codex's over-engineering call; accepted.)
+- **v4: Production-grade scheduling guarantees** — the pump is driven by GitHub Actions cron, which can be delayed and auto-disables after 60 quiet days. The guarantee is documented as *best-effort recovery within minutes*, with operator retry as the stated fallback. Claiming more would be a lie of the same class as the eval chart v3 had to fix.
 
 ## Context
 
@@ -167,6 +189,10 @@ Prior milestones: **v1.0** (email-driven pipeline, archived in `milestones/v1.0-
 | **v2:** Every multi-write op wrapped in one transaction; dedup + run-creation resolved transactionally; alias write in a nested SAVEPOINT (Phase 9) | A half-written run (paystubs replaced but status stale; email sent but status not advanced; duplicate run on a raced webhook) is the exact senior-engineer failure the milestone must not have | ✓ Good — proven via fault injection + the Phase 10 concurrency capstone under genuine parallelism |
 | **v2:** Alias learning binds on explicit client confirmation of the suggestion, not a re-extraction count-diff (Phase 11) | The original count-diff condition was circular and unreachable, so the write side never fired; binding on human-stated evidence preserves the misname guard's never-learn-from-inference intent | ✓ Good — full-loop hermetic test proves the system stops re-asking; same-record evidence guard added after review |
 | **v2:** Round cap escalates to a first-class `needs_operator` status rather than spamming or silently stalling (Phase 11) | The real failure was a silent park at `awaiting_reply` with no email out (WR-05), not spam; a bounded machine with a human escape is the safe terminal | ✓ Good — round-aware idempotency + 3-round cap + operator resolve/resume shipped |
+| **v4:** `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine | A job row that also encodes "what payroll status comes next" creates two sources of truth for the same question — the classic way a queue corrupts a state machine it was added to protect | ⏳ v4 |
+| **v4:** An authenticated pump endpoint + frequent cron, not an internal timer loop | Render free wakes only on **inbound HTTP**; internal sleeps do not keep it alive. Without an external pump, a queue is durable *storage* and never durable *execution* — a job retried with a future `available_at` would sit forever | ⏳ v4 |
+| **v4:** Exactly-once send via Resend's `Idempotency-Key`, keyed on the existing pre-send reserved `message_id` | `gateway.py` already mints a durable unique synthetic `message_id` and writes a `reserved` row *before* calling Resend — it just discards it. Handing it to the provider (and reusing it on retry, never minting a fresh uuid4) closes the double-payroll-email window that retries would otherwise open | ⏳ v4 |
+| **v4:** Milestone scoped to durability, not throughput | At ~1 payroll email per client per week, fairness/priority/backpressure machinery is building for load that never arrives; durability is the claim that is both true and load-bearing for any future productization | ⏳ v4 |
 
 ## Evolution
 
@@ -186,7 +212,19 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-10 — **v3 Phase 13 (Module Structure & Boundaries) complete**; god-file splits landed behavior-neutral (suite 615 green), BOUND-01 guard live in CI. Milestone v3 started 2026-07-08: CI quality gates (ruff + full suite on push), god-file splits (main.py / repo.py / orchestrator.py), full mypy adoption wired into CI, comment-archaeology pass after the splits, public module boundaries, plus triaged v2 polish (Phase 05 review warnings, fixture-10 label). All refactors behavior-neutral against the 613-test suite. Prior: v2 — Production Hardening SHIPPED 2026-07-07.*
+*Last updated: 2026-07-13 — **Milestone v4 — Durable Execution started.** Scoped from an adversarial audit
+finding two independent break-under-pressure defects: stage two is durable in memory only (a `BackgroundTask`
+dies with the process; recovery is externally triggered — dashboard page load, webhook redelivery, or operator
+retrigger), and the webhook blocks the event loop on a synchronous Resend fetch plus a multi-query psycopg
+transaction inside an `async def`. A queue fixes the first and nothing about the second. Four target features:
+durable handoff (jobs table + leases + worker pool, Resend fetch moved off the request path, Svix-keyed ingress
+dedup), the pump (authenticated endpoint + cron — Render free wakes only on inbound HTTP, so without it a queue
+is durable storage and never durable execution), failure policy (retryable/terminal result contract, backoff,
+dead-letter, exactly-once send via Resend's `Idempotency-Key` on the already-reserved `message_id`), and the
+proofs. Throughput machinery explicitly out of scope. Design: `docs/superpowers/specs/2026-07-13-durable-execution-design.md`.
+Prior: v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
+
+<!-- Prior footer (v3): Last updated: 2026-07-10 — **v3 Phase 13 (Module Structure & Boundaries) complete**; god-file splits landed behavior-neutral (suite 615 green), BOUND-01 guard live in CI. Milestone v3 started 2026-07-08: CI quality gates (ruff + full suite on push), god-file splits (main.py / repo.py / orchestrator.py), full mypy adoption wired into CI, comment-archaeology pass after the splits, public module boundaries, plus triaged v2 polish (Phase 05 review warnings, fixture-10 label). All refactors behavior-neutral against the 613-test suite. Prior: v2 — Production Hardening SHIPPED 2026-07-07. -->
 
 <!-- Prior footer (v2): Last updated: 2026-07-07 after the **v2 — Production Hardening milestone** shipped (Phases 7, 7.5, 8, 9, 10, 11; all 16 requirements validated). v2 took the working v1.0 MVP and made its money-logic and data layer production-grade: MONEY-01/02/03 (zero-hours gate, Unicode-NFC names, field-regression carry-forward), OPS2-01/02/03 (PII-safe error_detail, hot-path indexes, real-Postgres concurrency proof in CI), DATA-01/02/03 (atomic multi-writes, webhook-dedup race fix, stuck-run recovery), CLAR2-01…07 (round-aware clarify idempotency, 3-round `needs_operator` cap, multi-round context accumulation, reachable bind-on-confirmation alias learning). Milestone audit PASSED (13/13 reqs, 6/6 phases, 5/5 integration seams, 3/3 E2E flows). Deferred: 6 non-blocking post-demo polish items (STATE.md → Deferred Items). Prior milestone: v1.0 SHIPPED 2026-06-25. Full history below.* -->
 

@@ -1,20 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v3
-milestone_name: — Production-Ready Codebase
-current_phase: 15
-status: ready
-stopped_at: v3 SHIPPED — archived and tagged
-last_updated: "2026-07-13T21:27:29.153Z"
-last_activity: 2026-07-13
-last_activity_desc: "v3 milestone complete — archived, tagged, pushed"
+milestone: v4
+milestone_name: — Durable Execution
+status: planning
+last_updated: "2026-07-14T03:44:33.725Z"
+last_activity: 2026-07-14
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 29
-  completed_plans: 29
-  percent: 100
-current_phase_name: comment-hygiene-deferred-polish-triage
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -28,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-07 after v2 milestone)
 
 ## Current Position
 
-Phase: 15 — Comment Hygiene & Deferred-Polish Triage (COMPLETE)
-Plan: 11/11 complete
-Status: v3 milestone COMPLETE — all 4 phases (12, 13, 14, 15) shipped
-Last activity: 2026-07-14 — Completed quick task 260713-oi6: clarify-round hours safety (drop-detection blind spot + operator-visible hours changes)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-07-14 — Milestone v4 started
 
 ## Performance Metrics
 
