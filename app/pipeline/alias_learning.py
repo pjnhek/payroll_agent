@@ -25,7 +25,7 @@ from typing import Any, cast
 import psycopg
 
 from app.db import repo
-from app.models.roster import Employee, Roster
+from app.models.roster import Employee, NameMatchResult, Roster
 from app.pipeline.reconcile_names import deterministic_match, normalize_name
 
 logger = logging.getLogger("payroll_agent.orchestrator")
@@ -104,6 +104,124 @@ def bind_evidence_for_token(
         ):
             return True
     return False
+
+
+def confirmed_prior_matches(
+    prior_matches: list[NameMatchResult] | None,
+    current_matches: list[NameMatchResult],
+    alias_candidates: dict[str, Any] | None,
+    roster: Roster,
+) -> list[NameMatchResult] | None:
+    """Bridge the CLARIFIED employee's identity into prior_matches. PURE (no DB, no LLM).
+
+    THE DEFECT THIS REPAIRS. `detect_field_regression` (and `backfill_extracted`) build
+    their ORIGINAL-side identity map from `prior_matches` filtered to `resolved`. The
+    employee a NAME clarification is about was, by definition, UNRESOLVED in the prior
+    round — that is why we asked. So the snapshot employee is structurally invisible to
+    the drop detector, and an hours line dropped on the clarification reply ("Sandy
+    20r/10ot" -> "Yes, Sandra Kim, 40 regular") is silently accepted, backfilled, and
+    PAID. The missing thing is an IDENTITY, so the fix belongs in `prior_matches` itself
+    — repair it ONCE, here, and every consumer inherits the same identity map. Seeding
+    each consumer separately would let them disagree about who the snapshot employee is.
+
+    THE EVIDENCE STANDARD (do not weaken it). The prior round's token ("Sandy") and the
+    reply's token ("Sandra Kim") are DIFFERENT STRINGS, and two tempting ways to connect
+    them are wrong:
+
+    - Re-reconciling the prior token against the roster FAILS: `write_aliases_if_safe`
+      runs at the APPROVAL gate (delivery.deliver), so at resume time "Sandy" is still
+      absent from employees.known_aliases and still resolves to nothing.
+    - A whole-run SET DIFFERENCE ("employee S newly appears resolved AND the token
+      vanished") is FORBIDDEN — it is precisely the two-independent-facts inference that
+      `bind_evidence_for_token`'s docstring exists to reject. "No, Dave didn't work;
+      David worked 5 hours separately" satisfies both facts and binds a match the client
+      explicitly DENIED.
+
+    So the bridge reuses `bind_evidence_for_token` VERBATIM: bind only when ONE
+    reconciliation record ties both facts together. The LLM's suggestion (persisted in
+    `alias_candidates` by clarification.clarify) merely PROPOSES employee S; the
+    deterministic resolver — pure code over the roster — is what CONFIRMS it. That is the
+    exact same evidence already trusted to PERMANENTLY write an alias to the roster, a
+    strictly higher-stakes action than diffing two hours values.
+
+    Guards, each of which SKIPS the seed on failure:
+    - the resolved target id must parse as a UUID and must belong to this roster;
+    - COLLISION GUARD: the target must NOT already be mapped by a `resolved`
+      prior_matches entry. A prior entry that resolved DIRECTLY is the authoritative
+      record and must win. The consumers' identity maps are last-entry-wins, so a bridged
+      duplicate would silently overwrite the real snapshot employee with the clarified
+      token's row — reporting a drop that never happened;
+    - the token itself must not already be a resolved prior submitted_name.
+
+    Returns a NEW list; NEVER mutates the caller's prior_matches. `prior_matches is None`
+    returns None unchanged, preserving detect_field_regression's documented honest no-op.
+    """
+    if prior_matches is None:
+        return None
+    if not alias_candidates:
+        return list(prior_matches)
+
+    already_mapped_ids: set[uuid.UUID] = {
+        m.matched_employee_id
+        for m in prior_matches
+        if m.resolved and m.matched_employee_id is not None
+    }
+    already_mapped_names: set[str] = {
+        m.submitted_name
+        for m in prior_matches
+        if m.resolved and m.matched_employee_id is not None
+    }
+
+    # bind_evidence_for_token reads dicts via .get(), not Pydantic models — serialize once.
+    current_as_dicts: list[object] = [m.model_dump(mode="json") for m in current_matches]
+
+    bridged: list[NameMatchResult] = list(prior_matches)
+    for token, value in alias_candidates.items():
+        cand = normalize_candidate(value)  # a legacy flat row would otherwise crash .get()
+
+        bound = cand.get("bound")
+        if bound is not None:
+            # ALREADY confirmed — by a prior round's bind, or by the operator ticking
+            # "remember this alias" at /resolve. No further evidence needed.
+            target_str = str(bound)
+        else:
+            suggested = cand.get("suggested")
+            if suggested is None:
+                continue  # nothing was ever proposed for this token
+            target_str = str(suggested)
+            suggested_full_name = next(
+                (e.full_name for e in roster.employees if str(e.id) == target_str), None
+            )
+            if not bind_evidence_for_token(
+                token, target_str, suggested_full_name, current_as_dicts
+            ):
+                # The client never confirmed this token (or explicitly denied it).
+                # This is the whole no-guess guarantee.
+                continue
+
+        try:
+            target = uuid.UUID(target_str)
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if not any(e.id == target for e in roster.employees):
+            continue  # not a member of THIS business's roster
+        if target in already_mapped_ids or token in already_mapped_names:
+            continue  # COLLISION GUARD — the direct prior resolution wins
+
+        bridged.append(
+            NameMatchResult(
+                submitted_name=token,
+                matched_employee_id=target,
+                source="alias",
+                resolved=True,
+                reason="confirmed at clarification reply",
+            )
+        )
+        # Bar a SECOND candidate in this same call from re-colliding onto this employee.
+        already_mapped_ids.add(target)
+        already_mapped_names.add(token)
+
+    return bridged
 
 
 def safe_to_learn_alias(

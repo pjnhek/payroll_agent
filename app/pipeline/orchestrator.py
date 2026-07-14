@@ -442,6 +442,7 @@ def resume_pipeline(
                 prior_matches=prior_matches,  # [] on very first resume
                 resolved_drops=None,      # no confirmed_dropped pairs yet
                 overrides=overrides,      # operator mapping, else None
+                alias_candidates=_pre_candidates,  # the identity bridge (see _run_stages)
             )
             # NOTE: no extracted= kwarg on Round-1. _run_stages calls extract() internally.
 
@@ -738,6 +739,7 @@ def resume_pipeline(
                 # → backfill skip
                 extracted=raw_extracted,                # combined-body extraction, lossless
                 overrides=overrides,                    # operator mapping, else None
+                alias_candidates=_pre_candidates,       # the identity bridge
             )
 
             # STEP 4: check clarify_deferred AFTER persisting terminals. If _run_stages
@@ -857,6 +859,7 @@ def _run_stages(
     suppress_detection: set[tuple[str, str]] | None = None,
     extracted: Extracted | None = None,
     overrides: dict[str, str] | None = None,
+    alias_candidates: dict[str, Any] | None = None,
 ) -> _RunStagesResult:
     """The shared gate path: extract → reconcile → validate → decide → persist → branch.
 
@@ -884,6 +887,18 @@ def _run_stages(
     reconcile_names(overrides=...) so an operator-resolved name wins BEFORE the exact/alias
     tiers. None (the default, and every pre-existing caller) is behavior-identical.
 
+    alias_candidates=: the run's persisted {token: {"suggested", "bound"}} record. Used
+    ONCE, inside the `if prior is not None:` block, to rebind the local `prior_matches`
+    through alias_learning.confirmed_prior_matches — the IDENTITY BRIDGE. The employee a
+    name-clarification is about was UNRESOLVED in the prior round by definition, so it is
+    missing from prior_matches and every consumer that keys off it is blind to that
+    employee. The augmentation happens exactly ONCE and the single augmented list then
+    feeds all THREE consumers (detect_field_regression, detect_hours_changes, and
+    backfill_extracted). Seeding them separately would let the three disagree about WHO
+    the snapshot employee is — the same class of bug validate.py's is_paid docstring
+    warns about ("Keeping it shared is what stops the two rules from disagreeing").
+    run_pipeline passes nothing: its `prior` is None, so the block never runs.
+
     Returns _RunStagesResult(clarify_deferred, matches, issues).
     """
     # If the caller supplies pre-extracted data (the classify-first resume path), skip the
@@ -908,6 +923,13 @@ def _run_stages(
     # 3. CALC: validate(BACKFILLED extracted, raw_field_drops=raw_drops) → decide → calc.
     raw_drops = None
     if prior is not None:
+        # 0. BRIDGE the clarified employee's identity into prior_matches, ONCE, before any
+        # consumer reads it. The clarified employee was UNRESOLVED in the prior round by
+        # definition, so without this the drop detector is structurally blind to exactly
+        # the person the clarification is about. One augmented list, three consumers.
+        prior_matches = alias_learning.confirmed_prior_matches(
+            prior_matches, matches, alias_candidates, roster
+        )
         # 1. DETECT on the raw (pre-backfill) extraction. detect_field_regression is called
         # here rather than inside validate() precisely so it cannot accidentally be run
         # after the backfill.
