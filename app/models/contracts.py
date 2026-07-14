@@ -159,6 +159,44 @@ class RawFieldDrop(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# HoursChange — a cross-round paid->paid VALUE CHANGE, for the operator's eyes only
+# ---------------------------------------------------------------------------
+
+
+class HoursChange(BaseModel):
+    """One hours value the client CHANGED (not dropped) across a clarification round.
+
+    THIS IS A DISPLAY RECORD. It has NO `issue_type`, so it structurally cannot be
+    constructed into a `ValidationIssue`, it is never passed to `validate()`, and it never
+    reaches `decide()`. A cross-round hours change is SURFACED TO THE HUMAN OPERATOR at
+    the approval gate — it is not gated by the machine. That type wall is the enforcement
+    mechanism; do not "helpfully" route these through validate().
+
+    Why not gate on it: the accumulation design is deliberate and it stands. When a client
+    replies "actually she worked 30, not 40", the reply's corrected value WINS and is PAID
+    without re-asking — interrogating a client about their own correction is the behavior
+    tests/test_multiround_context_edge.py exists to prevent. What was missing is that the
+    human who APPROVES the payroll never saw the change happen. Now they do.
+
+    The trigger is deliberately DISJOINT from RawFieldDrop's, so no money event is ever
+    double-reported through two mechanisms:
+      RawFieldDrop  paid -> UNPAID (absent, or an explicit zero) -> GATES the run
+      HoursChange   paid -> PAID, different value                -> DISPLAY ONLY
+    Both values are non-optional here BECAUSE both sides are paid by construction.
+
+    submitted_name is from the RESUMED extraction — the name the client used in their
+    reply. Same convention as RawFieldDrop.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    submitted_name: str
+    field: str
+    original_value: Decimal = Field(ge=0)
+    resumed_value: Decimal = Field(ge=0)
+
+
+# ---------------------------------------------------------------------------
 # ClarifiedFields — typed validator for the clarified_fields JSONB column
 # ---------------------------------------------------------------------------
 
