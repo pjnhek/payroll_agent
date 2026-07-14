@@ -119,8 +119,15 @@ def _make_slow_parse_inbound(call_count: dict[str, int]):
 
 
 def test_two_concurrent_webhooks_run_in_parallel_not_serially(
-    monkeypatch, fake_repo, unsigned_fixtures_env
+    monkeypatch, fake_repo, unsigned_fixtures_env, mock_llm
 ) -> None:
+    # mock_llm is load-bearing for the timing assertion below, not decoration.
+    # ASGITransport drains the post-response BackgroundTasks before returning
+    # control, so `elapsed` spans the pipeline the route schedules — not just the
+    # threadpool hop under test. Unstubbed, that pipeline makes a real LLM HTTP
+    # round-trip (~1.6s), swamping the SLOW_S budget and failing a route that is
+    # in fact correctly parallel. Measured: 2.18s unstubbed vs 0.61s stubbed,
+    # against a 0.9s bound.
     call_count = {"n": 0}
     monkeypatch.setattr(gateway, "parse_inbound", _make_slow_parse_inbound(call_count))
 
