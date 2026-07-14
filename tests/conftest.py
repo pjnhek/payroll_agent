@@ -1023,6 +1023,45 @@ class InMemoryRepo:
         found = matching[-1]
         return {"message_id": found["message_id"], "round": found.get("round", 0)}
 
+    def get_unconfirmed_outbound(self, run_id, *, purpose, round=0, conn=None):
+        """Epoch-scoped unconfirmed-reservation read (mirrors repo.get_unconfirmed_outbound).
+
+        Complementary to get_outbound_for_round: filters on send_state IN
+        ('reserved', 'failed') instead of == 'sent', so it answers "might this
+        already have reached the client?" rather than "was this proven sent?".
+        Same purpose ValueError guard and same epoch scoping against the run's
+        CURRENT reply_epoch as get_outbound_for_round — a prior-epoch reservation
+        (a human retrigger has since bumped the epoch) must be invisible here,
+        which is what lets an operator recover an escalated run.
+        """
+        if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
+            raise ValueError(
+                "purpose must be 'clarification', 'confirmation', or "
+                f"'clarification_field_regression', got {purpose!r}"
+            )
+        rows = self.outbound.get(str(run_id))
+        if not rows:
+            return None
+        run = self.runs.get(str(run_id))
+        current_epoch = run.get("reply_epoch", 0) if run is not None else 0
+        matching = [
+            r
+            for r in rows
+            if r.get("purpose") == purpose
+            and r.get("round") == round
+            and r.get("epoch", 0) == current_epoch
+            and r.get("send_state") in ("reserved", "failed")
+        ]
+        if not matching:
+            return None
+        found = matching[-1]
+        return {
+            "message_id": found["message_id"],
+            "send_state": found.get("send_state"),
+            "round": found.get("round", 0),
+            "created_at": found.get("created_at"),
+        }
+
     def mark_reply_consumed(self, message_id, round, conn=None):
         """Write-once consumed_round marker on the matching inbound row.
 
@@ -1248,6 +1287,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "get_clarification_round",
         "set_clarification_round",
         "get_outbound_for_round",
+        "get_unconfirmed_outbound",
         "mark_reply_consumed",
         "load_consumed_replies",
         "get_inbound_by_message_id",
