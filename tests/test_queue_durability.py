@@ -948,3 +948,183 @@ def test_every_worker_start_call_goes_through_the_live_worker_wrapper() -> None:
         "so its teardown can quiesce a straggler before _isolated_jobs "
         "deletes beneath it."
     )
+
+
+# ---------------------------------------------------------------------------
+# Proof 2 — the phase's headline claim: a retrigger survives a worker death
+# and completes on the next drain. ROADMAP criterion #2.
+# ---------------------------------------------------------------------------
+
+
+def test_retrigger_survives_worker_crash_mid_lease(
+    seeded_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Six steps, each with its own assertion — a step with no assertion is
+    where the vacuity gets in (see this file's own module docstring and
+    16-VALIDATION.md's named vacuous twin: a test that never actually leases
+    the job before "killing" the worker, so the reclaim path never fires and
+    the first drain simply does the work on dumb luck).
+
+    This test starts NO real worker. It drives `repo.claim_job()` and
+    `drain.drain_once()` directly on the test thread, which is the only way
+    to stop MID-LEASE — `drain_once()` would run the handler to completion.
+    It therefore never trips `_isolated_jobs`' worker-quiescence delete gate
+    and must not acquire a `worker.start()` call of its own; if a future
+    edit ever needs a real worker here, it must go through `live_worker`.
+
+    The orchestrator (`pipeline_glue.run_pipeline_bg`) is stubbed — this
+    repo's `.env` carries live LLM keys, and an unstubbed call would hit a
+    real provider, bill real money, and flake. The stub also records an
+    OBSERVABLE side effect (advancing the run to COMPUTED) rather than being
+    a bare no-op recorder: bare status alone cannot discriminate "the
+    reclaim fired and the run genuinely re-ran" from "the reclaim never
+    fired and the run is exactly as stuck as it was after step 3" — both
+    leave the run sitting at EXTRACTING, because that is the value
+    `handle_run_pipeline`'s OWN forward CAS writes in the passing case, and
+    it is also the value step 3 below left behind on its own in the failing
+    case. Only the spy call list and the run's status moving PAST EXTRACTING
+    tell the two apart.
+
+    FALSIFYING MUTATIONS (each executed against real, unmutated source in
+    this worktree, confirmed RED, then reverted — see the plan's SUMMARY for
+    the pasted red output):
+      (a) strip `OR (c.state = 'leased' AND c.leased_until < now())` from
+          claim_job's WHERE (app/db/repo/jobs.py) — the job is never
+          reclaimed, step 5's drain claims nothing, and this test must go
+          red on `drain.drain_once() is True`.
+      (b) strip the `if job.attempts > 1: repo.rewind_for_reclaim(run_id)`
+          preamble from handle_run_pipeline (app/queue/handlers/pipeline.py)
+          — the run stays at EXTRACTING (from step 3's own CAS), the
+          RECEIVED->EXTRACTING forward CAS then fails because the run is no
+          longer sitting at RECEIVED, the job is still marked `done` (a lost
+          CAS is not an error), and this test must go red on the orchestrator
+          spy never having been called / the run never reaching COMPUTED.
+    """
+    from fastapi.testclient import TestClient
+
+    import app.main as app_main
+    import app.routes.pipeline_glue as pipeline_glue_mod
+    from app.db import repo
+    from app.models.status import RunStatus
+    from app.queue import drain
+
+    # --- Step 1: seed an ERROR run, retrigger it -----------------------------
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.ERROR)
+    epoch_before = _read_reply_epoch(run_id)
+
+    orchestrator_calls: list[uuid.UUID] = []
+
+    def _stub_run_pipeline_bg(rid: uuid.UUID) -> None:
+        orchestrator_calls.append(rid)
+        # Simulate ONLY the observable fact that a real orchestrator would
+        # eventually advance the run past EXTRACTING — never a real
+        # LLM/provider call. See the docstring above for why this side
+        # effect, not a bare no-op, is what makes "genuinely re-ran"
+        # distinguishable from the stranded-mutation's own EXTRACTING value.
+        repo.set_status(rid, RunStatus.COMPUTED)
+
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", _stub_run_pipeline_bg)
+
+    client = TestClient(app_main.app)
+    response = client.post(f"/runs/{run_id}/retrigger")
+    assert response.status_code in (200, 303)
+
+    epoch_after = _read_reply_epoch(run_id)
+    assert epoch_after == epoch_before + 1, (
+        "retrigger's own clear_reply_context must bump the epoch exactly once"
+    )
+
+    # --- Step 2: assert the durable enqueue, looked up by dedup_key ---------
+    # Never assert merely "a jobs row exists" — hold this id and scope every
+    # assertion below to it, belt-and-suspenders alongside `_isolated_jobs`.
+    dedup_key = f"run_pipeline:{run_id}:{epoch_after}"
+    with repo.get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, state, kind, attempts FROM jobs WHERE dedup_key = %s",
+            (dedup_key,),
+        ).fetchone()
+    assert row is not None, f"no jobs row found for dedup_key={dedup_key!r}"
+    job_id = uuid.UUID(str(row[0]))
+    assert row[1] == "pending"
+    assert row[2] == "run_pipeline"
+    assert row[3] == 0
+    assert orchestrator_calls == [], (
+        "nothing may have run yet — WORKER_COUNT=0, and the pipeline has not "
+        "been dispatched"
+    )
+
+    # --- Step 3: simulate a worker that claims the job, gets partway through
+    # (its own forward CAS lands the run at EXTRACTING, mirroring what
+    # handle_run_pipeline itself would have done on a first attempt), and
+    # then dies mid-lease. NEVER drain_once() here — that would run the
+    # handler to completion; repo.claim_job() is what lets this test stop
+    # MID-LEASE. ------------------------------------------------------------
+    claimed = repo.claim_job()
+    assert claimed is not None
+    assert claimed.id == job_id, "the claim in step 3 must be THIS test's own job"
+    assert claimed.attempts == 1
+    token_a = claimed.lease_token
+
+    leased_row = repo.get_job(job_id)
+    assert leased_row is not None
+    assert leased_row["state"] == "leased", (
+        "the job must be GENUINELY leased before the simulated crash — "
+        "without this, the reclaim below never fires and the proof is "
+        "vacuous by 16-VALIDATION.md's own naming"
+    )
+    assert leased_row["lease_token"] == token_a
+    assert leased_row["leased_until"] is not None
+    assert leased_row["leased_until"] > datetime.now(UTC)
+
+    advanced = repo.claim_status(run_id, RunStatus.RECEIVED, RunStatus.EXTRACTING)
+    assert advanced is True, (
+        "modeling the dying worker's own forward CAS, using the SAME CAS "
+        "handle_run_pipeline itself issues on a first attempt — this is what "
+        "forces the automatic reclaim's rewind to be genuinely exercised "
+        "below rather than trivially skipped (a run left at RECEIVED would "
+        "let the forward CAS win regardless of whether the rewind ran at all)"
+    )
+
+    # --- Step 4: expire the lease WITHOUT sleeping ---------------------------
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '1 second' WHERE id = %s",
+            (str(job_id),),
+        )
+
+    # --- Step 5: a second worker (or a manual drain) picks the job back up --
+    assert drain.drain_once() is True, (
+        "drain_once() must claim and dispatch the reclaimed job — a job "
+        "that was never actually reclaimable would leave nothing to drain"
+    )
+
+    # --- Step 6: all four outcomes, separately -------------------------------
+    final_row = repo.get_job(job_id)
+    assert final_row is not None
+    assert final_row["attempts"] == 2, (
+        "the reclaim must have fired — a job that was never leased before "
+        "the crash would show 1 here, not 2; this is the vacuity detector"
+    )
+    assert final_row["state"] == "done"
+
+    assert orchestrator_calls == [run_id], (
+        "the automatic reclaim's rewind must have fired and the forward CAS "
+        "re-won, letting the orchestrator genuinely run a second time — a "
+        "lost CAS would leave this list empty"
+    )
+
+    final_run = repo.load_run(run_id)
+    assert final_run is not None
+    assert final_run["status"] == "computed", (
+        "the run must show the OBSERVABLE result of a real re-run (this "
+        "test's stub advances to COMPUTED), never left stuck at EXTRACTING — "
+        "which is exactly, and indistinguishably by status alone, what the "
+        "run would show under the attempts>1 rewind-removed mutation"
+    )
+
+    assert _read_reply_epoch(run_id) == epoch_after, (
+        "the automatic reclaim must never bump reply_epoch a second time — "
+        "only the operator's own retrigger click may grant that licence, "
+        "and it already did, once, in step 1"
+    )

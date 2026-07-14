@@ -282,6 +282,7 @@ def _backdate_updated_at(run_id: uuid.UUID, seconds_ago: int) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.queueproof
 @_SKIP_LIVE_DB
 def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     """SC3 end-to-end (DATA-03): a run stranded mid-flight is swept to ERROR
@@ -289,6 +290,15 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     progressing status via the ACTUAL operator-facing retrigger route, not the
     underlying claim primitive — so this proves the recovery path a human operator
     actually uses.
+
+    This is the only test in this module carrying the queueproof marker
+    (blast radius: 1 test, not the whole module) — this test is the one this
+    phase changed (the retrigger route no longer schedules a BackgroundTask;
+    it enqueues a durable jobs row and an explicit drain.drain_once() below
+    is what actually dispatches the pipeline), so it is the one this phase's
+    CI gate must actually run. The rest of this module's live-DB tests stay
+    exactly as dormant in CI as they were before this phase — that gap is
+    pre-existing and is not this plan's to close.
     """
     from app.routes.runs import STALE_THRESHOLD_SECONDS
 
