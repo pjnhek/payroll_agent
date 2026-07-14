@@ -593,6 +593,23 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _lifespan_database_url(monkeypatch):
+    """Every `with TestClient(...) as tc:` in this module now runs the app's
+    FastAPI lifespan on entry, and the worker pool's boot-time budget guard
+    reads `Settings()` eagerly — `database_url` has no default, so a process
+    with no DATABASE_URL set anywhere fails validation before any route even
+    runs. None of these tests exercise a real database (every DB call is
+    monkeypatched), so a stub value is enough for `Settings()` to validate.
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def client(monkeypatch):
     """TestClient with all DB/gateway calls patched out."""

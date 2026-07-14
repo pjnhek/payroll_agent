@@ -201,8 +201,7 @@ def _isolated_jobs(seeded_db):
 class _LiveWorkerHandle:
     """Handed to a test by the `live_worker` fixture. `blocker()` mints an
     Event the fixture will release on teardown even if the test body never
-    gets to; `start(n)` lazily imports `app.queue.worker` (this plan's own
-    wave does not have that module yet) and starts n real daemon workers."""
+    gets to; `start(n)` starts n real daemon workers via `app.queue.worker`."""
 
     def __init__(self, blockers: list[threading.Event]) -> None:
         self._blockers = blockers
@@ -213,8 +212,8 @@ class _LiveWorkerHandle:
         return event
 
     def start(self, n: int = 1) -> None:
-        # Lazy import: app.queue.worker does not exist until a later plan.
-        import app.queue.worker as worker  # type: ignore[import-not-found]  # noqa: PLC0415
+        from app.queue import worker  # noqa: PLC0415 — deferred alongside
+        # _quiesce_workers' own deferred import of the same module below
 
         worker.start(n)
 
