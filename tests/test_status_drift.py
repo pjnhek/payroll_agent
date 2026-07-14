@@ -214,6 +214,9 @@ class TestEnumCheckDrift:
         touch. Anchoring instead on the constraint's actual column set (conkey ->
         pg_attribute) makes the match exact. This static guard pins that idiom so a
         future schema edit cannot reintroduce the fuzzy one.
+
+        Pinned against a named set, not a bare magic number, so a future edit
+        fails by NAME rather than by an opaque count mismatch.
         """
         # Strip line comments first (the same normalization the value-set parsers use):
         # the explanatory comments above legitimately quote the old idiom, and only
@@ -223,12 +226,16 @@ class TestEnumCheckDrift:
             "schema.sql must never DROP a constraint matched by a name substring "
             "(conname LIKE) — anchor on the constraint's column set via conkey instead"
         )
-        # Both migration DO-blocks (payroll_runs.status, email_messages.purpose) must use
-        # the conkey-anchored matcher.
-        assert sql.count("ANY (c.conkey)") == 2, (
-            "expected exactly 2 conkey-anchored constraint matchers (the status and "
-            "purpose DO-blocks); only update this count alongside a reviewed new "
-            "migration block"
+        # Exactly these two migration blocks exist today. jobs.kind/jobs.state use an
+        # INLINE CHECK inside CREATE TABLE jobs (...) — there are no live rows to
+        # migrate on first deploy, so they deliberately do NOT add a third
+        # conkey-anchored DO-block. A genuine future third occurrence (e.g. widening
+        # jobs.kind's CHECK once it has live rows) is a reviewed, deliberate addition
+        # to this named set — never a silent count bump.
+        EXPECTED_DO_BLOCKS = {"payroll_runs_status_check", "email_messages_purpose_check"}
+        assert sql.count("ANY (c.conkey)") == len(EXPECTED_DO_BLOCKS), (
+            f"expected exactly {len(EXPECTED_DO_BLOCKS)} conkey-anchored constraint "
+            "matchers; see the comment above before changing this count"
         )
 
     def test_no_db_connection_needed(self) -> None:
@@ -324,11 +331,25 @@ class TestIndexStaticGuard:
             f"expected 'status', got {m.group(1).strip()!r}"
         )
 
-    def test_exactly_three_new_indexes(self) -> None:
+    def test_expected_indexes_present_and_no_others(self) -> None:
+        """Index inventory is pinned by NAME, not by a bare count.
+
+        Replaces the former `test_exactly_three_new_indexes`
+        (`sql.count("CREATE INDEX IF NOT EXISTS") == 3`), which the new
+        `idx_jobs_claimable` index detonates by simple arithmetic (3 -> 4). A future
+        index addition now fails with the exact name missing from the assertion
+        message — never a bare "4 != 5" — and the comparison is immune to false
+        negatives from reordering, since it is a SET comparison, not a positional one.
+        """
         sql = _SCHEMA_SQL.read_text()
-        assert sql.count("CREATE INDEX IF NOT EXISTS") == 3, (
-            "expected exactly 3 CREATE INDEX IF NOT EXISTS statements in schema.sql"
-        )
+        expected = {
+            "idx_payroll_runs_created_at",
+            "idx_payroll_runs_status",
+            "idx_email_messages_run_direction_state",
+            "idx_jobs_claimable",
+        }
+        found = set(re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", sql))
+        assert found == expected, f"index inventory drifted: {found ^ expected}"
 
     def test_contact_email_still_not_null_unique(self) -> None:
         """businesses.contact_email's UNIQUE constraint is untouched.
