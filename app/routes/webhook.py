@@ -231,6 +231,57 @@ def _parse_and_ingest_sync(raw_body: bytes) -> IngestResult:
     )
 
 
+def _duplicate_redelivery_sync(
+    message_id: str,
+) -> tuple[uuid.UUID, InboundEmail] | None:
+    """The duplicate-branch redelivery-reschedule check (D-11) — runs in a worker thread.
+
+    A redelivered webhook carrying a reply is normally just a no-op duplicate — but if
+    the PERSISTED reply row is still unconsumed AND its run is still awaiting_reply, the
+    original resume never happened (dead background task / missed delivery) and this
+    redelivery is the only signal we will ever get. Without this check the run stalls in
+    awaiting_reply forever and the client's answer is silently dropped.
+
+    Load the row by message_id — NEVER rebuild the reply from the request body. The
+    persisted row holds the CLEANED body; re-cleaning a redelivered raw body would
+    produce different text than the one the first delivery stored (that reconstruction
+    is `pipeline_glue.row_to_inbound`'s job, called below on the persisted row only).
+
+    Returns (run_id, inbound) when a re-schedule should fire, else None. The caller
+    (the route, back on the event loop) is responsible for the actual
+    `background_tasks.add_task(pipeline_glue.resume_pipeline_bg, ...)` call — scheduling
+    a BackgroundTask from inside a worker thread would attach it to the wrong context.
+
+    `pipeline_glue.reply_sender_ok` — re-asserts the sender revalidation before this
+    redelivery re-schedule fires. A spoofed reply that already failed revalidation on
+    first delivery is left linked+unconsumed — exactly the state this function resumes
+    from. Without this re-check, redelivering the same message_id would launder the
+    spoofed reply straight into the pipeline. KEPT VERBATIM (it is a security control,
+    not incidental logic) — including its own `logger.warning` on mismatch.
+    """
+    reply_row = repo.get_inbound_by_message_id(message_id)
+    if (
+        reply_row is not None
+        and reply_row.get("consumed_round") is None
+        and reply_row.get("run_id") is not None
+    ):
+        linked_run = repo.load_run(reply_row["run_id"])
+        if (
+            linked_run is not None
+            and linked_run.get("status") == RunStatus.AWAITING_REPLY.value
+        ):
+            if pipeline_glue.reply_sender_ok(reply_row, linked_run):
+                logger.info(
+                    "run_id=%s redelivery reschedule", reply_row["run_id"]
+                )
+                return reply_row["run_id"], pipeline_glue.row_to_inbound(reply_row)
+            logger.warning(
+                "run_id=%s redelivery blocked — sender mismatch persists",
+                reply_row["run_id"],
+            )
+    return None
+
+
 @router.post("/webhook/inbound")
 async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     """Ingest one inbound email, schedule the pipeline, return 200 fast.
@@ -254,7 +305,8 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
          so the event loop is free for other requests while it executes (QUEUE-01).
          Response shaping and `background_tasks.add_task` calls happen strictly AFTER
          this `await` returns, on the loop — never inside the threadpool call.
-      4. Reply routing, sender auth, create_run, background task.
+      4. Reply routing, sender auth (also off-loop, see `_duplicate_redelivery_sync` /
+         `pipeline_glue.finish_reply_resume`), background task scheduling.
 
     The invariant this ordering protects: in production ANY unsigned POST is rejected —
     both the Resend-envelope shape and the canonical InboundEmail shape. Accepting the
@@ -314,51 +366,22 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
 
     if outcome == "duplicate":
         logger.info("duplicate inbound message_id=%s — no second run", email.message_id)
-        # Redelivery re-schedule: a redelivered webhook carrying a reply is normally
-        # just a no-op duplicate — but if the PERSISTED reply row is still unconsumed
-        # AND its run is still awaiting_reply, the original resume never happened (dead
-        # background task / missed delivery) and this redelivery is the only signal
-        # we will ever get. Without this branch the run stalls in awaiting_reply
-        # forever and the client's answer is silently dropped.
-        #
-        # Load the row by message_id — NEVER rebuild the reply from this request's body.
-        # The persisted row holds the CLEANED body; re-cleaning the redelivered raw body
-        # would produce a different text than the one the first delivery stored.
-        #
-        # Re-schedule only if both conditions hold. A consumed reply, or a run no longer
-        # awaiting_reply, stays a pure no-op (the duplicate response below). The CAS
-        # claim inside resume_pipeline (AWAITING_REPLY -> EXTRACTING) makes any
-        # double-scheduling safe.
-        reply_row = repo.get_inbound_by_message_id(email.message_id)
-        if (
-            reply_row is not None
-            and reply_row.get("consumed_round") is None
-            and reply_row.get("run_id") is not None
-        ):
-            linked_run = repo.load_run(reply_row["run_id"])
-            if (
-                linked_run is not None
-                and linked_run.get("status") == RunStatus.AWAITING_REPLY.value
-            ):
-                # Re-assert the sender revalidation before dispatching this redelivery
-                # re-schedule. A spoofed reply that already failed revalidation on first
-                # delivery is left linked+unconsumed — exactly the state this branch
-                # resumes from. Without this re-check, redelivering the same message_id
-                # would launder the spoofed reply straight into the pipeline.
-                if pipeline_glue.reply_sender_ok(reply_row, linked_run):
-                    logger.info(
-                        "run_id=%s redelivery reschedule", reply_row["run_id"]
-                    )
-                    background_tasks.add_task(
-                        pipeline_glue.resume_pipeline_bg,
-                        reply_row["run_id"],
-                        pipeline_glue.row_to_inbound(reply_row),
-                    )
-                else:
-                    logger.warning(
-                        "run_id=%s redelivery blocked — sender mismatch persists",
-                        reply_row["run_id"],
-                    )
+        # D-11: the redelivery-reschedule check performs its own blocking repo reads
+        # (get_inbound_by_message_id, load_run) plus the reply_sender_ok spoof-guard
+        # (which itself calls find_business_by_sender) — all moved off-loop into
+        # _duplicate_redelivery_sync via the same run_in_threadpool mechanism as the
+        # main ingest, so this branch never touches the DB directly on the loop either.
+        reschedule = await run_in_threadpool(
+            _duplicate_redelivery_sync, email.message_id
+        )
+        if reschedule is not None:
+            resched_run_id, resched_inbound = reschedule
+            # background_tasks.add_task appends to a plain list on this REQUEST-owned
+            # object — safe to call here (back on the loop, after the await above
+            # resumed) because scheduling the task itself never touches the DB.
+            background_tasks.add_task(
+                pipeline_glue.resume_pipeline_bg, resched_run_id, resched_inbound
+            )
         return JSONResponse(
             status_code=200,
             content={
@@ -372,10 +395,26 @@ async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONRe
         # The transaction's classification is authoritative — do NOT re-run
         # find_awaiting_reply_for_header/find_any_run_for_header here. Re-reading the
         # header match post-commit reintroduces the duplicate-run race in a different
-        # shape. Re-run ONLY the sender revalidation: a pure read-then-branch, no write.
+        # shape. finish_reply_resume performs the sender revalidation (its own blocking
+        # repo.load_run + repo.find_business_by_sender calls) and response shaping — run
+        # via run_in_threadpool so that DB work also stays off the loop.
+        #
+        # Cross-thread BackgroundTasks handoff — documented, then proven (Task 3).
+        # finish_reply_resume calls background_tasks.add_task(...) FROM INSIDE the
+        # worker thread this run_in_threadpool call dispatches to. This is safe: the
+        # object is handed off, not shared — the event loop does not touch
+        # `background_tasks` while the worker thread holds it, because this `await`
+        # suspends the route until the helper returns, giving a clean happens-before
+        # edge before Starlette ever drains the task list. Resolving
+        # `pipeline_glue.finish_reply_resume` as a module attribute at call time (not a
+        # bare-name import) keeps the existing monkeypatch seam live (BOUND-01).
         assert result.reply_run_id is not None
-        return pipeline_glue.finish_reply_resume(
-            result.reply_run_id, email, cleaned, background_tasks
+        return await run_in_threadpool(
+            pipeline_glue.finish_reply_resume,
+            result.reply_run_id,
+            email,
+            cleaned,
+            background_tasks,
         )
 
     if outcome == "late_reply":
