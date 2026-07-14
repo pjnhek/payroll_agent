@@ -42,6 +42,14 @@ from app.db.repo.emails import (
     update_email_message_sent,
     update_email_message_state,
 )
+from app.db.repo.jobs import (
+    claim_job,
+    complete_job,
+    enqueue_job,
+    fail_job,
+    get_job,
+    release_leases,
+)
 from app.db.repo.pipeline_state import (
     clear_reply_context,
     get_clarification_round,
@@ -121,6 +129,12 @@ __all__ = [
     "set_hours_changes",
     "set_pre_clarify_extracted",
     "update_known_alias",
+    "claim_job",
+    "complete_job",
+    "enqueue_job",
+    "fail_job",
+    "get_job",
+    "release_leases",
     "load_roster_for_business",
     "_ACCENT_CLASS_MAP",
     "_TERMINAL_STATUSES",
