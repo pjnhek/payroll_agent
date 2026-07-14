@@ -76,6 +76,12 @@ jobs:
         #        in agreement, so a retriggered run APPENDS a new outbound row instead
         #        of overwriting the email it already sent.
         #
+        #    D-14 (v4 Phase 16): durability proofs added from Phase 16 onward do NOT
+        #    go in this by-name list. They carry @pytest.mark.queueproof and are
+        #    collected by the NEW step below, by MARKER rather than by filename — so
+        #    a future durability proof, in any file, needs zero edits to this file.
+        #    This list stays scoped to the two pre-existing proofs it already names.
+        #
         # 2. THESE TESTS SELF-SKIP WITHOUT A DATABASE, so a green job only means
         #    something if nothing skipped. If DATABASE_URL or ALLOW_DB_RESET goes
         #    missing, or a fixture errors into a skip, every proof quietly opts out,
@@ -94,5 +100,63 @@ jobs:
           fi
           if ! grep -qE '[0-9]+ passed' pytest-integration.log; then
             echo "No integration test reported as passed — the file selection or the live-DB guard is broken." >&2
+            exit 1
+          fi
+      - name: Run the queue durability proofs (real Postgres)
+        # D-14 (v4 Phase 16): the queue/durability proof surface, collected by MARKER
+        # (`queueproof`) instead of by filename. Any test anywhere under tests/, in any
+        # phase 16-21, that carries @pytest.mark.queueproof runs here automatically
+        # with ZERO further edits to this file — that is what D-04 originally wanted,
+        # delivered without D-04's blast radius (see below).
+        #
+        # This step is intentionally NOT a widening of the step above. The step above
+        # stays byte-identical to the pre-D-14 gate: 2 named files, `-m integration`.
+        # Whole-suite `-m integration` collection is FORBIDDEN — 12 files under tests/
+        # already carry an `integration` marker and only 2 of them (the ones named
+        # above) run in CI today. Collecting the whole suite would wake the other 10
+        # dormant live-DB modules at once against this SAME shared Postgres service,
+        # each hitting the destructive module-scope reset in tests/conftest.py:74-93 —
+        # a large, unbudgeted, unrelated change with no place in a durability phase.
+        # KNOWN, DELIBERATELY-UNFIXED GAP: those 10 modules
+        # (test_atomic_persist, test_claim_status, test_dashboard, test_gateway,
+        # test_ingest, test_persistence, test_seed_roundtrip, test_stuck_run_recovery,
+        # test_threading, test_webhook_dedup_race) stay exactly as dormant in CI as
+        # they were before this plan. This is a pre-existing gap, tracked in the
+        # roadmap backlog, and is explicitly NOT this phase's job to close. A comment
+        # implying they run here would be worse than no comment.
+        #
+        # Guards, mirroring the step above exactly:
+        #   - `[0-9]+ skipped` → red. A skipped durability proof proves nothing —
+        #     identical rationale to the step above.
+        #   - `[0-9]+ passed` → red if absent. IMPORTANT — this guard is NOT what
+        #     catches a whole-marker typo (e.g. `-m queueprooof`): with `set -o
+        #     pipefail` in front of `tee`, a selection that collects ZERO tests exits
+        #     pytest's own NO_TESTS_COLLECTED code (5), which already reds this step
+        #     before the guard is even reached. An earlier draft of this comment
+        #     claimed the guard catches that case — that claim was FALSE, the
+        #     cross-AI review caught it, and it is not repeated here.
+        #     The guard's REAL value is surviving a DISARMED pipeline: the single most
+        #     common way a gate gets silently defanged is someone appending `|| true`
+        #     to "unblock CI", or dropping `pipefail` — either one swallows pytest's
+        #     exit code, and this log-content check is what still catches "the run
+        #     produced no passing test for any reason" when that happens.
+        #     STATED GAP THIS GUARD DOES NOT CLOSE: it cannot detect a typo'd marker
+        #     on ONE newly-added test while the OTHER queueproof tests still pass —
+        #     the log still says "N passed" and the new proof silently never ran.
+        #     Nothing in CI closes that. What closes it is a per-plan check run at
+        #     authoring time: `uv run pytest tests/ -m queueproof --collect-only -q`
+        #     must list every test in the file just written (an acceptance criterion
+        #     on every plan that adds a queueproof test — 16-04, 16-07, 16-09, 16-10).
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run pytest tests/ -m queueproof -v -rs 2>&1 | tee pytest-queueproof.log
+          if grep -qE '[0-9]+ skipped' pytest-queueproof.log; then
+            echo "A queue durability proof was skipped instead of executed. A skipped proof proves nothing." >&2
+            echo "Check DATABASE_URL / ALLOW_DB_RESET and the module-level live-DB guards." >&2
+            exit 1
+          fi
+          if ! grep -qE '[0-9]+ passed' pytest-queueproof.log; then
+            echo "No queueproof test reported as passed — the marker selection or the live-DB guard is broken." >&2
             exit 1
           fi
