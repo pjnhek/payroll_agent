@@ -2,9 +2,13 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
+current_phase: 16
+current_phase_name: Queue Substrate & Unblocked Webhook
 status: planning
-last_updated: "2026-07-14T04:10:00.000Z"
+stopped_at: Phase 16 context gathered
+last_updated: "2026-07-14T14:52:28.395Z"
 last_activity: 2026-07-14
+last_activity_desc: ROADMAP.md created for v4 (6 phases, 16–21); REQUIREMENTS.md traceability filled (19/19 mapped, no orphans)
 progress:
   total_phases: 6
   completed_phases: 0
@@ -217,9 +221,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-14T04:10:00.000Z
-Stopped at: v4 ROADMAP.md created (Phases 16–21) and REQUIREMENTS.md traceability filled
-Resume file: None
+Last session: 2026-07-14T14:52:28.385Z
+Stopped at: Phase 16 context gathered
+Resume file: .planning/phases/16-queue-substrate-unblocked-webhook/16-CONTEXT.md
 
 ## Operator Next Steps
 
