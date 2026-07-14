@@ -1,187 +1,272 @@
 # Project Research Summary
 
-**Project:** Payroll Agent
-**Domain:** LLM-driven email-to-payroll automation pipeline with a single human-in-the-loop gate (portfolio/demo, recruiter audience; free-tier hosting, Postgres-as-state-machine)
-**Researched:** 2026-06-20
-**Confidence:** HIGH (architecture/stack/features); MEDIUM-with-flags on two numeric/identifier surfaces (exact LLM model IDs, 2026 IRS Pub 15-T tables) that must be transcribed from live sources, not memory.
+**Project:** Payroll Agent — v4 Durable Execution
+**Domain:** Durable Postgres-backed job queue + in-process worker pool bolted onto a shipped, email-driven payroll pipeline (FastAPI, Supabase Postgres via Supavisor transaction-mode pooling, Render free tier)
+**Researched:** 2026-07-13
+**Confidence:** HIGH overall — every claim below is traced to a live file:line in this repo or a vendor doc, not inferred.
+
+---
 
 ## Executive Summary
 
-This is a **portfolio artifact, not a payroll product.** The "users" are hiring managers and technical reviewers who spend under two minutes scanning for a deployment link they can try, a quantified metric tied to impact, and visible safety/interpretability mechanisms. Every design choice serves a fixed priority order: **(1) visibly works end-to-end -> (2) clean 60-90s demo -> (3) a real, legible eval chart.** Experts build systems like this as a *deterministic-first, code-gated* pipeline where the LLM is a *proposer under constraints*, not a decider -- and where the durable state engine is Postgres (the `status` column IS the state machine and the HITL checkpoint), not an agent framework. The locked stack (FastAPI + Pydantic v2 + OpenAI-compatible client + psycopg3 + Supabase + reportlab on Render free) is exactly right for this; the research deepens rather than relitigates it.
+Four researchers adversarially validated the already-approved v4 design (`docs/superpowers/specs/2026-07-13-durable-execution-design.md`) against the live codebase and vendor docs. **The verdict: the design is substantially correct, and it needs zero new dependencies** — every primitive (`SELECT … FOR UPDATE SKIP LOCKED`, `gen_random_uuid()`, transactional enqueue, a bounded thread pool, `resend`'s `Idempotency-Key`) is already installed and already running in production on six live tables. `uv add` count: 0. The work is entirely schema, config, worker threads, and — the one genuinely hard piece — teaching the orchestrator to return an explicit `ok`/`retryable`/`terminal` result instead of swallowing every stage failure into `ERROR` and returning `None`.
 
-The recommended approach has **one load-bearing design constraint that dominates everything else** -- call it the **DRY seam.** The four judgment stages (`extract`, `reconcile_names`, `validate`, `decide`) must be written as **pure importable functions** that take Pydantic data in and return Pydantic data out (`def extract(email_text, *, llm) -> Extracted`, **never** `def extract(run_id)`). The **hard gates must live INSIDE `decide.py`**, computing a code-owned `final_action` that overrides the LLM's proposal -- not in the orchestrator. And the **eval must import and score those exact same functions and that exact `final_action`.** This single choice is what makes the eval credible *and* tests the project's core thesis ("a low-confidence match can never reach a real payroll calculation"). If the gate lived in the orchestrator, the eval would test a different code path than production, and the whole portfolio story would be unverifiable. The roadmap must treat this seam as a hard, early constraint, not a refactor to discover later.
+But the design as written contains real defects, two of them severe enough to sink the milestone's headline claims if shipped as-is. Two researchers independently found, without coordinating, that **the design's own claim SQL can never reclaim an expired lease** (`WHERE state='pending'` never matches a job stuck at `state='leased'` after its worker died) — the exact failure the lease exists to prevent, and the exact scenario the design's own Phase D Proof #4 is supposed to exercise. Two researchers also independently found that **a pump cadence fast enough to be useful (5–10 min) keeps the Render free service permanently awake**, burning ~720–744 of the workspace's 750 free instance-hours/month — a cost the design costed for latency but never for budget. And two researchers found the **"no client is ever emailed twice" claim is false as designed**: Resend's `Idempotency-Key` is bound to the payload, the retry path re-drafts the email via a live LLM call and regenerates non-deterministic PDF bytes, and the repo's own upsert (`emails.py:83-89`) overwrites the very `message_id` the design says to reuse. None of these are exotic — they are the kind of defect only surfaced by tracing argument flow against live source, which is exactly what this research did.
 
-The key risks cluster on two surfaces. **First, the IRS Pub 15-T calc engine is the single highest bug-risk unit, and its bugs are INVISIBLE to the reconciliation check** -- a payroll computed with last year's wage base still ties out internally; it is just wrong against reality. Only *golden-value unit tests* against hand-computed 2026 paystubs catch stale constants, Worksheet 1A order-of-operations errors, the 401k/FICA pre-tax sequencing trap, and FLSA overtime miscounts. **Second, the resume-on-reply re-entrancy** requires strict idempotency invariants (overwrite `extracted_data`, replace-by-run line items, match replies only to runs in `awaiting_reply`). Both warrant isolated, heavily-tested phases. Mitigation is built into the architecture: a pure, isolated calc engine unit-tested in parallel with everything else, and durable status checkpoints so a Render cold-start never loses a run. Several **decisions emerged from research that must be made explicitly in requirements** (tax year + OBBBA scoping, exact model IDs, an explicit orchestrator module, a stuck-run recovery path) -- flagged below; do not let them resolve by accident.
+The recommended path is NOT "start with the queue." Architecture research refutes the design's own claim that unblocking the webhook's event loop "cannot be split" from adding the queue — `run_in_threadpool` fixes the event-loop-blocking defect today, with zero schema changes, using a mechanism the codebase already relies on elsewhere. The queue, the pump, the failure/result-contract, and the exactly-once send policy decompose into 7 independently shippable phases, with one hard ordering constraint the design gets backwards: **the pump and the failure policy must land before the webhook is cut over to the queue**, or the cutover ships a window in which the worker silently records success on a payroll that actually failed.
+
+---
+
+## CORRECTIONS TO THE APPROVED DESIGN
+
+Ranked by severity. Every item traced to file:line. This section is the load-bearing part of this research — do not let the roadmap flatten it into "add a queue."
+
+### CRITICAL
+
+**C1 — The claim SQL cannot reclaim an expired lease.** (ARCHITECTURE §4, FEATURES §1 — independently converged)
+Design's claim SQL (`design.md:150-153`): `WHERE state = 'pending' AND available_at <= now()`. A job whose worker died holding the lease stays `state='leased'` **forever** and is never reclaimed. This is the exact failure the lease exists to prevent, and it means **the design's own Phase D Proof #4 ("reclaim safety") would fail against the design's own SQL.**
+Fix: `WHERE (state='pending' AND available_at <= now()) OR (state='leased' AND leased_until < now())`.
+
+**C2 — Phase ordering ships a durability regression window.** (ARCHITECTURE §7)
+Design orders Phase A (full webhook cutover to queue) → B (pump) → C (retry policy/result contract). Between the end of A and the end of C: there is no pump draining future-dated jobs; the orchestrator still swallows stage failures into `ERROR` and returns normally, so **a worker records success on a payroll that actually failed**; and the dashboard sweep is being *kept* "until the queue is proven," so it now races the queue's own lease reclaim on the same run (both fire at ~15 min). **The pump and the failure policy must precede the webhook cutover** — this is a correctness ordering, not a preference.
+
+**C3 — Exactly-once send is broken as designed.** (FEATURES §3, PITFALLS Pitfall 6 — independently converged, four compounding sub-bugs)
+- **G1 (payload drift → hard 409, not a silent no-op):** Resend binds the idempotency key to the *payload*; same key + different payload = `409 invalid_idempotent_request` (vendor docs, verified). `delivery.py:118` re-drafts the confirmation body via a live Kimi LLM call on every retry; `delivery.py:136` regenerates PDFs via reportlab's `SimpleDocTemplate`, which stamps a fresh `/CreationDate` + `/ID` — non-deterministic bytes every call. Same key, different payload, on essentially every retry.
+- **The repo's own write path destroys the reservation it needs to read:** `insert_email_message`'s upsert (`app/db/repo/emails.py:83-89`) does `ON CONFLICT (...) DO UPDATE SET message_id = EXCLUDED.message_id` — a retry **overwrites** the reserved row's `message_id` with a fresh `uuid4` before the design's "reuse it" logic can ever read it. This is also the reply-threading anchor (`gateway.py:271-273`); overwriting it silently misroutes a client's clarification reply into a brand-new phantom payroll run.
+- **G2 (24h key expiry unbounded by the retry ladder):** Resend retains an idempotency key ~24h. The design's retry/backoff ladder has no bound tying it to that window — a dead-lettered job resumed by an operator on Monday, or any backoff schedule that stretches past a day, sends a second payroll email with provider-side dedup silently gone.
+- **G3 (`failed` is not proof of non-delivery):** `send_outbound` flips a row to `send_state='failed'` on **any** exception including a timeout *after* Resend accepted the message (`gateway.py:341-345`). The retry guards only recognize `send_state='sent'` as proof of delivery — a `failed` row does not suppress a retry, and if that retry mints a fresh key, the client gets emailed twice.
+- Fix requires ALL of: read-before-mint on `send_outbound`; stop overwriting `message_id` in the upsert; treat both `reserved` and `failed` as "may have escaped" (both must reuse the key); deterministic PDF bytes (pin `/CreationDate`/`/ID`); cap total retry age below the confirmed Resend window; the honest published claim is narrower than "never twice" (see below).
+
+### HIGH
+
+**C4 — "Unblock the front door is not shippable before the queue" is false.** (ARCHITECTURE §7)
+Design (`design.md:175-176`): *"It cannot be split... Merged."* This conflates two different defects: event-loop blocking (Finding 2) vs. fetch-in-the-request-path availability risk. `await run_in_threadpool(_ingest_sync, raw_body)` fixes the event-loop-blocking defect **today, with zero new schema**, using `starlette.concurrency.run_in_threadpool` — the exact mechanism `pipeline_glue`'s existing sync-`def` wrappers already exploit on purpose. Independently shippable, independently testable (fire 2 concurrent webhooks against a stubbed slow fetch, assert wall-clock ≈ max not sum). It does NOT fix a Resend outage still 502ing the webhook — that's a different, later concern.
+
+**C5 — Keeping `sweep_stranded_runs` alongside the queue is the two-sources-of-truth hazard, literally.** (ARCHITECTURE §7, PITFALLS Pitfall 7)
+Two independent status writers, both firing at ~15 min, both authorized to write `payroll_runs.status`, racing on the same run: the sweep flips a stale `extracting` run to `ERROR` (the sanctioned third status writer) at the same moment the queue reclaims the expired lease, re-runs the handler, whose CAS fails against `error` → no-op → job `done`. The design's headline claim ("recovers automatically within minutes, without a human noticing") is defeated by the very safety net meant to back it up. **The sweep must be REPLACED by the dead-letter transition in the same phase the failure policy lands — not "retired once the queue is proven."** This is also a net deletion win: `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, the `runs_list()` sweep block, and the redelivery-reschedule branch all become deletable.
+
+**C6 — The producer/payload inventory is incomplete.** (ARCHITECTURE §2, PITFALLS Pitfall 10)
+Design names 3 job kinds and 6 `BackgroundTasks` call sites. Actual grep of `BackgroundTasks` **type annotations** (not just `add_task` call sites — a route can take `background_tasks` and delegate to a helper, which a naive grep misses) finds **8 producers across 3 distinct payload signatures**:
+- `operator_resume_bg(run_id, overrides: dict[str, str])` (`runs.py:262`) carries a **dict of business data** with nowhere to live in the design's 3-column job row → needs a 4th job kind (`operator_resume`) + a new `payroll_runs.operator_overrides JSONB` column.
+- `resume_pipeline_bg(run_id, inbound: InboundEmail)` carries an **object**, not an identifier → must become an `email_id` FK (rehydrated via the already-existing `pipeline_glue.row_to_inbound`).
+- Two producers the design's list misses entirely: `runs.py:475` (the dashboard sweep itself is a producer) and `runs.py:792` → `pipeline_glue.route_reply` → `pipeline_glue.py:127` (an indirect `add_task`, invisible to a `grep add_task` in `runs.py`).
+Missing any one of the 8 leaves two competing execution systems, one of which still loses work on restart — the exact bug the milestone exists to kill.
+
+### MEDIUM
+
+**C7 — `lease_token` fencing does not protect the business writes; the design's rule 2 overclaims.** (ARCHITECTURE §4)
+Design's rule 2: *"Every completion or failure write must match the `lease_token`."* True, but it only fences the `jobs` row. The orchestrator's actual business writes commit in a *different* transaction, minutes earlier, with no token in scope. The real guarantee comes from `claim_status` (the run-status CAS) + `uq_email_run_purpose_round_epoch` (blocks a second send) + `replace_line_items`'s delete-then-insert (idempotent by value). State this precisely in the README/ops page or repeat the "eval chart was lying" mistake this project already had to correct once.
+
+**C8 — 10-min pump collides with Render's 750 free instance-hours/month.** (ARCHITECTURE §5, PITFALLS Pitfall 2 — independently converged)
+A pump cadence under 15 minutes means the service never spins down → ~720–744 h/month against a 750 h/workspace/month cap → six hours of margin, and only if this is the *sole* free web service in the workspace. Blow the budget and free services suspend until next month — the demo dies silently, mid-month, unflagged anywhere in the design. This is an unmade decision dressed as an implementation detail; it must be written down explicitly (see Open Decisions below).
+
+**C9 — No graceful lease release on shutdown.** (ARCHITECTURE §5)
+A Render redeploy is routine (several times a day during development). Without releasing held leases in the `lifespan` teardown, every in-flight job strands for a full lease-plus-pump-interval (~25 min). One `UPDATE jobs SET state='pending', lease_token=NULL WHERE id=… AND lease_token=%(token)s` in `worker.stop()` turns a 25-minute stall into a sub-second handoff on every deploy.
+
+### LOW
+
+**C10 — `inbound_events` retention has no named executor.** The design calls for "a byte cap and a retention policy" but names nobody to run it. The pump is the only recurring execution context in the system — it must own retention (`DELETE FROM inbound_events WHERE received_at < now() - interval '30 days'`).
+
+---
+
+## What the design got RIGHT (must survive into the roadmap unchanged)
+
+- `jobs` as transport-state-only, `payroll_runs.status` as the sole business state machine — correct, and it's the milestone's actual thesis. It just needed the enforcement teeth (INVARIANT J-1, CI drift guards) that the architecture research adds.
+- `business_id` nullable on `jobs` — correct; sender→business routing happens after the (now-deferred) body fetch.
+- The pump is not optional — "durable storage is not durable execution" is the sharpest sentence in the design and is true.
+- The reserved `message_id` as a pre-send idempotency key is the best insight in the design — verified against the installed SDK (`resend==2.32.2` ships `SendOptions.idempotency_key`, emits `Idempotency-Key` header).
+- "Never mint a fresh uuid4 on retry" — correctly identified as the subtle bug, even though the fix is incomplete as stated (see C3).
+- Infrastructure failures stay in `error`, not `needs_operator` — confirmed correct against `/resolve`'s hard requirement on `decision.unresolved_names`.
+- No session-level advisory locks, no LISTEN/NOTIFY — correct; both are silently broken under Supavisor transaction-mode pooling.
+- Five connections is the ceiling, not forty AnyIO threads — the most under-appreciated constraint, and the design named it first.
+- Throughput machinery (priority lanes, fairness, backpressure) explicitly out of scope — right call, schema already shaped to make each an `ORDER BY` change later, not a migration.
+
+---
 
 ## Key Findings
 
 ### Recommended Stack
 
-The stack is locked and verified against PyPI + official docs (June 2026). It is a single FastAPI process on one Render free web service, with Postgres as the only state. The two soft spots are not library choices but *external values that drift*: the exact LLM model IDs and the 2026 tax tables -- both must be pulled from live sources and pinned, never remembered. See **STACK.md** for full version pins, usage patterns, and gotchas.
+**Verdict: add nothing.** Every design primitive is already installed and in live production use: `FOR UPDATE SKIP LOCKED` (PG 9.5+, Supabase ships ≥15), `gen_random_uuid()` (already the PK default on 6 shipped tables via `pgcrypto`), `psycopg[binary,pool]==3.3.4` transactional enqueue, stdlib `threading.Thread` for the worker pool, FastAPI `lifespan=` (currently absent from `app/main.py` — the one new hook), `starlette.concurrency.run_in_threadpool`, and `resend==2.32.2`'s `SendOptions(idempotency_key=...)` (no version bump needed). Three lightweight Postgres-queue libraries were seriously evaluated and rejected: `procrastinate` (requires an async connector — a second connection pool against a 5-connection budget), `pgqueuer` (wants its own CLI worker process — Render free has none), `pgmq` (no fencing token → the zombie-reclaim proof is unimplementable; no unique dedup key → the ingress-idempotency proof is unimplementable). The only real "stack" changes are schema (`jobs` table + `provider_message_id` column) and config (`PUMP_SECRET`, `WORKER_COUNT`, `LEASE_SECONDS`, `MAX_ATTEMPTS`) — both already have first-class, CI-gated machinery in this repo.
 
-**Core technologies:**
-- **FastAPI 0.138.0 + Pydantic v2 (2.13.4)** -- webhook + dashboard + the shared contract layer. Pydantic models are the contracts that let eval and production share code. Use v2 idioms (`model_validate_json`, `ConfigDict`), not v1.
-- **openai 2.43.0 (OpenAI-compatible client)** -- ONE client, `base_url`/`model`/`key` swapped per task tier. **Use `response_format={"type":"json_object"}` + `model_validate_json()` + retry -- NOT `.parse()`/strict `json_schema`** (DeepSeek doesn't support strict schema; targeting it breaks the provider-agnostic path).
-- **psycopg3 (3.3.4, `[binary,pool]`)** -- direct Postgres for real transactions + `SELECT ... FOR UPDATE` to prevent double-approval. NOT `supabase-py` (a REST wrapper with no transactions). Connect Render->Supabase via the **Supavisor pooler host, transaction mode port 6543** (the direct host is IPv6-only; Render is IPv4-only).
-- **reportlab 5.0.0** -- pure-Python, BSD, zero native deps; generate PDFs in-memory to `BytesIO` and stream them (Render FS is ephemeral). Avoid WeasyPrint (heavy native deps bloat the slim image).
-- **Jinja2 3.1.6, server-rendered** -- 4 dashboard pages, no SPA/build step.
-- **Year-keyed tax constants module + `TAX_YEAR` env** -- SS wage base **$184,500** (2026), Medicare 1.45% no cap; Pub 15-T brackets transcribed from the live PDF. Never inline a tax number.
+**Core technologies (all pre-existing):**
+- **Supabase Postgres ≥15**: `FOR UPDATE SKIP LOCKED` claim, `gen_random_uuid()` lease tokens — zero new extension surface.
+- **psycopg[binary,pool] 3.3.4**: claim/complete/fail queries reuse the existing transactional discipline; already Supavisor-transaction-mode-safe (`prepare_threshold=None`).
+- **stdlib `threading.Thread`, daemon=True**: the worker primitive — NOT `asyncio.Task` (all downstream work is blocking sync I/O) and NOT `ThreadPoolExecutor` (adds a dispatcher thread for zero safety gain over N self-driving claim loops).
+- **FastAPI `lifespan=`**: start/stop N daemon worker threads; `app/main.py` has none today.
+- **resend 2.32.2**: `SendOptions(idempotency_key=...)` already present at the pinned version — do not bump during this milestone.
 
 ### Expected Features
 
-The audience lens reframes "table stakes" as *what makes this read as a credible agentic system in a 60-90s look.* Three differentiators are the headline; do not spread effort thin. See **FEATURES.md** for the full landscape, dependencies, and anti-features.
+**Must have (P1, table stakes for the word "durable" to be earned):**
+- Result contract (`ok`/`retryable`/`terminal`) — the hard prerequisite; nothing else in the milestone can be built without it.
+- `jobs` table + SKIP LOCKED claim + lease + lease-token fencing + **the stale-lease reaper fix (C1)**.
+- Svix-event-ID-keyed idempotent enqueue; RFC `Message-ID` dedup retained as a second, deeper gate.
+- The pump — authenticated endpoint + cron; without it the rest is durable storage that never executes.
+- Backoff + jitter + attempt cap → dead-letter, ladder bounded **inside** Resend's confirmed idempotency window.
+- Exactly-once send: all parts of C3's fix (reuse reserved `message_id`, replay persisted payload without recomposing, deterministic PDF bytes, split the two distinct 409 sub-codes into retryable vs. terminal, persist `provider_message_id`, escalate stale `reserved`/`failed` rows to a human rather than auto-resend).
+- Every `BackgroundTasks` producer migrated — all 8, not the design's 6 (C6).
+- Atomic CAS claim for the initial pipeline (`run_pipeline` currently writes `received → extracting` unconditionally — a reclaimed job could otherwise run it twice, concurrently).
+- The ops page (7 signals: queue depth, oldest-pending age, in-flight count, expired-lease count, attempts distribution, dead-letter list, stale-`reserved`-row list).
+- The four durability proofs, on the existing real-Postgres barrier harness — each proven able to **fail** via a named falsifying mutation.
+- The honest guarantee, published in README + ops page (narrower than "never twice" — see below).
 
-**Must have (table stakes -- absence disqualifies):**
-- **LLM extraction** (messy email -> structured per-employee JSON, JSON mode + Pydantic + retry) -- the "LLM reads" beat
-- **Real IRS Pub 15-T federal withholding + gross/FICA/FLSA-OT** -- a payroll demo that fakes the math is not a payroll demo (highest bug risk -> isolated, unit-tested)
-- **Single operator approval gate** (side-by-side submitted vs computed, gated BEFORE the send) -- the narrative spine
-- **Reconciliation check** (net + taxes + deductions ties out) -- cheap "system checks its own work"
-- **Runs list + status badges, "Send test email" button, deployed Render instance + README disclaimer** -- the demo surface; the test button is the on-camera trigger AND the live-email fallback
+**Should have / differentiators:** the falsification harness itself (this repo's identity is "every claim has a proof behind it"); enforcing `jobs`-as-transport-only via a CI drift guard, not just a stated intent; persisting `provider_message_id` as durable send evidence (today only logged).
 
-**Should have (the three differentiators that make a reviewer lean in):**
-- *** Name reconciliation** (deterministic-first; LLM only on residual ambiguity; typo vs nickname vs different-person, with confidence + reason) -- *the headline*; the deterministic-first split is itself the impressive part
-- *** Code-gated process-vs-clarify decisioning** (LLM proposes, code disposes at 0.8) -- *the trust mechanism*; the gate must visibly override the model
-- *** The eval chart** (4 metrics over ~15-25 committed fixtures, one legible chart) -- *the proof, not the demo*; reproducibility is the credibility lever
-- **Clarification round-trip** (auto-send, client replies on thread, run resumes via RFC headers) -- differentiator, *not* table stakes; highest-risk-vs-payoff, prove via fixtures, wire the real provider last
-
-**Defer (v2+ -- already correctly scoped out):**
-- State withholding (nullable column stays), spreadsheet-attachment parsing, cached/persisted PDFs + Storage bucket, client-confirm second gate (breaks the single-gate narrative), reasoning models, dashboard auth, eval exotica (bias harnesses), retry/queue/observability infra, per-employee YTD ledger.
+**Defer (v2+), named anti-features — all four researchers agree:** priority lanes, per-tenant fairness/weighted round-robin, adaptive backpressure, circuit breakers (LLM/Resend), autoscaling worker pool, distributed tracing, a full metrics stack (Prometheus/Grafana), an N-concurrent-email load chart, a separate worker process. Real traffic is ~1 payroll email/client/week; every one of these is machinery for load that will never arrive. The schema already carries `priority` and `business_id` unread, so each remains a future `ORDER BY` change, not a migration, if traffic characteristics ever change.
 
 ### Architecture Approach
 
-The one idea that makes it work: **there is no in-memory orchestration state and no message queue -- `payroll_runs.status` IS the state machine.** Every stage reads the run, does its work, writes the next status. A pause is a status the orchestrator stops at; a resume is an inbound event (webhook or button) that re-invokes the orchestrator on a paused run. There are exactly **two pauses**: `awaiting_reply` (machine pause on the client, resumes at stage 2) and `awaiting_approval` (the single HITL gate, resumes at stage 8). This is why "plain Python + Postgres" replaces LangGraph cleanly and survives Render cold starts. See **ARCHITECTURE.md** for the full state machine, the fixture seam, re-entrancy invariants, and the 6-tier build-order graph.
+`jobs` is transport state only (enforced by a CI drift guard, not just documented intent); `payroll_runs.status` remains the sole business state machine. The queue is coarse-grained — one job kind per orchestrator entry point (4 kinds: `ingest`, `run_pipeline`, `resume_reply`, `operator_resume`), never per-stage, because there is no durable checkpoint between the pipeline's internal stages and per-stage granularity would force a next-status onto the job row (the exact forbidden duplication). Worker count is a tuned constant (2) derived from the 5-connection budget, not a scaling knob. The claim/lease/fencing protocol is the one piece of real machinery; everything else — enqueue atomicity, the pump, the failure taxonomy — composes around it using patterns (transactional co-tenancy with `conn.transaction()`, the `claim_status` CAS idiom) this repo has already proven correct in production.
 
 **Major components:**
-1. **Edge / FastAPI (`app/main.py`)** -- thin HTTP adapter; returns 200 fast, schedules a `BackgroundTask`. No business logic.
-2. **Pipeline orchestrator (`app/pipeline/orchestrator.py` -- ADD THIS)** -- the unnamed-but-required state-machine driver; owns legal status transitions and where the pauses are. *Not named in the original repo structure; the roadmap must add it explicitly.*
-3. **Judgment stages (`extract`, `reconcile_names`, `validate`, `decide`)** -- pure importable functions over `models/` types; **`decide.py` contains the hard gates and computes `final_action`.** Imported by both the orchestrator AND the eval (the DRY seam).
-4. **Calc engine (`calculate.py` + `reconcile_payroll.py`)** -- PURE functions, zero upstream deps; the only component buildable + unit-testable in complete isolation. Highest bug risk -> isolate early.
-5. **LLM client (`llm/client.py`)** -- one OpenAI-compatible client, per-task routing, JSON mode, retry. Vendor-agnostic.
-6. **Email gateway (`email/gateway.py`)** -- the ONE provider-aware seam (`parse_inbound`, `send -> message_id`); stubbed until last.
-7. **DB layer, PDF generator, dashboard, eval harness** -- DB is the single status mutator; PDF is stateless on-demand bytes; dashboard is read-only except approve/reject; eval imports production functions.
-
-**Build order (6 tiers, the spine of phase sequencing):** contracts/schema first -> LLM client + pure calc engine in parallel -> webhook + orchestrator + 4 judgment stages with a **stub gateway** (= first "visibly works end to end") -> clarify/threading/dashboard -> eval + PDFs + reconciliation -> real provider + deploy + CI **last**.
+1. `app/queue/` (new package) — `enqueue()`, `claim_one()`, `settle()`, `drain_once()`; owns every `UPDATE jobs`.
+2. `app/queue/handlers/{ingest,pipeline}.py` — the verbatim-moved DATA-02 ingest transaction; the rewind-preamble + CAS wrapper around the orchestrator.
+3. `app/routes/internal.py` — `POST /internal/pump` (authenticated, bounded drain, returns real counts) + `GET /internal/queue` ops view.
+4. The orchestrator's new result contract — `JobResult = Ok | Retryable(reason) | Terminal(reason)`, replacing the current swallow-and-return-None.
 
 ### Critical Pitfalls
 
-The pitfalls are ranked by threat to (1) eval credibility, (2) demo stability, (3) payroll correctness. Payroll-math bugs are over-represented because they are the highest bug-risk surface AND invisible to the reconciliation check. See **PITFALLS.md** for all 18 with warning signs, recovery costs, and the pitfall-to-phase map.
+1. **Durable storage that is never durable execution** — Render free wakes only on inbound HTTP; any in-process timer (asyncio sleep loop, APScheduler, `threading.Timer`) sleeps with the dyno and dies silently. Avoid: the pump is non-negotiable; ban in-process timers with a CI grep guard.
+2. **The pump/free-tier collision (C8 above)** — must become a written decision with the arithmetic in the phase doc, not an unexamined config default.
+3. **Connection-pool starvation** — `max_size=5` is the true ceiling; an LLM call held inside a checked-out connection is how you hit it. Enforce `worker_concurrency + reserved_headroom ≤ max_size` as a startup assertion.
+4. **Supavisor transaction-mode pooling breaks session state silently** — advisory locks and LISTEN/NOTIFY don't error, they just quietly do nothing; only row leases + CAS survive port 6543.
+5. **Vacuous durability tests** — this exact failure already happened once (Phase 10's concurrency proof passed even with its own safety clause deleted, because 8 threads were driven through a serialized async route). Every Phase D proof must be demonstrated able to fail via a named mutation, driven through the sync repo seam directly under a `threading.Barrier`, not through an HTTP route.
 
-1. **Stale/wrong-year tax constants (P1)** -- a code-writing LLM confidently emits last year's $176,100 wage base or stale brackets; the reconciliation check will NOT catch it. *Avoid:* one dated `tax_tables_2026.py` module with source + retrieval date in a header; a golden-value unit test asserting a hand-computed 2026 paystub to the penny.
-2. **The LLM decision is trusted instead of code-gated (P6 -- the core narrative failure)** -- if a reviewer can produce one email where the model says `process` and code should have blocked it but didn't, the whole story collapses. *Avoid:* code computes the gate independently of the model's action; the decision object's `final_action` is code-owned; the eval scores `final_action`, not `model_action`. Seed a "model-says-process-but-field-missing" fixture.
-3. **Eval doesn't exercise the production path / train-test leakage (P9, P10)** -- eval calls a parallel code path, or fixtures are generated by the same model/prompt that extracts them, so the chart proves the wrong thing (and a sharp reviewer asks exactly this). *Avoid:* eval imports the SAME functions; decouple the fixture generator from the extractor (different model/persona); hand-label the decision-critical cases.
-4. **Non-deterministic / non-reproducible eval (P8)** -- the headline metric can't be reproduced a week later; CI flaps red/green. *Avoid:* `temperature=0`, **pin versioned model IDs (not floating aliases) and record them in `eval_results`**, consider caching raw model outputs for committed fixtures.
-5. **Payroll-math sequencing traps (P2-P5)** -- Worksheet 1A order-of-operations, **401k reduces the federal base but NOT the FICA base**, FLSA OT computed on worked-hours-only (paid leave excluded from the 40-hr threshold), and `Decimal`-not-`float` to keep the reconciliation check honest. *Avoid:* named intermediates (`fica_wages`, `fed_taxable_wages`), table-driven tests across filing status x checkbox x credits, and targeted fixtures ("40 worked + 8 vacation" -> 0 OT; FICA constant as 401k% varies).
+---
 
 ## Implications for Roadmap
 
-Based on combined research, the suggested phase structure follows the architecture's 6-tier dependency graph, corroborated by the feature dependencies. The **non-negotiable sequencing principle**: build the judgment stages as **pure importable functions with the gate inside `decide.py`** (the DRY seam) before wiring any persistence or endpoints around them -- otherwise the eval (differentiator #3) becomes a rewrite. The calc engine, being the only zero-dependency component and the highest bug risk, is isolated and tested in parallel from the start.
+Architecture research proposes **7 independently-shippable phases** with one hard, non-negotiable dependency order: **2 → 3 → 4 → 5** (queue substrate → pump → failure policy → webhook cutover). Phase 1 is independent of everything and should ship first regardless. Phase 6 (exactly-once send) is independent of phase 5 and can run in parallel. Phase 7 (proofs) is last by definition.
 
-### Phase 1: Contracts & Foundations
-**Rationale:** The schema and Pydantic models are the contracts every other component imports (Tier 0); nothing works without them. Locking the `decision`-object schema (`{model_action, gate_triggered, gate_reasons[], final_action, unresolved_names[], missing_fields[]}`) early prevents late ripple into the gate, the dashboard, AND the eval.
-**Delivers:** `db/schema.sql` (6 tables, the 11-value status enum, **a unique index on `email_messages.message_id` for idempotency**), `db/supabase.py` typed accessors, and all `models/` Pydantic contracts (InboundEmail, Extracted, Decision, PaystubLineItem).
-**Addresses:** the shared-contract substrate beneath every feature.
-**Avoids:** P13 (duplicate webhook -> no second run, via the unique index); late schema churn.
+### Phase 1: Unblock the event loop
+**Rationale:** Refutes the design's false "cannot be split" claim (C4). Needs zero new schema — pure risk reduction before the riskier queue work begins.
+**Delivers:** `webhook.py:inbound` wraps its blocking body in `run_in_threadpool`; `MAX_WEBHOOK_BODY_BYTES` cap added.
+**Addresses:** Finding 2 (event-loop blocking) from the design.
+**Avoids:** Pitfall — conflating availability risk with event-loop blocking; keeps this change independently testable and independently shippable.
 
-### Phase 2: Pure Calc Engine (isolated, golden-value tested)
-**Rationale:** The only component with zero upstream dependencies (Tier 1), buildable in parallel with everything else, and the single highest bug-risk unit whose bugs are invisible to the reconciliation check. Isolating and over-testing it early de-risks the entire schedule.
-**Delivers:** `calculate.py` + `reconcile_payroll.py` as pure functions -- gross, FLSA OT, salary proration, 401k, FICA, **real IRS Pub 15-T percentage method (Worksheet 1A, all three filing statuses + Step-2-checkbox branch)**, net, and the `Decimal`-exact reconciliation check; a dated `tax_tables_2026.py`; a table-driven golden-value test suite.
-**Uses:** `Decimal` throughout; year-keyed constants (reportlab not yet).
-**Avoids:** P1 (stale constants), P2 (Worksheet 1A order), P3 (FLSA OT base/threshold), P4 (401k/FICA sequencing), P5 (penny drift).
-**Decision required first:** tax year (2025 vs 2026) and OBBBA scoping -- see Gaps.
+### Phase 2: Queue substrate + ONE producer
+**Rationale:** Learn leases/pool/lifecycle on the cheapest, most observable surface (operator retrigger) — not the money path.
+**Delivers:** `jobs` table (with the C1 stale-lease-reclaim fix baked into the claim SQL from day one), `app/queue/{worker,dispatch}.py`, `lifespan` hook, ONE producer (`retrigger`) cut over. BackgroundTasks coexists safely for exactly this one phase.
+**Uses:** psycopg3, stdlib threading, FastAPI lifespan — all from STACK.md.
+**Implements:** the claim/lease/fencing protocol (ARCHITECTURE §4).
 
-### Phase 3: LLM Client + Judgment Stages with the Gate (the DRY seam) + Webhook + Orchestrator -- *"visibly works end to end"*
-**Rationale:** This is the milestone that satisfies priority #1. With a **stub gateway** (synthetic `Message-ID`), the whole happy path + name-mismatch + clarify->reply->resume runs with ZERO real email. The judgment stages are pure functions; the orchestrator ties them to persistence; **the hard gates live inside `decide.py` computing `final_action`.**
-**Delivers:** `llm/client.py` (base_url/model/key swap, `json_object` mode, reflective retry); `extract`/`reconcile_names`/`validate`/`decide` as pure functions; the **explicit `orchestrator.py`** state-machine driver; `main.py` webhook (returns 200 fast, schedules `BackgroundTask`); `ingest.py` with reply-body stripping; stub `email/gateway.py`.
-**Implements:** the Edge, orchestrator, judgment stages, LLM client.
-**Avoids:** P6 (code-gated decision -- *the thesis*), P7 (name match calibration), P8 (temperature 0, pinned model IDs), P12 (quoted-history pollution), P14 (JSON-mode failures, hallucinated-employee cross-check, reflective 2nd retry).
-**This is the load-bearing phase** -- get the DRY seam and the in-`decide.py` gate right here or pay for it in Phase 5.
+### Phase 3: The pump
+**Rationale:** MUST precede the webhook cutover (C2) — after cutover, a lost job is a lost payroll.
+**Delivers:** `POST /internal/pump` (hmac-authenticated, bounded drain, real counts returned); `.github/workflows/pump.yml` (replaces `keepalive.yml` — net deletion); the pump cadence vs. 750h decision (C8) written down explicitly with the arithmetic.
+**Avoids:** Pitfall 1 (durable storage, never durable execution) and Pitfall 2 (the free-tier collision).
 
-### Phase 4: Close the Loop -- Clarify Round-trip, Threading, Dashboard
-**Rationale:** Tier 3; needs runs to exist before there's anything to render or resume. The resume logic is proven against fixtures (the test button replays a fixture), keeping real email off the critical path.
-**Delivers:** `compose_email.py` (cheap model) + clarify auto-send + threading store; resume-on-reply lookup (RFC header chain, with strict re-entrancy idempotency); dashboard (runs list, run detail with side-by-side submitted vs computed + the decision object's reasons, approve/reject buttons, "Send test email" button).
-**Addresses:** the clarification differentiator + the operator-gate narrative spine.
-**Avoids:** P11 (header-not-subject threading), re-entrancy non-idempotency (overwrite `extracted_data`, replace-by-run line items, match replies only to `awaiting_reply` runs).
+### Phase 4: Failure policy + CAS + sweep deletion
+**Rationale:** MUST precede the webhook cutover (C2) — otherwise a transient LLM 503 on a real payroll email becomes a permanent, unretried ERROR.
+**Delivers:** `JobResult` classification (retryable vs. terminal, default-terminal for unknowns); `run_pipeline`/`resume_pipeline` return `JobResult` instead of `None`; the rewind-preamble CAS fix for `run_pipeline`; **deletion** of `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the `runs_list()` sweep block (C5).
+**Avoids:** Pitfall 8 (error-swallowing orchestrator) and Pitfall 7 / C5 (two sources of truth via the racing sweep).
 
-### Phase 5: The Proof -- Eval Harness + PDFs + Reconciliation View
-**Rationale:** Tier 4; the eval's entire value is reusing the Phase 3 judgment functions, so it cannot precede them. The chart is priority #3.
-**Delivers:** `generate_fixtures.py` (**decoupled from the extractor** -- different model/persona), ~15-25 committed fixtures across all categories, `run_eval.py` (imports the SAME pipeline functions, scores `final_action`), `scorers.py` (4 metrics), `eval_results` write + dashboard chart; on-demand paystub PDFs (stage 8 attach); the stage-9 reconciliation view.
-**Implements:** the eval harness, PDF generator.
-**Avoids:** P9 (train-test leakage -- design the generator correctly BEFORE generating; expensive to redo), P10 (eval path divergence -- integration test that the scorer sees the stored decision object).
+### Phase 5: Webhook cutover + raw inbox + re-keying
+**Rationale:** The riskiest change (new schema + threads + leases) now lands on a webhook that already has a pump and a failure policy backing it, not on top of a hole.
+**Delivers:** `inbound_events` durable raw inbox (Svix-event-ID keyed, byte-capped, retention-policed by the pump per C10); `app/queue/handlers/ingest.py` (the verbatim-moved DATA-02 transaction); all remaining `BackgroundTasks` producers migrated — **all 8, not 6** (C6), including the two the design's list misses (`runs.py:475`, `runs.py:792`).
+**Addresses:** Finding 1 (durable-in-memory-only) fully; the C6 producer-inventory gap.
 
-### Phase 6: Wire Reality + Ops (LAST, by design)
-**Rationale:** Tier 5; real email, deploy, and CI are packaging, not logic. The real provider touches only `gateway.parse_inbound` + real `send`. Treating this as the isolated tail protects priority #1.
-**Delivers:** real `email/gateway.py` provider (n8n / inbound-parse), Dockerfile (bind `0.0.0.0:$PORT`), Render deploy, Supabase project via the pooler, `.github/workflows` (keepalive.yml + eval.yml), README + architecture diagram + 60-90s demo.
-**Avoids:** P15 (cold-start -- pre-warm + fixture-replay fallback), P16 (ephemeral FS -- PDFs on demand), P17 (verify keep-alive actually ran), P18 (demo-day fallback -- fixture replay reproduces on-screen result without the gateway).
+### Phase 6: Exactly-once send
+**Rationale:** Independent of Phase 5 — could land in parallel.
+**Delivers:** the full C3 fix set — read-before-mint on `send_outbound`, stop overwriting `message_id` in the upsert, treat both `reserved` and `failed` as "may have escaped," deterministic PDF bytes, split the two 409 sub-codes, persist `provider_message_id`, retry ladder bounded below Resend's confirmed idempotency window, the honest narrowed published guarantee.
+**Avoids:** Pitfall 6 (all five variants — G1 through G4 plus the dead `send_state` parameter, which should be deleted in a small pre-flight commit before anyone reasons about send state).
+
+### Phase 7: Proofs + ops view
+**Rationale:** Last by definition — proves everything above actually holds.
+**Delivers:** the four durability proofs, each with a demonstrated red (falsifying mutation named and executed per proof, per PITFALLS Pitfall 12); `GET /internal/queue` ops view (7 signals); **widen `concurrency-proof.yml`** — it is the only CI workflow with a real Postgres and currently hard-codes a single test file, so new durability tests are silently never run unless this is fixed.
+**Avoids:** Pitfall 12 (vacuous durability tests) — this repo has already shipped one vacuous "proof" once (Phase 10); do not repeat it.
 
 ### Phase Ordering Rationale
 
-- **The DRY seam dictates everything.** Pure functions + gate-in-`decide.py` + eval-imports-the-same-functions must be established in Phase 3 before the eval (Phase 5) exists. Reversing this turns the eval into a rewrite and leaves the project's core thesis untested.
-- **Dependencies discovered:** contracts (P1) -> LLM client + calc engine in parallel (P2 calc has zero deps) -> webhook/orchestrator/stages with stub gateway (first end-to-end) -> dashboard/clarify (need runs to exist) -> eval (needs reusable judgment functions) -> real provider/deploy (packaging).
-- **Risk isolation:** the two highest-risk units -- the Pub 15-T calc engine and the resume-on-reply re-entrancy -- get their own focused phases (2 and 4) with targeted golden/idempotency tests, because their bugs are invisible to the runtime backstops.
-- **Priority alignment:** Phase 3 delivers "visibly works end to end" (#1) with zero external email risk; the test-email button and fixture-replay fallback (#2) are built into Phases 3-4; the eval chart (#3) lands in Phase 5; the riskiest external dependency (real inbound email) is deferred to Phase 6.
+- **2 → 3 → 4 → 5 is forced, not preferred.** Cutting the webhook over to the queue (5) before the pump exists (3) or the failure policy lands (4) creates the exact regression window in C2: jobs commit reliably and are never executed, or execute and silently report success on failure.
+- **Phase 1 is free and should ship immediately regardless of the rest of the roadmap** — it fixes a real, independently-provable defect with zero schema risk.
+- **Phase 6 is decoupled from 5** because the exactly-once-send fix touches `gateway.py`/`delivery.py`/`emails.py`, not the ingest path — it can be planned and executed by a different wave.
+- **This ordering directly avoids Pitfall 7/C5** (two sources of truth via the sweep racing the queue) by deleting the sweep in the same phase the failure policy lands, not deferring the deletion to "once the queue is proven."
 
 ### Research Flags
 
-Phases likely needing deeper research during planning (`/gsd-plan-phase --research-phase <N>`):
-- **Phase 2 (calc engine):** **CONFIRM the 2026 Pub 15-T bracket tables + Step-1 standard amounts against the live IRS PDF** (`irs.gov/pub/irs-pdf/p15t.pdf`) -- the 2026 edition incorporates OBBBA; any number from memory is stale. Confidence on the *numbers* is LOW until transcribed. This is the single most research-dependent phase.
-- **Phase 3 (LLM client):** **CONFIRM exact model IDs against the consoles** -- `deepseek-chat` deprecates 2026/07/24 (-> `deepseek-v4-flash` non-thinking); Kimi non-reasoning is `moonshot-v1-*` at `api.moonshot.ai/v1`. Verify how to force non-thinking mode and pin versioned IDs.
-- **Phase 6 (real gateway):** the chosen provider's inbound payload shape, signing-secret verification, and whether it offers a `stripped-text`/reply-only field -- only known once the provider is picked.
+Needs deeper research/scrutiny during planning:
+- **Phase 6 (exactly-once send):** Resend's idempotency-key retention window needs re-confirmation against current vendor docs before the retry-ladder cap is finalized (flagged as Gap G-1 in PITFALLS — not fully verified in this pass). Do not finalize a backoff schedule before this number is confirmed.
+- **Phase 3 (the pump):** the pump-cadence-vs-750h decision is a genuine open tradeoff requiring a human call (see below) — plan this phase with the decision already made, not deferred into execution.
+- **Phase 5 (webhook cutover):** the two-layer dedup argument (Svix event ID vs. RFC Message-ID) is subtle and worth a design-doc callout during planning so the "why both, not just one" reasoning survives into the PR.
 
-Phases with standard patterns (skip research-phase):
-- **Phase 1 (contracts/schema):** well-documented Pydantic v2 + Postgres DDL.
-- **Phase 4 (dashboard):** standard FastAPI + Jinja2 server-rendered pages; RFC threading is well-specified.
-- **Phase 5 (eval harness):** the patterns (import production fns, score `final_action`, decouple generator) are spelled out in research; the work is disciplined execution, not discovery.
+Standard patterns (skip deep research-phase):
+- **Phase 2 (queue substrate):** the claim/lease/fencing SQL is fully specified in ARCHITECTURE.md §4 with the C1 fix already incorporated — this is transcription, not design.
+- **Phase 4 (failure policy):** the result-type pattern and classification table are fully specified in FEATURES.md §2 and PITFALLS Pitfall 8.
+- **Phase 7 (proofs):** the falsification discipline is fully specified in PITFALLS Pitfall 12, including the exact vacuous-vs-real test shape for each of the 4 proofs.
+
+---
+
+## Open Decisions Requiring the Human
+
+**Pump cadence vs. the 750-instance-hour free-tier budget (C8).** This is a latency/cost tradeoff the design never surfaced, and it cannot be resolved by further research — it needs an explicit choice:
+
+| Option | Recovery latency | Instance-hours/month | Tradeoff |
+|---|---|---|---|
+| **10-min pump (architecture's recommendation)** | ~10 min | ~720–744 (6h margin against 750h cap) | Also eliminates cold-start latency on real webhooks entirely. **Requires: exactly one free web service in the Render workspace** — a new, currently-unwritten deploy constraint. |
+| 20-min+ pump | ~20–45 min | ~54 (service sleeps between pumps) | Cheap, large margin, but the milestone's "recovers within minutes" claim weakens materially. |
+| Duty-cycled pump (frequent during demos, sparse otherwise) | variable | variable | Makes the guarantee time-of-day dependent — hard to state honestly; not recommended by any researcher. |
+
+**Recommendation surfaced by research: take option 1**, add "exactly one Render free web service in this workspace" to the milestone's written constraints, and budget the arithmetic explicitly in the Phase 3 plan doc. This is the single most consequential unresolved tradeoff in the whole milestone and should be decided before Phase 3 is planned in detail.
+
+**The honest guarantee wording (a related, smaller decision).** The design's current claim — "no client is ever emailed twice" — is not promisable as stated (C3). The narrowed, defensible replacement, surfaced by FEATURES.md, is:
+
+> *A payroll confirmation is sent at most once per approved run, per epoch, within Resend's confirmed idempotency window. Delivery is anchored on a durable pre-send reservation and deduplicated by the provider on that key. Beyond that window — or after an operator retrigger, which deliberately opens a new epoch — provider-side deduplication no longer applies and a resend is possible. A stale send-state row is therefore escalated to a human rather than retried automatically.*
+
+This narrowing needs the human's sign-off before it goes in the README/ops page, since it changes what the milestone publicly promises.
+
+---
+
+## Anti-Features — build none of these
+
+All four researchers agree, independently, that the following are machinery for load that will never arrive at ~1 payroll email per client per week. The schema is deliberately shaped (`priority`, `business_id` columns present but unread) so each remains a future `ORDER BY` change rather than a migration, should traffic characteristics ever change:
+
+- **Priority lanes** — nothing to prioritize against at this queue depth.
+- **Per-tenant fairness / weighted round-robin** — tenants never contend at this scale.
+- **Adaptive backpressure** — the producer (Resend's webhook) cannot be pushed back on; the byte cap is the only real admission control available.
+- **Circuit breakers (LLM/Resend)** — a breaker protects a shared downstream from your own stampede; two workers doing one email/week are not a stampede, and a breaker adds a new stateful failure mode (stuck-open = silent blackhole) worse than the one it prevents.
+- **Autoscaling / dynamic worker pool** — Render free has one instance and five connections; worker count is a tuned constant, not a scaling knob.
+- **Distributed tracing (OTel/Jaeger)** — there is one service; `run_id` + the existing `error_detail` already correlate everything.
+- **A full metrics stack (Prometheus/Grafana)** — would need a second always-on service Render free doesn't offer, to graph a queue whose depth is 0 six days a week.
+- **The N-concurrent-email load chart** — would prove a property nobody is testing this system on, and invites a throughput comparison a free-tier single instance necessarily loses.
+- **A separate worker process** — Render free has no worker service type; in-process threads + the pump is the only shape that actually executes.
+
+---
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Versions/hosting/DB/LLM-client mechanics verified against PyPI + official docs (Jun 2026). Two flagged exceptions: exact model IDs (MEDIUM) and 2026 tax tables (LOW until transcribed). |
-| Features | HIGH | Recruiter-audience lens corroborated by multiple hiring-signal sources; HITL and entity-resolution best practices independently arrive at the same layered/gated design. |
-| Architecture | HIGH | Locked design; the three load-bearing mechanisms (FastAPI BackgroundTasks, OpenAI-compatible routing, Postgres-as-state-machine) verified against current docs. The DRY seam and re-entrancy invariants are deeply specified. |
-| Pitfalls | HIGH | Payroll-math facts verified against IRS.gov/SSA.gov; structured-output/eval/gating failure modes are well-established. MEDIUM only on model-specific JSON behavior (varies by provider/version). |
+| Stack | HIGH | Every claim verified against PyPI JSON API + live production evidence in this repo (pgcrypto/`gen_random_uuid()` already running on 6 tables). Zero speculation. |
+| Features | HIGH on Resend idempotency semantics (fetched from vendor docs) and all repo-source claims; MEDIUM on the general Postgres-queue-canon corroboration (multi-source, no single authority). |
+| Architecture | HIGH on integration points (traced against live source at commit `9975a86`); MEDIUM on the exact 750h Render budget figure — the arithmetic is certain, the cap itself should be re-confirmed against current Render docs before committing to a cadence. |
+| Pitfalls | HIGH on code-traced findings (every smoking gun cites a live line read directly); HIGH on Supavisor/pgbouncer transaction-mode semantics and Render free-tier accounting; MEDIUM on Resend's exact `Idempotency-Key` retention window (SDK support is verified; the provider's dedup *window* itself is flagged as an unverified gap — G-1). |
 
-**Overall confidence:** HIGH -- with two narrowly-scoped numeric/identifier gaps (model IDs, 2026 tax tables) that are *known, flagged, and resolvable by transcription from live sources at the start of their respective phases.*
+**Overall confidence:** HIGH — this is unusually well-grounded research; nearly every claim is either a direct source-code citation or a vendor-doc citation, and the two most severe corrections (C1, C3) were reached independently by different researchers using different methods.
 
 ### Gaps to Address
 
-These emerged from research and must be **decided explicitly during requirements/planning -- do not let them resolve by accident:**
-
-- **Tax year + OBBBA scope (decide BEFORE Phase 2):** 2025 vs 2026 tables, and whether to scope to the standard percentage method and **explicitly DISCLAIM OBBBA** (qualified-tips/overtime deductions, expanded W-4 Step-4(b) 15-line worksheet). The 2026 Pub 15-T incorporates OBBBA. The eval's ground truth and the engine must share the same assumption or they will silently diverge. *Recommendation: scope to standard percentage method, disclaim OBBBA, in writing.*
-- **Exact LLM model IDs (confirm at Phase 3):** `deepseek-chat`/`deepseek-reasoner` deprecate 2026/07/24; target `deepseek-v4-flash` non-thinking and `moonshot-v1-*`. Pin **versioned** IDs (not floating aliases) and **record them in `eval_results`** for reproducibility.
-- **Explicit orchestrator module:** add `app/pipeline/orchestrator.py` (the state-machine driver) to the roadmap -- it is required by the design but unnamed in the original repo structure. Keep all transition logic here, not scattered across stage files.
-- **Stuck-run / error recovery path:** in-process `BackgroundTasks` on a sleeping dyno can strand a run mid-`extracting`/`computed`. Specify at minimum dashboard visibility of `error`/stuck runs, ideally an idempotent re-trigger that resumes from the last persisted status. This is a first-class recovery state, not an afterthought.
-- **Idempotency / re-entrancy invariants (enforce in Phase 4):** overwrite (not accumulate) `extracted_data`; replace-by-run (not insert-only) line items; match replies only to runs in `awaiting_reply` (a header match to a `sent`/`reconciled` run is a late reply -- log, don't resume).
-
-**Carry-forward technical gotchas (cite in the relevant phases):** `response_format={"type":"json_object"}` not strict schema/`.parse()`; Supavisor pooler host port 6543 (IPv4/IPv6 mismatch otherwise); psycopg3 + `SELECT FOR UPDATE` against double-approval; reportlab 5.0.0 in-memory PDFs; 2026 SS wage base $184,500 / Medicare 1.45%; 401k reduces federal base but NOT FICA base; FLSA OT excludes paid-leave hours from the 40-hr threshold.
+- **Resend's exact `Idempotency-Key` retention window (24h is stated by researchers but flagged as not independently re-verified in this specific pass — G-1 in PITFALLS).** Confirm against Resend's docs before finalizing the Phase 6 backoff/retry-age cap. Do not design that cap "blind."
+- **The precise current Render 750-hour cap** should be re-confirmed against Render's live docs immediately before Phase 3 is planned — the arithmetic and the general shape are certain (multiple sources agree), but pinning the exact number to a dated citation matters given it drives an irreversible-feeling architectural decision (single free service in the workspace).
+- **The `operator_resume` dedup_key discriminator** (C6 / ARCHITECTURE §3) — an operator may legitimately re-resolve a `needs_operator` run with a different name-mapping without an epoch bump; the current `dedup_key` scheme doesn't yet have a clean answer for whether the second resolve is a new job or silently swallowed by `ON CONFLICT DO NOTHING`. Flagged as an explicit open question in ARCHITECTURE.md §3 — resolve during Phase 2/5 planning.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- IRS Pub 15-T (2026) -- `irs.gov/publications/p15t`, `irs.gov/pub/irs-pdf/p15t.pdf` -- Worksheet 1A percentage method, three filing statuses, Step-2-checkbox tables. *Method HIGH; 2026 numbers must be transcribed.*
-- SSA COLA 2026 + Contribution & Benefit Base -- `ssa.gov/oact/cola/cbb.html` -- 2026 SS wage base $184,500, OASDI 6.2%, Medicare 1.45%.
-- IRS Topic 751 -- `irs.gov/taxtopics/tc751` -- FICA rates.
-- PyPI JSON API -- verified version pins for fastapi 0.138.0, pydantic 2.13.4, openai 2.43.0, psycopg 3.3.4, reportlab 5.0.0 (BSD), jinja2 3.1.6, uvicorn 0.49.0, pydantic-settings 2.14.2 (Jun 20 2026).
-- DeepSeek API docs (`api-docs.deepseek.com`) + Moonshot/Kimi docs (`platform.kimi.ai`) -- `json_object` only on DeepSeek; non-reasoning families; ID deprecations.
-- openai-python README/helpers -- `base_url` swap; `.parse()` sends strict json_schema.
-- FastAPI BackgroundTasks (Context7 `/fastapi/fastapi`), OpenAI Python client (Context7 `/openai/openai-python`) -- verified the return-200-fast + per-task-routing patterns.
-- Render docs (`render.com/docs/free`) + Supabase docs (Supavisor/connection) -- 15-min sleep, $PORT, IPv4-only, ephemeral FS, 750 hrs; transaction mode 6543, pooler host for IPv4.
-- FLSA overtime + RFC 5322 threading + webhook at-least-once delivery -- standard practice.
+- This repository, read directly at commit `9975a86` and later — `app/db/schema.sql`, `app/db/supabase.py`, `app/db/repo/{runs,emails,jobs}.py`, `app/pipeline/{orchestrator,delivery,pdf}.py`, `app/email/gateway.py`, `app/routes/{webhook,runs,demo,pipeline_glue}.py`, `app/main.py`, `pyproject.toml`, `.github/workflows/{keepalive,concurrency-proof}.yml`.
+- Resend — Idempotency Keys vendor documentation (fetched 2026-07-13): 24h retention, 256-char limit, identical-payload replay vs. `409 invalid_idempotent_request` vs. `409 concurrent_idempotent_requests`.
+- PyPI JSON API — fastapi 0.138.0/0.139.0, pydantic 2.13.4, psycopg 3.3.4, resend 2.32.2/2.33.0, procrastinate 3.9.0, pgqueuer 1.1.1, pgmq 1.1.2. Verified 2026-07-13.
+- PostgreSQL release history — `SKIP LOCKED` since 9.5, `gen_random_uuid()` built-in since 13 / via pgcrypto at any version.
+- PgBouncer docs + issue #655 — `LISTEN` broken under transaction-mode pooling; directly applicable to Supavisor port 6543.
+- Render docs — free-tier 750 instance-hours/month, 15-min idle spin-down, inbound-HTTP-only wake, ephemeral filesystem.
 
 ### Secondary (MEDIUM confidence)
-- PayrollOrg / Grant Thornton -- 2026 Pub 15-T includes OBBBA (qualified-tips/overtime, expanded Step-4(b) worksheet).
-- Mercer / Paycor / OnPay / Kiplinger -- corroborate SS wage base $176,100 (2025) -> $184,500 (2026), max employee tax $11,439.
-- Salesforce Engineering, Babel Street -- layered, confidence-scored, LLM-on-residual entity resolution validates the Stage 3 design.
-- Towards Data Science, MachineLearningMastery, Permit.io -- HITL gate-before-side-effect, draft-and-approve diff UX, LangGraph as the default (deliberately not used).
-- DeepEval, Label Studio -- LLM-as-judge ~85% human agreement, known biases (acknowledge, don't build the harness).
-- Interview Kickstart, Let's Data Science, Medium -- hiring signals: deployment link, quantified metrics, interpretability/safety, cost/latency awareness.
-- python-taxes 0.7.0 (MIT, 2023-2025) + IRS-Public/tax-withholding-estimator -- Pub 15-T reference implementations / correctness oracle.
+- Postgres `SKIP LOCKED` queue canon (lease/visibility timeout, claim-token fencing, backoff+jitter) — corroborated across multiple independent community implementations, no single authority.
+- The exact current Render 750h cap and Resend's exact 24h key retention — both flagged for re-confirmation against live vendor docs before Phase 3/6 are finalized.
 
-### Tertiary (LOW confidence -- needs validation during planning)
-- Exact 2026 Pub 15-T bracket rows + Step-1 standard amounts -- transcribe from the live PDF at Phase 2.
-- Exact DeepSeek/Kimi model IDs + how to force non-thinking mode -- confirm against the consoles at Phase 3.
-- DeepSeek/Kimi JSON-mode reliability specifics -- vary by provider/version; verify per provider.
+### Repo memory (project-history corroboration)
+- Phase 10's concurrency proof was verified-but-vacuous (threads serialized through an async route; passed even with the safety clause deleted) — the direct precedent motivating PITFALLS Pitfall 12's falsification discipline for Phase 7.
 
 ---
-*Research completed: 2026-06-20*
+*Research completed: 2026-07-13*
 *Ready for roadmap: yes*

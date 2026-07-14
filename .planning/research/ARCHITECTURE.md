@@ -1,547 +1,693 @@
-# Architecture Research
+# Architecture Research — v4 Durable Execution
 
-**Domain:** LLM-driven email-to-payroll pipeline with Postgres-backed state and a single human-in-the-loop gate
-**Researched:** 2026-06-20
-**Confidence:** HIGH (architecture is locked; this document deepens it. The three load-bearing mechanisms — FastAPI `BackgroundTasks`, OpenAI-compatible `base_url`/`response_format` routing, and Postgres-as-state-machine — are verified against current docs.)
+**Domain:** Integrating a durable Postgres job queue into an existing Postgres status-column state machine (FastAPI, Render free, Supavisor transaction-mode pooling)
+**Researched:** 2026-07-13
+**Supersedes:** the v1-era architecture research at this path (the pipeline architecture it described is now shipped; its content lives in `CLAUDE.md` and `.planning/PROJECT.md`).
+**Confidence:** HIGH on the integration points (traced against live source at `9975a86`, not guessed). HIGH on the claim/lease SQL. MEDIUM on the Render instance-hours budget (the arithmetic is certain; the 750h cap should be re-confirmed against current Render docs before committing to a pump cadence).
 
-> Scope note: The architecture is fully specified in `PROJECT.md` and `payroll-agent-build-plan.md`. This document does **not** propose an alternative. It pins down the run state machine, the fixture seam, re-entrancy invariants, the eval/production DRY seam, the component/data-flow map, the build-order dependency graph, and the Render-constraint implications — and surfaces the non-obvious decisions the build plan leaves implicit.
-
----
-
-## Standard Architecture
-
-### System Overview
-
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│  EDGE  (one FastAPI process, single Render free web service)            │
-│                                                                         │
-│   POST /webhook/inbound  ──┐         GET  /            (runs list)      │
-│   POST /webhook/test-email │         GET  /runs/{id}   (run detail)     │
-│                            │         POST /runs/{id}/approve            │
-│                            │         POST /runs/{id}/reject             │
-│                            │         GET  /eval        (eval summary)   │
-└────────────┬───────────────┴──────────────────────┬────────────────────┘
-             │ returns 200 immediately               │ reads + mutates
-             │ schedules BackgroundTask              │ state synchronously
-             ▼                                       ▼
-┌───────────────────────────────────────┐  ┌──────────────────────────────┐
-│  PIPELINE ORCHESTRATOR (plain Python)  │  │  DASHBOARD (server-rendered)  │
-│  run_pipeline(run_id) — advances the   │  │  read-only except the 2       │
-│  status state machine stage by stage   │  │  operator buttons (approve/   │
-│                                        │  │  reject), which re-enter the  │
-│  Stage 1 ingest/route   (det)          │  │  pipeline at the send stage.  │
-│  Stage 2 extract        (LLM strong)   │  └───────────────┬──────────────┘
-│  Stage 3 reconcile names(det→LLM)      │                  │
-│  Stage 4 validate       (det)          │                  │
-│  Stage 5 decide         (LLM mid+gate) │                  │
-│  Stage 6a clarify  / 6b process        │                  │
-│  Stage 7 PAUSE → awaiting_approval     │                  │
-│  Stage 8 send           (det)          │                  │
-│  Stage 9 reconcile $    (det)          │                  │
-└───┬───────────┬──────────────┬─────────┘                  │
-    │           │              │                            │
-    ▼           ▼              ▼                            ▼
-┌────────┐ ┌──────────┐ ┌──────────────┐         ┌──────────────────────┐
-│  LLM   │ │  CALC    │ │   EMAIL      │          │      DB LAYER        │
-│ client │ │ engine   │ │  gateway     │◄────────►│  (Supabase Postgres) │
-│ +route │ │(pure fn) │ │ (1 interface)│  threads │  6 tables; status    │
-│        │ │          │ │              │  on RFC  │  column = state mac. │
-└───┬────┘ └──────────┘ └──────┬───────┘  headers └──────────┬───────────┘
-    │ base_url/model/key                  │                   │
-    ▼ swapped per task                    ▼ provider wired    ▼
- Kimi / DeepSeek                     LAST (n8n / inbound-  all state, incl.
- (OpenAI-compatible)                 parse svc)           HITL checkpoint
-                                                          + PDF source data
-
-   PDF generator (app/pdf): pure function, run row → bytes, on demand only.
-```
-
-**The one idea that makes the whole thing work:** there is no in-memory orchestration state and no message queue. `payroll_runs.status` IS the state machine. Every stage reads the run, does its work, and writes the next status. A pause is just a status the orchestrator stops at; a resume is just an inbound event that re-invokes the orchestrator on a run already in a paused status. This is why "plain Python + Postgres" replaces LangGraph cleanly — the durable state engine is the database, not a framework.
-
-### Component Responsibilities
-
-| Component | Owns | Boundary rule (what it must NOT do) |
-|-----------|------|-------------------------------------|
-| **Edge / FastAPI (`app/main.py`)** | HTTP surface: webhook ingress, dashboard routes, operator actions. Returns 200 fast, schedules pipeline work. | No business logic, no LLM calls, no calc. It is a thin adapter that translates HTTP ↔ pipeline calls. |
-| **Pipeline orchestrator (`app/pipeline/`)** | Advancing one run through the 9 stages by reading/writing `status`. Owns transition rules and the hard gates. | Does not know about HTTP, gateways' wire formats, or model vendors. Calls stage functions + lower components. |
-| **LLM client (`app/llm/client.py`)** | One OpenAI-compatible client; per-task routing (strong/mid/cheap) via swapped `base_url`/`model`/`key`; JSON mode; one retry on parse failure; Pydantic validation. | Knows nothing about payroll or pipeline stages. Vendor-agnostic call surface only. |
-| **Calc engine (`app/pipeline/calculate.py`)** | Gross, FLSA OT, salary proration, 401k, FICA, IRS Pub 15-T federal withholding, net. **Pure functions** (roster + hours in → numbers out). | No DB, no I/O, no LLM. This is what makes it independently buildable and trivially testable. |
-| **Email gateway (`app/email/gateway.py`)** | The ONE seam to the outside mail world: parse inbound payload → canonical dict; send outbound; return the outbound `Message-ID`. | The only file that knows the provider. Everything upstream sees the canonical interface, never provider-specific fields. |
-| **DB layer (`app/db/`)** | Schema (`schema.sql`) + typed accessors for the 6 tables. The single place that mutates `status`. | No business decisions; it persists what the pipeline decides. |
-| **PDF generator (`app/pdf/paystub.py`)** | Run/line-item rows → PDF bytes, generated on demand. | Stateless; writes nothing to disk (Render is ephemeral). |
-| **Dashboard (`app/dashboard/`)** | Render existing state; expose the two operator buttons + the demo button. | Read-only except approve/reject, which are pipeline re-entry, not direct DB edits. |
-| **Eval harness (`eval/`)** | Run the **same** extract/reconcile/validate/decide/score code over committed fixtures; write `eval_results`. | Must import production components, never reimplement them. (See the DRY seam.) |
+**Method:** every `file:function` reference below was read. The approved design (`docs/superpowers/specs/2026-07-13-durable-execution-design.md`) was validated line-by-line against that source. It is **mostly right and load-bearing** — but contains **one critical SQL defect, one critical phase-ordering defect, one false claim about shippability, and four gaps.** Those are in [What the approved design got wrong](#what-the-approved-design-got-wrong) and are the highest-value part of this document.
 
 ---
 
-## Recommended Project Structure
+## 1. The two-state-machines hazard — the concrete, enforceable rule
 
-The structure is already specified in the build plan; the rationale below is what the roadmap needs.
+The design doc says *"`jobs` is transport state only… never what payroll status comes next."* Right instinct, but **not enforceable as written** — it is a statement of intent, not an invariant. Here is the enforceable version.
 
-```
-payroll-agent/
-  app/
-    main.py                  # FastAPI: webhook ingress + dashboard routes (thin adapter)
-    pipeline/
-      orchestrator.py        # (ADD) run_pipeline(run_id): the state machine driver
-      ingest.py              # stage 1  (deterministic)
-      extract.py             # stage 2  (LLM strong)  — eval imports this
-      reconcile_names.py     # stage 3  (det→LLM)     — eval imports this
-      validate.py            # stage 4  (deterministic) — eval imports this
-      decide.py              # stage 5  (LLM mid + the hard gates) — eval imports this
-      calculate.py           # stage 6b (pure functions)
-      reconcile_payroll.py   # stage 9  (pure functions)
-      compose_email.py       # stage 6a/6b/8 drafting (LLM cheap)
-    models/                  # Pydantic schemas (the shared contracts)
-    llm/
-      client.py              # OpenAI-compatible wrapper + per-task routing
-      prompts/
-    email/
-      gateway.py             # inbound parse, outbound send, threading (the one seam)
-    db/
-      supabase.py            # typed accessors + the status mutators
-      schema.sql             # 6 tables, status enum
-    pdf/
-      paystub.py             # on-demand bytes
-    dashboard/
-      templates/
-  eval/
-    generate_fixtures.py     # synthetic email+ground-truth generator
-    fixtures/                # ~15-25 committed email+label pairs
-    run_eval.py              # imports app.pipeline.* — never reimplements
-    scorers.py               # field acc, name recon, decision, LLM-judge
-  .github/workflows/
-    keepalive.yml            # pings Supabase so the free project doesn't pause
-    eval.yml                 # runs eval on push
-  Dockerfile  requirements.txt  .env.example  README.md
-```
+### INVARIANT J-1 (single authority)
 
-### Structure Rationale (the parts the build plan leaves implicit)
+> **Every job handler's first durable action is a `claim_status(expected → next)` CAS on `payroll_runs.status`.**
+> **A failed CAS is a SUCCESSFUL job (`state='done'`) — not a retry, not an error.**
+> **Therefore: job execution is at-least-once; status transition is at-most-once.**
+> **The job row therefore never needs to name a status, and must not contain one.**
 
-- **`pipeline/orchestrator.py` is the one file the build plan never names but the design demands.** The stage modules are the *what*; the orchestrator is the *when and what-next*. It is the only code that knows the legal status transitions and where the pauses are. Keep transition logic here, not scattered across stage files, or the state machine becomes un-auditable. Put it in the roadmap explicitly.
-- **`models/` (Pydantic) is the contract layer that lets eval and production share code.** Stage functions take and return Pydantic models, not raw dicts. The eval feeds fixtures through the same models; the dashboard renders the same `decision` object. One schema, three consumers.
-- **`calculate.py` and `reconcile_payroll.py` are pure on purpose.** No DB import in either file. The orchestrator loads the roster + extracted data, calls them, persists the result. This is what lets the calc engine be built and unit-tested in parallel with everything else (it is the only component with zero upstream dependencies).
-- **`email/gateway.py` is the only provider-aware file.** Two functions — `parse_inbound(payload) -> InboundEmail` and `send(outbound) -> message_id` — are the entire abstraction. This is the fixture seam (below).
+This is not a platitude — it is a test-pinnable property, and the primitive already exists: `repo.claim_status` (`app/db/repo/runs.py:356-380`), whose docstring already states the exact contract ("Returns False if it was NOT in `expected` — the caller logs a late/duplicate and **drops cleanly WITHOUT re-running the work**"). `resume_pipeline` already obeys it (`app/pipeline/orchestrator.py:305-313`). `/runs/{id}/resolve` already documents *why* the route must not pre-claim and must let the handler own the sole CAS (`app/routes/runs.py:257-262`). **The queue does not introduce a new discipline; it generalizes one the repo already blessed in three places.**
 
----
+### Where the boundary is, precisely
 
-## The Run State Machine (`payroll_runs.status`)
+| Question | Answered by | Never answered by |
+|---|---|---|
+| *Is an operation owed?* | `jobs` row with `state IN ('pending','leased')` | `payroll_runs.status` |
+| *Who owns it right now?* | `jobs.lease_token` + `leased_until` | — |
+| *Is it safe to retry?* | `jobs.attempts` / `max_attempts` / `available_at` | — |
+| *What payroll state is this run in?* | `payroll_runs.status` | `jobs` — **ever** |
+| *What happens next to the payroll?* | `decide.py` → `final_action`, then the orchestrator | `jobs` — **ever** |
 
-This is the spine. The `status` column is simultaneously the workflow position, the durable checkpoint, the HITL gate, and the crash-recovery anchor.
+A job says **"someone should look at this run."** It never says **"this run is now extracting."**
 
-### State transition diagram
+### The divergence cases, resolved
 
-```
-                  inbound webhook (new thread, known sender)
-                              │
-                              ▼
-                       ┌────────────┐   unknown sender → log to email_messages,
-   (no run created  ◄──┤  received  │   NO run created, stop. (edge case, stage 1)
-    on unknown send)   └─────┬──────┘
-                             │ orchestrator picks up
-                             ▼
-                       ┌────────────┐
-                       │ extracting │  stage 2 (LLM strong). On unrecoverable
-                       └─────┬──────┘  LLM/parse failure after retry → error.
-                             │  (stage 3 reconcile + stage 4 validate run inline;
-                             │   they don't need their own statuses — see note)
-                             ▼
-                       ┌────────────┐
-                       │  decided?  │  stage 5: LLM proposes, CODE GATES enforce
-                       └──┬──────┬──┘
-            gate/LLM says │      │ gate passes AND LLM says "process"
-       "request_clarify"  │      │
-                          ▼      ▼
-              ┌────────────────────┐   ┌──────────┐
-              │ needs_clarification│   │ computed │  stage 6b: calc engine runs,
-              └─────────┬──────────┘   └────┬─────┘  line items written, conf.
-                        │ 6a: LLM drafts,   │        email drafted (not sent)
-                        │ gateway sends,     │
-                        │ outbound msg-id    ▼
-                        │ stored on run ┌──────────────────┐
-                        ▼               │ awaiting_approval│ ◄── THE HITL PAUSE.
-              ┌────────────────┐        └───┬──────────┬───┘     Orchestrator stops.
-              │ awaiting_reply │            │ approve  │ reject
-              └───────┬────────┘            ▼          ▼
-                      │              ┌──────────┐ ┌──────────┐
-   client reply on    │              │ approved │ │ rejected │ (terminal)
-   thread (In-Reply-  │              └────┬─────┘ └──────────┘
-   To matches stored  │                   │ stage 8: gateway sends confirmation
-   msg-id) RE-ENTERS  │                   ▼   + on-demand PDFs
-   AT STAGE 2 ────────┘              ┌──────────┐
-   status → extracting               │   sent   │
-                                     └────┬─────┘
-                                          │ stage 9: net+taxes+deductions
-                                          ▼   ties to run total (or flags drift)
-                                     ┌────────────┐
-                                     │ reconciled │ (terminal, success)
-                                     └────────────┘
+**Job succeeds but the run didn't advance.** *Not divergence — the design working.* A handler whose CAS failed (another actor owns the run) executed correctly and completes `done`. `done` means *"this owed operation was executed exactly once against the state machine; the state machine decided what that meant."* It never means *"the run advanced."* Anyone reading `jobs.state='done'` as a business fact has violated J-1.
 
-   error  — terminal-ish: any stage's unrecoverable failure. Surfaced on the
-            dashboard; an operator/dev can inspect and (optionally) re-trigger.
-```
+**The run advanced but the job didn't complete** (worker committed the orchestrator's transaction, then died before the completion `UPDATE`). This is the real hazard, and J-1 dissolves it: the lease expires → another worker reclaims → re-runs the handler → its CAS `received → extracting` fails because the run is now `awaiting_approval` → no-op → `done`. **J-1 is precisely what converts at-least-once job delivery into at-most-once state advance.**
 
-### Status semantics table
+**The one hole J-1 opens — and the design doc does not see it.** A worker that dies *mid-run* leaves the run in `extracting`. On reclaim, `claim_status(received → extracting)` **fails** (already `extracting`), the handler no-ops, the job goes `done`, and **the run is stranded in `extracting` forever with a completed job.** The naive CAS-first rule silently re-creates the exact bug this milestone exists to kill.
 
-| Status | Set by | Meaning | Orchestrator behavior |
-|--------|--------|---------|-----------------------|
-| `received` | webhook (ingest) | Run row created, source email linked, business routed. | Hand off to orchestrator. |
-| `extracting` | orchestrator (stage 2 entry) | Extraction → reconcile → validate → decide are running, OR a reply just re-entered here. | Active; runs to a pause or terminal. |
-| `needs_clarification` | stage 5 (gate or LLM) | Decision = clarify; clarification email being drafted/sent. | Transient; advances to `awaiting_reply` once the outbound msg-id is stored. |
-| `awaiting_reply` | stage 6a | Clarification sent; outbound `Message-ID` saved on run. **PAUSE #1.** | Stops. Only an inbound threaded reply resumes it. |
-| `computed` | stage 6b | Line items + taxes computed, confirmation drafted (not sent). | Advances to `awaiting_approval`. |
-| `awaiting_approval` | stage 6b→7 | **THE single HITL gate. PAUSE #2.** | Stops. Only an operator approve/reject resumes it. |
-| `approved` | operator action | Operator approved; about to send. | Advances to stage 8. |
-| `sent` | stage 8 | Confirmation + PDFs delivered. | Advances to stage 9. |
-| `reconciled` | stage 9 | Arithmetic ties out (or drift flagged in `decision`/details). | Terminal success. |
-| `rejected` | operator action | Operator rejected the computed payroll. | Terminal. |
-| `error` | any stage | Unrecoverable failure (LLM after retry, gateway send fail, etc.). | Terminal-ish; dashboard-visible, re-triggerable. |
-
-### The two pauses, precisely
-
-There are **two** places the orchestrator stops, and only one is the "human gate":
-
-1. **`awaiting_reply` (machine pause, external):** waiting on the *client*. Resumed by an inbound email whose `In-Reply-To`/`References` matches the outbound `Message-ID` stored on the run. **Resume point: stage 2 (extract).**
-2. **`awaiting_approval` (the HITL gate):** waiting on the *operator*. Resumed by `POST /runs/{id}/approve` or `/reject` from the dashboard. **Resume point: stage 8 (send) on approve, terminal on reject.**
-
-Both are implemented identically: the orchestrator function simply has no work to do for a run in a paused status, and an *external event* (webhook or button) flips the status and re-invokes the orchestrator. **There is no waiting thread, no timer, no queue** — which is exactly what survives a Render cold start.
-
-### Non-obvious decisions this surfaces (flag for the roadmap)
-
-- **Stages 3 and 4 do not get their own status values.** The enum jumps `extracting → needs_clarification | computed`. Reconcile-names and validate run *inline within the extracting span*. This is correct (they're fast, deterministic-first, and never pause), but it means "where did this run fail?" is answered by `decision.issues` + `error` context, not by status granularity. Decide deliberately: status = pause points + terminal states, not every stage. (The 11 enum values already encode this.)
-- **`error` is not in the happy path enum list but must be a first-class recovery state.** Because pipeline work runs in a `BackgroundTask` (below), a crash mid-stage leaves a run stuck in `extracting`/`computed`. The roadmap needs a "stuck-run" story: at minimum dashboard visibility; ideally an idempotent re-trigger that re-runs from the last persisted status.
-- **`received` → `extracting` is itself a re-entry seam.** A fresh run and a resumed reply both land in `extracting`. The difference is whether `extracted_data`/line items already exist (see Re-entrancy).
-
----
-
-## The Fixture-First Seam
-
-The single most strategically important boundary in the build, because it decouples the one risky external dependency (inbound email) from everything that proves the system works.
-
-### The interchangeable payload
-
-Define **one** canonical inbound shape (a Pydantic model in `app/models/`). The webhook accepts exactly this JSON; nothing else.
+**Fix — the rewind preamble.** Reuse the primitive `retrigger` already blesses (`app/routes/runs.py:344-359` rewinds a stale `EXTRACTING → RECEIVED`):
 
 ```python
-class InboundEmail(BaseModel):          # the canonical interface
-    message_id: str                     # RFC Message-ID of THIS email
-    in_reply_to: str | None = None      # set when it's a reply
-    references: str | None = None       # RFC References chain
-    subject: str
-    from_addr: str
-    to_addr: str
-    body_text: str
-    # (attachments deferred — spreadsheet parsing is out of scope for v1)
+# app/queue/handlers/pipeline.py  (NEW)
+def handle_run_pipeline(job: Job) -> JobResult:
+    if job.attempts > 1:
+        # Rewind MY OWN crashed attempt. Safe because dedup_key makes (kind, run_id, epoch) a
+        # unique job, and SKIP LOCKED + the lease make ME its only live holder -- so the only
+        # actor who could have left this run in EXTRACTING under this job is a prior attempt
+        # of this same job.
+        repo.claim_status(job.run_id, RunStatus.EXTRACTING, RunStatus.RECEIVED)
+
+    if not repo.claim_status(job.run_id, RunStatus.RECEIVED, RunStatus.EXTRACTING):
+        # Another actor owns this run (operator retrigger, reject, a reply resume).
+        # Not an error. Not a retry. The state machine said no.
+        return JobResult.ok("run not at RECEIVED — another actor owns it")
+
+    return orchestrator.run_pipeline(job.run_id)   # returns ok / retryable / terminal
 ```
 
-### Where the seam sits
+This **requires deleting the unconditional `repo.set_status(run_id, RunStatus.EXTRACTING)` at `app/pipeline/orchestrator.py:232`** and — critically — **requires `retrigger` to stop pre-claiming `RECEIVED → EXTRACTING`** (`app/routes/runs.py:352-356`), or the handler's CAS always loses and **every retrigger becomes a silent no-op.** That is a real integration bug that only appears when both changes land. Mirror `/resolve`'s documented pattern: the route enqueues, the handler owns the sole CAS.
 
-```
-  A JSON fixture file        Real provider's webhook
-  (curl POST in dev)         (n8n / inbound-parse, wired LAST)
-          │                          │
-          │                          │ provider-specific JSON
-          ▼                          ▼
-   POST /webhook/inbound      app/email/gateway.parse_inbound(raw) ─► InboundEmail
-          │                          │
-          └──────────► InboundEmail ◄┘   ← BOTH paths converge here
-                            │
-                            ▼
-              the pipeline only ever sees InboundEmail
-```
+### The mechanical guard (this repo's idiom: pin it or it drifts)
 
-Two interchange strategies, both valid; pick one and state it:
+The repo already enforces `RunStatus` ↔ SQL CHECK set-equality with a CI drift test (`app/models/status.py:1-7` ↔ `app/db/schema.sql:74-86`), pins `_STRANDED_SCOPE_STATUSES` with a scope test, and enforces module boundaries with an AST guard (BOUND-01). Add four in the same spirit:
 
-- **(Recommended) Fixtures are already-canonical `InboundEmail` JSON.** The dev `POST /webhook/inbound` receives exactly what the gateway would emit. `parse_inbound` is bypassed in dev and exercised only once, when the real provider is wired. Simplest; the whole pipeline is built and demoed without the gateway existing.
-- **(Alternative) Fixtures mimic the chosen provider's raw shape**, and `parse_inbound` runs in dev too. More faithful, but couples fixtures to a provider you haven't chosen yet — contradicts "provider wired last."
+1. **`set(JobKind) ∩ set(RunStatus) == ∅`** — a job kind can never *be* a status.
+2. **`set(JobKind) == set(jobs.kind CHECK list)`** — the same drift-test shape as the status one.
+3. **`set(JobKind) == {name for name in dispatch.HANDLERS}`** — the kinds are exactly the pipeline entry points, no more.
+4. **A source guard:** no `RunStatus` value string may appear in any `INSERT INTO jobs` / `UPDATE jobs` statement in `app/db/repo/jobs.py`.
 
-**Recommendation:** canonical-fixture path. The gateway's `parse_inbound` becomes the *last* thing implemented and the *only* thing that changes when you pick n8n vs a hosted parser. The webhook endpoint, the orchestrator, and every stage are provider-agnostic from day one. The "send test email" button posts a canonical `InboundEmail` to the same endpoint — it is literally a fixture replay, which is why it doubles as demo *and* live-email fallback.
-
-### Outbound symmetry
-
-The gateway's send side must **return the outbound `Message-ID`** so the orchestrator can store it on the run for threading. In dev, the gateway's send is a no-op stub that returns a synthetic `Message-ID` and logs the draft. This lets the full clarify→reply→resume loop be tested end to end with **zero** real email — post a "reply" fixture whose `in_reply_to` equals the synthetic id.
+That is what makes J-1 *enforced* rather than *asserted*.
 
 ---
 
-## Pipeline Re-entrancy (resume on threaded reply)
+## 2. Job granularity — coarse. One job per orchestrator entry point. Not per stage.
 
-The build plan says a clarification reply "re-enters at stage 2 (extract) and the run resumes." For that to be safe, re-running stages 2–5 on an existing run must be idempotent.
+**Recommendation: 4 kinds, mapping 1:1 onto the 4 existing `pipeline_glue` entry points.** Not literally "one per run" — *one per invocation of an entry point*, which is subtly better (a run can legitimately own a `run_pipeline` job and later a `resume_reply` job).
 
-### Fresh run vs resumed run
-
-| | Fresh run | Resumed run (reply) |
+| `kind` | Handler calls | Entry status (the CAS `expected`) |
 |---|---|---|
-| Trigger | Inbound email, no `In-Reply-To` match | Inbound email whose `In-Reply-To`/`References` matches an outbound msg-id stored on a run in `awaiting_reply` |
-| Run row | **Created** | **Reused** (looked up by header → run_id) |
-| `source_email_id` | the new inbound | unchanged (original); the reply is appended to `email_messages` with `run_id` set |
-| Status on entry | `received` → `extracting` | `awaiting_reply` → `extracting` |
-| `extracted_data` | empty → filled | **already populated** → must be *replaced/merged* by the new extraction over original + reply text |
-| Line items | none yet | possibly none (clarify happened before compute) — clean |
+| `ingest` | `gateway.parse_inbound` + the moved DATA-02 transaction | *(no run yet)* |
+| `run_pipeline` | `orchestrator.run_pipeline` | `received` |
+| `resume_reply` | `orchestrator.resume_pipeline(from_status=AWAITING_REPLY)` | `awaiting_reply` |
+| `operator_resume` | `orchestrator.resume_pipeline(from_status=NEEDS_OPERATOR)` | `needs_operator` |
 
-### Idempotency invariants the roadmap must enforce
+**Why `resume_reply` and `operator_resume` must stay distinct kinds:** they differ only in `from_status`. Merging them forces `from_status` onto the job row — **a status in the job row, a direct violation of J-1.** Keeping them distinct keeps that status *statically in code*, where it belongs. This is a load-bearing argument, not bookkeeping.
 
-1. **Stage 2 (extract) must overwrite, not append.** Re-extraction sets `extracted_data` fresh from the combined context (original email + the reply that answered the question). Treat `extracted_data` as a single replaceable cell, not an accumulator. The jsonb column makes this a single write.
-2. **Stage 3 line-item writes must be replace-by-run, not insert-only.** If a resume ever reaches compute twice, deleting/replacing `paystub_line_items WHERE run_id = ?` before re-inserting prevents duplicate paystubs. (Because clarify precedes compute, this is usually moot — but it is the invariant that makes a re-trigger of a stuck `computed` run safe.)
-3. **`decision` is overwritten each pass.** The stored decision object always reflects the latest evaluation, so the dashboard and eval read one truth.
-4. **The reply must be matched to a run in `awaiting_reply` specifically.** A header match to a run already `sent`/`reconciled`/`rejected` is a late/duplicate reply — log it, do not resume. This guard is the boundary between "resume" and "ignore."
-5. **`email_messages` is append-only and is the audit log.** Every inbound and outbound is a row. The run's `extracted_data` is mutable; the message history is not. This split is what keeps the pipeline re-runnable while preserving a complete audit trail.
+### Why per-stage is wrong for THIS pipeline (four independent reasons)
 
-### Why re-entry targets stage 2 (not stage 5)
+1. **There is no durable checkpoint between the stages.** `_run_stages` (`app/pipeline/orchestrator.py:862-1046`) commits extract → reconcile → validate → decide → persist → status advance in **one transaction** (line 999). A per-stage queue would first have to invent 4 new statuses and 4 persisted intermediate artifacts to have anything to checkpoint *on*.
+2. **It would rewrite the thesis-bearing module.** The eval's credibility rests on "the eval imports and scores the exact same spine production runs on" (`_run_stages`' own docstring, lines 876-881; PROJECT.md's DRY-seam decision). Splitting the spine across job boundaries breaks the seam the project exists to demonstrate.
+3. **Re-running from the top is already free and already safe.** `persist_extracted` OVERWRITES wholesale; `replace_line_items` is DELETE-by-run-then-INSERT (documented at `orchestrator.py:268-271`). Idempotent re-entry from stage 1 *is already the retrigger semantic*. A redo costs one bounded DeepSeek call (45 s ceiling, `max_retries=0`, `app/llm/client.py:218-224`). At ~1 payroll email per client per week, that is free.
+4. **Fine grain *increases* the two-sources-of-truth risk.** A per-stage job must encode which stage is next — the exact forbidden duplicate of `payroll_runs.status`.
 
-The reply contains *new information* ("Jane worked 38 not 48"). Resuming at decide would re-decide stale extracted data. Resuming at extract re-reads the corrected facts and flows naturally back through reconcile → validate → decide, which may now pass the gate. **The whole 2→5 segment is designed to be safe to re-run; that is the architectural cost of the resume feature, and it is paid by making those four stages stateless-over-their-inputs.**
+### The payload problem the design doc missed
 
----
+The doc lists 3 kinds. There are **4 BackgroundTasks producers with 3 distinct signatures**, and two carry non-`run_id` arguments the doc's `jobs` table has nowhere to put:
 
-## The Eval / Production DRY Seam
+- **`resume_pipeline_bg(run_id, inbound: InboundEmail)`** — an **object**. But it is already durable: the reply row is in `email_messages`, and `pipeline_glue.row_to_inbound` (`app/routes/pipeline_glue.py:25-52`) exists *precisely* to rebuild it from the row — exactly what the redelivery reschedule (`webhook.py:264`) and the stranded sweep (`runs.py:478`) already do. → **the job carries `email_id UUID`, a FK to the persisted row. Never the object.** This *deletes* the pass-a-parsed-object-through-memory pattern entirely.
+- **`operator_resume_bg(run_id, overrides: dict[str, str])`** (`app/routes/runs.py:262`) — a **dict of business data**. A `jobs.payload` JSONB would reintroduce business data into transport state. → **new column `payroll_runs.operator_overrides JSONB`**, written in the same transaction as the enqueue. (`resolve()` already persists the adjacent `alias_candidates` this way at `runs.py:256` — same shape, same place.)
 
-> Hard requirement: the eval runs "the same extraction and decision code over the fixtures." Zero duplication.
-
-### The boundary that makes it work
-
-The four "judgment" stages must be written as **pure-ish functions that take Pydantic inputs and return Pydantic outputs, with the DB and the LLM client passed in (or imported), not entangled.**
-
-```
-                app/pipeline/  (the single implementation)
-                ┌──────────────────────────────────────────┐
-                │ extract(email_text, *, llm) -> Extracted  │
-                │ reconcile_names(extracted, roster, *, llm)│
-                │ validate(extracted) -> Issues             │
-                │ decide(extracted, recon, issues, *, llm)  │
-                │   -> Decision   (incl. the hard gates)    │
-                └───────────────┬───────────────┬──────────┘
-                                │               │
-           imported by         │               │   imported by
-        ┌───────────────────────▼┐            ┌─▼──────────────────────┐
-        │ orchestrator (live)     │            │ eval/run_eval.py       │
-        │ loads run from DB,      │            │ loads fixtures from     │
-        │ calls the 4 fns,        │            │ disk, calls the SAME    │
-        │ persists status+jsonb   │            │ 4 fns, scores vs labels │
-        └─────────────────────────┘            │ writes eval_results     │
-                                               └─────────────────────────┘
-```
-
-The seam is: **`app/pipeline/{extract,reconcile_names,validate,decide}.py` know nothing about runs, statuses, webhooks, or the DB.** They are functions over `models/` types. The *orchestrator* is the only thing that ties them to persistence; the *eval* ties the identical functions to fixtures + scorers. Neither extraction logic nor the gate logic exists in two places.
-
-### Concrete DRY rules for the roadmap
-
-- **Stage functions take data, return data.** No `def extract(run_id)`. Instead `def extract(email_text, *, llm) -> Extracted`. The orchestrator does the DB load/store around it; the eval does fixture load + scoring around it. This single signature decision is what satisfies the DRY requirement.
-- **The hard gates live inside `decide.py`, not in the orchestrator.** Critical: the eval must exercise the *gates*, not just the LLM. If the orchestrator applied the gate, the eval would test a different decision path than production. So `decide()` returns the *gated* `Decision` (LLM proposal + code override), and both callers get identical behavior. The orchestrator merely *acts* on the decision (which status to set); it never *makes* it.
-- **The LLM client is injected/imported, not stubbed differently.** Eval and production hit the same `app/llm/client.py`. (Eval may pin temperature 0 for reproducibility, but it is the same client/router.)
-- **Calc + reconcile_payroll are already pure** — eval can score computed payroll against ground truth by importing them directly too, if the suite grows to cover compute.
-
-### Where the three decisioning layers live as code
-
-| Layer | Lives in | Callable by |
-|-------|----------|-------------|
-| Deterministic fast-path | `reconcile_names.py` (exact/normalized/alias match) + `validate.py` (presence, bounds, numeric) | orchestrator + eval |
-| LLM judgment | `reconcile_names.py` (fuzzy, only on det-match leftovers) + `decide.py` (process-vs-clarify proposal) | orchestrator + eval |
-| Hard gates (code) | **inside `decide.py`** — block on missing required field or any name < 0.8 confidence, even on LLM "process" | orchestrator + eval |
-
-Putting the gate *inside* `decide.py` (not in the orchestrator) is the single decision that keeps the auditable, gated decision identical in the live system and in the eval. **This is the load-bearing DRY decision.** Call it out in the roadmap.
+**Net rule: a `jobs` row carries only `(kind, dedup_key, run_id?, email_id?, event_id?, business_id?)` — all identifiers, zero business data.** That is J-1 made structural: there is physically nowhere to put a next-status.
 
 ---
 
-## Component Boundaries & Data Flow
+## 3. Enqueue atomicity — the enqueue is a co-tenant of the transaction that owes it
 
-### What talks to what (allowed dependency directions)
+Every helper in `app/db/repo/` already takes `conn: psycopg.Connection | None = None` and runs through `_conn_ctx` / `_nulltx` (`app/db/repo/_shared.py:19-50`). `enqueue_job(..., conn=conn)` slots into that with **zero new machinery** — it is just another aggregate module in the existing per-aggregate repo package.
 
-```
-main.py ──► orchestrator ──► {extract, reconcile_names, validate, decide,
-                              calculate, reconcile_payroll, compose_email}
-                │                       │              │           │
-                │                       ▼              ▼           ▼
-                │                   llm/client    (pure, no I/O)  llm/client
-                ▼
-            db/supabase  ◄──── dashboard (read) ; ◄──── operator actions (write status)
-                ▲
-                │
-            email/gateway  (called by orchestrator for send; calls back via webhook)
+### The pattern
 
-eval/run_eval ──► {extract, reconcile_names, validate, decide} ──► llm/client
-              └─► scorers ──► db/supabase (eval_results)        [reuses prod fns]
+```python
+# THE RULE: the enqueue lives inside the SAME `conn.transaction()` as the state change that
+# owes it. The CAS in that transaction supplies EXCLUSIVITY. The dedup_key UNIQUE supplies
+# IDEMPOTENCY. You need both, or you get a lost job (state advanced, no job) or a phantom
+# job (job, no state).
 
-pdf/paystub ◄── orchestrator (stage 8) / dashboard (on-demand render)
+# app/routes/runs.py :: retrigger   (MODIFIED — one transaction replaces CAS-then-add_task)
+with repo.get_connection() as conn, conn.transaction():
+    claimed = (
+        repo.claim_status(run_id, RunStatus.ERROR, RunStatus.RECEIVED, conn=conn)
+        or repo.claim_status(run_id, RunStatus.APPROVED, RunStatus.RECEIVED, conn=conn)
+        or _claim_stale_in_flight(run_id, conn=conn)
+    )
+    if claimed:
+        epoch = repo.clear_reply_context(run_id, conn=conn)   # MODIFIED: return the new reply_epoch
+        repo.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            run_id=run_id,
+            dedup_key=f"run_pipeline:{run_id}:{epoch}",       # ◄── the epoch is the discriminator
+            conn=conn,
+        )
+# committed. Only the CAS winner enqueued. A crash anywhere above → nothing happened at all.
+return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 ```
 
-Rules: arrows point only downward/inward. `main.py` and `eval/run_eval.py` are the two *entry points*; both depend on pipeline components, never the reverse. Stage functions depend on `models/`, `llm/client`, and (for calc) nothing. Only the orchestrator and the operator actions mutate `status`.
-
-### Key data flows
-
-1. **Fresh intake:** webhook → `parse_inbound`→`InboundEmail` → create `payroll_runs(received)` + `email_messages(inbound)` → 200 returned → `BackgroundTask(run_pipeline)` → extract→reconcile→validate→decide → pause at `awaiting_approval` or `awaiting_reply`.
-2. **Clarify→resume:** decide=clarify → `compose_email`(LLM cheap) → `gateway.send` returns outbound msg-id → stored on run, status `awaiting_reply`, `email_messages(outbound)` row → … client replies … → webhook → header lookup finds the run → status `extracting` → re-run 2–5.
-3. **HITL approve:** operator opens `/runs/{id}` → sees submitted vs computed + decision object → `POST approve` → status `approved` → `BackgroundTask` resumes orchestrator at stage 8 → `gateway.send` confirmation + `pdf/paystub` bytes attached → `sent` → stage 9 → `reconciled`.
-4. **Eval:** CI/local runs `run_eval.py` → load fixtures → same `extract/reconcile/validate/decide` → `scorers` compare to labels → write `eval_results(suite_run_id,...)` → dashboard `/eval` renders the summary chart.
-
----
-
-## Suggested Build Order (the dependency graph)
-
-This is the section that drives phase sequencing. Read top-to-bottom; items on the same tier are parallelizable.
-
-```
-TIER 0 — Foundations (nothing works without these)
-  ┌─────────────────────────────────────────────────────────┐
-  │ db/schema.sql (6 tables, status enum)  +  db/supabase.py │
-  │ models/ (Pydantic: InboundEmail, Extracted, Decision,    │
-  │          PaystubLineItem, …)  — the shared contracts     │
-  └───────────────┬─────────────────────────────┬───────────┘
-                  │                             │
-TIER 1 — Independent leaves (build in parallel) │
-  ┌───────────────▼──────────┐   ┌──────────────▼───────────┐
-  │ llm/client.py + routing  │   │ calculate.py +           │
-  │ (base_url/model/key swap,│   │ reconcile_payroll.py     │
-  │  JSON mode, retry-once)   │   │ (PURE — no deps at all,  │
-  │  ◄ unblocks all LLM stages│   │  unit-test against IRS   │
-  └───────────────┬──────────┘   │  Pub 15-T worked examples)│
-                  │              └──────────────────────────┘
-TIER 2 — The pipeline seam + judgment stages
-  ┌───────────────▼─────────────────────────────────────────┐
-  │ main.py webhook  +  InboundEmail contract  +  ingest.py  │
-  │   (POST a fixture → create run → 200 + BackgroundTask)    │
-  │ orchestrator.py skeleton (status state machine driver)    │
-  │ extract.py → reconcile_names.py → validate.py → decide.py │
-  │   (decide.py CONTAINS the hard gates)                      │
-  │ email/gateway.py with STUB send (returns synthetic msgid) │
-  └───────────────┬─────────────────────────────────────────┘
-                  │  ← at this point the whole happy path +
-                  │    name-mismatch + clarify→reply→resume
-                  │    runs end-to-end with ZERO real email
-TIER 3 — Close the loop (needs runs to exist)
-  ┌───────────────▼──────────┐   ┌──────────────────────────┐
-  │ compose_email.py (LLM    │   │ dashboard (list, detail,  │
-  │ cheap) + clarify auto-   │   │ approve/reject buttons,   │
-  │ send + threading store   │   │ side-by-side submitted vs │
-  │ + resume-on-reply lookup │   │ computed) — reads existing │
-  └───────────────┬──────────┘   │ state, so it comes AFTER  │
-                  │              │ runs exist                │
-                  │              └──────────────────────────┘
-TIER 4 — Proof + delivery (needs extract+decide reusable)
-  ┌───────────────▼─────────────────────────────────────────┐
-  │ eval/: generate_fixtures → fixtures/ → run_eval (imports  │
-  │   TIER-2 stage fns) → scorers → eval_results              │
-  │ eval view on dashboard (the chart = the proof)            │
-  │ pdf/paystub.py (on-demand) + stage 8 attach + stage 9     │
-  └───────────────┬─────────────────────────────────────────┘
-                  │
-TIER 5 — Wire reality + ops (LAST, by design)
-  ┌───────────────▼─────────────────────────────────────────┐
-  │ email/gateway.py REAL provider (n8n / inbound-parse)      │
-  │   — only parse_inbound + real send change                │
-  │ Dockerfile, Render deploy, Supabase project              │
-  │ .github/workflows: keepalive.yml + eval.yml              │
-  │ README + architecture diagram + 60-90s demo              │
-  └─────────────────────────────────────────────────────────┘
+```sql
+-- app/db/repo/jobs.py :: enqueue_job
+INSERT INTO jobs (kind, dedup_key, run_id, email_id, event_id, business_id, available_at)
+VALUES (%(kind)s, %(dedup_key)s, %(run_id)s, %(email_id)s, %(event_id)s, %(business_id)s, now())
+ON CONFLICT (dedup_key) DO NOTHING
+RETURNING id;
 ```
 
-### Hard ordering constraints (the "X before Y" the roadmap must respect)
+### `dedup_key` must carry an epoch, or the second legitimate retrigger is swallowed
 
-- **Schema + `models/` before everything.** They are the contracts every other component imports. (Tier 0.)
-- **`llm/client.py` before extract/reconcile/decide/compose.** Every LLM stage is a no-op without the router. (Tier 1 → Tier 2.)
-- **Calc engine is the one component with no upstream dependency** — buildable Tier 1, fully unit-tested in isolation against IRS Pub 15-T examples, *in parallel* with the LLM client. It is the highest-bug-risk unit, so isolating it early de-risks the schedule.
-- **The webhook + fixture seam before any stage can be exercised end-to-end** — but the stages themselves only need `models/` + `llm/client`, so stage *logic* can be drafted in parallel with the webhook and joined by the orchestrator.
-- **Gateway send can be a stub until Tier 5.** The entire clarify→reply→resume loop is testable with a synthetic-msgid stub + reply fixtures. The real provider is wired *last* and touches only `gateway.py`.
-- **Dashboard after runs exist.** It reads state; there's nothing to render until the pipeline produces runs. (Tier 3.)
-- **Eval after extract + decide are reusable.** Eval's entire value is reusing those functions; it cannot precede them. (Tier 4.)
-- **Deploy/CI last.** Dockerfile, Render, keep-alive, and the eval workflow are packaging, not logic. (Tier 5.)
+A naive `dedup_key = f"run_pipeline:{run_id}"` means: run errors → operator retriggers → job runs, goes `done` → run errors again → operator retriggers again → `ON CONFLICT DO NOTHING` against the **old `done` row** → **the second retrigger silently does nothing.**
 
-### The earliest "it visibly works end to end" milestone
+The discriminator already exists: **`payroll_runs.reply_epoch`**, bumped by `clear_reply_context` on every retrigger (`app/db/schema.sql:112-116`, called at `app/routes/runs.py:378`). Make `clear_reply_context` return the new epoch and key on it.
 
-End of **Tier 2 + the clarify loop from Tier 3** = a recruiter-demoable system with no email provider, no PDFs, and a stub dashboard: POST a messy fixture → watch the run move `received→extracting→needs_clarification→awaiting_reply`, POST a reply fixture → `extracting→computed→awaiting_approval`, approve via a curl or a one-button page → `sent→reconciled`. Optimizing for "visibly works end to end" (the stated #1 priority) means front-loading Tiers 0–2 and treating Tier 5 (real email, deploy) as the safe, isolated tail.
+| kind | `dedup_key` |
+|---|---|
+| `ingest` | `ingest:{event_id}` (the Svix id, or the fixture content hash) |
+| `run_pipeline` | `run_pipeline:{run_id}:{reply_epoch}` |
+| `resume_reply` | `resume_reply:{run_id}:{email_id}` (the inbound row is the natural unique cause) |
+| `operator_resume` | `operator_resume:{run_id}:{reply_epoch}:{seq}` — ⚠️ an operator may legitimately re-resolve with a *different* mapping without an epoch bump, so this one needs a discriminator or the second resolve is swallowed. **Open question — see §8.** |
 
----
-
-## Render Free-Tier Architectural Implications
-
-These constraints are not ops trivia — they shaped the core design, and getting them wrong breaks the demo.
-
-| Constraint | Architectural consequence | Concrete rule |
-|------------|---------------------------|---------------|
-| **Sleeps after 15 min idle; only inbound HTTP wakes it** | **Webhook-driven, never polling.** There is no background loop to "check for new email." All progress is event-triggered: an inbound POST or an operator button. | No `while True`, no cron-in-process, no scheduler. Every state advance is caused by an HTTP request. |
-| **Cold start < 1 min** | First request after sleep is slow; the *gateway* must tolerate a one-time delay. A provider retry/timeout on the inbound webhook must not drop the email. | Webhook returns 200 *fast* (before pipeline work) so the provider sees success even during a cold start. Pipeline runs in a `BackgroundTask` after the response. |
-| **In-process `BackgroundTasks` + a dyno that can sleep mid-task** | A run can be stranded mid-`extracting`/`computed` if the dyno sleeps before the task finishes. **This is why the Postgres `status` column must double as a crash-recovery anchor, not just a HITL gate.** | Persist status transitions *as each stage completes*, so a re-trigger resumes from the last durable status. Make stages 2–5 idempotent (already required by the resume feature). Surface `error`/stuck runs on the dashboard with a re-trigger. |
-| **Ephemeral filesystem** | Nothing on local disk survives. PDFs cannot be cached to disk; fixtures must be in the repo (they are). | `pdf/paystub.py` returns bytes, generated on demand from the run row, streamed in the response — never written to disk. (This is exactly why "generate on demand, no storage bucket" was chosen.) |
-| **Free Supabase project pauses when idle** | The single source of truth can go away. | `keepalive.yml` GitHub Action pings Supabase a couple times a week. State integrity depends on this workflow, so it is part of the architecture, not an afterthought. |
-| **Single process, no queue/Redis** | No external durable queue. The "queue" is the set of runs in non-terminal statuses. | The state machine *is* the work queue. Recovery = "find runs not in a terminal status and re-drive them," which a re-trigger or a manual dashboard action handles. |
-
-**The synthesis:** Render-free forces an event-sourced, database-as-truth design where every unit of progress is (a) triggered by an HTTP event, (b) short enough to finish before a likely sleep, and (c) durably checkpointed in `status` so a cold start never loses a run. The webhook+Postgres+BackgroundTask combination is not incidental — it is the minimal architecture that survives this hosting tier. (FastAPI `BackgroundTasks` running after the response is returned: verified against current FastAPI docs.)
+**`resume_reply`'s key collapses two mechanisms into one.** Today a lost reply-resume is recovered by *two* independent seams — the redelivery reschedule (`webhook.py:241-270`) and the stranded-unconsumed-reply sweep (`runs.py:465-484`). Both would enqueue `resume_reply:{run_id}:{email_id}`; the UNIQUE makes them **the same row**. Two code paths, one job — and then both code paths can be deleted (§7).
 
 ---
 
-## Anti-Patterns (specific to this build)
+## 4. The claim/lease protocol — the SQL, and what it actually protects
 
-### Anti-Pattern 1: Smuggling the hard gate into the orchestrator
-**What people do:** Let `decide.py` return the raw LLM proposal and have the orchestrator apply the 0.8/missing-field gate before setting status.
-**Why it's wrong:** The eval calls `decide.py` directly and would test the *ungated* decision — a different code path than production. The auditable, gated decision (the project's core value) would be untested.
-**Do this instead:** The gate lives **inside** `decide.py`; it returns the final gated `Decision`. The orchestrator only maps that decision to a status.
+### The `jobs` table (NEW)
 
-### Anti-Pattern 2: Stage functions that take a `run_id` and do their own DB I/O
-**What people do:** `def extract(run_id): row = db.get(run_id); ...; db.save(...)`.
-**Why it's wrong:** Couples judgment logic to persistence, making the eval unable to reuse it without a database and fixtures masquerading as runs. Breaks the DRY requirement.
-**Do this instead:** `def extract(email_text, *, llm) -> Extracted`. Persistence lives only in the orchestrator.
+```sql
+CREATE TABLE IF NOT EXISTS jobs (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- The 4 kinds mirror the 4 pipeline_glue entry points EXACTLY. A CI drift test asserts
+    -- set-equality with JobKind AND with the dispatch table -- the same guard shape that pins
+    -- payroll_runs.status against RunStatus. A kind is a FUNCTION NAME, never a status.
+    kind          TEXT NOT NULL CHECK (kind IN
+                    ('ingest','run_pipeline','resume_reply','operator_resume')),
+    dedup_key     TEXT NOT NULL,
+    -- Identifiers ONLY. No business data, no target status, no payload. This is INVARIANT J-1
+    -- made structural: there is physically nowhere to put "what payroll status comes next".
+    run_id        UUID REFERENCES payroll_runs(id) ON DELETE CASCADE,
+    email_id      UUID REFERENCES email_messages(id),
+    event_id      UUID REFERENCES inbound_events(id),
+    -- NULLABLE by necessity: sender->business routing happens AFTER the Resend body fetch,
+    -- which this design moves into the worker. The tenant key does not exist at ingress.
+    -- Backfilled by the ingest handler.
+    business_id   UUID REFERENCES businesses(id),
+    priority      INT  NOT NULL DEFAULT 100,   -- WRITTEN, NEVER READ in v4 (fairness lanes are out of scope)
+    state         TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (state IN ('pending','leased','done','dead')),
+    attempts      INT  NOT NULL DEFAULT 0,
+    max_attempts  INT  NOT NULL DEFAULT 5,
+    available_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    lease_token   UUID,
+    leased_until  TIMESTAMPTZ,
+    last_error    TEXT,   -- PII-scrubbed through the EXISTING repo._scrub/_build_error_detail (OPS2-01)
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_jobs_dedup_key UNIQUE (dedup_key),
+    -- A half-written lease (state='leased' with a NULL token) is indistinguishable from an
+    -- unclaimed job, and the fencing check below would silently degrade to "no fence at all".
+    -- The database refuses to store one. Same discipline as employees.step_3_dependents >= 0.
+    CONSTRAINT ck_jobs_lease_coherent CHECK (
+        (state =  'leased' AND lease_token IS NOT NULL AND leased_until IS NOT NULL) OR
+        (state <> 'leased' AND lease_token IS NULL     AND leased_until IS NULL)
+    )
+);
 
-### Anti-Pattern 3: A polling loop or in-process scheduler to "check for replies"
-**What people do:** A background thread that periodically scans for new mail or stuck runs.
-**Why it's wrong:** Render sleeps the dyno; the loop dies. Only inbound HTTP wakes the service, so the loop is both unreliable and pointless.
-**Do this instead:** Everything is webhook/button-triggered. The reply *arrives* as an inbound POST and resumes the run by header lookup.
+-- Partial index matching the claim predicate EXACTLY. done/dead rows (the overwhelming
+-- majority over time) are not in the index at all, so the claim stays O(1) forever with no
+-- purge job.
+CREATE INDEX IF NOT EXISTS idx_jobs_claimable
+    ON jobs (priority, available_at)
+    WHERE state IN ('pending','leased');
+```
 
-### Anti-Pattern 4: Treating `extracted_data` as an accumulator across resumes
-**What people do:** Merge new extraction into the old jsonb on a reply.
-**Why it's wrong:** Re-extraction over the corrected context should *replace* the picture; merging creates inconsistent half-states and breaks idempotency.
-**Do this instead:** Stage 2 overwrites `extracted_data` wholesale each pass; append-only history lives in `email_messages`.
+### The claim — ONE statement, ONE implicit transaction, commits before any real work
 
-### Anti-Pattern 5: Coupling fixtures (or the webhook) to the chosen email provider before it's chosen
-**What people do:** Shape fixtures like n8n's payload and parse provider fields in the webhook.
-**Why it's wrong:** Violates "provider wired last"; you'd rework fixtures + webhook when the provider changes.
-**Do this instead:** Fixtures and the webhook speak the canonical `InboundEmail`. `gateway.parse_inbound` is the only provider-aware code and is implemented last.
+```sql
+UPDATE jobs j
+   SET state        = 'leased',
+       lease_token  = gen_random_uuid(),
+       leased_until = now() + (%(lease_seconds)s || ' seconds')::interval,
+       attempts     = j.attempts + 1,      -- attempt-on-CLAIM, not on failure. See below.
+       updated_at   = now()
+ WHERE j.id = (
+       SELECT c.id
+         FROM jobs c
+        WHERE c.attempts < c.max_attempts
+          AND (
+                (c.state = 'pending' AND c.available_at <= now())
+             OR (c.state = 'leased'  AND c.leased_until <  now())   -- ◄── RECLAIM AN EXPIRED LEASE
+              )
+        ORDER BY c.priority, c.available_at
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+ )
+RETURNING j.id, j.kind, j.run_id, j.email_id, j.event_id,
+          j.attempts, j.max_attempts, j.lease_token;
+```
+
+**The `OR (state='leased' AND leased_until < now())` clause is the single most important line in this document.** The approved design's claim SQL (`design.md:150-153`) is `WHERE state = 'pending' AND available_at <= now()` and **nothing else** — so a job whose worker died holding the lease stays `state='leased'` **forever** and is never reclaimed. That is the exact failure the milestone exists to eliminate, reintroduced by the queue meant to fix it. **The design's own Phase D proof #4 ("let a lease expire, let a second worker claim the job") would fail against the design's own SQL.**
+
+Three things that make this correct under **Supavisor transaction-mode pooling**:
+
+- **One statement ⇒ one implicit transaction.** No session state, no `LISTEN/NOTIFY`, no session-level advisory locks — all forbidden on port 6543. (`app/db/supabase.py:1-18` already documents why session state is fatal here: `prepare_threshold=None` exists for exactly this reason.)
+- **`FOR UPDATE SKIP LOCKED` lives in the SUBQUERY**, and the outer `UPDATE` re-targets by `id`. A bare `UPDATE … LIMIT 1` is not valid Postgres, and `FOR UPDATE` on the outer statement does not give you row-skipping.
+- **It commits immediately, releasing the pooled connection before any LLM / Resend / PDF call.** With `max_size=5` (`app/db/supabase.py:57-68`), holding a transaction across a 45-second LLM call would pin 20% of the entire connection budget per worker. `_run_stages` already honors this discipline — see the explicit comment at `orchestrator.py:1015-1018`: *"No transaction may span a network/LLM call."* **The queue inherits that rule; it does not invent it.**
+
+**Attempt-on-claim is correct and non-obvious.** Incrementing `attempts` at *claim* time (not at failure time) is what bounds a **crash loop**: a worker that OOMs or is SIGKILLed before recording *anything* still burned an attempt, so a poison job dead-letters instead of looping forever. The design got this right; preserve it deliberately — and it means **the completion path must never also increment.**
+
+### The completion — fenced on `lease_token`
+
+```sql
+UPDATE jobs
+   SET state = 'done', lease_token = NULL, leased_until = NULL, updated_at = now()
+ WHERE id = %(id)s AND state = 'leased' AND lease_token = %(token)s
+RETURNING id;
+```
+
+`row is None` ⇒ **the lease was stolen; this worker is a zombie.** It must **not** retry, **not** error the run, **not** re-enqueue. It logs and drops. *This is the identical contract to `claim_status` returning `False`* — the repo already has the "lost the CAS → drop cleanly" idiom in four places; the fencing check is the fifth and should read the same way.
+
+### The failure / retry — fenced, with dead-letter atomic against the run's ERROR
+
+```sql
+UPDATE jobs
+   SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
+       available_at = now() + (%(backoff_seconds)s || ' seconds')::interval,
+       last_error   = %(scrubbed_detail)s,
+       lease_token  = NULL, leased_until = NULL, updated_at = now()
+ WHERE id = %(id)s AND state = 'leased' AND lease_token = %(token)s
+RETURNING state;
+```
+
+Backoff + jitter computed **in Python** (`min(cap, base * 2 ** (attempts - 1)) * uniform(0.5, 1.5)`) so it is unit-testable without a clock. When `RETURNING state` is `'dead'`, **the same transaction** calls `repo.record_run_error(run_id, "JobDeadLettered", stage=job.kind, conn=conn)` — so **`job dead ⟺ run in ERROR` is atomic.** That is what lets `sweep_stranded_runs` be deleted (§7).
+
+### THE CRUX: the fencing token does **not** protect the business writes
+
+This is the question's hardest sub-part, and the design's rule 2 (*"Every completion or failure write must match the `lease_token`"*) quietly overclaims. State it precisely:
+
+> **The `lease_token` fences the `jobs` row and nothing else.** The orchestrator's business writes committed in a *different* transaction (`orchestrator.py:999`), minutes earlier, with no token in scope. There is no way to make `_run_stages` lease-aware without threading a transport token into the money path — which is J-1 inverted.
+>
+> **The business writes are fenced by `claim_status`, and only by `claim_status`. The lease is an optimization (don't pay for two DeepSeek calls); the CAS is the correctness.**
+
+Reason the split-brain case out loud, because it is the only honest way to state the guarantee. Worker A **stalls** (network partition, not death) while holding a lease. The lease expires. Worker B reclaims and re-runs. Both are now executing `_run_stages` for the same run. What is the damage?
+
+| Side effect | Guard that ALREADY exists | Outcome |
+|---|---|---|
+| Status advance | `claim_status` CAS | Exactly one wins. A's later `set_status` calls inside `_run_stages` are unguarded — **but both write the same forward transitions to the same values**, so they are idempotent by value. |
+| Paystub line items | `replace_line_items` = DELETE-by-run + INSERT (`orchestrator.py:1012`) | Last-write-wins over identical inputs. No duplicate rows. |
+| Extracted / decision / reconciliation | `persist_*` OVERWRITE one JSONB cell (`orchestrator.py:268-271`) | Last-write-wins. |
+| **Clarification email to the client** | `uq_email_run_purpose_round_epoch` UNIQUE (`schema.sql:279`) + `get_outbound_for_round` (CLAR2-01) | **A second send is blocked by a DB constraint.** |
+| **Confirmation email to the client** | purpose-aware already-sent guard (`delivery.py:95-113`) + the same UNIQUE | **Blocked.** |
+| Job completion | `lease_token` fence | A's completion is rejected. Only B's counts. |
+
+**The honest guarantee, then:** *a stalled-not-dead worker whose lease expired can double-**execute** the pipeline; the damage is bounded to a duplicated LLM call and a last-write-wins persist, because **every side-effecting write is already individually guarded by a DB constraint or a CAS.** No client is emailed twice; no paystub is duplicated; no status regresses.* A generous lease makes it vanishingly rare.
+
+**Therefore `lease_seconds = 900` (15 min).** Not tight — and *derived*, not guessed. The derivation already exists in this repo: `app/routes/runs.py:34-68` computes the worst-case gap between two consecutive DB writes on the longest real path at **210 s** (the resume path's back-to-back double extraction — 45 s × 2 app-attempts × 2 calls — plus a 30 s clarification draft) and picks 15 min as ~4×. **Reuse `STALE_THRESHOLD` as `QUEUE_LEASE_SECONDS`: one constant, one already-reviewed derivation.**
 
 ---
 
-## Integration Points
+## 5. Worker lifecycle on Render free
 
-### External Services
+### Startup: `lifespan` — and `app/main.py` currently has none
 
-| Service | Integration pattern | Notes / gotchas |
-|---------|---------------------|-----------------|
-| Kimi / DeepSeek (LLM) | OpenAI-compatible client; swap `base_url`+`model`+`key` per task tier; `response_format={"type":"json_object"}`; one retry on parse failure → Pydantic validate | Model IDs config-driven (env). Non-reasoning chat variants only. Verified: `base_url` swap + JSON mode are the standard OpenAI-compatible mechanisms. |
-| Email gateway (n8n / inbound-parse) | Inbound: provider POSTs → `parse_inbound` → `InboundEmail`. Outbound: `gateway.send` returns `Message-ID`. | The ONE provider-aware seam. Wired last. Threading anchored on RFC `In-Reply-To`/`References` vs the stored outbound `Message-ID`. |
-| Supabase Postgres | Python client / typed accessors; all 6 tables; `status` is the state machine. | Free project pauses when idle → keep-alive workflow is load-bearing. No file storage used. |
-| GitHub Actions | `keepalive.yml` (ping Supabase), `eval.yml` (run eval on push, import pipeline fns). | Eval workflow must have LLM keys as secrets; reproducibility favors temperature 0. |
+`app/main.py` is 16 lines with no lifespan at all.
 
-### Internal Boundaries
+```python
+# app/main.py (MODIFIED)
+from contextlib import asynccontextmanager
+from app.queue import worker
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| `main.py` ↔ orchestrator | direct call + `BackgroundTask(run_pipeline, run_id)` | Webhook returns 200 before pipeline runs. |
-| orchestrator ↔ stage fns | direct calls over `models/` types | Orchestrator owns persistence + status; stages own logic. |
-| stage fns ↔ `llm/client` | injected/imported client | Stages are vendor-agnostic. |
-| orchestrator ↔ `email/gateway` | `send(outbound) -> message_id` | Stub in dev; real provider last. |
-| dashboard ↔ db | read; + approve/reject **write status only** | Operator actions are pipeline re-entry, not arbitrary edits. |
-| eval ↔ stage fns | imports the SAME functions | The DRY seam; zero reimplementation. |
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    # FAIL FAST at startup, in the pydantic-settings spirit: a worker count that starves
+    # ingest / approvals / dashboard reads of connections is a config bug, not a runtime
+    # surprise. Pool max_size=5 (app/db/supabase.py:57-68).
+    assert settings.queue_workers + 3 <= 5, "worker count would starve the connection pool"
+    worker.start(n=settings.queue_workers)
+    yield
+    worker.stop(grace_seconds=10)   # sets a threading.Event, joins, AND RELEASES HELD LEASES
+
+app = FastAPI(title="Payroll Agent", lifespan=lifespan)
+```
+
+### The workers are OWN threads — NOT the AnyIO threadpool
+
+`BackgroundTasks` and `run_in_threadpool` both execute on Starlette's shared ~40-thread AnyIO pool — **the same pool that serves every sync route** (`approve`, `retrigger`, `runs_list`, `run_detail`). A long-lived worker loop parked there permanently consumes a request-serving slot. Use `threading.Thread(daemon=True)` with an owned lifecycle. (The AnyIO pool *is* the right tool for the short ingest hop in §7 phase 1 — that's a burst, which is what it's for.)
+
+### Worker count: **2** — a connection-budget decision, not a throughput one
+
+The design's Finding 3 is correct and is the most under-appreciated constraint here: **the ceiling is 5 connections, not 40 threads.**
+
+| Consumer | Connections (transient) |
+|---|---|
+| Webhook ingest | 1 |
+| Dashboard reads (`/runs`, `/runs/{id}`, `/runs/{id}/status` polled every 2 s) | 1–2 |
+| Operator approve → `delivery.deliver` | 1 |
+| **Workers** | **2** |
+
+Workers hold a connection only in **short bursts** — the claim statement, the orchestrator's persist transaction, the completion statement — and never across an LLM/Resend/PDF call (§4). So 2 fit comfortably. Make it a settings knob (`QUEUE_WORKERS`, default 2) with the startup assertion above. At ~1 email/client/week, worker count is a **safety** parameter, not a scaling knob. Say so in the README.
+
+### The pump: what drains the queue when nothing is knocking
+
+Render free has **no worker service type** and wakes **only on inbound HTTP**. Internal timers sleep with the dyno. Without an external pump, a job with a future `available_at` is **durable storage that is never executed** — which the design doc correctly calls *"a worse lie than the current design, which at least fails visibly."* That framing is right and must survive into the roadmap.
+
+- **`POST /internal/pump`** (NEW, `app/routes/internal.py`) — shared-secret auth via **`hmac.compare_digest`** (constant-time; this repo already cares about this class of thing). Drains **inline and bounded**: claim-and-run up to `K` jobs or `T` seconds, then return `{"claimed": n, "done": n, "retried": n, "dead": n, "depth": d, "oldest_pending_age_s": s}`. **Returning real counts is what gives the GitHub Action something to fail on** — a pump that merely wakes the service and hopes the background workers notice is unassertable.
+- **Safe to run concurrently with the background workers** — it uses the same `SKIP LOCKED` claim. That is what `SKIP LOCKED` is for.
+- **The pump also owns retention:** `DELETE FROM inbound_events WHERE received_at < now() - interval '30 days'`. The design calls for "a byte cap and a retention policy" but names no executor. **The pump is the only recurring execution context this system has.** It is the executor.
+
+### ⚠️ Pump cadence vs the 750 free instance-hours cap — an unflagged collision
+
+A pump every **10 minutes** means the service is *never* idle for 15 minutes ⇒ **it never spins down** ⇒ it is awake ~**720–744 hours/month** against a **750 h/month** free cap. That is **six hours of margin**, and only if this is the **sole free web service in the workspace**. Over the cap, free services suspend until the next month — taking the live demo down.
+
+| Option | Recovery latency | Instance-hours/mo | Note |
+|---|---|---|---|
+| **10-min pump (RECOMMENDED)** | ~10 min | **~720–744** — at the cap | Also eliminates cold-start latency on real inbound webhooks (Resend's webhook timeout never fires). **Requires: exactly one free web service in this workspace, documented as a hard constraint.** |
+| 20-min pump | ~20 min | ~54 (the service sleeps between pumps; each pump costs a ~1-min cold start + ~30 s work) | Cheap, huge margin — but "recovers within *minutes*" starts to strain at 20. |
+
+**Recommend 10 min**, and add *"exactly one Render free web service in this workspace"* to the milestone Constraints. This is a real, checkable deploy constraint that is currently written down nowhere.
+
+**Fold `keepalive.yml` into `pump.yml`.** The pump call *is* a Render wake *and* a Supabase query — it strictly subsumes the existing 2×/week `/health/ready` ping (`.github/workflows/keepalive.yml:16-20,39-55`). Keep that workflow's `workflow_dispatch` escape hatch, whose comment already documents GitHub's 60-day auto-disable — the single most important honesty caveat in this milestone. **One workflow replaces two. Net deletion.**
+
+### Dyno spins down mid-job → what happens to the lease
+
+1. The process dies. The `leased` row sits with a `leased_until` in the future. Nothing else changes.
+2. At `leased_until`, the row becomes claimable **via the `OR (state='leased' AND leased_until < now())` clause** — which is why that clause is non-negotiable.
+3. The next pump wakes the service and reclaims it. `attempts` is now ≥ 2, so the handler's **rewind preamble** (§1) resets the run from `extracting` to its entry status and re-CASes forward. The run completes.
+4. **Worst-case recovery = `lease_seconds` (15 min) + pump interval (10 min) ≈ 25 minutes.** Put that number in the README. Do not write "minutes" and let the reader infer 2.
+
+### Graceful shutdown must release the lease — the design omits this
+
+A Render **redeploy** is routine (several times a day during development). Without a release, every in-flight job strands for a full 15-minute lease *plus* a pump interval. One statement in `worker.stop()` fixes it:
+
+```sql
+UPDATE jobs SET state='pending', available_at=now(),
+                lease_token=NULL, leased_until=NULL, updated_at=now()
+ WHERE id=%(id)s AND state='leased' AND lease_token=%(token)s;
+```
+
+Turns a 25-minute stall into a sub-second handoff on every deploy.
 
 ---
 
-## Scaling Considerations
+## 6. Ingest re-keying — two layers, and why neither is redundant
 
-This is a single-operator educational demo for a recruiter audience; "scale" means "survives a live demo on a free tier," not throughput.
+Moving the Resend body-fetch (`gateway._parse_resend_envelope` → `resend.EmailsReceiving.get(email_id)`, `app/email/gateway.py:158-201`) out of the request path means **the RFC `Message-ID` — today's dedup key — is not known at ingest.** Once the fetch is in the worker, every Resend redelivery would mint a fresh `ingest` job.
 
-| Scale | Adjustment |
-|-------|------------|
-| Demo (1 operator, a handful of runs) | Current architecture is exactly right. Single FastAPI process, `BackgroundTasks`, Postgres state. |
-| If it ever grew (out of scope) | First bottleneck would be in-process `BackgroundTasks` on a sleeping dyno → move pipeline work to a durable external queue (the `status` column already makes runs re-drivable, so this is a localized change). Second: per-task LLM latency → already mitigated by tiered routing + non-reasoning models. |
+### Layer 0 — transport dedup, at ingress: `inbound_events.event_id UNIQUE`
 
-**Scaling priority #1 (the only one that matters here):** never lose a run to a cold start. Solved by durable status checkpoints + idempotent stages 2–5 + dashboard-visible re-trigger.
+```sql
+CREATE TABLE IF NOT EXISTS inbound_events (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- The Svix event id for a signed Resend webhook; 'sha256:<hex>' of the raw body for an
+    -- UNSIGNED dev/fixture POST (which carries no svix-* headers at all). Content-addressing
+    -- the fixture path preserves today's semantics EXACTLY -- the same bytes twice is the same
+    -- event -- and keeps the tests exercising the same UNIQUE the production path uses.
+    event_id    TEXT NOT NULL,
+    signed      BOOLEAN NOT NULL,
+    payload     JSONB NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_inbound_events_event_id UNIQUE (event_id)
+);
+```
+
+`event_id = request.headers["svix-id"]` when signed, else `f"sha256:{hashlib.sha256(raw_body).hexdigest()}"`. The signature is already verified *before* this point (`webhook.py:70-85`), so the header is trusted. Fixture tests that want a fresh run already vary the `message_id`, which varies the body, which varies the hash — **semantics preserved, zero test churn.**
+
+### Layer 1 — message dedup, one layer deeper: `email_messages.message_id UNIQUE` — **UNCHANGED**
+
+`uq_message_id` (`app/db/schema.sql:260`) and `insert_inbound_email`'s `ON CONFLICT (message_id) DO NOTHING RETURNING id` (`app/db/repo/runs.py:82-105`) **stay exactly as they are.** They simply now execute inside the ingest *worker* instead of the webhook.
+
+### Why both layers are required — the crisp argument
+
+They are **not** redundant, and the reason is the *retry of the ingest job itself*:
+
+> A worker crashes **after** the Resend fetch but **before** the ingest transaction commits. The job retries. It carries the **same `event_id`** — Layer 0 cannot help, and must not: the event was legitimately accepted and the work is legitimately still owed. The retry re-fetches, re-derives the same RFC `Message-ID`, and re-enters the ingest transaction — where **Layer 1's `message_id` UNIQUE is the only thing that stops a second run from being created.**
+>
+> **Layer 0 dedups the DELIVERY. Layer 1 dedups the MESSAGE. The ingest job's own retry is precisely the case that needs both.**
+
+### The move, not the rewrite
+
+The **entire five-outcome ingest-decision transaction** (`app/routes/webhook.py:139-220` — duplicate / reply_candidate / late_reply / unknown_sender / new_run) **moves verbatim into `app/queue/handlers/ingest.py`**, with `gateway.parse_inbound` in front of it.
+
+That block **is** DATA-02. It survived Phase 9's atomicity surgery and is one of the three surfaces in Phase 10's real-Postgres concurrency proof. Its correctness argument is 80 lines of comments earned across two adversarial reviews. **Move it wholesale — `git mv`, function-for-function. Do not rewrite it.** Rewriting re-opens evidence that was expensively earned. (The AST-diff discipline v3's Phase 13 used for the god-file splits is the right proof technique here.)
+
+The post-commit response-shaping block (`webhook.py:224-314`) does **not** move — it *dissolves*. The redelivery reschedule (`webhook.py:241-270`) becomes `enqueue_job(kind=RESUME_REPLY, dedup_key=f"resume_reply:{run_id}:{email_id}")` inside the ingest transaction. `finish_reply_resume` (`pipeline_glue.py:80-131`) keeps its sender revalidation (**`reply_sender_ok`, `pipeline_glue.py:55-77` — the spoof guard, which MUST survive intact and MUST be re-asserted in the `resume_reply` handler exactly as it is today at `webhook.py:257` and `runs.py:472`**) and loses its `BackgroundTasks` parameter.
+
+### A free win nobody named
+
+Once the fetch is in the worker, **the webhook's request payload is bounded by construction** — Resend's inbound webhook envelope is *metadata only* (`email_id`, `from`, `to`, `subject`). A 20 MB email attachment never touches the request path at all.
+
+Combine with an explicit cap on `await request.body()` (`webhook.py:57`, currently **unbounded** — `demo.py`'s 4000-char cap does **not** protect the real webhook): **`MAX_WEBHOOK_BODY_BYTES = 256 * 1024`, reject with 413.** Without the cap, a durable raw inbox will happily persist an oversized body and then retry it forever.
+
+---
+
+## 7. Build order — and the design's "cannot be split" claim is **false**
+
+### The refutation
+
+> *Design doc, Phase A:* "The original plan split 'unblock the front door' and 'add a queue' into two phases. **It cannot be split**: 'persist raw → enqueue' requires the queue to exist. Merged."
+
+**This conflates *one implementation* of unblocking with unblocking itself.** Unblocking the front door means: *no synchronous Resend HTTP call and no multi-query psycopg transaction on the event loop.* You can achieve that **today, with zero new schema, in one line**:
+
+```python
+# app/routes/webhook.py :: inbound  — Phase 1, no queue required
+raw_body = await request.body()                            # genuinely async — fine on the loop
+gateway.verify(raw_body, dict(request.headers), secret)    # pure-CPU HMAC — fine on the loop
+result = await run_in_threadpool(_ingest_sync, raw_body)   # ◄── EVERYTHING blocking, off the loop
+```
+
+`starlette.concurrency.run_in_threadpool` is the exact primitive Starlette uses for sync endpoints — **the same mechanism `pipeline_glue`'s sync `def` wrappers already exploit on purpose** (their docstrings say so). The Resend fetch and the psycopg transaction now run off the loop. **Head-of-line blocking is gone. Independently shippable. Independently testable** (fire 2 concurrent webhooks against a stubbed slow `parse_inbound`; assert wall-clock ≈ max, not sum).
+
+What it does *not* fix: a Resend outage still 502s the webhook and still triggers redelivery. **But that is a different defect (availability) from the one Finding 2 names (event-loop blocking).** Conflating them is what produced the false "cannot be split."
+
+**Why the split matters practically:** it lets the riskiest change in the milestone — new schema + worker threads + leases + a connection-budget change — land on a webhook that is **already known-good under concurrent load**, instead of changing both at once.
+
+### ⚠️ The design's phase ordering ships a regression window
+
+The design orders **A** (full webhook cutover to the queue) → **B** (the pump) → **C** (retry policy + the result contract). Between the end of A and the end of C, the system is **strictly less durable than it is today**:
+
+- The webhook now hands work to a queue, but **there is no pump** — a job with a future `available_at` never fires. (The design's own §"load-bearing constraint" calls this *"a worse lie than the current design."*)
+- The orchestrator still **swallows stage failures into `ERROR` and returns normally** (`orchestrator.py:235-247`, `850-859`) — so **the worker records success on a failed payroll**, and there is no retry policy to catch it.
+- Meanwhile Phase A says *"Keep the dashboard sweep until the queue is proven"* — so `sweep_stranded_runs` (15-min threshold) is now **racing** the queue's lease reclaim (also ~15 min) **on the same run.**
+
+**The pump and the failure policy must precede the webhook cutover.** That is a correctness ordering, not a preference.
+
+### ⚠️ Keeping `sweep_stranded_runs` alongside the queue IS the two-sources-of-truth hazard, literally
+
+Two independent recovery mechanisms, both firing at ~15 minutes, both authorized to write `payroll_runs.status`, on the same run:
+
+> The sweep flips a stale `extracting` run to **ERROR** (`repo.sweep_stranded_runs`, `app/db/repo/runs.py:394-450` — the *sanctioned third status writer*). Simultaneously the queue reclaims the expired lease and re-runs the handler, whose CAS now fails against `error` → no-op → job `done`. **The run sits in ERROR awaiting a human retrigger — and the milestone's headline claim ("recovers automatically within minutes, without a human noticing") is defeated by the very mechanism that was supposed to be a safety net.**
+
+**The sweep is not "retired later." It is REPLACED — in the same phase the failure policy lands.** The sweep only *guesses* a worker died, from `updated_at`. The queue **knows**: expired lease → reclaim → attempts exhausted → `dead` → `record_run_error(run_id, "JobDeadLettered")`, **atomically, in the failure transaction** (§4). A strictly better answer to the identical question. That lets you **delete**:
+
+- `repo.sweep_stranded_runs` (`app/db/repo/runs.py:394-450`) + `_STRANDED_SCOPE_STATUSES` + its scope-pin test
+- `repo.find_stranded_unconsumed_replies` (`app/db/repo/emails.py:306`)
+- **the entire sweep block in `runs_list()` (`app/routes/runs.py:463-486`)** — the dashboard-page-load-as-cron hack, the ugliest thing in the current architecture
+- the redelivery-reschedule branch (`webhook.py:241-270`) — subsumed by `resume_reply`'s `dedup_key`
+
+**A net deletion of the recovery machinery, replaced by one mechanism that is actually correct.** For a portfolio project read by hiring managers, *"the queue let me delete the three recovery hacks"* is a far stronger story than *"the queue was added alongside them."*
+
+### The phase sequence — 7 steps, each independently shippable
+
+| # | Phase | NEW | MODIFIED | **Shippable claim (provable at this step)** |
+|---|---|---|---|---|
+| **1** | **Unblock the loop** *(no schema)* | — | `webhook.py:inbound` → `run_in_threadpool`; `MAX_WEBHOOK_BODY_BYTES` cap on `webhook.py:57`; `config.py` | *"The webhook no longer blocks the event loop; a slow Resend fetch delays only its own request."* **Refutes the design's "cannot be split."** |
+| **2** | **Queue substrate + ONE producer** | `schema.sql` → `jobs`; `app/models/job.py` (`JobKind`/`JobState`/`JobResult`); `app/db/repo/jobs.py`; `app/queue/{worker,dispatch}.py`; `lifespan` in `main.py` | `runs.py:retrigger` (the **only** producer cut over); pool-budget assertion | *"A retrigger survives a redeploy."* Kill the process mid-run, restart, assert completion. **Learn leases / pool / lifecycle on the cheapest, most observable surface — not on the money path.** BackgroundTasks stays for everything else; the two systems coexist for exactly one phase, safely, because each producer uses exactly one mechanism. |
+| **3** | **The pump** | `app/routes/internal.py` (`POST /internal/pump`, `hmac.compare_digest`); `.github/workflows/pump.yml` | **delete `keepalive.yml`** (subsumed) | *"A job scheduled with a future `available_at` fires with no human present."* **MUST precede the webhook cutover** — after cutover, a lost job is a lost payroll. |
+| **4** | **Failure policy + the CAS + the sweep deletion** | `JobResult` classification: `APITimeoutError`/`APIConnectionError`/`RateLimitError`/`psycopg.OperationalError` → **retryable**; `ValidationError`, the `orchestrator.py:1073` integrity raise, a gate decision → **terminal**; **unknown → terminal (fail closed)** | `run_pipeline`/`_run`/`resume_pipeline` **return** `JobResult` instead of `None`; `run_pipeline` gains the rewind preamble + CAS (delete `orchestrator.py:232`); `retrigger` stops pre-claiming; **DELETE `sweep_stranded_runs` + `find_stranded_unconsumed_replies` + `runs_list()`'s sweep block** | *"A transient LLM outage retries and recovers; a poison job dead-letters into a visible ERROR; the dashboard is no longer load-bearing for recovery."* **MUST precede the webhook cutover** — otherwise a DeepSeek 503 on a real payroll email is a permanent ERROR with no retry. |
+| **5** | **Webhook cutover + raw inbox + re-keying** | `schema.sql` → `inbound_events`; `app/queue/handlers/ingest.py` (**the verbatim-moved DATA-02 transaction**); `payroll_runs.operator_overrides JSONB` | `webhook.py:inbound` → verify → threadpool(persist raw + enqueue) → 200; migrate remaining producers (`runs.py:262`, `demo.py:205`, `demo.py:313`, `runs.py:simulate_reply`); `pipeline_glue` wrappers become handlers | *"No accepted email is ever lost — the raw signed event is durable before we do anything with it, and the body fetch is a retryable job, not a 502."* |
+| **6** | **Exactly-once send** | `email_messages.provider_message_id TEXT`; `repo.get_reserved_message_id(run_id, purpose, round, epoch)` | `gateway.send_outbound` (`app/email/gateway.py:271-289`): **reuse** the reserved `message_id` on retry (never mint a fresh `uuid4`) + pass it as `resend.Emails.SendOptions(idempotency_key=...)`; persist `provider_message_id` | *"A crash between Resend accepting the mail and the `sent` commit sends no second email."* **VERIFIED against the installed SDK:** `resend==2.32.2` ships `Emails.SendOptions.idempotency_key` (`resend/emails/_emails.py:187-202`), emitted as the `Idempotency-Key` header (`resend/request.py:65-66`). The design's key insight is confirmed. Independent of Phase 5 — could land in parallel. |
+| **7** | **Proofs + ops view** | `tests/test_queue_durability.py` (the 4 proofs); `GET /internal/queue`; `POST /internal/jobs/{id}/retry` | `concurrency-proof.yml` | The 4 proofs. **⚠️ 3 of the 4 need a real Postgres, and `concurrency-proof.yml` is the ONLY workflow that has one — and it hard-codes a single test file.** Generalize it, or the proofs never run in CI. Consider pulling that generalization forward into Phase 2. |
+
+**Forced dependency order (not preference):** 2 → 3 → 4 → 5. The pump and the failure policy are **prerequisites** of the cutover, not follow-ups. Phase 1 is independent of everything. Phase 6 is independent of 5. Phase 7 is last by definition.
+
+---
+
+## What the approved design got wrong
+
+Ordered by severity. Every item traced against live source.
+
+| # | Severity | Finding |
+|---|---|---|
+| **1** | 🔴 **CRITICAL** | **The claim SQL cannot reclaim an expired lease.** `design.md:150-153` reads `WHERE state = 'pending' AND available_at <= now()`. A job whose worker died holding the lease stays `state='leased'` **forever**. **The design's own Phase D proof #4 would fail against the design's own SQL.** Fix: add `OR (state='leased' AND leased_until < now())`. See §4. |
+| **2** | 🔴 **CRITICAL** | **The phase ordering ships a window in which the system is *less* durable than today.** A (webhook→queue) lands before B (the pump) and C (retry + the result contract). Between them: no drain for future-dated jobs; the orchestrator still swallows failures and returns normally, so **the worker records success on a failed payroll**; and the sweep is being *kept*, racing the queue. **Pump and failure policy must precede the cutover.** See §7. |
+| **3** | 🟠 **HIGH** | **"Unblock the front door is not independently shippable" is false.** `await run_in_threadpool(...)` around the existing body unblocks the loop with **zero new schema**, using the exact mechanism `pipeline_glue` already relies on. The doc conflated *event-loop blocking* (Finding 2) with *fetch-in-the-request-path* (an availability concern). Separating them de-risks the entire milestone. |
+| **4** | 🟠 **HIGH** | **Keeping `sweep_stranded_runs` alongside the queue is the two-sources-of-truth hazard in literal form** — two status writers, both firing at ~15 min, on the same run, with the sweep winning by flipping to ERROR just as the queue reclaims. The sweep must be **replaced by the dead-letter transition**, not "retired once the queue is proven." Also a net code deletion (3 recovery hacks removed). |
+| **5** | 🟠 **HIGH** | **The 4th producer is missing.** The doc names 3 kinds. `operator_resume_bg(run_id, overrides: dict)` (`runs.py:262`) carries a **dict of business data** with nowhere to live — needs a 4th kind + `payroll_runs.operator_overrides JSONB`. And `resume_pipeline_bg(run_id, inbound: InboundEmail)` carries an **object** — it must become an `email_id` FK (which `pipeline_glue.row_to_inbound` already knows how to rehydrate). |
+| **6** | 🟡 **MEDIUM** | **`lease_token` fencing does not protect the business writes** — only the `jobs` row. The doc's rule 2 implies more safety than it delivers. The real guarantee comes from `claim_status` + `uq_email_run_purpose_round_epoch` + `replace_line_items`' delete-then-insert. State it precisely, or the milestone repeats the "eval chart was lying" mistake it already had to correct once. See §4 crux. |
+| **7** | 🟡 **MEDIUM** | **A 10-min pump collides with Render's 750 free instance-hours/month.** It keeps the service permanently awake (~720–744 h/mo vs a 750 h cap — six hours of margin, and only if it is the sole free service in the workspace). Unflagged anywhere. Must become a documented deploy constraint. |
+| **8** | 🟡 **MEDIUM** | **No graceful lease release on shutdown.** A Render redeploy — routine, several times a day — strands every in-flight job for `lease + pump interval` ≈ 25 min. One `UPDATE … SET state='pending'` in the lifespan teardown fixes it. |
+| **9** | 🟢 **LOW** | **`inbound_events` retention has no executor.** The doc calls for "a byte cap and a retention policy" but names nobody to run it. **The pump is the only recurring execution context in the system.** It owns retention. |
+
+### What the design got RIGHT (and must survive into the roadmap)
+
+- **`jobs` is transport-only; `payroll_runs.status` stays the sole business state machine.** Correct, and it is the milestone's thesis. It just needed teeth (INVARIANT J-1).
+- **`business_id` must be nullable** — sender→business routing (`webhook.py:195-220`) happens *after* the fetch, so the tenant key does not exist at ingress. Exactly right.
+- **The pump is not optional.** *"Durable storage is not durable execution"* is the sharpest sentence in the document, and it is true.
+- **The reserved `message_id` is already a durable pre-send idempotency key** (`gateway.py:271-289` mints it and writes a `reserved` row *before* calling Resend — then discards it). **Verified: `resend==2.32.2` accepts it.** This is the best insight in the design.
+- **"Never mint a fresh `uuid4` on retry"** — the subtle one, correctly identified. A fresh synthetic id becomes a fresh idempotency key, which defeats the provider check entirely and sends the second payroll email.
+- **Infrastructure failures stay in `error`, not `needs_operator`.** Confirmed against source: `/resolve` genuinely requires `decision.unresolved_names` (`runs.py:208-213`) and would 303-noop on a run whose extraction timed out — an unserviceable state. Correct call.
+- **No session-level advisory locks, no `LISTEN/NOTIFY`.** Correct, and `app/db/supabase.py:1-18` already documents why session state is fatal under Supavisor transaction-mode.
+- **Five connections is the ceiling, not forty threads.** The most under-appreciated constraint in the whole design.
+- **Throughput machinery is out of scope.** At ~1 email/client/week, fairness lanes and backpressure would be machinery for load that never arrives. `priority` and `business_id` on the row keep each a future `ORDER BY` change rather than a migration. Right call, right reason.
+
+---
+
+## Integration points — complete NEW vs MODIFIED inventory
+
+### NEW
+
+| Path | Purpose |
+|---|---|
+| `app/db/schema.sql` → `jobs` | Transport state. 4-value `kind` CHECK, 4-value `state` CHECK, `uq_jobs_dedup_key`, `ck_jobs_lease_coherent`, `idx_jobs_claimable` partial index. |
+| `app/db/schema.sql` → `inbound_events` | The durable raw inbox. `uq_inbound_events_event_id`. |
+| `app/db/schema.sql` → `payroll_runs.operator_overrides JSONB` | The `operator_resume` payload — kept OUT of the job row. |
+| `app/db/schema.sql` → `email_messages.provider_message_id TEXT` | Durable send evidence (today only logged, `gateway.py:347-353`). |
+| `app/models/job.py` | `JobKind` / `JobState` / `Job` / `JobResult`. Canonical Python enums mirrored into SQL CHECKs and pinned by a drift test — **the exact pattern `app/models/status.py` establishes.** |
+| `app/db/repo/jobs.py` | `enqueue_job` / `claim_job` / `complete_job` / `fail_job` / `release_lease` / `queue_stats` / `retry_dead_job`. A new aggregate in the existing per-aggregate repo package, exported through the `app/db/repo/__init__.py` facade. Every function takes `conn=` and runs through `_shared._conn_ctx`. |
+| `app/queue/worker.py` | Thread pool + claim loop + lifecycle (`start` / `stop` with lease release). |
+| `app/queue/dispatch.py` | The `kind → handler` table. **The only place a kind maps to a function.** |
+| `app/queue/handlers/ingest.py` | `gateway.parse_inbound` + **the verbatim-moved** `webhook.py:139-220` ingest transaction. |
+| `app/queue/handlers/pipeline.py` | The rewind preamble + CAS + orchestrator dispatch for the 3 run-scoped kinds. |
+| `app/routes/internal.py` | `POST /internal/pump`, `GET /internal/queue` (ops view), `POST /internal/jobs/{id}/retry`. |
+| `.github/workflows/pump.yml` | `*/10` cron + `workflow_dispatch`. **Absorbs and replaces `keepalive.yml`.** |
+
+### MODIFIED
+
+| File:function | Change |
+|---|---|
+| `app/main.py` | Add `lifespan=` (**currently none** — the file is 16 lines). Start/stop workers; assert the connection budget. |
+| `app/routes/webhook.py:inbound` | Phase 1: `run_in_threadpool` hop + body cap on line 57. Phase 5: verify → persist `inbound_events` + `enqueue(ingest)` → 200. **Lines 139-220 MOVE OUT verbatim.** |
+| `app/routes/pipeline_glue.py` | `run_pipeline_bg` / `resume_pipeline_bg` / `operator_resume_bg` become job handlers. `finish_reply_resume` / `route_reply` drop their `BackgroundTasks` param. **`reply_sender_ok` (the spoof guard, lines 55-77) survives untouched** and must be re-asserted in the `resume_reply` handler exactly as today. |
+| `app/pipeline/orchestrator.py:195-247` (`run_pipeline` / `_run`) | Delete the unconditional `set_status(EXTRACTING)` (line 232). Return `JobResult`. Classify the except block (line 235) into retryable/terminal instead of always writing ERROR. |
+| `app/pipeline/orchestrator.py:250-859` (`resume_pipeline`) | Return `JobResult`. Classify the except block (line 850). **Its existing CAS (line 305) already obeys J-1 — do not touch it.** |
+| `app/routes/runs.py:266-381` (`retrigger`) | CAS + `clear_reply_context` + `enqueue_job` in **one transaction**. **Stop pre-claiming `RECEIVED → EXTRACTING`** (lines 352-356) or the handler's CAS always loses. |
+| `app/routes/runs.py:159-263` (`resolve`) | Persist `operator_overrides` + `enqueue_job` in one transaction. (It already correctly declines to pre-claim — that pattern is now the rule.) |
+| `app/routes/runs.py:444-503` (`runs_list`) | **DELETE the sweep block (lines 463-486).** |
+| `app/routes/runs.py:684-809` (`simulate_reply`) | Enqueue `resume_reply` instead of `add_task`. |
+| `app/routes/demo.py:205, 313` | Enqueue `run_pipeline` in the same transaction as `create_run`. |
+| `app/email/gateway.py:209-359` (`send_outbound`) | Reuse an existing `reserved` row's `message_id` on retry; pass `options={"idempotency_key": message_id}` to `resend.Emails.send`; persist `provider_message_id`. |
+| `app/db/repo/runs.py:394-450` | **DELETE `sweep_stranded_runs`** + `_STRANDED_SCOPE_STATUSES`. |
+| `app/db/repo/emails.py:306` | **DELETE `find_stranded_unconsumed_replies`.** |
+| `app/db/repo/runs.py` (`clear_reply_context`) | Return the new `reply_epoch` (needed for the `dedup_key`). |
+| `app/config.py` | `queue_workers=2`, `queue_lease_seconds=900`, `queue_max_attempts=5`, `pump_secret`, `max_webhook_body_bytes=262144`. |
+| `.github/workflows/concurrency-proof.yml` | Generalize — it is **the only workflow with a real Postgres** and it hard-codes one test file. 3 of the 4 durability proofs need a DB. |
+
+---
+
+## Data-flow changes
+
+**Today**
+```
+Resend ──POST──► inbound()  [async def — ON THE EVENT LOOP]
+                    │
+                    ├─ verify (HMAC, cheap)
+                    ├─ parse_inbound ──► SYNC HTTP to the Resend API   ◄── BLOCKS THE LOOP
+                    ├─ clean_body
+                    ├─ ingest transaction (multi-query psycopg)         ◄── BLOCKS THE LOOP
+                    └─ background_tasks.add_task(run_pipeline_bg)       ◄── IN PROCESS MEMORY.
+                       └─► 200                                              Dies on redeploy /
+                                                                            spin-down. Recovered
+                                                                            ONLY by a human loading
+                                                                            /runs.
+```
+
+**After**
+```
+Resend ──POST──► inbound()  [async def]
+                    ├─ verify (HMAC, cheap — stays on the loop)
+                    └─ run_in_threadpool:
+                         ┌── ONE TRANSACTION ───────────────────────────┐
+                         │  INSERT inbound_events                       │  atomic:
+                         │    ON CONFLICT (event_id) DO NOTHING         │  no lost job,
+                         │  if inserted:                                │  no phantom job
+                         │    INSERT jobs (kind='ingest')               │
+                         │      ON CONFLICT (dedup_key) DO NOTHING      │
+                         └──────────────────────────────────────────────┘
+                    └─► 200   (bounded, ~5 ms, no third-party call, no LLM)
+
+worker thread (×2, lifespan-owned)   ──or──   POST /internal/pump (cron, */10)
+    │
+    ├─ claim_job()  ── ONE STATEMENT, COMMITS IMMEDIATELY. FOR UPDATE SKIP LOCKED.
+    │                  Reclaims expired leases. Releases the connection before any work.
+    │
+    ├─ dispatch[kind](job):
+    │     ingest          → parse_inbound (the Resend fetch — RETRYABLE now, not a 502)
+    │                       → the moved DATA-02 transaction (message_id UNIQUE = layer 1)
+    │                       → enqueue(run_pipeline | resume_reply)   ◄── SAME TRANSACTION
+    │     run_pipeline    → [rewind if attempts>1] → claim_status(received→extracting)
+    │                       → orchestrator.run_pipeline → JobResult
+    │     resume_reply    → reply_sender_ok (the spoof guard) → resume_pipeline(AWAITING_REPLY)
+    │     operator_resume → resume_pipeline(NEEDS_OPERATOR, overrides read from payroll_runs)
+    │
+    └─ complete_job(id, lease_token)   ◄── FENCED. A zombie's write is rejected.
+       or fail_job(...) → backoff+jitter → 'pending', or → 'dead'
+                                             └─► record_run_error(run_id, "JobDeadLettered")
+                                                 ATOMIC with the dead transition.
+                                                 ◄── this REPLACES sweep_stranded_runs.
+```
+
+---
+
+## Anti-patterns — specific to this integration
+
+### AP-1: Putting the next payroll status in the job row
+**What people do:** `jobs.next_status = 'extracting'`, or `jobs.payload = {"from": "awaiting_reply"}`.
+**Why it's wrong:** two rows now answer "what happens next," and they *will* diverge — a retried job replays a transition the run has already moved past.
+**Instead:** the `kind` implies the entry status **statically, in code**. Keep `resume_reply` and `operator_resume` as **separate kinds** precisely so `from_status` never needs a column.
+
+### AP-2: Holding the claim transaction across the work
+**What people do:** `BEGIN; SELECT … FOR UPDATE; <run the pipeline>; COMMIT;` — the "obvious" way to guarantee exclusivity.
+**Why it's wrong:** it pins one of **five** pooled connections for up to 3.5 minutes (the derived worst case at `runs.py:34-68`), and **transaction-mode pooling on port 6543 hands your next statement to a different backend anyway.** Two workers doing this consume 40% of the pool while doing nothing.
+**Instead:** claim → **commit** → work → **fenced** completion. The lease *replaces* the held lock. (The codebase already knows this: `orchestrator.py:1015-1018` explicitly forbids spanning a transaction across an LLM call.)
+
+### AP-3: Treating `jobs.state='done'` as a business fact
+**What people do:** an ops page that reports "12 payrolls processed" by counting `done` jobs.
+**Why it's wrong:** a job whose CAS failed is *correctly* `done` and processed nothing. Under J-1 that is not a bug — it is the design. Reading it as a business fact re-couples the two state machines through the **reporting** layer, which is where this class of bug loves to hide.
+**Instead:** every business number comes from `payroll_runs`. The queue's ops view reports queue metrics only (depth, oldest-pending age, attempts, dead list).
+
+### AP-4: Running two recovery mechanisms "until the new one is proven"
+**What people do:** exactly what the design says — keep `sweep_stranded_runs` alongside the queue.
+**Why it's wrong:** both write `payroll_runs.status`, both fire at ~15 minutes, and the sweep wins the race by flipping the run to ERROR just as the queue reclaims the lease — **defeating the milestone's headline claim with its own safety net.**
+**Instead:** the dead-letter transition **replaces** the sweep, atomically and with better information (it *knows* the worker died; the sweep only guesses from `updated_at`). Delete the sweep in the same phase.
+
+### AP-5: An in-process timer to drain the queue
+**What people do:** `asyncio.create_task(drain_forever())` in the lifespan.
+**Why it's wrong:** Render free wakes **only on inbound HTTP**. The timer sleeps with the dyno. A job retried with a future `available_at` sits forever. You have shipped durable *storage* and called it durable *execution*.
+**Instead:** the external pump. The in-process workers are the **fast path** (they drain immediately while the service happens to be awake); the pump is the **guarantee**.
+
+### AP-6: Rewriting the ingest transaction instead of moving it
+**What people do:** "while we're in here," re-derive the 5-outcome classification in the new handler.
+**Why it's wrong:** `webhook.py:139-220` **is** DATA-02. It survived Phase 9's atomicity surgery and is one of the three surfaces in Phase 10's real-Postgres concurrency proof. Its correctness argument is 80 lines of comments earned across two adversarial reviews.
+**Instead:** **move it function-for-function** and prove the move behavior-neutral against the existing tests (the same AST-diff discipline v3's Phase 13 used for the god-file splits). Then change nothing else.
+
+---
+
+## Scaling considerations *(honest — this milestone is explicitly not about throughput)*
+
+| Load | What actually happens | Adjustment |
+|---|---|---|
+| **Real load (~1 email/client/week)** | The queue is empty ~100% of the time. Every job is claimed within milliseconds by an already-running worker. The pump never finds anything. | **None. This is the design point.** |
+| **Burst (a demo click-storm; ~10 concurrent)** | 2 workers × ~2 min/run ≈ 10 min to drain. The dashboard stays responsive (the loop is unblocked; the workers don't touch the AnyIO pool). | None. Raise `QUEUE_WORKERS` to 3 *only if* the pool assertion still passes. |
+| **The first thing that actually breaks** | **The 5-connection pool** — not the threadpool, not the queue. `ConnectionPool(timeout=5)` starts raising `PoolTimeout`. | Raise `max_size` (Supavisor transaction-mode tolerates it far better than a direct connection would) **before** touching worker count. |
+| **The second thing** | Supabase free-tier storage — `inbound_events.payload` JSONB is retained forever without the pump's retention sweep. | The 30-day retention DELETE. Already in the design (it just needed an executor). |
+| **Genuine multi-tenant scale** | `ORDER BY priority, available_at` becomes `ORDER BY priority, <per-business round-robin>, available_at`. | **Already a one-line `ORDER BY` change, not a migration** — `business_id` and `priority` are on the row from day one. The design's best deferred decision. |
+
+---
+
+## 8. Open questions for the roadmapper
+
+1. **`operator_resume`'s `dedup_key` needs a discriminator.** An operator may legitimately re-resolve with a *different* mapping without an epoch bump, and `ON CONFLICT DO NOTHING` would swallow the second resolve. Bump `reply_epoch` on resolve too? Or add an explicit `resolve_seq` column? **Decide before Phase 5.**
+2. **Pump cadence: 10 min (at the 750 h cap, always-on, no cold starts) vs 20 min (huge margin, ~20-min worst-case recovery).** A *product* decision about how literally "within minutes" is meant. Recommend 10 min + document *"exactly one free web service in this workspace"* as a hard constraint.
+3. **`concurrency-proof.yml` is the only CI workflow with a real Postgres, and it hard-codes one file.** 3 of the 4 durability proofs need a DB. Generalizing it is a prerequisite for Phase 7 — and probably deserves to be pulled forward into Phase 2 so the queue's tests run in CI from the start.
+4. **Should `jobs` cascade-delete from `payroll_runs`?** A cascade silently vaporizes a run's attempt history. Runs are never deleted today, so this is theoretical — but `email_messages` is deliberately append-only, and `jobs` arguably should be too.
 
 ---
 
 ## Sources
 
-- `payroll-agent-build-plan.md` — full data model, 9-stage table, email/threading section, repo structure, build phases (project-internal, authoritative for the locked design).
-- `.planning/PROJECT.md` — decisioning model, constraints, key decisions (project-internal, authoritative).
-- FastAPI `BackgroundTasks` — runs after the response is returned; integrates with DI. Verified via Context7 (`/fastapi/fastapi`). Confirms the "return 200 fast, run pipeline after" pattern that the Render cold-start constraint requires. HIGH.
-- OpenAI Python client — `base_url` swap for OpenAI-compatible providers + `response_format={"type":"json_object"}`. Verified via Context7 (`/openai/openai-python`). Confirms the single-client per-task-tier routing design. HIGH.
-- Supabase Python client (`/supabase/supabase-py`) — Postgres accessors for the state-as-table model. Verified available; HIGH that the pattern is supported.
+- **Live source, read at `9975a86`** (every line reference above): `app/routes/{webhook,pipeline_glue,runs,demo,health}.py`, `app/pipeline/{orchestrator,delivery}.py`, `app/email/gateway.py`, `app/db/supabase.py`, `app/db/schema.sql`, `app/db/repo/{_shared,runs,emails}.py`, `app/models/status.py`, `app/main.py`, `app/config.py`, `.github/workflows/keepalive.yml`, `pyproject.toml`. **HIGH — traced, not inferred.**
+- **`resend==2.32.2`, installed in `.venv`** — `resend/emails/_emails.py:187-202` (`Emails.SendOptions.idempotency_key`) and `resend/request.py:65-66` (emitted as the `Idempotency-Key` header). **Verified by direct inspection. HIGH.**
+- `docs/superpowers/specs/2026-07-13-durable-execution-design.md` (`3ed7db9`) — the approved design under validation.
+- `.planning/PROJECT.md` — v4 milestone scope, constraints, and the Render/Supavisor facts.
+- **Postgres `SELECT … FOR UPDATE SKIP LOCKED` queue pattern** — the subquery-targeted `UPDATE` is the standard correct form; `FOR UPDATE` on the outer `UPDATE` does not skip locked rows. **HIGH.**
+- **Supavisor transaction-mode constraints** — no session state, no `LISTEN/NOTIFY`, no session advisory locks. Already documented and defended in `app/db/supabase.py:1-18` (the `prepare_threshold=None` rationale). **HIGH.**
+- **Render free tier** — no worker service type, 15-min idle spin-down, inbound-HTTP-only wake, ephemeral FS, 750 instance-hours/month. Per `.planning/PROJECT.md` Context + the v1 STACK research. **MEDIUM on the 750 h figure — re-confirm against current Render docs before committing to the 10-min pump cadence.**
 
 ---
-*Architecture research for: LLM email-to-payroll pipeline with Postgres state machine + single HITL gate*
-*Researched: 2026-06-20*
+*Architecture research for: durable job queue ↔ Postgres status-column state machine integration*
+*Researched: 2026-07-13*
