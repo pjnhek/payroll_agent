@@ -133,6 +133,25 @@ success criterion #2 forbids.
   oldest-pending age, attempts, and the dead-letter list are explicitly **OPS-01 (Phase 21)**;
   building a job-status UI now is scope creep into that phase.
 
+### Scope resolutions (research open questions, resolved 2026-07-14)
+
+- **D-11: The webhook's duplicate/response-shaping branch's blocking DB reads ALSO move off-loop.**
+  Research (`16-RESEARCH.md` § Pitfall 3) found blocking DB I/O in the webhook's response-shaping
+  branches, outside QUEUE-01's literal file:line citation. They move into `run_in_threadpool` too.
+  Rationale: the phase's headline claim is "the event loop is never blocked by the webhook" — leaving
+  a blocking read on the duplicate-delivery path makes criterion #1 true only on the happy path. Same
+  mechanism, near-zero marginal cost, and it closes the hole rather than deferring it to a phase that
+  has no reason to look there.
+
+- **D-12: `jobs` is registered with `/health/schema` in this phase.** Research CONFIRMED by direct read
+  that `app/db/schema_introspect.py` does **not** auto-cover a new table — both the column-diff dict and
+  the CHECK-value drift query hardcode `payroll_runs` / `email_messages`. Criterion #5 is satisfied by
+  the static CI guard alone, so this is strictly additive; it is done anyway because `/health/schema` is
+  the live-DB drift probe, and leaving the newest, most concurrency-critical table uncovered means a
+  `jobs` table that silently fails to apply on Render would go undetected. Also fixes the related gap
+  research found: **`bootstrap.py`'s `_DROP_ORDER` omits `jobs`** (Pitfall 4), which breaks hermetic
+  test isolation on the `ALLOW_DB_RESET` fixture path.
+
 ### Claude's Discretion
 
 - **No `ON DELETE CASCADE` from `payroll_runs` to `jobs`.** Keep the attempt history append-only,
