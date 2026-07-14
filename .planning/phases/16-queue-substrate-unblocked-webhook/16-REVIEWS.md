@@ -227,3 +227,41 @@ exactly what new HIGH #2 makes concrete).
 **Verdict: NOT READY TO EXECUTE.** The contractual round-1 defects are fixed and D-13 materially
 improves money-path safety, but the revision introduced a bricked worker restart and a
 self-interfering proof substrate. Both are in the new code this phase ships.
+
+---
+
+# Cross-AI Plan Review — Phase 16, ROUND 3 (reviewing THE FIX)
+
+Reviewer: Codex CLI, source-grounded. Reviews the round-2 FIXES (commit e7c436f), on the premise —
+borne out by this project's own history — that the round which reviews the fix is the one that finds
+the next bug.
+
+# Part 1 — Round 2 fix verdicts
+
+| Finding | Verdict | Evidence | Why |
+|---|---|---|---|
+| D-15: stop event never reset | CLOSED | `16-07-PLAN.md:154-175`, `:202-217`, `:324-335` | Each generation receives a fresh event; `stop()` never clears it; restart tests require an actual drain, not liveness. The original stale-event defect is genuinely addressed. |
+| D-16: queueproof tests share jobs | PARTIAL | `tests/conftest.py:57-73`; `16-04-PLAN.md:502-543`, `:596-602` | The function-scoped autouse fixture deletes before and after tests, and assertions are ID-scoped. Normal cross-test contamination is closed. However, teardown can still delete rows from a live worker if a test exits early or leaves a blocked thread alive. |
+| D-17: nullable `run_pipeline.run_id` | CLOSED | `16-03-PLAN.md:217-239`; `16-04-PLAN.md:264-269`, `:572-580` | The database CHECK rejects raw SQL inserts, while `enqueue_job` raises before issuing SQL. The two falsifying tests independently prove both mechanisms. The CHECK is correctly kind-scoped for Phase 19. |
+| D-18: bypassable AST guard | PARTIAL | `16-06-PLAN.md:432-468`, `:499-518` | The listed aliasing, `getattr`, direct-function-import, and dynamic-import mutations are genuinely rejected. But the resolver only specifies names directly bound to the repo module. `import app.db as db; db.repo.set_status(...)` or `from app import db; db.repo.set_status(...)` can evade the described pass. |
+| Queueproof mutation rationale | CLOSED | `16-02-PLAN.md:156-175`; `:35-39` | The revised rationale correctly states pytest’s exit-5 behavior, the value of the log guard after `|| true`/lost `pipefail`, and the remaining single-test typo gap. The falsifying mutation now actually tests the guard. |
+
+The D-16 fix is real for orderly test completion, but its destructive teardown is not safe against abnormal test exit or an unjoined worker. The D-18 fix closes the named round-2 bypasses, but not every statically resolvable route to the repo facade.
+
+# Part 2 — New findings introduced by the fixes
+
+- **HIGH — D-16 teardown can delete rows from a live worker.** The fixture explicitly performs `DELETE FROM jobs` after every test (`16-04-PLAN.md:514-530`), while worker tests deliberately run real threads and can block inside a handler (`16-07-PLAN.md:306-322`; `16-07-PLAN.md:199-217`). If a test assertion or timeout occurs before it releases and joins the worker, fixture teardown deletes its leased row. The worker then continues against a missing job, and the test may report misleading fencing or completion behavior. Teardown needs a worker-quiescence assertion or the live worker proofs need fixture coordination.
+
+- **MEDIUM — D-15 does not specify lifecycle-operation serialization strongly enough.** The plan says module state is lock-guarded (`16-07-PLAN.md:134-135`) but does not require `start()` and `stop()` to serialize their complete operations. If two `stop()` calls interleave around joining and partitioning (`16-07-PLAN.md:199-217`), one can overwrite `_threads`, `_orphans`, or `_stop` based on stale snapshots. A concurrent `start()` can also observe transitional state and race lifecycle cleanup. Require one lifecycle lock covering the state transition and explicitly define concurrent `stop()` behavior.
+
+- **MEDIUM — D-18 still has an import-graph bypass.** The specified resolver handles `from app.db import repo`, aliases, and `import app.db.repo as r` (`16-06-PLAN.md:432-435`), but not `import app.db as db; db.repo.set_status(...)` or `from app import db; db.repo.set_status(...)`. Such calls do not use a collected repo-bound name, so the status-write scan can remain green. The guard should either resolve nested module paths rooted at any first-party import or reject unresolved first-party module attribute chains.
+
+- **LOW — The generation fence is effectively unreachable through the public lifecycle.** `start()` refuses while old threads or orphans remain (`16-07-PLAN.md:161-169`), and only then increments `_generation` (`:173-177`). Therefore an old generation cannot normally coexist with a new generation; the `gen != _generation` check (`:183-190`) is useful defense-in-depth but is not independently exercised by the planned tests.
+
+# Part 3 — Verdict
+
+**Overall risk: HIGH — NOT READY TO EXECUTE.**
+
+The D-15 fresh-event fix and D-17 database enforcement are real. The D-16 isolation proof now tests the right mechanism, and the corrected CI mutation is non-vacuous.
+
+Execution should still pause because the live-test cleanup can destroy rows beneath a surviving worker, and the D-18 guard remains bypassable through nested module aliases. The worker lifecycle also needs an explicit serialized start/stop contract to make the claimed race safety executable rather than implied.
