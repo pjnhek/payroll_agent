@@ -14,15 +14,18 @@ from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Any
 
+import psycopg
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.db import repo
 from app.email import gateway
 from app.email.clean import clean_body
+from app.models.job import JobKind
 from app.models.roster import Employee, Roster
 from app.models.status import RunStatus
 from app.pipeline import delivery
+from app.queue import wake
 from app.routes import pipeline_glue
 from app.routes.demo import DEMO_FIXTURES
 from app.routes.templating import badge_class_filter, badge_label_filter, templates
@@ -263,20 +266,82 @@ async def resolve(
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
+def _claim_stale_in_flight(run_id: uuid.UUID, conn: psycopg.Connection) -> bool:
+    """Stale in-flight recovery: claim a RECEIVED/EXTRACTING/COMPUTED/SENT run whose
+    updated_at is genuinely stale. Conn-aware extraction of retrigger()'s inline logic —
+    same scope, same rule, same comments; the ONLY change from the original inline block
+    is that every repo call below threads `conn=conn` into retrigger()'s caller-owned
+    transaction instead of each opening its own.
+
+    Returns False (no-op) if the run is missing, not stale, outside the stale scope, or
+    loses its claim — a failed claim here is a completed retrigger, not a retry.
+    """
+    run = repo.load_run(run_id, conn=conn)
+    if run is None:
+        return False
+    updated_at = run.get("updated_at")
+    stale = (
+        updated_at is not None
+        and datetime.now(tz=UTC) - updated_at > STALE_THRESHOLD
+    )
+    # This scope is FOUR statuses, including SENT — deliberately DIVERGENT
+    # from repo.sweep_stranded_runs's scope (EXACTLY THREE:
+    # received/extracting/computed). Sharing ONE threshold VALUE
+    # (STALE_THRESHOLD_SECONDS) does NOT mean sharing one scope LIST: the two
+    # lists diverge by design and must NOT be converged. A SENT run has already
+    # durably committed the provider-send evidence, so it belongs to retrigger's
+    # operator-initiated re-run path — safe only because delivery's already-sent
+    # idempotency guard suppresses a second confirmation. It does NOT belong to
+    # the sweep, whose scope is "the background task died before persisting
+    # anything durable". Adding SENT to the sweep would auto-re-run runs that
+    # already emailed the client. Do NOT "fix" this into parity.
+    stale_statuses = {
+        RunStatus.RECEIVED.value,
+        RunStatus.EXTRACTING.value,
+        RunStatus.COMPUTED.value,
+        RunStatus.SENT.value,
+    }
+    if not (stale and run["status"] in stale_statuses):
+        return False
+    # The claim target MUST differ from the current status:
+    # RECEIVED→EXTRACTING (never the RECEIVED→RECEIVED no-op), and every
+    # other stale status (EXTRACTING/COMPUTED/SENT)→RECEIVED. This
+    # guarantees the conditional UPDATE actually changes the row, so two
+    # concurrent retrigger clicks cannot both win and run the pipeline twice.
+    # NOTE: COMPUTING is NOT a RunStatus member — the valid post-calc
+    # in-flight state is COMPUTED.
+    target = (
+        RunStatus.EXTRACTING
+        if run["status"] == RunStatus.RECEIVED.value
+        else RunStatus.RECEIVED
+    )
+    claimed = repo.claim_status(run_id, RunStatus(run["status"]), target, conn=conn)
+    if claimed:
+        logger.info(
+            "stale run %s (%s) claimed to %s",
+            run_id,
+            run["status"],
+            target.value,
+        )
+    return claimed
+
+
 @router.post("/runs/{run_id}/retrigger")
-def retrigger(
-    run_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
-) -> RedirectResponse:
+def retrigger(run_id: uuid.UUID) -> RedirectResponse:
     """Retrigger a run from ERROR, APPROVED, or stale in-flight states (INGEST-05).
 
     Retrigger can also claim from stale RECEIVED/EXTRACTING/COMPUTED/SENT states: a
     worker that died mid-run otherwise leaves the run stuck forever with no recovery UI.
+    See `_claim_stale_in_flight` for that branch's full scope/rule.
 
-    Stale guard: in-flight claims require updated_at older than STALE_THRESHOLD (shared
-    with runs_list()'s recovery sweep — see the constant's own comment for the derived
-    worst-case rationale). A freshly-started in-flight run is NEVER force-restarted, or
-    a retrigger click would race the live worker and double-process the run.
+    QUEUE-02: the winning CAS (either the ERROR/APPROVED core claim or the stale
+    in-flight claim), the reply-context clear, and the durable job enqueue ALL commit
+    inside ONE caller-owned transaction below. A crash anywhere in that block means
+    nothing happened at all — no state advanced without a job, and no job without a
+    state advance. `wake.wake()` fires strictly AFTER the block exits and the
+    transaction has committed: firing it any earlier would let the woken worker race
+    ahead of visibility, find nothing to claim, and go back to sleep — degrading
+    Retrigger from instant to the queue's slow poll interval.
 
     KNOWN LIMITATION — reply-context loss on retrigger (accepted, not a bug): a stranded
     run that originally entered via a clarification REPLY (non-empty clarified_fields or
@@ -291,13 +356,6 @@ def retrigger(
     diagnosable) and can re-send the clarification context as a fresh email if the
     retriggered result looks wrong.
 
-    Stale CAS exclusivity: the claim TARGET must differ from the CURRENT status, so the
-    conditional UPDATE genuinely changes the row. A stale RECEIVED run therefore claims
-    to EXTRACTING, not RECEIVED→RECEIVED. All other stale statuses claim to RECEIVED. If
-    the target equalled the current status the UPDATE would be a no-op, two concurrent
-    retrigger clicks would both see the row unchanged, and BOTH would win — running the
-    pipeline twice over the same payroll.
-
     NOTE: COMPUTED is the correct post-calculation in-flight status; there is no
     COMPUTING member in RunStatus.
 
@@ -307,77 +365,41 @@ def retrigger(
     set_status(SENT) and set_status(RECONCILED)) can be re-run from the start without
     the client receiving a second confirmation email.
     """
-    # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
-    # prevents a duplicate confirmation email even if the run already sent one.
-    claimed = repo.claim_status(
-        run_id, RunStatus.ERROR, RunStatus.RECEIVED
-    ) or repo.claim_status(
-        run_id, RunStatus.APPROVED, RunStatus.RECEIVED
-    )
-
-    if not claimed:
-        # Stale in-flight recovery: only claim if updated_at is genuinely stale.
-        run = repo.load_run(run_id)
-        if run is not None:
-            updated_at = run.get("updated_at")
-            stale = (
-                updated_at is not None
-                and datetime.now(tz=UTC) - updated_at > STALE_THRESHOLD
+    with repo.get_connection() as conn, conn.transaction():
+        # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
+        # prevents a duplicate confirmation email even if the run already sent one.
+        claimed = (
+            repo.claim_status(run_id, RunStatus.ERROR, RunStatus.RECEIVED, conn=conn)
+            or repo.claim_status(
+                run_id, RunStatus.APPROVED, RunStatus.RECEIVED, conn=conn
             )
-            # This scope is FOUR statuses, including SENT — deliberately DIVERGENT
-            # from repo.sweep_stranded_runs's scope (EXACTLY THREE:
-            # received/extracting/computed). Sharing ONE threshold VALUE
-            # (STALE_THRESHOLD_SECONDS) does NOT mean sharing one scope LIST: the two
-            # lists diverge by design and must NOT be converged. A SENT run has already
-            # durably committed the provider-send evidence, so it belongs to retrigger's
-            # operator-initiated re-run path — safe only because delivery's already-sent
-            # idempotency guard suppresses a second confirmation. It does NOT belong to
-            # the sweep, whose scope is "the background task died before persisting
-            # anything durable". Adding SENT to the sweep would auto-re-run runs that
-            # already emailed the client. Do NOT "fix" this into parity.
-            stale_statuses = {
-                RunStatus.RECEIVED.value,
-                RunStatus.EXTRACTING.value,
-                RunStatus.COMPUTED.value,
-                RunStatus.SENT.value,
-            }
-            if stale and run["status"] in stale_statuses:
-                # The claim target MUST differ from the current status:
-                # RECEIVED→EXTRACTING (never the RECEIVED→RECEIVED no-op), and every
-                # other stale status (EXTRACTING/COMPUTED/SENT)→RECEIVED. This
-                # guarantees the conditional UPDATE actually changes the row, so two
-                # concurrent retrigger clicks cannot both win and run the pipeline twice.
-                # NOTE: COMPUTING is NOT a RunStatus member — the valid post-calc
-                # in-flight state is COMPUTED.
-                target = (
-                    RunStatus.EXTRACTING
-                    if run["status"] == RunStatus.RECEIVED.value
-                    else RunStatus.RECEIVED
-                )
-                claimed = repo.claim_status(
-                    run_id, RunStatus(run["status"]), target
-                )
-                if claimed:
-                    logger.info(
-                        "stale run %s (%s) claimed to %s",
-                        run_id,
-                        run["status"],
-                        target.value,
-                    )
-
+            or _claim_stale_in_flight(run_id, conn=conn)
+        )
+        if claimed:
+            # Context lost means ALL of it. Clear clarified_fields + pre_clarify_extracted
+            # + the round counter + suggestion/candidate state AFTER the winning claim
+            # (every branch above converges here) and BEFORE the pipeline re-run is
+            # enqueued. The retriggered run re-extracts from the ORIGINAL email, so any
+            # surviving reply context would be stale: is_round_2 = bool(clarified) would
+            # misread a fresh run as a round-2 resume, and a provenance badge would
+            # outlive the data that produced it — pointing at values the run no longer
+            # holds. clear_reply_context ALSO bumps reply_epoch and returns the new
+            # value — the discriminator the dedup_key below keys on, so a SECOND
+            # legitimate retrigger is never swallowed by ON CONFLICT against the FIRST
+            # retrigger's now-done job row.
+            epoch = repo.clear_reply_context(run_id, conn=conn)
+            repo.enqueue_job(
+                kind=JobKind.RUN_PIPELINE,
+                run_id=run_id,
+                dedup_key=f"run_pipeline:{run_id}:{epoch}",
+                conn=conn,
+            )
+    # ── Transaction committed. Everything below is post-commit. ────────────────────
     if claimed:
-        # Context lost means ALL of it. Clear clarified_fields + pre_clarify_extracted
-        # + the round counter + suggestion/candidate state AFTER the winning claim
-        # (both branches above converge here) and BEFORE run_pipeline_bg is scheduled.
-        # The retriggered run re-extracts from the ORIGINAL email, so any surviving
-        # reply context would be stale: is_round_2 = bool(clarified) would misread a
-        # fresh run as a round-2 resume, and a provenance badge would outlive the data
-        # that produced it — pointing at values the run no longer holds.
-        # clear_reply_context opens its own committed transaction (conn=None): a
-        # durable unit that must NOT span the LLM-heavy run_pipeline_bg background task.
-        repo.clear_reply_context(run_id)
         logger.info("run_id=%s reply context cleared on retrigger", run_id)
-        background_tasks.add_task(pipeline_glue.run_pipeline_bg, run_id)
+        # Strictly after commit — see the docstring above for why firing this any
+        # earlier defeats the point of the wake signal.
+        wake.wake()
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

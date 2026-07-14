@@ -312,16 +312,24 @@ def test_needs_operator_excluded_from_retrigger_stale_statuses():
     An escalated run's recovery path is the operator's resolve form, not a generic
     retrigger-from-original — retriggering would discard the very context the operator
     was escalated to resolve.
+
+    The stale_statuses set literal lives in `_claim_stale_in_flight`, a conn-aware
+    helper `retrigger()` calls as one branch of its winning-claim CAS chain (extracted
+    so every claim in retrigger's body can join one caller-owned transaction) — not
+    inline in `retrigger` itself.
     """
     import inspect
 
     import app.routes.runs as runs_mod
 
-    src = inspect.getsource(runs_mod.retrigger)
+    src = inspect.getsource(runs_mod._claim_stale_in_flight)
     tree = ast.parse(src)
 
     stale_sets = [node for node in ast.walk(tree) if isinstance(node, ast.Set)]
-    assert stale_sets, "retrigger's stale_statuses set literal must be present in its source"
+    assert stale_sets, (
+        "_claim_stale_in_flight's stale_statuses set literal must be present in its "
+        "source"
+    )
 
     def _const_values(set_node: ast.Set) -> list[str]:
         values: list[str] = []
