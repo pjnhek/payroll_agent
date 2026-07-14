@@ -335,7 +335,7 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
 
     dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(
-        pipeline_glue_mod, "run_pipeline_bg", lambda rid: dispatched.append(rid)
+        pipeline_glue_mod, "run_pipeline_now", lambda rid: dispatched.append(rid)
     )
 
     client = TestClient(app_main.app)

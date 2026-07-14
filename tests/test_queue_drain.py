@@ -2,9 +2,11 @@
 
 Covers `drain_once()`'s claim/dispatch/complete-or-fail cycle,
 `handle_run_pipeline`'s reclaim rewind and INVARIANT J-1's CAS, the static
-J-1 CAS-only guard, and the pre-existing swallowed-catastrophic-start-failure
-pin. Everything here runs against `fake_repo` (the in-memory mirror) — the
-live-DB durability proofs live in `tests/test_queue_durability.py`.
+J-1 CAS-only guard, and the failure taxonomy: a catastrophic START failure is
+RETRIED (the job returns to pending), while a STAGE failure the pipeline already
+handled itself COMPLETES the job. Everything here runs against `fake_repo` (the
+in-memory mirror) — the live-DB durability proofs live in
+`tests/test_queue_durability.py`.
 
 THE J-1 CAS-ONLY GUARD (`test_queue_tier_status_writers_are_cas_only`) FAILS
 CLOSED. A guard that only collects `repo.<name>(...)` calls by matching the
@@ -37,8 +39,9 @@ SEPARATE, POSITIVE proof that the resolver actually saw the real code.
 from __future__ import annotations
 
 import ast
-import logging
 import pathlib
+import threading
+import time
 import uuid
 from typing import Any
 
@@ -96,7 +99,7 @@ def _job(
 def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
 
@@ -107,7 +110,7 @@ def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monke
 def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.COMPUTED)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
 
@@ -118,7 +121,7 @@ def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
 def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
 
@@ -129,7 +132,7 @@ def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypa
 def test_handler_attempts_2_reconciled_rewind_is_a_noop_cas_loses(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECONCILED)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: calls.append(rid))
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
 
@@ -141,7 +144,7 @@ def test_reply_epoch_unchanged_across_every_handler_path(fake_repo, monkeypatch)
     """Neither the forward CAS nor the reclaim rewind ever bumps reply_epoch
     — only a human retrigger, through clear_reply_context, may grant the
     licence to email the client a second time."""
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: None)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: None)
 
     for status, attempts in (
         (RunStatus.RECEIVED, 1),
@@ -184,7 +187,7 @@ def test_first_durable_action_is_a_cas_on_both_branches(fake_repo, monkeypatch):
 
     monkeypatch.setattr(repo, "claim_status", _spy_claim_status)
     monkeypatch.setattr(repo, "rewind_for_reclaim", _spy_rewind)
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", lambda rid: None)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: None)
 
     run_id_first_attempt = _seed_run(fake_repo, status=RunStatus.RECEIVED)
     pipeline.handle_run_pipeline(_job(run_id=run_id_first_attempt, attempts=1))
@@ -196,34 +199,34 @@ def test_first_durable_action_is_a_cas_on_both_branches(fake_repo, monkeypatch):
     assert order == ["rewind_for_reclaim", "claim_status"], order
 
 
-def test_swallowed_start_failure_marks_the_job_done_KNOWN_GAP_FAIL01(fake_repo, monkeypatch):
-    """This test PINS a KNOWN GAP; it does not endorse it. A future fix that
-    turns a swallowed catastrophic START failure into a real retry must
-    INVERT this assertion, never delete this test — it is that fix's
-    red-to-green target.
+def test_catastrophic_start_failure_is_retried_not_marked_done(fake_repo, monkeypatch):
+    """This test was `..._marks_the_job_done_KNOWN_GAP_FAIL01`, and it PINNED a
+    known gap: a catastrophic START failure was swallowed, the job was marked
+    `done`, the durable row vanished as a success, and the run stranded
+    mid-flight with nothing left to retry it — a silently lost payroll run,
+    with a green suite. Its docstring said the fix must INVERT this assertion
+    rather than delete the test. This is that inversion; the assertion below is
+    the same one, flipped.
 
-    `run_pipeline_bg` already catches a catastrophic START failure (e.g. the
-    orchestrator module itself failing to import) and returns normally
-    rather than raising, so a background task can never crash the process
-    that scheduled it. This handler's own forward CAS has already moved the
-    run to EXTRACTING by the time `run_pipeline_bg` is even called, so the
-    run does not literally stay at RECEIVED — but it advances no FURTHER,
-    because the stubbed failure below prevents any real pipeline stage from
-    ever running. The job is nonetheless marked done: nothing here can tell
-    the difference between "ran and produced no further progress" and "never
-    truly started".
+    The handler now calls `pipeline_glue.run_pipeline_now`, which lets a
+    catastrophic start failure PROPAGATE (an import error, the database
+    unreachable at the first read). `drain_once` catches it, routes it through
+    the fenced `fail_job` write with backoff, and the job returns to `pending`
+    to be retried — dead-lettering only after `max_attempts`. The one-word
+    difference at the call site (`run_pipeline_now` vs `run_pipeline_bg`) is the
+    whole of it: `_bg`'s swallow is right for a fire-and-forget BackgroundTask
+    on a webhook that already returned 200, and fatal for a queued job.
+
+    The forward CAS has already moved the run to EXTRACTING before the pipeline
+    is invoked, so the run legitimately sits there while the retry is pending —
+    what must NOT happen is the JOB disappearing as done.
     """
     run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
 
-    def _swallowing_run_pipeline_bg(rid: uuid.UUID) -> None:
-        try:
-            raise RuntimeError("simulated catastrophic import/start failure")
-        except Exception:  # noqa: BLE001 — mirrors run_pipeline_bg's own safety net
-            logging.getLogger("payroll_agent.queue.test_pin").exception(
-                "pipeline failed to start for run_id=%s", rid
-            )
+    def _failing_run_pipeline_now(rid: uuid.UUID) -> None:
+        raise RuntimeError("simulated catastrophic import/start failure")
 
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_bg", _swallowing_run_pipeline_bg)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", _failing_run_pipeline_now)
 
     dedup_key = f"run_pipeline:{run_id}:0"
     job_id = fake_repo.enqueue_job(
@@ -235,11 +238,55 @@ def test_swallowed_start_failure_marks_the_job_done_KNOWN_GAP_FAIL01(fake_repo, 
 
     job_row = fake_repo.get_job(job_id)
     assert job_row is not None
-    # KNOWN GAP — a future fix must flip this to something other than 'done'
-    # (or must guarantee the run reaches a further status), never delete
-    # this assertion outright.
-    assert job_row["state"] == "done"
+    # THE INVERTED ASSERTION. `done` here is the lost-run bug: it means the queue
+    # threw away a payroll run it never actually executed.
+    assert job_row["state"] == "pending", (
+        "a catastrophic start failure must leave the job retryable, not `done` — "
+        f"got {job_row['state']!r}. `done` is the silently-lost-run bug: the handler "
+        "swallowed the failure, drain_once read that as success, and the durable row "
+        "that was the run's only chance of ever executing was deleted from the queue."
+    )
+    assert job_row["attempts"] == 1
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
+def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
+    """The other half of the contract, and the reason the fix above is not simply
+    "make every failure retry".
+
+    A STAGE failure (the LLM refuses, the calc raises) is caught by the pipeline's
+    OWN catch-all, which persists ERROR on the run and returns normally. The run is
+    already visible to a human in that state, so the job has genuinely finished its
+    work and must complete — retrying it would re-run a pipeline that already
+    recorded its error, and would keep re-running it until it dead-lettered.
+
+    Only the catastrophic-START case (the pipeline never began at all) is a retry.
+    This test is what stops a future "just retry everything" edit from turning every
+    errored run into `max_attempts` duplicate executions.
+    """
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+
+    def _stage_failure_handled_internally(rid: uuid.UUID) -> None:
+        # Mirrors the orchestrator's own error-wrap: it persists ERROR and RETURNS.
+        fake_repo.set_status(rid, RunStatus.ERROR)
+
+    monkeypatch.setattr(
+        pipeline_glue, "run_pipeline_now", _stage_failure_handled_internally
+    )
+
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE, dedup_key=f"run_pipeline:{run_id}:0", run_id=run_id
+    )
+    assert job_id is not None
+    assert drain.drain_once() is True
+
+    job_row = fake_repo.get_job(job_id)
+    assert job_row is not None
+    assert job_row["state"] == "done", (
+        "a stage failure is handled and persisted by the pipeline itself — the job "
+        "did its work and must complete, not retry a run that already recorded ERROR"
+    )
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.ERROR.value
 
 
 # ── drain_once: the five behaviors ──────────────────────────────────────
@@ -617,3 +664,77 @@ def test_the_guard_actually_resolves_the_queue_tiers_real_calls() -> None:
     )
     assert "claim_status" in func_names
     assert "rewind_for_reclaim" in func_names
+
+
+def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
+    """A shutdown must not be able to look at a worker that the DATABASE has already
+    handed a lease to and conclude that it holds nothing.
+
+    The window: `repo.claim_job()` RETURNS — the lease is now held by this process as
+    far as Postgres is concerned — and the worker is descheduled before the next line
+    records the token. `stop()` snapshots `held_tokens()` right there, sees an empty
+    set, and `release_leases` never hands the lease back. The app exits with a live
+    lease outstanding, and that job is unclaimable for the full `lease_seconds`
+    (15 minutes) — on a platform that redeploys routinely.
+
+    This drives the window directly rather than hoping to hit it: the claim is held
+    open on an Event, and the snapshot is taken while the worker sits inside it.
+    `held_tokens()` must BLOCK there (the claim is in flight) and come back with the
+    token, not race past it with an empty list.
+    """
+    token = uuid.uuid4()
+    claimed_job = _job(run_id=uuid.uuid4(), attempts=1)
+    claimed_job = Job(
+        id=claimed_job.id,
+        kind=claimed_job.kind,
+        run_id=claimed_job.run_id,
+        attempts=1,
+        max_attempts=5,
+        lease_token=token,
+    )
+
+    claim_entered = threading.Event()
+    release_claim = threading.Event()
+    snapshot_taken = threading.Event()
+
+    def _slow_claim():
+        # The DB is about to hand over the lease; the worker is descheduled here.
+        claim_entered.set()
+        assert release_claim.wait(timeout=5.0)
+        return claimed_job
+
+    def _blocking_handle(job):
+        # Keep the job in flight until the snapshot has landed, so the drain's own
+        # finally-discard cannot race the assertion below.
+        assert snapshot_taken.wait(timeout=5.0)
+
+    monkeypatch.setattr(repo, "claim_job", _slow_claim)
+    monkeypatch.setattr(dispatch, "handle", _blocking_handle)
+    monkeypatch.setattr(repo, "complete_job", lambda job_id, tok: True)
+
+    snapshot: list[list[uuid.UUID]] = []
+    drainer = threading.Thread(target=drain.drain_once, name="f6-drainer")
+    snapshotter = threading.Thread(
+        target=lambda: snapshot.append(drain.held_tokens(settle_timeout=5.0)),
+        name="f6-snapshotter",
+    )
+
+    drainer.start()
+    assert claim_entered.wait(timeout=5.0), "the drain never reached the claim"
+
+    # Shutdown snapshots RIGHT NOW — the worker is inside the claim.
+    snapshotter.start()
+    time.sleep(0.05)  # let the snapshotter actually reach held_tokens() and block
+
+    release_claim.set()  # the DB hands the lease over; the worker records the token
+    snapshotter.join(timeout=5.0)
+    snapshot_taken.set()  # let the drain finish
+    drainer.join(timeout=5.0)
+
+    assert not snapshotter.is_alive() and not drainer.is_alive()
+    assert snapshot == [[token]], (
+        "held_tokens() snapshotted a lease into oblivion: the database had already "
+        f"granted lease {token} to this process, but the snapshot came back {snapshot} "
+        "— release_leases would never have handed it back, and the job would sit "
+        "unclaimable for the full 15-minute lease expiry after the app exits"
+    )

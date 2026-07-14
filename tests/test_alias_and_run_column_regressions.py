@@ -470,7 +470,7 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     import app.routes.pipeline_glue as app_main
 
     dispatched: list[uuid.UUID] = []
-    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: dispatched.append(rid))
+    monkeypatch.setattr(app_main, "run_pipeline_now", lambda rid: dispatched.append(rid))
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
 
@@ -523,7 +523,7 @@ def test_retrigger_clears_context_on_stale_inflight_claim(
     import app.routes.pipeline_glue as app_main
 
     dispatched: list[uuid.UUID] = []
-    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: dispatched.append(rid))
+    monkeypatch.setattr(app_main, "run_pipeline_now", lambda rid: dispatched.append(rid))
 
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
@@ -574,7 +574,7 @@ def test_stale_provenance_cannot_reproduce_after_retrigger(client, fake_repo, mo
     persisted column (not a rendered label)."""
     import app.routes.pipeline_glue as app_main
 
-    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: None)
+    monkeypatch.setattr(app_main, "run_pipeline_now", lambda rid: None)
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
     # Sanity: before retrigger, clarified_fields is genuinely non-empty (the

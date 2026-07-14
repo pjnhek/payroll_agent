@@ -207,19 +207,42 @@ def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
         logger.exception("resume failed to start for run_id=%s", run_id)
 
 
+def run_pipeline_now(run_id: uuid.UUID) -> None:
+    """Run the orchestrator for a run and let a catastrophic START failure PROPAGATE.
+
+    This is the entrypoint for a caller that can actually DO something with a start
+    failure — today, the queue's worker, whose `drain_once` routes any exception into a
+    fenced `fail_job` write with backoff and retries the job up to `max_attempts`.
+
+    Never route a queued job through `run_pipeline_bg` instead. That wrapper's swallow is
+    correct for a fire-and-forget BackgroundTask and catastrophic for a queued job: the
+    handler would return normally, `drain_once` would mark the job `done`, the durable row
+    would disappear as a success, and the run would strand mid-flight with nothing left to
+    retry it. A payroll run would be silently lost. The whole point of putting the pipeline
+    on a durable queue is that a start failure becomes a retry — but only if it is allowed
+    to reach the code that retries.
+
+    The orchestrator still owns its own try/except error-wrap and persists ERROR on any
+    STAGE failure, so those never reach here. What reaches here is the catastrophic kind:
+    the orchestrator failing to import, the database being unreachable at start.
+    """
+    from app.pipeline.orchestrator import run_pipeline
+
+    run_pipeline(run_id)
+
+
 def run_pipeline_bg(run_id: uuid.UUID) -> None:
-    """Run the orchestrator for a run.
+    """Fire-and-forget wrapper for the FastAPI BackgroundTask path (the inbound webhook).
 
-    The orchestrator owns its own try/except error-wrap and persists ERROR on any
-    stage failure. This outer guard exists ONLY so a catastrophic failure (e.g. the
-    orchestrator itself failing to import/start) can never propagate out of the
-    BackgroundTask — the webhook already returned 200, so a background crash must be
-    logged, not raised. It does NOT swallow stage errors; those are caught and
-    persisted inside run_pipeline before they ever reach here."""
+    Swallows a catastrophic start failure because the webhook has ALREADY returned 200 to
+    the email gateway — there is no caller left to hand an exception to, and an escaping
+    background crash would take down the request's task group. Logged, never raised.
+
+    A caller that CAN act on a start failure must use `run_pipeline_now` instead; see its
+    docstring for why routing a queued job through this swallow loses the run.
+    """
     try:
-        from app.pipeline.orchestrator import run_pipeline
-
-        run_pipeline(run_id)
+        run_pipeline_now(run_id)
     except Exception:  # noqa: BLE001 — background safety net; webhook already 200'd
         logger.exception("pipeline failed to start for run_id=%s", run_id)
 

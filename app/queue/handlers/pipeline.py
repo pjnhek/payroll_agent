@@ -65,24 +65,26 @@ on:**
   another actor already owns this run's next state; the correct response is
   to log and return, letting the caller mark the job done.
 
-**A known, accepted gap this handler does not close (pinned by a named test,
-not buried in a comment).** The function this handler calls
-(`pipeline_glue.run_pipeline_bg`) already catches a catastrophic failure
-before any real pipeline work begins (an import error, the database being
-unreachable at the very first read) and returns normally rather than
-raising — a safety net that predates this queue and exists so a background
-task can never crash the process that scheduled it. Under this handler, that
-same swallow means the job is marked done even though the run never
-advanced. A STAGE failure is different and already fully visible: the
-pipeline's own catch-all persists ERROR on the run before returning, so the
-run shows up in that state for a human to see. Only the narrower,
-catastrophic-START case is silently swallowed today. The honest claim this
-handler can make is: no accepted retrigger is lost to a worker PROCESS
-DEATH — the durable row survives and is reclaimed. It is not "every failure
-is automatically retried." Turning the swallowed-start case into a real
-retry is future work with its own design; until then,
-`test_swallowed_start_failure_marks_the_job_done_KNOWN_GAP_FAIL01` pins the
-current behavior as a named, visible gap rather than a silent one.
+**A CATASTROPHIC START FAILURE IS A RETRY, NOT A COMPLETION — and the one-word
+choice that makes it so.** This handler calls `pipeline_glue.run_pipeline_now`,
+which lets a catastrophic start failure (the orchestrator failing to import, the
+database unreachable at the very first read) PROPAGATE. `drain_once` catches it,
+routes it into a fenced `fail_job` write with backoff, and the job is retried up
+to `max_attempts` before dead-lettering. That is the entire point of putting the
+pipeline on a durable queue.
+
+Do NOT "tidy" this back to `run_pipeline_bg`. That wrapper swallows and returns
+normally — correct for a fire-and-forget BackgroundTask on the inbound webhook,
+which has already returned 200 and has no caller left to raise to, and
+catastrophic here: the handler would return cleanly, `drain_once` would mark the
+job `done`, the durable row would vanish as a SUCCESS, and the run would strand
+mid-flight with nothing left to retry it. A payroll run would be silently lost,
+with a green suite. The two functions differ by one word at the call site and by
+everything in consequence.
+
+A STAGE failure is different and needs no queue involvement: the pipeline's own
+catch-all persists ERROR on the run before returning, so the run is already
+visible to a human in that state and the job completes normally.
 """
 from __future__ import annotations
 
@@ -141,4 +143,9 @@ def handle_run_pipeline(job: Job) -> None:
         )
         return
 
-    pipeline_glue.run_pipeline_bg(run_id)
+    # run_pipeline_now, never run_pipeline_bg: a catastrophic start failure must REACH
+    # drain_once, which routes it into a fenced fail_job write with backoff and retries
+    # the job. The _bg wrapper swallows and returns normally, so drain_once would mark
+    # this job `done`, the durable row would vanish as a success, and the run would strand
+    # mid-flight with nothing left to retry it — a silently lost payroll run.
+    pipeline_glue.run_pipeline_now(run_id)

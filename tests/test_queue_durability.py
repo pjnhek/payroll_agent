@@ -972,7 +972,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
     and must not acquire a `worker.start()` call of its own; if a future
     edit ever needs a real worker here, it must go through `live_worker`.
 
-    The orchestrator (`pipeline_glue.run_pipeline_bg`) is stubbed — this
+    The orchestrator (`pipeline_glue.run_pipeline_now`) is stubbed — this
     repo's `.env` carries live LLM keys, and an unstubbed call would hit a
     real provider, bill real money, and flake. The stub also records an
     OBSERVABLE side effect (advancing the run to COMPUTED) rather than being
@@ -1015,7 +1015,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
 
     orchestrator_calls: list[uuid.UUID] = []
 
-    def _stub_run_pipeline_bg(rid: uuid.UUID) -> None:
+    def _stub_run_pipeline_now(rid: uuid.UUID) -> None:
         orchestrator_calls.append(rid)
         # Simulate ONLY the observable fact that a real orchestrator would
         # eventually advance the run past EXTRACTING — never a real
@@ -1024,7 +1024,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
         # distinguishable from the stranded-mutation's own EXTRACTING value.
         repo.set_status(rid, RunStatus.COMPUTED)
 
-    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", _stub_run_pipeline_bg)
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _stub_run_pipeline_now)
 
     client = TestClient(app_main.app)
     response = client.post(f"/runs/{run_id}/retrigger")
