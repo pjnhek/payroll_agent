@@ -21,11 +21,13 @@ from __future__ import annotations
 
 # Route/repository monkeypatches intentionally use dynamic test seams.
 import uuid
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.models.status import RunStatus
+from app.queue import drain
 
 
 @pytest.fixture
@@ -33,6 +35,34 @@ def client(fake_repo):
     from app.main import app
 
     return TestClient(app, raise_server_exceptions=True)
+
+
+def _assert_run_pipeline_job_enqueued(fake_repo, run_id: uuid.UUID) -> dict[str, Any]:
+    """QUEUE-02: assert retrigger enqueued a durable `jobs` row for this run BEFORE
+    any drain happens — this is new coverage for the durable-enqueue half of
+    ROADMAP criterion #2, not a workaround for the BackgroundTasks-synchronicity
+    assumption these tests used to rely on.
+
+    Returns the matching job row so a caller can additionally assert on its
+    dedup_key (the epoch discriminator).
+    """
+    run = fake_repo.load_run(run_id)
+    matching = [j for j in fake_repo.jobs.values() if j["run_id"] == run_id]
+    assert len(matching) == 1, (
+        f"retrigger must enqueue exactly one run_pipeline job for {run_id}; "
+        f"found {len(matching)}"
+    )
+    job = matching[0]
+    assert job["state"] == "pending" and job["kind"] == "run_pipeline", (
+        f"expected a pending run_pipeline job; got state={job['state']!r} "
+        f"kind={job['kind']!r}"
+    )
+    expected_dedup_key = f"run_pipeline:{run_id}:{run.get('reply_epoch', 0)}"
+    assert job["dedup_key"] == expected_dedup_key, (
+        f"the enqueued job's dedup_key must carry the run's CURRENT reply_epoch; "
+        f"got {job['dedup_key']!r}, expected {expected_dedup_key!r}"
+    )
+    return cast(dict[str, Any], job)
 
 
 def _run_at_awaiting_approval(fake_repo) -> uuid.UUID:
@@ -147,7 +177,8 @@ def test_approve_unknown_run_still_redirects(client, fake_repo):
 
 
 def test_retrigger_from_error_backgrounds_pipeline(client, fake_repo):
-    """INGEST-05: retrigger from ERROR claims the run and backgrounds the pipeline."""
+    """INGEST-05/QUEUE-02: retrigger from ERROR claims the run, enqueues a durable
+    job (asserted BEFORE any drain), and the pipeline runs once that job is drained."""
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.ERROR)
@@ -158,11 +189,31 @@ def test_retrigger_from_error_backgrounds_pipeline(client, fake_repo):
     assert f"/runs/{run_id}" in r.headers.get("location", ""), (
         "retrigger must redirect to the run detail page"
     )
+    # New coverage: a jobs row exists, and the pipeline has NOT yet run.
+    job = _assert_run_pipeline_job_enqueued(fake_repo, run_id)
+    assert fake_repo.load_run(run_id)["status"] == "received", (
+        "before draining, the run must sit at the claimed status (received), "
+        "not have already advanced — proving the enqueue, not an inline run, "
+        "is what the route did"
+    )
+    assert drain.drain_once() is True, (
+        "drain_once must claim and dispatch the job retrigger enqueued"
+    )
+    assert fake_repo.jobs[str(job["id"])]["state"] == "done", (
+        "after drain, the drained job must be marked done — the pipeline has run "
+        "(no mock_llm fixture here, so the run's own error boundary is free to "
+        "land it wherever it lands; the job's completion is what this test pins)"
+    )
+    assert fake_repo.load_run(run_id)["status"] != "received", (
+        "after drain, the handler's forward CAS must have advanced the run off "
+        "its claimed RECEIVED status"
+    )
 
 
 def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
     """Retrigger from APPROVED — where a run lands if delivery died before recording
-    an error — must be accepted, or the run is unrecoverable."""
+    an error — must be accepted, or the run is unrecoverable. QUEUE-02: the enqueued
+    job is asserted before drain, then drained to prove the pipeline actually runs."""
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.APPROVED)
@@ -170,6 +221,58 @@ def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
     assert r.status_code == 303, (
         f"retrigger from APPROVED must return 303; got {r.status_code}"
     )
+    _assert_run_pipeline_job_enqueued(fake_repo, run_id)
+    assert drain.drain_once() is True, (
+        "drain_once must claim and dispatch the job retrigger enqueued"
+    )
+
+
+def test_second_retrigger_enqueues_a_second_job(client, fake_repo, monkeypatch):
+    """QUEUE-02: the dedup_key's epoch is what lets a SECOND, later retrigger enqueue
+    a SECOND job rather than being silently swallowed by ON CONFLICT DO NOTHING
+    against the first retrigger's now-done job row.
+
+    This is the falsifying-mutation target for the dedup_key's epoch: strip the epoch
+    from retrigger's dedup_key and this test must go red (see the SUMMARY for the
+    captured red run).
+    """
+    import app.routes.pipeline_glue as app_main
+
+    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: None)
+
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+
+    # First retrigger: enqueue + drain to done.
+    r1 = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+    assert r1.status_code == 303
+    first_job = _assert_run_pipeline_job_enqueued(fake_repo, run_id)
+    assert drain.drain_once() is True
+    assert fake_repo.jobs[str(first_job["id"])]["state"] == "done", (
+        "sanity: the first job must be done before the second retrigger fires, or "
+        "this test cannot distinguish 'a second job was enqueued' from 'the first "
+        "job was still pending'"
+    )
+
+    # Put the run back in ERROR (as a real second failure would) and retrigger again.
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+    r2 = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+    assert r2.status_code == 303
+
+    matching = [j for j in fake_repo.jobs.values() if j["run_id"] == run_id]
+    assert len(matching) == 2, (
+        f"a second retrigger must enqueue a SECOND run_pipeline job for {run_id} — "
+        f"found {len(matching)} job(s) total. If this is 1, the second enqueue was "
+        "silently swallowed by ON CONFLICT DO NOTHING against the first retrigger's "
+        "now-done job row (the epoch-less dedup_key bug)"
+    )
+    second_job = next(j for j in matching if j["id"] != first_job["id"])
+    assert second_job["dedup_key"] != first_job["dedup_key"], (
+        f"the second job's dedup_key must differ from the first's; both were "
+        f"{first_job['dedup_key']!r}"
+    )
+    assert second_job["state"] == "pending"
 
 
 def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, monkeypatch):

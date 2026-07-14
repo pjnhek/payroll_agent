@@ -310,13 +310,18 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     )
 
     # --- Operator recovery: the ACTUAL POST /runs/{run_id}/retrigger route -
-    # Monkeypatch the background-task target to a no-op so this proves the
-    # CLAIM + ROUTE behavior against the real DB without triggering a real
-    # LLM/pipeline run.
+    # QUEUE-02: retrigger no longer schedules a BackgroundTask — it enqueues a
+    # durable `jobs` row inside the same transaction as the winning claim, and a
+    # worker (here, an explicit drain.drain_once()) is what actually dispatches the
+    # pipeline. Monkeypatch the background-task target to a no-op so this proves the
+    # CLAIM + ENQUEUE + DISPATCH behavior against the real DB without triggering a
+    # real LLM/pipeline run.
     from fastapi.testclient import TestClient
 
     import app.main as app_main
     import app.routes.pipeline_glue as pipeline_glue_mod
+    from app.db.supabase import get_connection
+    from app.queue import drain
 
     dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(
@@ -334,10 +339,32 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
         "the swept-to-ERROR run must be claimed to a progressing status "
         "(received) by the actual retrigger route"
     )
+
+    # A durable jobs row must exist BEFORE the drain runs, proving the enqueue
+    # (not just the drain below) is what the route is actually responsible for.
+    with get_connection() as conn:
+        job_row = conn.execute(
+            "SELECT state, kind, dedup_key FROM jobs WHERE run_id = %s",
+            (str(run_id),),
+        ).fetchone()
+    assert job_row is not None, (
+        "retrigger must enqueue a durable jobs row for this run_id — none was found"
+    )
+    assert job_row[0] == "pending" and job_row[1] == "run_pipeline", (
+        f"expected a pending run_pipeline job; got state={job_row[0]!r} "
+        f"kind={job_row[1]!r}"
+    )
+    assert str(run_id) in job_row[2], (
+        f"the enqueued job's dedup_key must carry this run_id; got {job_row[2]!r}"
+    )
+
+    assert drain.drain_once() is True, (
+        "drain_once must claim and dispatch the job the retrigger route enqueued"
+    )
     assert dispatched == [run_id], (
-        "the retrigger route must schedule the background pipeline task for "
-        "this run_id, proving it actually dispatched recovery work (not just "
-        "flipped a status column)"
+        "the retrigger route's enqueued job, once drained, must dispatch the "
+        "background pipeline task for this run_id — proving it actually dispatched "
+        "recovery work (not just flipped a status column)"
     )
 
 
