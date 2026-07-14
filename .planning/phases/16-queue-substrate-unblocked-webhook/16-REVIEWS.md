@@ -132,3 +132,98 @@ executed in CI. Inventory and classify all 12 before flipping the workflow.
 ## Next Step
 
   /gsd-plan-phase 16 --reviews
+
+---
+
+# Cross-AI Plan Review — Phase 16, ROUND 2
+
+Reviewer: Codex CLI, source-grounded, re-reviewing the REVISED 10 plans (commit b33f864) with round 1's
+findings as an explicit checklist. Job 1: is each round-1 finding actually closed, or just reworded?
+Job 2: what did the revision itself break?
+
+# Part 1 — Round 1 finding verdicts
+
+| Finding | Verdict | Evidence | Why |
+|---|---|---|---|
+| J-1 contradicted reclaim rewind | CLOSED | Revised 16-06 objective; current `claim_status` CAS at [app/db/repo/runs.py:356-381](/Users/pnhek/usf%20msds/github/payroll_agent/app/db/repo/runs.py:356) | The revision explicitly permits exactly two queue-side CAS writers: forward `claim_status` and reclaim-only `rewind_for_reclaim`, gated by `attempts > 1`. The old “first action must always be claim_status” contradiction is removed. |
+| `Job` vs `RETURNING` mismatch | CLOSED | Revised 16-03 Task 1 and 16-04 Task 1; current repo row-mapping conventions at [app/db/repo/runs.py:239-258](/Users/pnhek/usf%20msds/github/payroll_agent/app/db/repo/runs.py:239) | `Job` is now explicitly six fields, with no `email_id`, and the plan requires ordered bidirectional `RETURNING` equality tests. An executor has a single coherent contract. |
+| Pre-Phase-20 double-send window | CLOSED | New 16-10; current reserve/provider/sent sequence at [app/email/gateway.py:271-289](/Users/pnhek/usf%20msds/github/payroll_agent/app/email/gateway.py:271), [app/email/gateway.py:339-357](/Users/pnhek/usf%20msds/github/payroll_agent/app/email/gateway.py:339) | D-13 adds an epoch- and purpose/round-scoped fail-closed guard for `reserved` and `failed` rows before both send sites. The revised plans no longer claim generic reruns are harmless. Provider failure intentionally escalates to `ERROR`, which the plan keeps outside automatic rewind. |
+| D-04 unexpectedly activates dormant integration tests | CLOSED | Revised D-14 in 16-02; current filename-limited workflow at [.github/workflows/concurrency-proof.yml:65-89](/Users/pnhek/usf%20msds/github/payroll_agent/.github/workflows/concurrency-proof.yml:65) | The existing two-file gate remains unchanged, and the new gate selects only `queueproof`. This avoids waking the ten dormant integration modules. |
+| Expanded live-test reset model is unsafe | PARTIALLY CLOSED | D-14 narrows CI scope; reset remains module-scoped at [tests/conftest.py:57-73](/Users/pnhek/usf%20msds/github/payroll_agent/tests/conftest.py:57) | The broad CI blast radius is closed, but the new `tests/test_queue_durability.py` contains multiple live queue tests sharing one module-scoped reset. The plans do not require per-test queue cleanup or isolated dedup/claim state. |
+| Startup exceptions silently mark jobs done | CLOSED | Revised 16-06 Task 2 residual-risk block and named `test_swallowed_start_failure_marks_the_job_done_KNOWN_GAP_FAIL01` | The limitation is now explicitly qualified, pinned by a regression target, and excluded from the phase’s headline guarantee. It is not fixed, but the revised plan no longer misrepresents it as fixed. |
+| `clear_reply_context` fake/caller contract | CLOSED | Revised 16-04 Task 2 caller inventory; current implementation returns nothing at [app/db/repo/pipeline_state.py:346-385](/Users/pnhek/usf%20msds/github/payroll_agent/app/db/repo/pipeline_state.py:346) and fake at [tests/conftest.py:660-683](/Users/pnhek/usf%20msds/github/payroll_agent/tests/conftest.py:660) | The revision names the production caller, fake implementation, tuple, and unchanged tests, and adds the universal pairing guard. It gives the executor the required updates. |
+| Worker second-start lifecycle guard | CLOSED | Revised 16-07 Task 1/2; current app has no worker lifecycle yet ([app/main.py:1-16](/Users/pnhek/usf%20msds/github/payroll_agent/app/main.py:1)) | `_orphans`, generation tracking, refusal while an orphan lives, and an explicit liveness test close the original “clear timed-out threads then start another generation” defect. |
+
+The only finding not fully closed is the live-test reset model: narrowing CI prevents the original ten-module blast radius, but it does not isolate the new multi-test queueproof module from leftover pending or leased jobs.
+
+# Part 2 — New findings
+
+- **HIGH — Worker restart is still broken because the stop event is never reset.** Revised 16-07 requires `stop()` to set the worker stop event, but `start()` never explicitly clears or replaces it. After a clean `start → stop`, a later `start()` creates threads whose first loop observes the already-set event and exits immediately. This directly contradicts the revised test requiring restart after the orphan dies. Failure sequence: clean shutdown → second `start(1)` → worker exits without draining. The plan must specify a fresh/cleared stop event at each new generation.
+
+- **HIGH — Queueproof live tests can consume each other’s jobs.** `seeded_db` resets once per module, not per test ([tests/conftest.py:57-73](/Users/pnhek/usf%20msds/github/payroll_agent/tests/conftest.py:57)). The planned `test_queue_durability.py` contains claim-race, expiry, release, shutdown, and reclaim tests, while `claim_job()` selects globally claimable jobs. Several tests intentionally leave jobs leased or pending. A later test can claim an earlier test’s row, causing false winners, wrong attempt counts, or a proof that passes against the wrong run. Add per-test queue cleanup, unique-scoped claim filtering, or a fixture that resets jobs between tests.
+
+- **MEDIUM — The AST J-1 guard is trivially bypassable.** The revised guard scans `repo.<name>(...)` calls, but an executor following that mechanism can miss `r = repo; r.set_status(...)`, `getattr(repo, "set_status")(...)`, or an imported alias. It also cannot infer which calls semantically write `payroll_runs.status`; it must rely on a hard-coded name list. A future queue handler using an alias can therefore add an unconditional status write while the AST guard remains green. The guard should reject aliases/imported repo objects or inspect all calls to known status-writing functions more robustly.
+
+- **MEDIUM — `RUN_PIPELINE` jobs remain valid with `run_id = NULL`.** Revised 16-03 keeps `run_id` nullable and revised 16-04 exposes `enqueue_job(..., run_id=None)`. The sole `JobKind` is `run_pipeline`, yet the schema does not enforce that this kind has a run ID. A malformed or future caller can enqueue a null-run job; the handler then attempts `claim_status(None, ...)`, returns normally, and `drain_once()` can mark the job done without processing any payroll. Add a kind-specific constraint or reject null `run_id` in `enqueue_job`/dispatch.
+
+- **LOW — The queueproof mutation rationale is overstated.** The new CI step uses `set -o pipefail`; `pytest tests/ -m queueprooof` with no matches normally exits 5, so the step is already red even without the `[0-9]+ passed` guard. The guard is still useful defense-in-depth, but the claimed “typo collects zero tests and exits green” mutation is not accurate for this invocation. More importantly, the guard cannot detect a typo on one newly added test if other queueproof tests still pass.
+
+# Part 3 — Risk Assessment
+
+Overall risk: **HIGH — NOT READY TO EXECUTE.**
+
+The Round 1 contractual findings are largely addressed, and D-13 materially improves the money-path safety story. However, the missing stop-event reset can permanently brick worker restarts, and the shared live queue state makes the central durability proofs capable of consuming the wrong jobs. Those are execution-blocking defects in the new worker and proof substrate. Resolve them before implementation.
+
+---
+
+## Orchestrator Verification (Claude) — round 2
+
+Both new HIGH findings independently re-traced against live source. Both CONFIRMED:
+
+### CONFIRMED — stop event is never reset (new HIGH #1)
+
+- `16-07-PLAN.md:141` — `_loop(gen)` runs "until the stop event is set **or its generation is stale**".
+- `stop()` sets that event. Nothing in the plan clears or replaces it on the next `start()`.
+- Therefore after a clean `start()` → `stop()`, a later `start()` spawns threads whose first loop
+  iteration observes an already-set event and returns immediately. The workers exist but never drain.
+- This makes the plan self-contradictory: `16-07:247` specifies
+  `test_start_refuses_while_a_previous_generation_is_still_alive`, whose premise is that a start
+  AFTER the orphan dies succeeds — but as specified it would spawn dead workers.
+
+Fix: the stop event must be fresh (or explicitly `.clear()`ed) per generation in `start()`, and the
+plan needs a test that a restarted worker actually CLAIMS a job — not merely that threads are alive.
+
+### CONFIRMED — module-scoped reset lets queue proofs eat each other's jobs (new HIGH #2)
+
+- `tests/conftest.py:57` — `@pytest.fixture(scope="module")`, `bootstrap(reset=True)` runs ONCE per module.
+- The planned `tests/test_queue_durability.py` holds multiple live-DB queue proofs (claim race, lease
+  expiry, release-on-shutdown, reclaim), and several deliberately LEAVE a job `pending` or `leased`.
+- `claim_job()` claims the oldest eligible row GLOBALLY — it has no per-test scoping.
+- So a later test in the same module can claim an earlier test's leftover row: false winners, wrong
+  `attempts` counts, a proof that passes against the wrong run. This is the same vacuous-proof class as
+  the Phase 10 concurrency proof.
+
+Fix: per-test queue cleanup (truncate `jobs` between tests), or scope every claim assertion to a
+job id the test itself enqueued. A durability proof that can claim someone else's row proves nothing.
+
+### Accepted without re-tracing
+
+- **MEDIUM — `run_pipeline` jobs may carry `run_id = NULL`.** `enqueue_job(..., run_id=None)` is
+  exposed and the schema does not require a run id for the only `JobKind` there is. A null-run job
+  would `claim_status(None, ...)`, no-op, and be marked `done` — a silently discarded job. Needs a
+  kind-specific NOT NULL / CHECK constraint or a reject in `enqueue_job`.
+- **MEDIUM — the AST J-1 guard is name-based** and misses `r = repo; r.set_status(...)`, `getattr`,
+  and import aliases. Harden it or state the limitation.
+- **LOW — the queueproof mutation rationale is factually wrong.** pytest exits 5 on zero-collected, so
+  a marker typo is ALREADY red; the plan should not teach that it would "exit green". Keep the
+  `[0-9]+ passed` guard (still useful) but fix the stated rationale.
+
+### Round 1 scorecard
+
+7 of 8 round-1 findings CLOSED. 1 PARTIAL (the live-test reset model — narrowing CI removed the
+10-module blast radius but did not isolate the new queue proofs from each other; that partial is
+exactly what new HIGH #2 makes concrete).
+
+**Verdict: NOT READY TO EXECUTE.** The contractual round-1 defects are fixed and D-13 materially
+improves money-path safety, but the revision introduced a bricked worker restart and a
+self-interfering proof substrate. Both are in the new code this phase ships.
