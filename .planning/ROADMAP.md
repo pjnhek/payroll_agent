@@ -60,7 +60,7 @@ one already-manual, low-risk producer (operator retrigger) before the money path
   4. A routine redeploy (graceful worker shutdown) releases any held leases immediately, so an in-flight retrigger resumes within seconds rather than stalling for the full lease duration.
   5. A CI-enforced guard fails the build if a `jobs.kind` value ever collides with a `payroll_runs.status` value or drifts from the `JobKind` enum — the job row can never encode "what payroll status comes next."
 
-**Plans**: 5/10 plans executed
+**Plans**: 7/10 plans executed
 *(Replanned 2026-07-14 after a cross-AI plan review. Two scope-level decisions were locked: **D-13** —
 forward-port the send-idempotency fix into this phase, because this phase is where live workers and
 lease-expiry reclaim actually ship, so this is where the double-send window actually opens; and
@@ -82,8 +82,8 @@ start the first live workers.)*
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 16-06-PLAN.md — `app/queue/`: wake (D-09), dispatch, the `run_pipeline` handler (D-01 rewind + the restated INVARIANT J-1 + its CAS-only static guard), `drain_once()`, and the pre-FAIL-01 pin test *(wave 3)*
-- [ ] 16-10-PLAN.md — **D-13: the fail-closed send-idempotency guard.** A `reserved`/`failed` outbound row in the run's current epoch means the provider MAY already hold the message → do NOT re-send, escalate to the operator. Lands BEFORE the first live worker. *(wave 3)*
+- [x] 16-06-PLAN.md — `app/queue/`: wake (D-09), dispatch, the `run_pipeline` handler (D-01 rewind + the restated INVARIANT J-1 + its CAS-only static guard), `drain_once()`, and the pre-FAIL-01 pin test *(wave 3)*
+- [x] 16-10-PLAN.md — **D-13: the fail-closed send-idempotency guard.** A `reserved`/`failed` outbound row in the run's current epoch means the provider MAY already hold the message → do NOT re-send, escalate to the operator. Lands BEFORE the first live worker. *(wave 3)*
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -209,7 +209,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 13. Module Structure & Boundaries | v3 | 4/4 | Complete    | 2026-07-10 |
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
-| 16. Queue Substrate & Unblocked Webhook | v4 | 5/10 | In Progress|  |
+| 16. Queue Substrate & Unblocked Webhook | v4 | 7/10 | In Progress|  |
 | 17. The Pump | v4 | 0/TBD | Not started | - |
 | 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
