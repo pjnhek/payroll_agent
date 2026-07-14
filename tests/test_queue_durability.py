@@ -95,11 +95,14 @@ red run pasted into the plan's SUMMARY, then reverted):
 """
 from __future__ import annotations
 
+import ast
 import inspect
+import pathlib
 import re
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 
 import psycopg
 import pytest
@@ -651,4 +654,297 @@ def test_skip_locked_steps_over_a_row_another_worker_is_holding(seeded_db) -> No
     assert winner.id == second, (
         "the claimer must step OVER the held row and take the other job, not "
         "return the locked one"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Proof 4 — a graceful shutdown releases a real held lease immediately, and
+# the released row's own zombie worker is fenced out rather than corrupting it.
+# ---------------------------------------------------------------------------
+
+
+def test_graceful_shutdown_releases_held_leases_immediately(
+    seeded_db, live_worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real worker holds a real lease; worker.stop() (not repo.release_leases
+    called directly — that repo-level half already exists elsewhere) must hand
+    it back to `pending` immediately, without waiting out LEASE_SECONDS. The
+    straggler that stop() could not join is not corrupting anything: its own
+    eventual complete_job call is fenced on the lease token it was issued and
+    comes back False.
+    """
+    from app.db import repo
+    from app.models.job import JobKind
+    from app.queue import worker
+    from app.queue.handlers import pipeline
+
+    run_id = _seed_run_for_queue_proof()
+    enqueued_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-graceful-shutdown:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    assert enqueued_id is not None
+
+    handler_entered = threading.Event()
+    release_me = live_worker.blocker()  # minted BY THE FIXTURE — its
+    # teardown releases this even if the test body never reaches its own set()
+
+    def blocking_handler(job) -> None:
+        handler_entered.set()
+        release_me.wait(timeout=_BLOCKER_WAIT_SECONDS)
+
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", blocking_handler)
+
+    complete_results: list[bool] = []
+    real_complete_job = repo.complete_job
+
+    def spy_complete_job(job_id, lease_token, conn=None):  # noqa: ANN001
+        result = real_complete_job(job_id, lease_token, conn=conn)
+        complete_results.append(result)
+        return result
+
+    monkeypatch.setattr(repo, "complete_job", spy_complete_job)
+
+    live_worker.start(n=1)  # never worker.start() directly
+    assert handler_entered.wait(timeout=_BLOCKER_WAIT_SECONDS), (
+        "the worker never entered the blocked handler"
+    )
+
+    # Precondition: a genuinely held lease, or everything below is theatre.
+    row = repo.get_job(enqueued_id)
+    assert row is not None
+    assert row["state"] == "leased"
+    assert row["lease_token"] is not None
+    assert row["leased_until"] is not None
+    assert row["leased_until"] > datetime.now(UTC)
+
+    straggler_candidates = live_queue_worker_threads()
+    assert len(straggler_candidates) == 1
+    straggler = straggler_candidates[0]
+
+    worker.stop(grace_seconds=1)  # the blocked handler will not exit within
+    # this grace window — that is intentional and exactly what the release
+    # below must survive.
+
+    row = repo.get_job(enqueued_id)
+    assert row is not None
+    assert row["state"] == "pending", (
+        "worker.stop() must release the held lease IMMEDIATELY, without "
+        "waiting out LEASE_SECONDS"
+    )
+    assert row["lease_token"] is None
+    assert row["leased_until"] is None
+
+    release_me.set()
+    straggler.join(timeout=_BLOCKER_WAIT_SECONDS)
+    assert not straggler.is_alive(), (
+        "the straggler must actually exit once released — its generation's "
+        "stop event is still set, so its next loop-boundary check returns"
+    )
+
+    assert complete_results == [False], (
+        "the now-zombie worker's complete_job must be FENCED OUT (return "
+        f"False) rather than marking the job done; got {complete_results}"
+    )
+    row = repo.get_job(enqueued_id)
+    assert row is not None
+    assert row["state"] == "pending", (
+        "the zombie's fenced-out completion must not have moved the row off "
+        "pending"
+    )
+
+
+def test_quiesce_releases_a_blocked_handler_and_joins_to_zero(
+    seeded_db, live_worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_quiesce_workers` is what stands between a blocked worker and a DELETE
+    landing on its leased row. It only ever runs on an abort path in normal
+    use, so drive it head-on rather than leaving it exercised only when
+    nobody is watching.
+    """
+    from app.db import repo
+    from app.models.job import JobKind
+    from app.queue.handlers import pipeline
+
+    run_id = _seed_run_for_queue_proof()
+    enqueued_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-quiesce:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    assert enqueued_id is not None
+
+    handler_entered = threading.Event()
+    release_me = live_worker.blocker()
+
+    def blocking_handler(job) -> None:
+        handler_entered.set()
+        release_me.wait(timeout=_BLOCKER_WAIT_SECONDS)
+
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", blocking_handler)
+
+    live_worker.start(n=1)
+    assert handler_entered.wait(timeout=_BLOCKER_WAIT_SECONDS)
+
+    assert live_queue_worker_threads(), (
+        "the precondition: a live worker thread must exist before quiescing it"
+    )
+    row = repo.get_job(enqueued_id)
+    assert row is not None
+    assert row["state"] == "leased"
+
+    # Do NOT release the blocker and do NOT call stop() — this is exactly
+    # what live_worker's own teardown does when a test body dies here.
+    _quiesce_workers([release_me])
+
+    assert release_me.is_set(), "_quiesce_workers must release every blocker"
+    row = repo.get_job(enqueued_id)
+    assert row is not None
+    # `_quiesce_workers` releases every blocker BEFORE calling stop(), so a
+    # handler that (like this one) returns immediately once unblocked can
+    # legitimately race ahead and complete the job through the normal
+    # complete_job path before stop()'s own release_leases call ever sees it
+    # still leased — `complete_job` clears lease_token/leased_until exactly
+    # like release_leases does. Both outcomes are SAFE and both are what this
+    # assertion accepts: what matters is that no row is left `leased` with a
+    # stale token once the process is quiescent.
+    assert row["state"] in ("pending", "done"), row["state"]
+    assert row["lease_token"] is None
+    assert live_queue_worker_threads() == [], (
+        "the process must be fully quiescent — this is what makes it safe "
+        "for _isolated_jobs to delete `jobs` next"
+    )
+
+
+def test_a_restarted_worker_claims_and_completes_a_real_job(
+    seeded_db, live_worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live half of the restart proof: not "the restarted threads are
+    alive", but "the restarted worker CLAIMS AND COMPLETES A JOB." Under the
+    round-2 defect (a single stop event that start() never resets), the
+    second generation's threads would observe generation 1's still-set event
+    on their first iteration and return before ever calling drain_once — job
+    B stays `pending` forever and `thread.is_alive()` would have been GREEN
+    against the exact bug this proves absent.
+    """
+    from app.db import repo
+    from app.models.job import JobKind
+    from app.queue import worker
+    from app.queue.handlers import pipeline
+
+    run_id = _seed_run_for_queue_proof()
+
+    handled_a: list[uuid.UUID] = []
+    handled_a_event = threading.Event()
+
+    def stub_a(job) -> None:
+        handled_a.append(job.id)
+        handled_a_event.set()
+
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", stub_a)
+
+    job_a = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-restart-a:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    assert job_a is not None
+
+    live_worker.start(n=1)  # never worker.start() directly
+    assert handled_a_event.wait(timeout=_BLOCKER_WAIT_SECONDS)
+    worker.stop(grace_seconds=_BLOCKER_WAIT_SECONDS)  # a CLEAN stop; the
+    # thread joins — calling stop() directly (not through the fixture) is
+    # fine and is the point of this test; it is START that must go through
+    # the fixture, so the fixture knows a worker exists and can quiesce it.
+
+    handled_b: list[uuid.UUID] = []
+    handled_b_event = threading.Event()
+
+    def stub_b(job) -> None:
+        handled_b.append(job.id)
+        handled_b_event.set()
+
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", stub_b)
+
+    job_b = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-restart-b:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    assert job_b is not None
+
+    live_worker.start(n=1)  # a second generation, with a brand-new stop event
+    assert handled_b_event.wait(timeout=_BLOCKER_WAIT_SECONDS), (
+        "the restarted worker's dispatch was never invoked for job B — "
+        "generation 2 likely observed generation 1's still-set stop event"
+    )
+    worker.stop(grace_seconds=_BLOCKER_WAIT_SECONDS)  # joins: complete_job
+    # has provably already run by the time this join returns
+
+    assert handled_b == [job_b], "the stub must have received job B's id, not a stranger's"
+
+    row_b = repo.get_job(job_b)
+    assert row_b is not None
+    assert row_b["state"] == "done", (
+        "job B must reach `done`, read back by its OWN id — a thread being "
+        "alive proves nothing about whether it ever drained"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A static guard: the ONLY place in this file that may call
+# `worker.start(...)` is `_LiveWorkerHandle.start`'s own body — the single
+# wrapper every test call site goes through. An AST scan, not a grep: this
+# module's own prose has to SAY the words "never worker.start() directly" to
+# explain the rule, and a grep that counts its own explanation would be
+# self-invalidating.
+# ---------------------------------------------------------------------------
+
+
+def test_every_worker_start_call_goes_through_the_live_worker_wrapper() -> None:
+    tree = ast.parse(pathlib.Path(__file__).read_text())
+    sanctioned_class = "_LiveWorkerHandle"
+    sanctioned_method = "start"
+    violations: list[int] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._class_stack: list[str] = []
+            self._func_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self._class_stack.append(node.name)
+            self.generic_visit(node)
+            self._class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._func_stack.append(node.name)
+            self.generic_visit(node)
+            self._func_stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            is_worker_start = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "start"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "worker"
+            )
+            if is_worker_start:
+                in_sanctioned_wrapper = (
+                    self._class_stack[-1:] == [sanctioned_class]
+                    and self._func_stack[-1:] == [sanctioned_method]
+                )
+                if not in_sanctioned_wrapper:
+                    violations.append(node.lineno)
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    assert violations == [], (
+        f"worker.start(...) called directly outside {sanctioned_class}."
+        f"{sanctioned_method} at line(s) {violations} — every test in this "
+        "file must start a worker through the live_worker fixture instead, "
+        "so its teardown can quiesce a straggler before _isolated_jobs "
+        "deletes beneath it."
     )
