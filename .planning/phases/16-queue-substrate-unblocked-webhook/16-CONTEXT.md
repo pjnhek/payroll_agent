@@ -232,6 +232,101 @@ success criterion #2 forbids.
   pretend to fix it. It is recorded as a **backlog item** (see `.planning/ROADMAP.md` → Backlog) and
   acted on in a later, dedicated piece of work — not here.
 
+- **D-15: THE WORKER STOP EVENT IS PER-GENERATION, MINTED FRESH IN `start()` — NEVER `.clear()`ed.**
+
+  *(Added 2026-07-14 after cross-AI plan review, round 2. CONFIRMED against the revised plans.)*
+
+  The round-1 fix gave `worker.stop()` a stop `Event` and a `_generation` counter, and gave `start()`
+  a refusal guard. But **nothing ever un-set the event.** After a clean `start() → stop()`, the next
+  `start()` would spawn threads whose very first loop iteration observes an already-set event and
+  returns immediately: **workers exist, nothing ever drains.** A restarted process would be silently
+  dead. The revised plan even contradicted itself — `16-07`'s restart test asserts a start AFTER the
+  orphan dies *succeeds*, which as specified would have "succeeded" at spawning corpses.
+
+  **The mechanism:** `start()` mints a **brand-new `threading.Event()`** for the generation it is
+  about to spawn and passes it to each thread as an argument (`_loop(gen, stop_evt)`); the module
+  holds a reference to the current one so `stop()` can set it. A generation's event, once set, stays
+  set **forever** — it belongs to that generation and to no other.
+
+  **Why NOT `.clear()` a shared module-level event** (the obvious one-line fix, and the wrong one):
+  clearing a *shared* event **un-stops a straggler**. Plan 16-07's own Proof 4 constructs exactly that
+  straggler on purpose — a worker blocked inside a handler that survives a timed-out join. It is told
+  to stop; it has not yet reached the loop boundary where it would notice. A `.clear()` on the next
+  `start()` would revoke that instruction and resurrect it, on top of the new generation, holding a
+  pooled connection against a `max_size=5` budget — D-07's failure arriving through the back door.
+  A fresh object per generation makes that unrepresentable rather than merely unlikely.
+
+  **The test must prove the restarted worker DRAINS, not that its threads are alive.** A liveness
+  assertion (`thread.is_alive()`) stays **green with this exact bug present** — it is the vacuous
+  twin. The restart proof asserts a real job goes to `done`.
+
+- **D-16: THE LIVE QUEUE PROOFS ARE ISOLATED PER TEST — `jobs` IS EMPTIED BETWEEN THEM.**
+
+  *(Added 2026-07-14 after cross-AI plan review, round 2. CONFIRMED against live source.)*
+
+  `tests/conftest.py:57` — `seeded_db` is `scope="module"`. `bootstrap(reset=True)` therefore runs
+  **once per module, not once per test.** `tests/test_queue_durability.py` packs five-plus live-DB
+  proofs into ONE module, and several of them **deliberately leave a row `pending` or `leased`**
+  (Proof 4 releases a lease and never completes the job; the claim-race losers leave nothing, but the
+  reclaim proof leaves a leased row mid-flight). `claim_job()` claims the oldest eligible row
+  **globally** — it has no per-test scoping.
+
+  So a later test can claim an **earlier test's leftover row**: false winners in the claim race, wrong
+  `attempts` counts, a "reclaim" proof that passes against a stranger's job. That is the **same
+  vacuous-proof class** this project already shipped once (the Phase 10 concurrency proof) and had to
+  fix. A durability proof that can claim a row it did not enqueue proves nothing.
+
+  **The mechanism — two belts, in this order:**
+  1. **Structural (load-bearing):** a **module-local, `autouse=True`, function-scoped** fixture in
+     `tests/test_queue_durability.py` that `DELETE`s every row from `jobs` **before and after each
+     test**, layered on `seeded_db`. Module-local `autouse` means a test added in a later phase gets
+     isolation **for free** — there is no per-test discipline to forget, which is the failure mode.
+  2. **Assertional (defense in depth):** every claim assertion is scoped to a job id **the test itself
+     enqueued** (`claimed.id == enqueued_id`), never merely "a job came back". This survives a future
+     regression in belt 1.
+
+- **D-17: A `run_pipeline` JOB WITH A NULL `run_id` IS UNREPRESENTABLE — ENFORCED IN THE DATABASE.**
+
+  *(Added 2026-07-14 after cross-AI plan review, round 2.)*
+
+  `jobs.run_id` is nullable (correctly — Phase 19's `ingest` kind has no run yet) and `enqueue_job`
+  exposes `run_id=None`. But the **only** `JobKind` that exists is `run_pipeline`, which is
+  meaningless without a run. A null-run job would reach the handler, call `claim_status(None, ...)`,
+  no-op, return normally — and `drain_once()` would mark it **`done`**. A job that processed no
+  payroll, recorded as success. Silent loss, in the money path.
+
+  **The mechanism is a kind-scoped CHECK constraint** —
+  `CONSTRAINT ck_jobs_run_pipeline_requires_run CHECK (kind <> 'run_pipeline' OR run_id IS NOT NULL)`
+  — because it holds against **every future caller**, including a raw SQL insert or a Phase-19
+  producer that never reads `enqueue_job`'s signature. `enqueue_job` **also** raises `ValueError`
+  before issuing any statement, so the common case fails fast with a legible message rather than as an
+  `IntegrityError` from the driver. Both halves are proven independently: the Python guard by a
+  hermetic test that asserts **no SQL was executed**, the DB guard by a live INSERT that bypasses
+  `enqueue_job` entirely.
+
+- **D-18: THE J-1 AST GUARD FAILS CLOSED ON ANYTHING IT CANNOT STATICALLY RESOLVE.**
+
+  *(Added 2026-07-14 after cross-AI plan review, round 2.)*
+
+  The round-1 guard scanned `repo.<name>(...)` calls by name. That is trivially bypassable:
+  `r = repo; r.set_status(...)`, `getattr(repo, "set_status")(...)`, `from app.db import repo as r`,
+  or `from app.db.repo.runs import set_status`. A future queue module could add an unconditional
+  business-status write and the guard would stay green — a decorative guard, which is worse than none.
+
+  **The mechanism:** the guard resolves, per file, every name bound to the repo module (via
+  `ast.Import`/`ast.ImportFrom`, aliases included), and then **rejects the file outright** on any
+  construct that defeats static resolution — re-binding a repo name to another name, `getattr` on a
+  repo name, passing a repo name as a call argument, importing functions *out of* `app.db.repo.*`, or
+  any `importlib`/`__import__` under `app/queue/`. Only then does it check that the status-writing
+  calls are exactly `{claim_status, rewind_for_reclaim}`.
+
+  **Stated limitation, so nobody trusts it further than it goes:** the guard covers **direct repo
+  access from `app/queue/`**. It does not — and cannot — cover status writes performed by code the
+  queue *calls into* (`pipeline_glue.run_pipeline_bg` → `orchestrator`). That is correct and
+  intentional: **J-1 constrains the TRANSPORT tier, not the pipeline it invokes.** The orchestrator's
+  own unconditional `set_status(EXTRACTING)` is explicitly permitted and explicitly not this guard's
+  business.
+
 ### Claude's Discretion
 
 - **No `ON DELETE CASCADE` from `payroll_runs` to `jobs`.** Keep the attempt history append-only,
