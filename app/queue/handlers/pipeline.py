@@ -57,10 +57,10 @@ on:**
   external CAS anywhere. Deleting it here would leave every ordinary run
   sitting at RECEIVED forever; on the retrigger path it is simply a
   redundant same-value write.
-- It never builds a rich success/retryable/terminal result contract for what
-  the pipeline call below returns. There is nothing real to classify with one
-  yet, and inventing a taxonomy ahead of a real design for it is exactly the
-  kind of premature structure this codebase avoids.
+- It never builds a rich, multi-outcome failure-classification contract for
+  what the pipeline call below returns. There is nothing real to classify
+  with one yet, and inventing a taxonomy ahead of a real design for it is
+  exactly the kind of premature structure this codebase avoids.
 - It never raises on a lost CAS and never re-enqueues. A lost CAS means
   another actor already owns this run's next state; the correct response is
   to log and return, letting the caller mark the job done.
