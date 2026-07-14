@@ -1,0 +1,205 @@
+"""CI drift guard: the `jobs` queue vocabulary must never collide with, nor drift
+from, the `payroll_runs` business vocabulary or its own SQL CHECK constraints.
+
+ROADMAP criterion #5 turned into a tripwire: a CI-enforced guard fails the build
+if a `jobs.kind` value ever collides with a `payroll_runs.status` value, or drifts
+from the `JobKind` enum in either direction. This module mirrors
+tests/test_status_drift.py's shape — pure static-file parsing, no DB connection —
+but needs its OWN inline-CHECK parser: `jobs.kind`/`jobs.state` are declared as
+inline CHECKs inside `CREATE TABLE jobs (...)`, not via the executable DO-block
+re-add pattern `app/db/schema_introspect.py::_do_block_check_values` parses (that
+parser anchors on a constraint-name literal followed by its re-add CHECK, which
+`jobs` deliberately has none of — see app/db/schema.sql's DEVIATION 1 comment).
+Calling the DO-block parser against `jobs` raises ValueError; it does not
+silently pass with an empty set, so this file writes a genuinely different,
+simpler regex instead of reusing that helper with different arguments.
+
+Falsifying mutations (each independently reverts the guard to red — see the
+individual test bodies for the exact mutation and the executed proof pasted into
+this plan's SUMMARY):
+  (a) add a JobKind member with no corresponding value in the SQL CHECK
+      -> test_job_kind_check_matches_python_enum goes red.
+  (b) add a value to the SQL CHECK with no JobKind member
+      -> the SAME test goes red (set equality, both directions).
+  (c) rename a JobState member's value to a string RunStatus already owns
+      -> test_job_state_never_collides_with_run_status goes red.
+  (d) remove "jobs" from expected_schema().tables
+      -> test_health_schema_covers_jobs goes red (the registration this guards
+      is one careless refactor from silently disappearing without this).
+
+The dispatch-table half of Proof 5 (`set(JobKind) == set(dispatch.HANDLERS)`) is
+appended to THIS file by the plan that creates app/queue/dispatch.py — append
+below the placeholder at the bottom rather than creating a second file.
+"""
+
+import ast
+import pathlib
+import re
+
+from app.db import bootstrap
+from app.db.schema_introspect import _create_body, expected_schema
+from app.models.job import JobKind, JobState
+from app.models.status import RunStatus
+
+_SCHEMA_SQL = pathlib.Path(__file__).parent.parent / "app" / "db" / "schema.sql"
+
+
+def _inline_check_values(sql: str, table: str, column: str) -> set[str]:
+    """Parse the value set out of the FIRST `CHECK (<column> IN (...))` inside
+    `CREATE TABLE <table> (...)`.
+
+    A genuinely different, simpler parser than
+    `schema_introspect._do_block_check_values`: it has no constraint-name
+    literal to anchor on, because `jobs.kind`/`jobs.state` are inline CHECKs
+    with no DO-block re-add. Scoping the search to `table`'s CREATE body (via
+    `_create_body`, already parenthesis-balanced) rather than the whole file
+    keeps this from ever accidentally matching a sibling table's CHECK on a
+    same-named column.
+    """
+    body = _create_body(sql, table)
+    m = re.search(
+        rf"CHECK\s*\(\s*{re.escape(column)}\s+IN\s*\((.*?)\)\s*\)",
+        body,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not m:
+        raise ValueError(
+            f"No inline 'CHECK ({column} IN (...))' found in the {table} CREATE body"
+        )
+    return {v.strip().strip("'") for v in m.group(1).split(",") if v.strip()}
+
+
+def _clean_sql() -> str:
+    return re.sub(r"--[^\n]*", "", _SCHEMA_SQL.read_text())
+
+
+class TestKindStatusCollision:
+    """INVARIANT J-1: the queue vocabulary can never name a business status."""
+
+    def test_job_kind_never_collides_with_run_status(self) -> None:
+        kind_values = {m.value for m in JobKind}
+        status_values = {m.value for m in RunStatus}
+        collision = kind_values & status_values
+        assert not collision, (
+            f"JobKind value(s) {sorted(collision)} collide with RunStatus — a "
+            "jobs.kind that equals a payroll_runs.status is INVARIANT J-1 "
+            "violated at the vocabulary level"
+        )
+
+    def test_job_state_never_collides_with_run_status(self) -> None:
+        state_values = {m.value for m in JobState}
+        status_values = {m.value for m in RunStatus}
+        collision = state_values & status_values
+        assert not collision, (
+            f"JobState value(s) {sorted(collision)} collide with RunStatus — a "
+            "future JobState member taking a string RunStatus already owns is "
+            "exactly the trap this guard exists to catch"
+        )
+
+
+class TestJobKindCheckDrift:
+    """jobs.kind/jobs.state SQL CHECK value sets must set-EQUAL their Python enum."""
+
+    def test_job_kind_check_matches_python_enum(self) -> None:
+        sql = _clean_sql()
+        sql_values = _inline_check_values(sql, "jobs", "kind")
+        py_values = {m.value for m in JobKind}
+        sql_only = sql_values - py_values
+        py_only = py_values - sql_values
+        assert sql_values == py_values, (
+            f"jobs.kind drift detected!\n"
+            f"  In SQL CHECK but not in JobKind: {sql_only or 'none'}\n"
+            f"  In JobKind but not in SQL CHECK: {py_only or 'none'}\n"
+            f"  SQL values:    {sorted(sql_values)}\n"
+            f"  Python values: {sorted(py_values)}"
+        )
+
+    def test_job_state_check_matches_python_enum(self) -> None:
+        sql = _clean_sql()
+        sql_values = _inline_check_values(sql, "jobs", "state")
+        py_values = {m.value for m in JobState}
+        sql_only = sql_values - py_values
+        py_only = py_values - sql_values
+        assert sql_values == py_values, (
+            f"jobs.state drift detected!\n"
+            f"  In SQL CHECK but not in JobState: {sql_only or 'none'}\n"
+            f"  In JobState but not in SQL CHECK: {py_only or 'none'}\n"
+            f"  SQL values:    {sorted(sql_values)}\n"
+            f"  Python values: {sorted(py_values)}"
+        )
+
+
+class TestJobsDdlInventory:
+    """jobs' DDL inventory is pinned by name, so a silent drop/rename fails loud."""
+
+    def test_jobs_ddl_inventory_is_pinned(self) -> None:
+        sql = _clean_sql()
+        for name in (
+            "uq_jobs_dedup_key",
+            "ck_jobs_lease_coherent",
+            "idx_jobs_claimable",
+        ):
+            assert name in sql, f"{name} must be present in schema.sql"
+
+        body = _create_body(sql, "jobs")
+        assert body, "could not extract the jobs CREATE body"
+        assert "CASCADE" not in body.upper(), (
+            "jobs' CREATE body must not declare a cascading delete — an "
+            "append-only audit log (matching the email_messages precedent) "
+            "cannot silently vaporize a run's attempt history"
+        )
+        assert "event_id" not in body, (
+            "jobs.event_id must not exist — its FK target (a durable-ingest "
+            "events table) does not exist in this schema yet, and a FK to a "
+            "non-existent relation fails the bootstrap outright"
+        )
+
+    def test_bootstrap_drop_order_includes_jobs(self) -> None:
+        assert "jobs" in bootstrap._DROP_ORDER
+        assert "payroll_runs" in bootstrap._DROP_ORDER
+        assert bootstrap._DROP_ORDER.index("jobs") < bootstrap._DROP_ORDER.index(
+            "payroll_runs"
+        ), (
+            "'jobs' must precede 'payroll_runs' in _DROP_ORDER — it FK-references "
+            "payroll_runs, so dropping payroll_runs first would orphan (or, with "
+            "CASCADE, silently vaporize) job rows before jobs itself is dropped"
+        )
+
+    def test_health_schema_covers_jobs(self) -> None:
+        assert "jobs" in expected_schema().tables, (
+            "'jobs' must be a key of expected_schema().tables — without this, a "
+            "live deploy on which the jobs table silently failed to apply would "
+            "still report /health/schema as in_sync"
+        )
+
+
+class TestNoDbConnectionNeeded:
+    """This file must stay a pure static-file test — no DB import, ever."""
+
+    def test_no_db_connection_needed(self) -> None:
+        source = pathlib.Path(__file__).read_text()
+        tree = ast.parse(source, filename=__file__)
+
+        _FORBIDDEN = {"app.db.supabase", "psycopg", "psycopg_pool"}
+
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in _FORBIDDEN:
+                        offenders.append(f"line {node.lineno}: import {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module in _FORBIDDEN or module.startswith("app.db.supabase"):
+                    offenders.append(f"line {node.lineno}: from {module} import ...")
+
+        assert not offenders, (
+            "test_job_kind_drift.py must not import the DB layer.\n"
+            "Forbidden import(s) found:\n  " + "\n  ".join(offenders)
+        )
+
+
+# ── Placeholder: dispatch-table half of Proof 5 ─────────────────────────────
+# The plan that creates app/queue/dispatch.py appends the CI guard
+# `set(JobKind) == set(dispatch.HANDLERS)` (set EQUALITY) to THIS file, as a
+# new test in a new class below this marker — not a second drift-test file.

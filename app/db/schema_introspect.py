@@ -136,6 +136,16 @@ def expected_schema() -> ExpectedSchema:
     tables = {
         "payroll_runs": frozenset(_columns_for_table(sql, "payroll_runs")),
         "email_messages": frozenset(_columns_for_table(sql, "email_messages")),
+        # Column coverage only — NOT the Q3 CHECK-value drift query below.
+        # jobs.kind/jobs.state are declared as INLINE CHECKs inside CREATE TABLE
+        # jobs (...), not via the DO-block re-add pattern _do_block_check_values
+        # parses, so feeding them through that parser raises ValueError. Their
+        # value-drift coverage lives in tests/test_job_kind_drift.py's own
+        # inline-CHECK parser instead. What this line buys is narrower: a `jobs`
+        # table that silently failed to apply on a live deploy now trips
+        # /health/schema instead of the endpoint reporting in_sync with the
+        # newest, most concurrency-critical table entirely unchecked.
+        "jobs": frozenset(_columns_for_table(sql, "jobs")),
     }
     status_values = frozenset(
         _do_block_check_values(sql, "payroll_runs_status_check", "status")
@@ -219,6 +229,11 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
         missing_columns[table] = sorted(set(expected_cols) - live)
 
     # Q3: status + purpose CHECK defs (selected by conkey — column set — not name).
+    # Deliberately still exactly these two tables. The CASE WHEN below can only
+    # express a binary choice, so a third table needs a genuinely different query
+    # shape, not a wider IN list — and jobs.kind/jobs.state have no DO-block
+    # constraint-name literal to anchor a third branch on in the first place
+    # (see the comment on expected_schema()'s "jobs" entry above).
     rows = conn.execute(
         "SELECT CASE WHEN c.conrelid = to_regclass('public.payroll_runs') "
         "            THEN 'status' ELSE 'purpose' END AS which, "

@@ -69,14 +69,19 @@ def _script_in_sync(
     drop_col: str | None = None,
     drop_uq: bool = False,
 ) -> None:
-    """Script a FakeConnection to answer the 4 diff_against_live queries in order:
-    1) payroll_runs columns  2) email_messages columns
-    3) status+purpose constraint defs  4) unique-constraint names present.
+    """Script a FakeConnection to answer the 5 diff_against_live queries in order:
+    1) payroll_runs columns  2) email_messages columns  3) jobs columns
+    4) status+purpose constraint defs  5) unique-constraint names present.
+
+    The column-fetch queries (1-3) run one per exp.tables entry, in dict
+    insertion order — "jobs" is the third entry, so it needs its own scripted
+    fetchall or the queue shifts and Q4/Q5 read the wrong rows.
     """
     from app.db.schema_introspect import expected_schema
     exp = expected_schema()
     pr_cols = set(exp.tables["payroll_runs"])
     em_cols = set(exp.tables["email_messages"])
+    jobs_cols = set(exp.tables["jobs"])
     if drop_col:
         pr_cols.discard(drop_col)
     status_def = LIVE_STATUS_DEF
@@ -85,8 +90,9 @@ def _script_in_sync(
     uq_present = set() if drop_uq else {"uq_email_run_purpose_round_epoch"}
     conn.script_fetchall([(c,) for c in pr_cols])                 # Q1
     conn.script_fetchall([(c,) for c in em_cols])                 # Q2
-    conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])  # Q3
-    conn.script_fetchall([(n,) for n in uq_present])              # Q4
+    conn.script_fetchall([(c,) for c in jobs_cols])                # Q3
+    conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])  # Q4
+    conn.script_fetchall([(n,) for n in uq_present])              # Q5
 
 
 def _diff(conn: FakeConnection) -> SchemaDiff:
