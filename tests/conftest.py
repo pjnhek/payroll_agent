@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,6 +33,78 @@ import resend  # noqa: F401 — imported so the module is available for monkeypa
 
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
+
+# A hard set (not setdefault) at module top, before any test module imports
+# app.main. Ten existing tests open `with TestClient(app)`, which DOES run
+# FastAPI lifespan events — once the queue worker's lifespan lands, an
+# unpinned WORKER_COUNT would spawn real daemon threads hitting the real DB
+# from every one of those tests. A hard set also beats any stray .env entry:
+# actual environment variables outrank pydantic-settings' env_file loading.
+# Tests that need a real worker call worker.start(n=...) explicitly — never
+# through this env var.
+os.environ["WORKER_COUNT"] = "0"
+
+# ---------------------------------------------------------------------------
+# 0a. Suite-wide daemon-worker leak guard — the name prefix every real queue
+# worker thread carries, a thread scanner, and the failure body, factored
+# apart from the autouse fixture below so a test can drive the guard
+# directly (start a sentinel thread, assert the guard raises, join it, assert
+# the guard then returns cleanly) without needing app.queue.worker to exist.
+#
+# The `worker` module is process-global state, and a hermetic worker-unit
+# test file and this suite's live-DB durability proofs run in the SAME
+# pytest process — a daemon thread leaked by one file is still alive,
+# claiming rows, when a later file runs. Scanning threads by NAME (not by
+# asking the worker module "do you have live workers?") is deliberate: the
+# failure this exists to catch is a thread the worker module itself has
+# forgotten about or never tracked, and a query routed back through that
+# same module would answer "no" in exactly the case that matters.
+# ---------------------------------------------------------------------------
+
+QUEUE_WORKER_THREAD_PREFIX = "queue-worker-"
+
+
+def live_queue_worker_threads() -> list[threading.Thread]:
+    """Every currently-alive thread whose name starts with the queue worker
+    prefix — a plain `threading.enumerate()` scan, no import on the worker
+    module itself."""
+    return [
+        t
+        for t in threading.enumerate()
+        if t.is_alive() and t.name.startswith(QUEUE_WORKER_THREAD_PREFIX)
+    ]
+
+
+def fail_on_leaked_queue_workers() -> None:
+    """Fail loudly, naming every surviving thread and its daemon flag, if any
+    queue-worker-* thread is still alive. Factored out of the autouse fixture
+    below so a test can exercise this behavior directly."""
+    survivors = live_queue_worker_threads()
+    if survivors:
+        pytest.fail(
+            "leaked queue-worker thread(s) still alive after test teardown: "
+            + ", ".join(f"{t.name} (daemon={t.daemon})" for t in survivors)
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_queue_workers():
+    """Suite-wide autouse fixture: at the teardown of EVERY test, fail if a
+    queue-worker-* thread survived it. Attributes a leak to the test that
+    caused it rather than to an innocent test several files later that
+    happens to trip over the leftover thread.
+
+    This does NOT make tests/test_queue_durability.py's own `_isolated_jobs`
+    delete-gate redundant, and the two are not interchangeable: pytest sets
+    up conftest-level fixtures BEFORE module-local ones, so it tears THIS one
+    down AFTER `_isolated_jobs` has already issued its DELETE. This fixture
+    can only report a leak after the fact; only a gate INSIDE
+    `_isolated_jobs`, ahead of its own delete statement, can prevent that
+    delete from landing beneath a still-live worker.
+    """
+    yield
+    fail_on_leaked_queue_workers()
+
 
 # ---------------------------------------------------------------------------
 # 0. Live-DB two-factor guard + shared seeded_db fixture
@@ -260,6 +333,10 @@ class InMemoryRepo:
         # Outbound email_messages rows (the Message-ID threading anchor):
         # run_id -> list of rows.
         self.outbound: dict[str, list[dict[str, Any]]] = {}
+        # Durable job queue mirror: job_id -> job row, plus a dedup_key index
+        # standing in for the real table's UNIQUE(dedup_key) constraint.
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self._job_dedup_keys: dict[str, uuid.UUID] = {}
         # Seed businesses for sender matching.
         from app.db.seed import seed
 
@@ -658,7 +735,8 @@ class InMemoryRepo:
             run["clarification_round"] = value
 
     def clear_reply_context(self, run_id, conn=None):
-        """Null ALL reply-round context on the fake run (mirrors repo).
+        """Null ALL reply-round context on the fake run (mirrors repo) and
+        return the NEW reply_epoch.
 
         "Context lost means ALL of it": clarified_fields, pre_clarify_extracted,
         clarification_round, AND alias_candidates together — matches the real
@@ -666,9 +744,11 @@ class InMemoryRepo:
         provenance badge on the dashboard that outlives the data behind it.
 
         Also increments reply_epoch (default 0 via .get), mirroring the real
-        repo's `reply_epoch = reply_epoch + 1` in the same statement: bumping the
-        epoch is what makes prior-epoch replies invisible without deleting rows
-        from the append-only email_messages log.
+        repo's increment in the same statement: bumping the epoch is what
+        makes prior-epoch replies invisible without deleting rows from the
+        append-only email_messages log. Returning the incremented int (rather
+        than None, as this used to) lets a caller key a retrigger's dedup_key
+        on the fresh epoch without a separate read.
         """
         run = self.runs.get(str(run_id))
         if run is not None:
@@ -681,6 +761,130 @@ class InMemoryRepo:
             # conversation that no longer exists.
             run["hours_changes"] = None
             run["reply_epoch"] = run.get("reply_epoch", 0) + 1
+            return run["reply_epoch"]
+        return 0
+
+    def rewind_for_reclaim(self, run_id, conn=None):
+        """Mirror repo.rewind_for_reclaim: rewind a stranded run to RECEIVED
+        without touching reply_epoch — the automatic reclaim path must never
+        mint the same "send it again" licence a human retrigger grants
+        itself. Scoped to exactly the same three statuses as the real repo
+        function; returns True if the run was rewound, False otherwise.
+        """
+        run = self.runs.get(str(run_id))
+        if run is None or run.get("status") not in ("extracting", "computed", "sent"):
+            return False
+        run["status"] = "received"
+        run["clarified_fields"] = None
+        run["pre_clarify_extracted"] = None
+        run["clarification_round"] = 0
+        run["alias_candidates"] = None
+        run["hours_changes"] = None
+        return True
+
+    # --- durable job queue (in-memory mirror of app/db/repo/jobs.py) ---
+    def enqueue_job(
+        self,
+        *,
+        kind,
+        dedup_key,
+        run_id=None,
+        email_id=None,
+        business_id=None,
+        max_attempts=None,
+        conn=None,
+    ):
+        """Mirror repo.enqueue_job: raises before touching self.jobs on a
+        run-less run_pipeline job, and is idempotent on dedup_key (a second
+        enqueue with the same key returns None, like ON CONFLICT DO NOTHING).
+        """
+        from app.models.job import JobKind
+
+        if kind is JobKind.RUN_PIPELINE and run_id is None:
+            raise ValueError(
+                f"enqueue_job: kind={kind.value!r} requires a run_id — a "
+                "run_pipeline job with no run would be claimed and marked "
+                "done without processing any payroll."
+            )
+        if dedup_key in self._job_dedup_keys:
+            return None
+        jid = uuid.uuid4()
+        self.jobs[str(jid)] = {
+            "id": jid,
+            "kind": kind.value if hasattr(kind, "value") else kind,
+            "dedup_key": dedup_key,
+            "run_id": run_id,
+            "email_id": email_id,
+            "business_id": business_id,
+            "state": "pending",
+            "attempts": 0,
+            "max_attempts": max_attempts if max_attempts is not None else 5,
+            "lease_token": None,
+            "last_error": None,
+        }
+        self._job_dedup_keys[dedup_key] = jid
+        return jid
+
+    def claim_job(self, *, lease_seconds=None, conn=None):
+        """Mirror repo.claim_job: claims the first pending job (in-memory
+        insertion order stands in for the real query's ORDER BY), stamping a
+        fresh lease_token and incrementing attempts AT CLAIM."""
+        from app.models.job import Job, JobKind
+
+        for job in self.jobs.values():
+            if job["state"] == "pending" and job["attempts"] < job["max_attempts"]:
+                job["state"] = "leased"
+                job["lease_token"] = uuid.uuid4()
+                job["attempts"] += 1
+                return Job(
+                    id=job["id"],
+                    kind=JobKind(job["kind"]),
+                    run_id=job["run_id"],
+                    attempts=job["attempts"],
+                    max_attempts=job["max_attempts"],
+                    lease_token=job["lease_token"],
+                )
+        return None
+
+    def complete_job(self, job_id, lease_token, conn=None):
+        """Mirror repo.complete_job: fenced on lease_token."""
+        job = self.jobs.get(str(job_id))
+        if job is None or job["state"] != "leased" or job["lease_token"] != lease_token:
+            return False
+        job["state"] = "done"
+        job["lease_token"] = None
+        return True
+
+    def fail_job(self, job_id, lease_token, *, error, backoff_seconds, conn=None):
+        """Mirror repo.fail_job: fenced on lease_token, dead-letters at
+        max_attempts."""
+        from app.models.job import JobState
+
+        job = self.jobs.get(str(job_id))
+        if job is None or job["state"] != "leased" or job["lease_token"] != lease_token:
+            return None
+        job["last_error"] = str(error)[:200]
+        job["lease_token"] = None
+        if job["attempts"] >= job["max_attempts"]:
+            job["state"] = "dead"
+        else:
+            job["state"] = "pending"
+        return JobState(job["state"])
+
+    def release_leases(self, lease_tokens, conn=None):
+        """Mirror repo.release_leases: flips every leased row holding one of
+        lease_tokens back to pending; returns the count."""
+        count = 0
+        for job in self.jobs.values():
+            if job["state"] == "leased" and job["lease_token"] in lease_tokens:
+                job["state"] = "pending"
+                job["lease_token"] = None
+                count += 1
+        return count
+
+    def get_job(self, job_id, conn=None):
+        """Mirror repo.get_job: a plain single-row read."""
+        return self.jobs.get(str(job_id))
 
     def get_record_only_flag(self, run_id, conn=None):
         """Return the record_only flag for a run (mirrors repo.get_record_only_flag).
@@ -1049,6 +1253,18 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "get_inbound_by_message_id",
         "clear_reply_context",
         "find_stranded_unconsumed_replies",
+        # automatic-reclaim rewind (never bumps reply_epoch) + the durable
+        # job queue's claim/lease/fencing surface. A method defined on
+        # InMemoryRepo but missing from THIS tuple is silently never
+        # patched — see tests/test_fake_repo_pairing.py, which makes that
+        # class of miss impossible to reintroduce.
+        "rewind_for_reclaim",
+        "enqueue_job",
+        "claim_job",
+        "complete_job",
+        "fail_job",
+        "release_leases",
+        "get_job",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
