@@ -344,6 +344,8 @@ def test_partial_reply_preserves_hours():
             # The field-regression helpers (pre-clarify snapshot + clarified_fields).
             "load_pre_clarify_extracted", "load_clarified_fields",
             "set_pre_clarify_extracted", "set_clarified_fields",
+            # _run_stages calls set_hours_changes UNCONDITIONALLY on every run.
+            "set_hours_changes",
             # resume_pipeline writes the consumed-reply marker right after its CAS
             # claim, so the mini-store must intercept these too — otherwise they fall
             # through to the real DB-backed repo and the test needs a live database.
@@ -425,6 +427,8 @@ def test_resume_on_non_awaiting_reply_run_does_not_mutate():
             # The field-regression helpers (pre-clarify snapshot + clarified_fields).
             "load_pre_clarify_extracted", "load_clarified_fields",
             "set_pre_clarify_extracted", "set_clarified_fields",
+            # _run_stages calls set_hours_changes UNCONDITIONALLY on every run.
+            "set_hours_changes",
             # claim_status returns False here (the run is no longer awaiting_reply), so
             # these are never reached — patched anyway so that if the short-circuit ever
             # regresses, the test fails on its assertions rather than on a live-DB call.
@@ -799,6 +803,15 @@ class _MiniStore:
 
     def set_clarified_fields(self, run_id, clarified, conn=None):
         """No-op: this mini-store does not exercise the clarified-fields write."""
+        pass
+
+    def set_hours_changes(self, run_id, changes, conn=None):
+        """No-op: this mini-store does not exercise the hours-changes write.
+
+        It must still EXIST and be named in BOTH registration tuples below — _run_stages
+        calls repo.set_hours_changes unconditionally, and an unpatched name falls through
+        to the real DB-backed repo (see the comment on those tuples).
+        """
         pass
 
     def get_clarification_round(self, run_id, conn=None):

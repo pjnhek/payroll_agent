@@ -136,6 +136,35 @@
 </div>
 {% endif %}
 
+{# --- Cross-round hours CHANGE banner -----------------------------------------
+     INDEPENDENT of the decision chain above (an `if`, never another `elif`), so it
+     renders ALONGSIDE whichever decision banner is showing — including at
+     awaiting_approval, which lands in the 'process' branch. That is the ONE moment
+     that matters: the operator is about to approve these numbers.
+
+     The client CHANGED hours on their clarification reply. The pipeline pays the new
+     values by design (the accumulation contract — a correction wins and is not
+     re-litigated), so no gate fires and no gate_reason appears. This banner is the
+     only thing standing between that silent change and a human signature. It renders a
+     PERSISTED pipeline-time fact (payroll_runs.hours_changes), never a render-time
+     re-derivation against a roster that may since have learned the alias.
+
+     submitted_name is client-supplied text: `{{ }}` only, autoescaping ON, never |safe.
+--------------------------------------------------------------------------------- #}
+{% if run.hours_changes %}
+<div class="banner banner-awaiting banner-mb">
+  <strong>Hours changed on the client's reply</strong> — you are approving the NEW numbers below, not the ones originally emailed.
+  <div class="banner-divider">
+    {% for change in run.hours_changes %}
+    <p style="margin: 2px 0 0 0;">
+      {{ change.submitted_name }} — {{ change.field | replace('hours_', '') }}:
+      <strong>{{ change.original_value }}</strong> &rarr; <strong>{{ change.resumed_value }}</strong>
+    </p>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {# --- 3-column CSS grid --- #}
 <div class="run-detail-grid">
   {# Column 1: Raw email #}

@@ -36,12 +36,18 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
+from fastapi.testclient import TestClient
+
+from app.main import app
 from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
 from app.pipeline.orchestrator import resume_pipeline
+
+client = TestClient(app, raise_server_exceptions=False)
 
 # ---------------------------------------------------------------------------
 # Stable identifiers — Business 3 / Summit Tech (seed.py).
@@ -364,4 +370,177 @@ def test_bridge_does_not_fire_when_the_client_denies_the_match(fake_repo, mock_l
     cand = (run.get("alias_candidates") or {}).get("Sandy") or {}
     assert cand.get("bound") is None, (
         f"the alias candidate must stay unbound on a denial; got {cand!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — THE LIVE RUN (e6fa8643). A CHANGE is recorded, and STILL processes.
+# ---------------------------------------------------------------------------
+
+
+def _run_the_live_scenario(fake_repo, mock_llm) -> uuid.UUID:
+    """Reproduce live run e6fa8643 end to end. Shared by Tests 4 and 5.
+
+    Original: "Sandy 20 hours, 10 hrs OT". We clarify on the unresolved name "Sandy".
+    Reply: "Yes, Sandra kim but only 40r regular, 2 hrs ot" — the client CONFIRMS the
+    identity and CHANGES both hours values in the same breath.
+    """
+    run_id = _seed_clarify_round(
+        fake_repo,
+        original_body="Sandy 20 hours, 10 hrs OT",
+        snapshot_employees=[
+            {"submitted_name": "Sandy", "hours_regular": "20", "hours_overtime": "10"}
+        ],
+        prior_matches=[_mk_match("Sandy", None, resolved=False)],
+        alias_candidates={"Sandy": _pending_candidate(SANDRA_ID)},
+    )
+    mock_llm.script = [
+        _extraction_json(
+            [
+                {
+                    "submitted_name": "Sandra Kim",
+                    "hours_regular": "40",
+                    "hours_overtime": "2",
+                }
+            ]
+        ),
+    ]
+    resume_pipeline(
+        run_id, _inbound("Yes, Sandra kim but only 40r regular, 2 hrs ot")
+    )
+    return run_id
+
+
+def test_cross_round_hours_change_is_recorded_but_never_gates(fake_repo, mock_llm):
+    """The live run: both hours values CHANGED. Process anyway — but RECORD it.
+
+    All four assertions matter, and (d) is not redundant with (b):
+      (a) the run still reaches AWAITING_APPROVAL — the accumulation design is intact;
+      (b) final_action == 'process' with EMPTY gate_reasons — no new gate rule appeared;
+      (c) the change is PERSISTED as two records, so the operator approves a fact the
+          pipeline actually computed rather than a render-time re-derivation;
+      (d) the paystub PAYS 40 and 2. Asserting the LABEL without asserting the PAID VALUE
+          is exactly how this codebase has been bitten before.
+    """
+    run_id = _run_the_live_scenario(fake_repo, mock_llm)
+    run = fake_repo.load_run(run_id)
+
+    # (a) the accumulation design is intact — the corrected values are simply paid.
+    assert run["status"] == RunStatus.AWAITING_APPROVAL.value, (
+        f"a CHANGE (not a drop) must not re-clarify — the reply's corrected value wins "
+        f"and is paid; got {run['status']!r}"
+    )
+
+    # (b) no new gate rule. decide.py gained nothing.
+    decision = run["decision"]
+    assert decision["final_action"] == "process", (
+        f"final_action must stay 'process'; got {decision['final_action']!r}"
+    )
+    assert decision["gate_reasons"] == [], (
+        f"a recorded hours CHANGE must never produce a gate_reason — HoursChange has no "
+        f"issue_type and can never reach decide(); got {decision['gate_reasons']!r}"
+    )
+
+    # (c) the change is persisted — two records, both transitions.
+    persisted = run.get("hours_changes")
+    assert persisted, (
+        f"the cross-round change must be PERSISTED on the run row so the operator "
+        f"approves a pipeline-computed fact, not a render-time guess; got {persisted!r}"
+    )
+    by_field = {c["field"]: c for c in persisted}
+    assert set(by_field) == {"hours_regular", "hours_overtime"}, (
+        f"exactly the two changed fields must be recorded; got {persisted!r}"
+    )
+    assert Decimal(str(by_field["hours_regular"]["original_value"])) == Decimal("20")
+    assert Decimal(str(by_field["hours_regular"]["resumed_value"])) == Decimal("40")
+    assert Decimal(str(by_field["hours_overtime"]["original_value"])) == Decimal("10")
+    assert Decimal(str(by_field["hours_overtime"]["resumed_value"])) == Decimal("2")
+
+    # (d) THE MONEY. The paystub pays the client's NEW numbers, not the snapshot's.
+    line_items = fake_repo.load_line_items(run_id)
+    assert line_items, "a process run must compute a paystub"
+    sandra = [i for i in line_items if str(i.employee_id) == SANDRA_ID_STR]
+    assert sandra, f"a paystub line item for Sandra Kim ({SANDRA_ID_STR}) must exist"
+    assert sandra[0].hours_regular == Decimal("40"), (
+        f"the PAID regular hours must be the client's corrected 40, not the snapshot's "
+        f"20; got {sandra[0].hours_regular!r}"
+    )
+    assert sandra[0].hours_overtime == Decimal("2"), (
+        f"the PAID overtime must be the client's corrected 2, not the snapshot's 10 "
+        f"(a backfill restoring 10 here is an OVERPAY); got {sandra[0].hours_overtime!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — THE OPERATOR SEES IT, at the gate where they approve the money.
+# ---------------------------------------------------------------------------
+
+
+def test_operator_sees_the_hours_change_on_the_run_detail_page(fake_repo, mock_llm):
+    """The whole point of Change 2: the human approving the payroll can SEE the change.
+
+    Asserted on RENDERED TEXT, not on the template source — a banner that exists in the
+    file but never renders (wrong branch, wrong variable name) protects nobody.
+    """
+    run_id = _run_the_live_scenario(fake_repo, mock_llm)
+
+    response = client.get(f"/runs/{run_id}")
+    assert response.status_code == 200, (
+        f"GET /runs/{{id}} must render; got {response.status_code}"
+    )
+    body = response.text
+
+    assert "changed" in body.lower(), (
+        "the run detail page must carry a 'changed' affordance telling the operator the "
+        "client altered hours on their reply"
+    )
+    assert "Sandra Kim" in body, "the banner must name the employee whose hours changed"
+    for value in ("20", "40", "10", "2"):
+        assert value in body, (
+            f"the banner must render the {value} side of the transitions "
+            "(20 -> 40 regular, 10 -> 2 overtime)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — NO STALE STATE. The write is unconditional, so [] is structural.
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_with_no_change_persists_an_empty_hours_changes(fake_repo, mock_llm):
+    """hours_changes is written on EVERY run and EVERY resume — even when it is empty.
+
+    A stale value here would show the operator a change from a DEAD attempt and invite
+    them to approve numbers on the strength of it. Writing [] unconditionally makes that
+    structurally impossible rather than only accidentally absent — which is why the seed
+    below plants a stale record and demands it be gone.
+    """
+    run_id = _seed_clarify_round(
+        fake_repo,
+        original_body="Sandra Kim 20 hours",
+        snapshot_employees=[{"submitted_name": "Sandra Kim", "hours_regular": "20"}],
+        prior_matches=[_mk_match("Sandra Kim", SANDRA_ID)],
+        alias_candidates={},
+    )
+    # Plant a STALE change record from a hypothetical earlier attempt.
+    fake_repo.runs[str(run_id)]["hours_changes"] = [
+        {
+            "submitted_name": "Sandra Kim",
+            "field": "hours_regular",
+            "original_value": "99",
+            "resumed_value": "1",
+        }
+    ]
+
+    # The reply changes nothing — 20 regular, same as the snapshot.
+    mock_llm.script = [
+        _extraction_json([{"submitted_name": "Sandra Kim", "hours_regular": "20"}]),
+    ]
+    resume_pipeline(run_id, _inbound("Yes, 20 hours is right."))
+
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == RunStatus.AWAITING_APPROVAL.value
+    assert run.get("hours_changes") == [], (
+        f"a run with no cross-round change must persist an EMPTY list, overwriting any "
+        f"stale value — the write is unconditional; got {run.get('hours_changes')!r}"
     )

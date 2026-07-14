@@ -45,7 +45,13 @@ from decimal import Decimal
 from typing import Any, cast
 
 from app.db import repo
-from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail, PaystubLineItem
+from app.models.contracts import (
+    Extracted,
+    ExtractedEmployee,
+    HoursChange,
+    InboundEmail,
+    PaystubLineItem,
+)
 from app.models.roster import NameMatchResult, Roster, ValidationIssue
 from app.models.status import RunStatus
 from app.pipeline import alias_learning, clarification
@@ -53,7 +59,13 @@ from app.pipeline.calculate import calculate
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
 from app.pipeline.reconcile_names import reconcile_names
-from app.pipeline.validate import HOURS_FIELDS, detect_field_regression, is_paid, validate
+from app.pipeline.validate import (
+    HOURS_FIELDS,
+    detect_field_regression,
+    detect_hours_changes,
+    is_paid,
+    validate,
+)
 
 logger = logging.getLogger("payroll_agent.orchestrator")
 
@@ -922,6 +934,7 @@ def _run_stages(
     # 2. BACKFILL: fill silence fields from the snapshot (employee_id-keyed).
     # 3. CALC: validate(BACKFILLED extracted, raw_field_drops=raw_drops) → decide → calc.
     raw_drops = None
+    hours_changes: list[HoursChange] = []
     if prior is not None:
         # 0. BRIDGE the clarified employee's identity into prior_matches, ONCE, before any
         # consumer reads it. The clarified employee was UNRESOLVED in the prior round by
@@ -934,6 +947,12 @@ def _run_stages(
         # here rather than inside validate() precisely so it cannot accidentally be run
         # after the backfill.
         raw_drops = detect_field_regression(prior, extracted, prior_matches, matches)
+        # 1b. DETECT the paid->paid CHANGES on the same raw extraction, for the same reason:
+        # post-backfill the change is papered over. These are DISPLAY-ONLY — they are
+        # persisted for the operator's approval page and deliberately NOT passed to
+        # validate() or decide(). HoursChange has no issue_type, so the money gate cannot
+        # see them even by accident.
+        hours_changes = detect_hours_changes(prior, extracted, prior_matches, matches)
         # 2. BACKFILL: carry silence fields from the snapshot into extracted.
         # resolved_drops (the backfill-skip set) guards ONLY confirmed_dropped and
         # client_supplied from re-backfill — NOT carried_forward, which is intentionally
@@ -981,6 +1000,12 @@ def _run_stages(
         repo.persist_extracted(run_id, extracted, conn=conn)
         repo.persist_decision(run_id, decision, conn=conn)  # data-only; status written separately
         repo.persist_reconciliation(run_id, matches, conn=conn)  # never NULL on a clean run
+        # UNCONDITIONAL — including the empty list on a first run or an unchanged resume.
+        # Writing [] every time makes a stale record from a dead attempt structurally
+        # impossible rather than only accidentally absent: the operator must never be shown
+        # a change belonging to a conversation this run no longer has. DATA-ONLY: never
+        # passed to validate(), never passed to decide().
+        repo.set_hours_changes(run_id, hours_changes, conn=conn)
 
         if decision.final_action == "process":
             assert line_items is not None

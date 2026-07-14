@@ -628,6 +628,18 @@ class InMemoryRepo:
             return {}
         return run.get("clarified_fields") or {}
 
+    def set_hours_changes(self, run_id, changes, conn=None):
+        """Store the display-only cross-round hours changes (mirrors repo).
+
+        Serialized exactly as the real JSONB write does (model_dump(mode="json")), so the
+        run-detail template reads the SAME dict shape here as it does off a real row —
+        otherwise this fake would let a template that only works against Pydantic objects
+        pass, and the live page would break.
+        """
+        run = self.runs.get(str(run_id))
+        if run is not None:
+            run["hours_changes"] = [ch.model_dump(mode="json") for ch in changes]
+
     def get_clarification_round(self, run_id, conn=None):
         """Read the fake run's clarification_round key (mirrors repo).
 
@@ -664,6 +676,10 @@ class InMemoryRepo:
             run["pre_clarify_extracted"] = None
             run["clarification_round"] = 0
             run["alias_candidates"] = None
+            # hours_changes IS reply-round context — it is a diff BETWEEN rounds, so a
+            # record surviving a retrigger would show the operator a change belonging to a
+            # conversation that no longer exists.
+            run["hours_changes"] = None
             run["reply_epoch"] = run.get("reply_epoch", 0) + 1
 
     def get_record_only_flag(self, run_id, conn=None):
@@ -1014,6 +1030,11 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "load_pre_clarify_extracted",
         "set_clarified_fields",
         "load_clarified_fields",
+        # display-only cross-round hours changes. NOTE the `if hasattr(store, name)` guard
+        # below: a method defined on InMemoryRepo but MISSING from this tuple is simply
+        # never patched in — no AttributeError, no failure, just a silent fall-through to
+        # the real DB-backed repo. Adding the method is not enough; it must be named here.
+        "set_hours_changes",
         # stranded-run sweep + webhook-dedup loser lookup
         "sweep_stranded_runs",
         "find_run_by_message_id",
