@@ -1,12 +1,12 @@
 ---
-status: findings-open
+status: 4-fixed-2-open
 phase: 16-queue-substrate-unblocked-webhook
 reviewer: codex-cli 0.144.0 (external, cross-AI)
 scope: git diff phase16-base..HEAD -- app/ tests/  (45 files, +6414/-246)
 date: 2026-07-14
 findings_total: 6
-findings_fixed: 2
-findings_open: 4
+findings_fixed: 4
+findings_open: 2
 ---
 
 # Phase 16 — Cross-AI Code Review (Codex)
@@ -68,7 +68,42 @@ on top of it, which is worse than no tripwire.)
 
 ---
 
-## OPEN — require a decision
+## FIXED (commit baef7a3)
+
+### F-4 — A claimed job could be marked `done` without the pipeline running. CLOSED
+The handler now calls `pipeline_glue.run_pipeline_now` (raises) instead of
+`run_pipeline_bg` (swallows). `drain_once` catches the start failure, routes it through
+the fenced `fail_job` write with backoff, and retries up to `max_attempts`. The retry
+machinery was already fully built — the failure simply never reached it.
+
+`run_pipeline_bg` remains the swallowing wrapper for the inbound webhook's
+fire-and-forget BackgroundTask, which genuinely needs it (that route already returned 200;
+there is no caller left to raise to). The two differ by one word at the call site and by
+everything in consequence.
+
+The pinned gap test was **inverted, not deleted**, exactly as its own docstring demanded.
+Companion test added (`test_a_stage_failure_still_completes_the_job`) so a future "just
+retry everything" edit cannot turn every errored run into `max_attempts` duplicate
+executions.
+
+Falsifying mutation: handler reverted to `run_pipeline_bg` → `assert 'done' == 'pending'`. RED.
+
+### F-6 — Shutdown could snapshot a live lease into oblivion. CLOSED
+A `_claims_in_flight` counter is incremented before `repo.claim_job()` and decremented in
+the same critical section that records the token; `held_tokens()` blocks while it is
+non-zero. This keeps the snapshot OUT of the window rather than shrinking it. Bounded wait
+(2s; microseconds in practice) so a wedged DB call degrades to today's behavior rather than
+to a hung shutdown — Render sends SIGTERM, then kills.
+
+Falsifying mutation: `held_tokens()` snapshots immediately → `assert [[]] == [[UUID(...)]]`. RED.
+
+**Note:** four LIVE-DB spies stubbed the old seam and went red on a real Postgres while the
+hermetic suite stayed green. That is exactly the class of break the live gate exists to
+catch, and it would have shipped without it.
+
+---
+
+## OPEN — deferred by decision
 
 ### F-3 — TOCTOU: two concurrent workers can double-send. `send_guard.py` + `delivery.py:185-203`
 **Severity:** High (catastrophic impact, very low probability)
@@ -103,7 +138,7 @@ back has lost the race, and raises `UnconfirmedSendError` (fail-closed, matching
 semantics). Only the winner ever reaches `send_outbound`. This is one SQL clause plus a
 branch, but it sits on the money path and deserves its own plan + live-DB proof.
 
-### F-4 — A claimed job can be marked done without the pipeline running. `app/queue/handlers/pipeline.py:130-144`
+### ~~F-4~~ — CLOSED above (commit baef7a3). Original finding retained for the record:
 **Severity:** High (lost payroll run)
 
 `run_pipeline_bg()` catches a catastrophic start failure (orchestrator import error, DB
@@ -136,7 +171,7 @@ This is inherent to at-least-once lease queues and the code base already knows i
 module docstring states it explicitly). F-3 is its concrete money consequence. Recording it
 so the guarantee is stated honestly rather than assumed away.
 
-### F-6 — Shutdown can miss a newly claimed lease. `worker.py:220-231`, `drain.py:80-86`
+### ~~F-6~~ — CLOSED above (commit baef7a3). Original finding retained for the record:
 **Severity:** Medium
 
 A worker returns from `claim_job()` holding a lease but is descheduled before
