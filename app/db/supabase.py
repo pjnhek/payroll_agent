@@ -26,6 +26,14 @@ from psycopg_pool import ConnectionPool
 
 from app.config import get_settings
 
+# The shared connection budget every other consumer of this pool must reason
+# against — most importantly the queue worker's own boot-time refusal, which
+# compares the configured worker count against this exact number rather than
+# a second hand-copied literal. One number, one place; a bare `max_size=5` at
+# the ConnectionPool call site below and a second copy elsewhere is precisely
+# the kind of drift that would make that refusal silently wrong.
+POOL_MAX_SIZE = 5
+
 # Module-level pool singleton — initialised lazily on first call to get_pool().
 _pool: ConnectionPool | None = None
 # Guards the double-checked-locking construction below. Without it, two concurrent
@@ -57,7 +65,7 @@ def get_pool() -> ConnectionPool:
                 _pool = ConnectionPool(
                     conninfo=settings.database_url,
                     min_size=1,
-                    max_size=5,
+                    max_size=POOL_MAX_SIZE,
                     open=True,  # explicit; avoids DeprecationWarning about default changing
                     # Disable server-side prepared statements on every connection so
                     # they cannot break under Supavisor transaction-mode pooling
