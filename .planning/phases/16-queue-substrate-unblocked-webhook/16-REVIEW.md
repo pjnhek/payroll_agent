@@ -1,12 +1,13 @@
 ---
-status: 4-fixed-2-open
+status: round-2-complete-3-deferred
 phase: 16-queue-substrate-unblocked-webhook
 reviewer: codex-cli 0.144.0 (external, cross-AI)
 scope: git diff phase16-base..HEAD -- app/ tests/  (45 files, +6414/-246)
 date: 2026-07-14
-findings_total: 6
-findings_fixed: 4
-findings_open: 2
+findings_total: 10
+findings_fixed: 7
+findings_open: 3
+rounds: 2
 ---
 
 # Phase 16 — Cross-AI Code Review (Codex)
@@ -219,3 +220,92 @@ that could not fail*:
   property the clause exists for (liveness: stepping *over* a row another worker holds).
   New proof `test_skip_locked_steps_over_a_row_another_worker_is_holding` pins it: green in
   0.22s with the clause, red after blocking the full 5.21s timeout without it (`66dafa7`).
+
+
+---
+
+# Round 2 — Confirming Review (Codex, on the FIXES)
+
+The first round reviewed the phase. This round reviewed **the fixes from that round** — two
+commits of concurrency and exception-flow code that nobody had looked at. Your own history
+warranted it: in Phase 7.5, the round that reviewed the fixes found a *new* bug.
+
+It did so again. And it was largely an indictment of my own work.
+
+## R2-1 (High) — A lease could be forgotten. FIXED (4c7af9a)
+
+In `drain_once`, when `fail_job()` ITSELF raises — the realistic case, since the failure that
+reaches the handler is usually a DB outage and `fail_job` is another DB write — the
+unconditional `finally: _held_tokens.discard(...)` forgot the token anyway. The row stays
+`leased` in Postgres while this process no longer knows about it, so a graceful shutdown
+cannot hand it back and the job is unclaimable for the full 900s lease. That silently breaks
+both F-4's retry guarantee **and ROADMAP criterion 4**.
+
+The `finally`-discard predated the F-4 fix, but F-4 routes *more* exceptions into that path,
+so the fix amplified a latent bug. Discard is now conditional on the lease being genuinely
+settled (completed / failed / fenced out). Keeping a token is safe: `release_leases` is fenced
+on the token itself, so handing back a stale one is a no-op, not a theft.
+
+Mutation: restore the unconditional discard → RED.
+
+## R2-2 (High) — My F-4 comment lied. FIXED (4c7af9a)
+
+It claimed F-4 retries "the database unreachable at the first read." It does **not**:
+`run_pipeline` catches that, records ERROR, and returns normally, so the job COMPLETES. F-4
+actually retries only what the orchestrator's boundary could not RECORD — an import failure,
+or `record_run_error` itself failing.
+
+Written truthfully, that turns out to be a coherent contract, and the comment now states it:
+**a failure a human can SEE completes the job; a failure nobody can see must retry, or the
+run is lost with no trace.** A false comment on the money path is exactly what CLAUDE.md
+forbids.
+
+## R2-3 — ALL FOUR of my new tests were vacuous. FIXED (4c7af9a)
+
+Codex named the one-line mutation that defeats each. Every one now dies on it:
+
+| Mutation | What it would have shipped |
+|---|---|
+| `run_pipeline_now` body → bare `return` | Production marks **every queued payroll `done` without running it** — suite fully green. Nothing proved the function called the orchestrator at all. |
+| Handler invokes the pipeline **twice** | A double-executed payroll read as a pass — the stage-failure test had no call-count assertion. |
+| `held_tokens` default `2.0 → 0.1` | I passed `settle_timeout=5.0` explicitly; **no production caller does**, so the real default was untested. Now called bare, as `worker.stop()` calls it. |
+| `wake.wait` → `return True` | My wall-clock assertion proved "prompt redrain", **not "the signal survived"** — a hot-spinning loop passes it. Now asserts the wake event is SET at `wait()` entry and pins the drain count at exactly 2. |
+
+The F-4 fix's own regression test also shipped with **no test at all** for R2-1. Added.
+
+**The lesson, stated plainly:** I wrote each fix and its test in the same breath, so the test
+inherited the fix's assumptions. That is the same mechanism that produced every proof-that-
+cannot-fail found in this phase. A fix's test must be written adversarially, or reviewed by
+something that did not write the fix.
+
+## What Codex CLEARED
+
+- **F-4 does NOT widen exposure to the open F-3** — the thing I was most worried about.
+  Sequential retries are genuinely protected: the proven-sent guard catches a recorded `sent`
+  row, and `assert_no_unconfirmed_send` catches a `reserved` one. F-4 increases *entries* into
+  the send path but does not make sequential attempts *concurrent*.
+- **F-3's blast radius on the queue is narrower than first assessed.** The queued
+  `run_pipeline` path sends **clarifications**; the post-approval payroll *confirmation* is a
+  separate path. A duplicate clarification email is bad; it is not a duplicate payroll email.
+- **F-1 is correct**, verified against every producer call site (`enqueue_job` inside the
+  transaction, `wake()` strictly post-commit).
+- **No lock-order deadlock in F-6.** Workers take `_held_tokens_lock` but never
+  `_LIFECYCLE_LOCK`; `claim_job()` does not run under `_held_tokens_lock`; the counter
+  decrement is correctly inside a `finally`, including when `claim_job()` raises.
+
+---
+
+# STILL OPEN — for a gap phase (design decisions, not repairs)
+
+1. **F-3 — send-path TOCTOU.** `assert_no_unconfirmed_send` is a read; the reservation that
+   follows is an upsert, so two *concurrently executing* workers are not serialized between
+   the check and the provider call. Proposed fix: `ON CONFLICT ... DO NOTHING RETURNING id`,
+   so a losing writer fails closed instead of upserting over the winner.
+2. **R2-2b — should a RECORDED transient DB error auto-retry?** Today it completes the job and
+   waits for a human to retrigger. That is defensible and matches the pre-existing design, but
+   it means a transient blip needs an operator. A genuine design call, deliberately not made
+   under time pressure.
+3. **Finding 3 — the shutdown budget is not bounded end-to-end.** 2 workers × 10s sequential
+   joins + 2s settle + an unbounded `release_leases`, against Render's 30s `SIGKILL` window.
+   `WORKER_COUNT=3` blows it in joins alone, and the pool-budget check accepts it. Needs a
+   process-wide shutdown deadline, not per-operation ceilings.
