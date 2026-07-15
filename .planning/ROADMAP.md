@@ -38,7 +38,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 (16–21) are planned milestone work; decimal phases (e.g. 16.1) are reserved for urgent insertions.
 
 - [x] **Phase 16: Queue Substrate & Unblocked Webhook** - The webhook stops blocking the event loop and a durable Postgres job queue exists, proven on one already-manual, low-risk producer (operator retrigger) before the money path touches it. (completed 2026-07-14)
-- [ ] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present.
+- [x] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present. (completed 2026-07-15)
 - [ ] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism.
 - [ ] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue.
 - [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch.
@@ -107,7 +107,7 @@ nothing is knocking on the front door.
   3. The README states the chosen pump cadence, the resulting worst-case recovery-latency bound, and the 750-instance-hour/month arithmetic that forces that cadence, in plain checkable numbers.
   4. `.github/workflows/pump.yml` is the only cron hitting the service — the old twice-weekly keepalive workflow is gone, absorbed into the pump. **Absorbed means BOTH of keepalive.yml's jobs carry over, not just the wake-up ping:** the pump workflow must still fail RED on `/health/schema` returning 503 (live-DB schema drift) and on `/health/ready` failing. Deleting `keepalive.yml` without carrying the schema-parity check forward would silently drop drift detection that a prior milestone shipped deliberately — and it is the only monitor that catches a manual Supabase edit bypassing the deploy-migrate workflow.
 
-**Plans**: 4/5 plans executed
+**Plans**: 5/5 plans complete
 
 **Wave 1** (foundation — no cross-deps, parallel):
 
@@ -121,7 +121,7 @@ nothing is knocking on the front door.
 
 **Wave 3** (blocked on 17-04):
 
-- [ ] 17-05-PLAN.md — The criterion #2 anti-vacuous durability proof: future-due job, zero live workers, drained via the HTTP endpoint, with the falsifying-mutation demonstration (PROOF-05)
+- [x] 17-05-PLAN.md — The criterion #2 anti-vacuous durability proof: future-due job, zero live workers, drained via the HTTP endpoint, with the falsifying-mutation demonstration (PROOF-05)
 
 ### Phase 18: Failure Policy & Sweep Deletion
 
@@ -224,7 +224,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
-| 17. The Pump | v4 | 4/5 | In Progress|  |
+| 17. The Pump | v4 | 5/5 | Complete   | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |

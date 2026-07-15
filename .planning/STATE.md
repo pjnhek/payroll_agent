@@ -4,17 +4,17 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 17
 current_phase_name: the-pump
-status: executing
+status: verifying
 stopped_at: Completed 17-03-PLAN.md
-last_updated: "2026-07-15T15:01:31.769Z"
+last_updated: "2026-07-15T15:13:14.618Z"
 last_activity: 2026-07-15
 last_activity_desc: Phase 17 execution started
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 15
-  completed_plans: 14
-  percent: 17
+  completed_plans: 15
+  percent: 33
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 
 Phase: 17 (the-pump) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-15 — Phase 17 execution started
 
 ## Performance Metrics
@@ -95,6 +95,7 @@ Last activity: 2026-07-15 — Phase 17 execution started
 | Phase 17 P02 | 9min | 2 tasks | 3 files |
 | Phase 17 P03 | 15min | 3 tasks | 4 files |
 | Phase 17 P04 | ~12min | 2 tasks | 4 files |
+| Phase 17 P05 | 9min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -168,6 +169,7 @@ Recent decisions affecting current work:
 - [Phase 17]: README's BackgroundTasks limitation bullet corrected to state the durable queue's true partial-migration state (proven only on operator Retrigger) rather than overclaiming a full cutover not yet shipped.
 - [Phase 17]: 17-04: GET (not POST) for /internal/pump — simplest for a curl cron; the drain is idempotent (SKIP LOCKED).
 - [Phase 17]: 17-04: pump_token fail-closed logic lives in the route's _authorized(), not as Settings field validation (matches ALLOW_UNSIGNED_FIXTURES precedent).
+- [Phase ?]: [Phase 17]: 17-05: falsifying mutation targeted /internal/pump's drain while-loop (while False:) — a smaller, more surgical revert than claim_job's SQL — RED confirmed claimed==0, GREEN confirmed byte-identical revert.
 
 ### Pending Todos
 
@@ -233,7 +235,7 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-15T15:00:14.342Z
+Last session: 2026-07-15T15:10:42.332Z
 Stopped at: Completed 17-03-PLAN.md
 Resume file: None
 
