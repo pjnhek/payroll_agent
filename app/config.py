@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     # this constant already encodes that policy — it doesn't.
     max_attempts: int = 5
 
+    # PUMP_TOKEN: the shared secret the external cron (pump.yml, Phase 17) sends
+    # as `Authorization: Bearer $PUMP_TOKEN` to GET /internal/pump. Empty-default-
+    # secret convention (mirrors resend_api_key/webhook_signing_secret above); the
+    # fail-closed meaning (reject every call when this is unset/empty, D-03) lives
+    # in the route's _authorized() check, not as validation on this field —
+    # matching how ALLOW_UNSIGNED_FIXTURES gates behavior at its call site rather
+    # than in Settings itself.
+    pump_token: str = ""        # PUMP_TOKEN env var
+
     # QUEUE_POLL_SECONDS: the SLOW DURABLE FALLBACK, not the latency path. The
     # in-process threading.Event wake (app/queue/wake.py) is what makes
     # Retrigger feel instant for the demo; this poll exists only to cover what
