@@ -460,14 +460,16 @@ with repo.get_connection() as conn, conn.transaction():
 | A2 | `MAX_JOBS_PER_PUMP=20` / `MAX_WALL_CLOCK_SECONDS=120` are reasonable static constants for ~1 email/client/week load | §Code Examples, §Common Pitfalls Pitfall 2 | These are ASSUMED defaults, not measured against a real backlog scenario — if the demo ever simulates a large backlog, the caps may need retuning. Low risk given the stated load. |
 | A3 | Placing `DrainOutcome` in `app/queue/drain.py` rather than `app/models/job.py` is the better home | §Pattern 1 | This is a judgment call, not a locked decision — reasonable engineers could put it in `app/models/job.py` for symmetry with `JobKind`/`JobState`. The risk if "wrong" is purely stylistic; no functional impact either way. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **What should `drain_once()` return when `fail_job` itself raises (the double-failure branch)?**
+   - **RESOLVED:** Map to `FENCED` with an inline approximation comment, per the recommendation below — adopted verbatim in `17-01-PLAN.md` Task 1.
    - What we know: today this branch logs at ERROR and leaves `lease_settled = False` (the token stays in `_held_tokens` for eventual shutdown release), then falls through to the function's single `return True`. D-04's locked vocabulary has exactly five values (`empty|done|retried|dead|fenced`) and none of them precisely describes "the completion write itself failed, unknown final state."
    - What's unclear: whether the pump's `fenced` count should silently absorb this vanishingly-rare case (the sketch above does this) or whether it deserves a distinct signal.
    - Recommendation: map it to `FENCED` with an inline comment noting the approximation (as shown in Pattern 1), since it is already rare (requires a DB failure at the exact moment of a failure-write) and pre-existing (not a regression this phase introduces) — but flag this explicitly to the user/planner rather than silently deciding it, since a money-adjacent count being slightly approximate deserves a conscious call.
 
 2. **Does Render's free-tier proxy impose an undocumented request-duration ceiling?**
+   - **RESOLVED (deferred to live smoke test):** Treat `--max-time 360` as provisional; the verification is a Manual-Only row in `17-VALIDATION.md` (live smoke against the deployed instance once shipped). Carried, not dropped.
    - What we know: no official Render documentation surfaced a specific number via search; only the well-documented 15-minute idle-spindown and ~750h/month budget. [CITED: render.com/docs/free]
    - What's unclear: the actual behavior of a single in-flight request running 3-5+ minutes on a free web service.
    - Recommendation: treat the `--max-time 360` value as provisional and verify once deployed (see A1).

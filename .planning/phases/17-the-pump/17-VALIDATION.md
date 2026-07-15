@@ -1,10 +1,11 @@
 ---
 phase: 17
 slug: the-pump
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-14
+approved: 2026-07-14
 ---
 
 # Phase 17 — Validation Strategy
@@ -79,12 +80,15 @@ created: 2026-07-14
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or a Wave 0 dependency (workflow-structure + live-cron are the only manual carve-outs, justified above)
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 60s
-- [ ] Criterion #2 anchor demonstrated able to fail (falsifying mutation pasted RED) per PROOF-05
-- [ ] `nyquist_compliant: true` set in frontmatter
+Plan-level checks below verified by gsd-plan-checker (2026-07-14); the two execution-time boxes stay open until the phase runs.
 
-**Approval:** pending
+- [x] All tasks have `<automated>` verify or a Wave 0 dependency (workflow-structure + live-cron are the only manual carve-outs, justified above)
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s
+- [ ] Criterion #2 anchor demonstrated able to fail (falsifying mutation pasted RED) per PROOF-05 — *deferred to execution (17-05 Task 2)*
+- [x] `nyquist_compliant: true` set in frontmatter
+- [ ] `wave_0_complete` — *false until the Wave 0 test files are written during execution*
+
+**Approval:** validation strategy approved 2026-07-14 (gsd-plan-checker, 0 blockers); execution-time boxes pending phase run.
