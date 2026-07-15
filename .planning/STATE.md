@@ -6,14 +6,14 @@ current_phase: 17
 current_phase_name: the-pump
 status: executing
 stopped_at: Completed 17-03-PLAN.md
-last_updated: "2026-07-15T14:46:51.246Z"
+last_updated: "2026-07-15T15:01:31.769Z"
 last_activity: 2026-07-15
 last_activity_desc: Phase 17 execution started
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 15
-  completed_plans: 13
+  completed_plans: 14
   percent: 17
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 17 (the-pump) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-07-15 — Phase 17 execution started
 
@@ -94,6 +94,7 @@ Last activity: 2026-07-15 — Phase 17 execution started
 | Phase 17 P01 | 20min | 2 tasks | 8 files |
 | Phase 17 P02 | 9min | 2 tasks | 3 files |
 | Phase 17 P03 | 15min | 3 tasks | 4 files |
+| Phase 17 P04 | ~12min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -165,6 +166,8 @@ Recent decisions affecting current work:
 - [Phase 17]: pump.yml's --max-time 420 pump step is a NOMINAL operating budget (cold-start 60 + 120s between-jobs cap + ~240s external-call allowance, no headroom claimed); correctness rests on lease-reclaim (lease_seconds=900), not the curl timeout.
 - [Phase 17]: keepalive.yml deleted and folded into pump.yml as the sole 30-min cron with a workflow-level concurrency group; both keepalive jobs (wake + schema-drift) carried forward verbatim.
 - [Phase 17]: README's BackgroundTasks limitation bullet corrected to state the durable queue's true partial-migration state (proven only on operator Retrigger) rather than overclaiming a full cutover not yet shipped.
+- [Phase 17]: 17-04: GET (not POST) for /internal/pump — simplest for a curl cron; the drain is idempotent (SKIP LOCKED).
+- [Phase 17]: 17-04: pump_token fail-closed logic lives in the route's _authorized(), not as Settings field validation (matches ALLOW_UNSIGNED_FIXTURES precedent).
 
 ### Pending Todos
 
@@ -230,7 +233,7 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-15T14:46:51.237Z
+Last session: 2026-07-15T15:00:14.342Z
 Stopped at: Completed 17-03-PLAN.md
 Resume file: None
 

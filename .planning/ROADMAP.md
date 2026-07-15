@@ -107,7 +107,7 @@ nothing is knocking on the front door.
   3. The README states the chosen pump cadence, the resulting worst-case recovery-latency bound, and the 750-instance-hour/month arithmetic that forces that cadence, in plain checkable numbers.
   4. `.github/workflows/pump.yml` is the only cron hitting the service — the old twice-weekly keepalive workflow is gone, absorbed into the pump. **Absorbed means BOTH of keepalive.yml's jobs carry over, not just the wake-up ping:** the pump workflow must still fail RED on `/health/schema` returning 503 (live-DB schema drift) and on `/health/ready` failing. Deleting `keepalive.yml` without carrying the schema-parity check forward would silently drop drift detection that a prior milestone shipped deliberately — and it is the only monitor that catches a manual Supabase edit bypassing the deploy-migrate workflow.
 
-**Plans**: 3/5 plans executed
+**Plans**: 4/5 plans executed
 
 **Wave 1** (foundation — no cross-deps, parallel):
 
@@ -117,7 +117,7 @@ nothing is knocking on the front door.
 
 **Wave 2** (blocked on 17-01 + 17-02):
 
-- [ ] 17-04-PLAN.md — The authenticated `GET /internal/pump` route (D-01/02/03/05/09/10) + `pump_token` setting + main wiring + hermetic auth/bounded/infra tests
+- [x] 17-04-PLAN.md — The authenticated `GET /internal/pump` route (D-01/02/03/05/09/10) + `pump_token` setting + main wiring + hermetic auth/bounded/infra tests
 
 **Wave 3** (blocked on 17-04):
 
@@ -224,7 +224,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 14. Full Type-Checking (mypy) | v3 | 10/10 | Complete    | 2026-07-10 |
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
-| 17. The Pump | v4 | 3/5 | In Progress|  |
+| 17. The Pump | v4 | 4/5 | In Progress|  |
 | 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
