@@ -3,13 +3,15 @@ phase: 17-the-pump
 reviewer: codex-cli 0.144.0 (cross-AI confirming review)
 reviewed: 2026-07-15
 scope: git diff 9614161..HEAD (all of Phase 17, production source + tests)
-status: issues_found
+status: resolved
+resolved_in: "914d779 — drain.py:216 double-failure log switched from logger.exception() to logger.error() with type(exc).__name__ only (no traceback/str(exc)); full hermetic suite + double-failure/worker tests green, ruff/mypy/provenance-guard clean"
 findings:
   critical: 0
   high: 1
   medium: 0
   low: 0
   total: 1
+  resolved: 1
 orchestrator_severity_note: "Codex rated the single finding HIGH; the orchestrator assesses it MEDIUM/LOW (log-only, operator-visible Render logs, requires a rare double-failure whose exception is typically a psycopg host/dbname message — not the password; pre-existing and deliberately kept by plan 17-01). Real but debatable."
 ---
 
@@ -25,7 +27,14 @@ in a read-only sandbox over `git diff 9614161..HEAD`.
 
 **File:** `app/queue/drain.py:216`
 
-**Defect:** The double-failure branch (`fail_job()` itself raised) logs with `logger.exception(...)`.
+**Status: RESOLVED (commit 914d779)** — applied the recommended operability-preserving fix:
+`except Exception as exc:` + `logger.error(<same message with (%s) type>, type(exc).__name__, job.id)`,
+dropping the traceback/`str(exc)`. The full exception still propagates via the re-raise, and the
+route already logs type-name-only, so both log emissions on the double-failure path now honor the
+discipline. No test asserted on the prior `logger.exception` call; full hermetic suite (735 passed),
+the double-failure `pytest.raises` test, and the worker-survival test all remain green.
+
+**Defect (as found):** The double-failure branch (`fail_job()` itself raised) logs with `logger.exception(...)`.
 The message template interpolates only `job.id`, but `logger.exception` appends the current
 exception's full traceback — whose final line is `type(exc): str(exc)`. If the `fail_job` write
 failed with a psycopg error whose message carries DB connection detail (host/port/dbname/user), that
