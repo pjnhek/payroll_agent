@@ -138,7 +138,49 @@ mechanism.
   4. `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the runs-list sweep block are removed from the codebase — there is exactly one recovery mechanism left, not two racing ones.
   5. Viewing the list of runs no longer has any side effect on any run's status — it is a read, not an accidental cron trigger.
 
-**Plans**: TBD
+**Plans**: 12 plans
+
+**Wave 1** (result contract foundation):
+
+- [ ] 18-01-PLAN.md — Define the bounded pipeline result contract, classifier, and temporary legacy adapter
+
+**Wave 2** (durable persistence foundation; blocked on 18-01):
+
+- [ ] 18-02-PLAN.md — Add identifier-only job context and typed operator-resolution persistence
+
+**Wave 3** (schema parity; blocked on 18-02):
+
+- [ ] 18-12-PLAN.md — Extend schema introspection for operator-resolution storage and job linkage
+
+**Wave 4** (durable resume consumers; blocked on 18-01, 18-02, and 18-12):
+
+- [ ] 18-09-PLAN.md — Add persisted-reply and operator-resolution queue handlers and dispatch
+
+**Wave 5** (atomic background settlement; blocked on 18-01, 18-02, 18-09, and 18-12):
+
+- [ ] 18-03-PLAN.md — Install atomic result settlement and durable retry bridges before producer cutover
+
+**Wave 6** (queue policy and operator visibility; blocked on 18-03):
+
+- [ ] 18-04-PLAN.md — Make queue drain result-aware and reap expired final-attempt leases
+- [ ] 18-06-PLAN.md — Surface bounded retry diagnostics and preserve same-run manual retrigger
+
+**Wave 7** (pump accounting and producer cutover; blocked on 18-04):
+
+- [ ] 18-05-PLAN.md — Report final-lease reaping honestly in pump accounting
+- [ ] 18-10-PLAN.md — Cut both orchestrator entry points over to explicit PipelineResult returns
+
+**Wave 8** (strict compatibility closure; blocked on 18-10):
+
+- [ ] 18-11-PLAN.md — Remove every remaining None-as-success compatibility path
+
+**Wave 9** (caller-first sweep removal; blocked on 18-04, 18-06, and 18-11):
+
+- [ ] 18-07-PLAN.md — Make GET /runs read-only and remove all legacy sweep callers
+
+**Wave 10** (retired API deletion; blocked on 18-07 and durable replacements):
+
+- [ ] 18-08-PLAN.md — Delete sweep repositories, facade exports, fakes, and obsolete status support
 
 ### Phase 19: Webhook Cutover & Durable Ingest
 
