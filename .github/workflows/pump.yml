@@ -87,12 +87,19 @@ jobs:
         # STALL gap (app/routes/runs.py:37-72 — a max gap between two DB writes, not a
         # job runtime). A 90s timeout (the health steps' budget) would false-RED even a
         # routine pump.
-        run: curl -f --max-time 420 -H "Authorization: Bearer $PUMP_TOKEN" "$RENDER_URL/internal/pump"
+        # Block scalar (run: |) so the unquoted colon in the Authorization header
+        # cannot make this a strict-YAML parse error for linters/tooling.
+        run: |
+          curl -f --max-time 420 -H "Authorization: Bearer $PUMP_TOKEN" "$RENDER_URL/internal/pump"
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
           PUMP_TOKEN: ${{ secrets.PUMP_TOKEN }}
 
       - name: Ping /health/ready (wakes service + touches Supabase via SELECT)
+        # always(): run even if the drain step above went RED, so a pump-route
+        # regression cannot silently suppress this wake+touch signal. The job still
+        # fails overall if any step fails — these are three independent RED signals.
+        if: ${{ always() }}
         # /health/ready runs SELECT 1 FROM businesses LIMIT 1, so this ping keeps both
         # Render warm (only inbound HTTP wakes it) and Supabase un-paused (only a real
         # query counts). Kept even though the pump step above already hits the DB —
@@ -105,6 +112,10 @@ jobs:
           RENDER_URL: ${{ secrets.RENDER_URL }}
 
       - name: Check /health/schema (drift → RED)
+        # always(): run even if an earlier step went RED, so a pump-route regression
+        # cannot silently suppress the schema-drift monitor. The job still fails
+        # overall if any step fails — three independent RED signals.
+        if: ${{ always() }}
         # Layer 3 monitoring: /health/schema returns 503 on drift; -f makes curl
         # exit non-zero so this scheduled run goes RED and the operator is notified.
         # Catches drift from ANY source, including a manual Supabase edit that

@@ -127,3 +127,34 @@ def test_pump_yml_has_workflow_dispatch() -> None:
     assert "workflow_dispatch" in stripped, (
         "expected workflow_dispatch in pump.yml's comment-stripped text"
     )
+
+
+def test_health_steps_run_independently_of_the_drain_step() -> None:
+    """The three curl steps are INDEPENDENT RED signals. GitHub Actions skips later
+    steps once one fails, so without an `if:` guard a RED drain step (the pump route
+    is allowed to go RED on a worst-case overrun or a 503 regression) would silently
+    skip the /health/ready wake and /health/schema drift monitors — the exact
+    silent-monitor-drop that ROADMAP criterion #4 forbids. Both health steps must
+    carry `always()` (or `!cancelled()`) so they fire regardless of the drain step's
+    outcome; the job still fails overall if any step fails."""
+    parsed = yaml.safe_load(PUMP_WORKFLOW.read_text(encoding="utf-8"))
+    steps = [
+        step
+        for job in parsed["jobs"].values()
+        for step in job.get("steps", [])
+    ]
+    health_steps = [
+        s
+        for s in steps
+        if isinstance(s.get("run"), str)
+        and ("/health/ready" in s["run"] or "/health/schema" in s["run"])
+    ]
+    assert len(health_steps) == 2, (
+        f"expected 2 health curl steps in pump.yml, found {len(health_steps)}"
+    )
+    for step in health_steps:
+        guard = str(step.get("if", "")).lower()
+        assert "always" in guard or "cancelled" in guard, (
+            f"health step {step.get('name')!r} must carry an `if: always()` "
+            "(or !cancelled()) guard so a RED drain step cannot skip it"
+        )
