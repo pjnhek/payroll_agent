@@ -24,13 +24,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 17 — the-pump
+**Current focus:** Phase 18 — Failure Policy & Sweep Deletion (not started)
 
 ## Current Position
 
 Phase: 18 — Failure Policy & Sweep Deletion
 Plan: Not started
-Status: Phase complete — ready for verification
+Status: Phase 17 complete + verified (5/5, CI green); Phase 18 not started — next: /gsd-discuss-phase 18
 Last activity: 2026-07-15 — Phase 17 complete, transitioned to Phase 18
 
 ## Performance Metrics
