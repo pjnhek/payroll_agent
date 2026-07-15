@@ -136,8 +136,39 @@ The default Resend sender is `onboarding@resend.dev`, which is suitable for an a
 Sending to arbitrary client addresses requires a verified domain and a corresponding
 `RESEND_FROM_ADDR`.
 
-The scheduled `keepalive.yml` workflow wakes Render and touches Supabase twice weekly. It helps
-avoid prolonged inactivity but does **not** keep the Render service continuously warm.
+### The pump: cadence, recovery, and the 750-hour budget
+
+A GitHub Actions cron (`.github/workflows/pump.yml`) hits an authenticated `/internal/pump`
+endpoint every **30 minutes**, draining any due job in the durable Postgres queue. The same
+workflow also pings `/health/ready` (wakes Render, touches Supabase so the free project stays
+un-paused) and `/health/schema` (fails RED on schema drift, including a manual Supabase edit
+that bypasses the deploy-migrate workflow) — it is the **only** cron hitting the service.
+
+- **Recovery latency is nominal, not an absolute bound.** A due job is nominally picked up
+  within the next 30-minute cadence, plus Render cold-start and the job's own execution time.
+  GitHub Actions scheduling delays can push a run later, so this is a best-effort target, not a
+  strict ≤30-minute end-to-end guarantee.
+- **The 750-instance-hour/month math forces 30 minutes.** Render's free tier caps usage at
+  ~750 instance-hours/month and sleeps the service after 15 idle minutes. The idle duty-cycle
+  arithmetic is a **baseline**, not an exact figure: `awake ≈ 15 ÷ cadence` — at a 30-minute
+  cadence the idle baseline is awake ~15 of every 30 minutes (~50%, ~365 instance-hours/month),
+  comfortably under 750 even accounting for the extra awake time a long-running pump request
+  adds (the 15-minute idle timer restarts after the pump's own activity). A 10-minute cadence
+  would push toward ~730 hours with no margin — hence 30 minutes.
+- **Best-effort caveats.** GitHub Actions scheduled crons can be delayed under load, and GitHub
+  auto-disables a scheduled workflow after ~60 days with no repository commit activity —
+  `workflow_dispatch` is the one-click re-enable from the Actions tab. Operator Retrigger is the
+  stated fallback when a run needs to move faster than the cadence allows.
+- **A known recovery residual: the final-attempt strand.** Automatic lease-reclaim recovers an
+  interrupted job only while it still has attempts remaining. A job whose worker dies on its
+  final allowed attempt is **not** auto-reclaimed by the current claim query and waits for a
+  future dead-letter transition (Phase 18) — a known, low-severity, pre-existing residual that
+  never loses or duplicates a payroll (the operator can retrigger the affected run).
+- **The pump's counts are a transport signal, not a payroll-success count.** The pump reports
+  `claimed`/`done`/`retried`/`dead`/`fenced` counts describing queue-transport outcomes —
+  `done` counts job invocations that completed without an unrecordable crash, not "N successful
+  payrolls." A job success rate near 100% while `payroll_runs.status='error' > 0` is a known,
+  Phase-21-scoped gap, not evidence the pipeline itself is error-free.
 
 To reset the curated demo state between recordings:
 
@@ -154,6 +185,9 @@ uv run python scripts/demo_reset.py --confirm
   `additional_medicare_not_modeled` limitation flag when its configured threshold estimate is
   crossed.
 - State withholding is not implemented.
-- FastAPI `BackgroundTasks` runs in the web process rather than a durable job queue. Persisted
-  statuses and recovery paths mitigate several interruption cases, but a restart can still strand
-  in-flight work until it is retriggered or swept.
+- A durable Postgres job queue (lease + claim protocol) now exists, proven on the operator
+  Retrigger action, and the pump cron (above) recovers a due job on that queue automatically on
+  its next 30-minute cadence, with no worker threads required — without a manual re-click, except
+  the documented final-attempt-strand residual (Phase 18). The primary inbound-email path still
+  runs through `BackgroundTasks` today; migrating every remaining producer onto the durable queue
+  is a later, in-progress step of this project's durability work.
