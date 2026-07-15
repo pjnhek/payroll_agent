@@ -5,8 +5,8 @@ milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: Failure Policy & Sweep Deletion
 status: verifying
-stopped_at: Completed 17-03-PLAN.md
-last_updated: "2026-07-15T15:38:29.719Z"
+stopped_at: Phase 18 context gathered
+last_updated: "2026-07-15T20:47:49.693Z"
 last_activity: 2026-07-15
 last_activity_desc: Phase 17 complete, transitioned to Phase 18
 progress:
@@ -236,9 +236,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-15T15:10:42.332Z
-Stopped at: Completed 17-03-PLAN.md
-Resume file: None
+Last session: 2026-07-15T20:47:49.680Z
+Stopped at: Phase 18 context gathered
+Resume file: .planning/phases/18-failure-policy-sweep-deletion/18-CONTEXT.md
 
 ## Operator Next Steps
 
