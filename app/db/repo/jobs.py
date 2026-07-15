@@ -289,7 +289,7 @@ def get_job(
 def count_open_jobs(conn: psycopg.Connection | None = None) -> int:
     """The point-in-time backlog count: rows in `state IN ('pending',
     'leased')`. Used by the pump route's `queue_depth` response field and,
-    later, an ops view (OPS-01).
+    later, a queue-depth panel on the operator dashboard.
 
     Deliberately backlog-scoped (total outstanding), NOT "claimable right
     now" — it does not filter on `available_at <= now()` the way
