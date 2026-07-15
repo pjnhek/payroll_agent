@@ -1129,3 +1129,243 @@ def test_retrigger_survives_worker_crash_mid_lease(
         "only the operator's own retrigger click may grant that licence, "
         "and it already did, once, in step 1"
     )
+
+
+# ---------------------------------------------------------------------------
+# THE ANTI-VACUOUS-PROOF ANCHOR (17-05, ROADMAP criterion #2, PUMP-01). A job
+# scheduled for LATER, on an instance with NO live worker threads, is proven
+# executed by hitting GET /internal/pump — never drain.drain_once() directly,
+# because criterion #2 is specifically about the endpoint the external cron
+# actually calls. WORKER_COUNT=0 is already this suite's default (see
+# tests/conftest.py), so the zero-worker state is the default, not staging.
+# ---------------------------------------------------------------------------
+
+
+def test_pump_drains_future_due_job_with_zero_workers(
+    seeded_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nine steps, each carrying its own assertion — a step with no assertion
+    is where the vacuity gets in (see this module's own docstring). The four
+    non-vacuity traps this test is deliberately built to make impossible:
+    (a) never requests `live_worker` — no worker races ahead of the pump;
+    (b) asserts the job is genuinely NOT claimable while future-dated, so the
+    claim query is not trivially satisfied; (c) asserts `claimed == 1` and
+    `done == 1` from the JSON body, plus a by-id row re-read — never merely
+    status_code == 200; (d) STUBS `pipeline_glue.run_pipeline_now` (review
+    finding #3) and asserts the handler-side observable `orchestrator_calls
+    == [run_id]` — the seeded job is kind `run_pipeline`, and an unstubbed
+    drain would hit the real orchestrator and paid LLM providers
+    (app/queue/handlers/pipeline.py:159) AND could let `done == 1` pass on a
+    run that ended in ERROR, since the pipeline catches stage failures and
+    returns normally (pipeline.py:74). The stub's OBSERVABLE side effect
+    (advancing the run to COMPUTED — recoverable/in-flight per
+    app/routes/runs.py:66-69, NOT terminal; review LOW #4) is what lets the
+    run-status assertion in step 9 discriminate "the pump genuinely drove the
+    correct handler" from "the row merely says done."
+
+    FALSIFYING MUTATION (executed against real, unmutated source in this
+    worktree, confirmed RED, then reverted — see the plan's SUMMARY for the
+    pasted red output): make GET /internal/pump's drain loop a no-op (the
+    `while` condition in app/routes/pump.py never runs `drain_once()`) — the
+    future-due-then-backdated job is never claimed, the response reports
+    `claimed == 0`, and this test must go red on `body["claimed"] == 1`.
+    """
+    from fastapi.testclient import TestClient
+
+    import app.main as app_main
+    import app.routes.pipeline_glue as pipeline_glue_mod
+    from app.config import get_settings
+    from app.db import repo
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+
+    # --- Step 0: stub the orchestrator BEFORE anything touches the endpoint —
+    # mandatory (review finding #3): the seeded job is kind run_pipeline, and
+    # an unstubbed drain hits the real orchestrator + paid LLM providers.
+    orchestrator_calls: list[uuid.UUID] = []
+
+    def _stub_run_pipeline_now(rid: uuid.UUID) -> None:
+        orchestrator_calls.append(rid)
+        # The observable a real orchestrator would eventually produce — never
+        # a bare no-op, or this test could not tell "the pump genuinely ran
+        # the handler" apart from "the job row merely says done."
+        repo.set_status(rid, RunStatus.COMPUTED)
+
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _stub_run_pipeline_now)
+
+    # --- settings-cache discipline (review MEDIUM): clear BEFORE and AFTER,
+    # not only before — copying tests/test_repo_jobs_sql.py:20-31 — or a
+    # cached PUMP_TOKEN leaks into a later test.
+    token = f"queueproof-pump-token-{uuid.uuid4()}"
+    monkeypatch.setenv("PUMP_TOKEN", token)
+    get_settings.cache_clear()
+    try:
+        # --- Step 1: seed a run at RECEIVED (the default) + enqueue its job -
+        run_id = _seed_run_for_queue_proof()
+        job_id = repo.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key=f"queueproof-pump-anchor:{uuid.uuid4()}",
+            run_id=run_id,
+        )
+        assert job_id is not None
+
+        # --- Step 2: backdate available_at into the FUTURE, direct SQL, this
+        # module's existing backdating idiom (no sleep) --------------------
+        with repo.get_connection() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE jobs SET available_at = now() + interval '1 hour'"
+                " WHERE id = %s",
+                (str(job_id),),
+            )
+
+        # --- Step 3: the precondition that makes the rest meaningful -------
+        assert live_queue_worker_threads() == [], (
+            "this proof requires ZERO live queue-worker threads on this "
+            "instance — a running worker would race ahead of the pump and "
+            "make the pump's own contribution unprovable, the vacuous twin "
+            "this file's own module docstring names"
+        )
+
+        # --- Step 4: genuinely NOT claimable while future-dated ------------
+        assert repo.claim_job() is None, (
+            "a future-dated job must not be claimable yet — if this claims, "
+            "the backdate above did not take and the drain below would "
+            "prove nothing about the pump reclaiming a future-due job"
+        )
+
+        # --- Step 5: move available_at into the past ------------------------
+        with repo.get_connection() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE jobs SET available_at = now() - interval '1 second'"
+                " WHERE id = %s",
+                (str(job_id),),
+            )
+
+        # --- Step 6: hit the HTTP endpoint — never drain.drain_once() ------
+        # directly; criterion #2 is specifically about the endpoint the
+        # external cron calls.
+        client = TestClient(app_main.app)
+        response = client.get(
+            "/internal/pump", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        # --- Step 7: the response reports real per-job outcomes, never a
+        # bare 200 ------------------------------------------------------------
+        assert body["claimed"] == 1, body
+        assert body["done"] == 1, body
+
+        # --- Step 8: the handler-side observable — the CORRECT run ran
+        # exactly once, not merely "some job reached done" ------------------
+        assert orchestrator_calls == [run_id], (
+            "the pump must have driven THIS run's handler exactly once — a "
+            "job marked done on an ERROR run (pipeline.py:74, unstubbed) or "
+            "a stranger's run would not show up here"
+        )
+
+        # --- Step 9: re-read the row/run by their own ids -------------------
+        final_job = repo.get_job(job_id)
+        assert final_job is not None
+        assert final_job["state"] == "done"
+
+        final_run = repo.load_run(run_id)
+        assert final_run is not None
+        assert final_run["status"] == "computed", (
+            "the run must show the stub's OBSERVABLE post-handler status "
+            "(COMPUTED — in-flight, non-terminal; review LOW #4), never "
+            "merely 'the job row says done' while the run itself never ran"
+        )
+
+        # --- Step 10: queue_depth reflects the completed job, live ----------
+        assert body["queue_depth"] == 0, (
+            "the sole open job just completed; queue_depth must reflect "
+            "that live, not a stale count"
+        )
+    finally:
+        get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# The LIVE half of count_open_jobs (17-05) — the behavioral proof 17-02's
+# FakeConnection test could not give: a real pending/leased/done/dead
+# population against actual Postgres, exact open count.
+# ---------------------------------------------------------------------------
+
+
+def test_count_open_jobs_live_mixed_population(seeded_db) -> None:
+    """Built sequentially, not concurrently — claim_job() has no "claim THIS
+    id" API, so a job is only unambiguously claimed while it is the SOLE
+    claimable row in this test's (isolated) table. Each state is verified by
+    its own id before the count is trusted, and the count is re-checked after
+    one more transition to prove it reads live state on every call rather
+    than returning something memoized from the first read.
+    """
+    from app.db import repo
+    from app.models.job import JobKind
+
+    # --- leased: claim immediately, while it is the only row in the table --
+    leased_run_id = _seed_run_for_queue_proof()
+    leased_job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-mixed-leased:{uuid.uuid4()}",
+        run_id=leased_run_id,
+    )
+    assert leased_job_id is not None
+    leased_claim = repo.claim_job()
+    assert leased_claim is not None
+    assert leased_claim.id == leased_job_id
+
+    # --- done: enqueue, claim (the only claimable row), complete -----------
+    done_run_id = _seed_run_for_queue_proof()
+    done_job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-mixed-done:{uuid.uuid4()}",
+        run_id=done_run_id,
+    )
+    assert done_job_id is not None
+    done_claim = repo.claim_job()
+    assert done_claim is not None
+    assert done_claim.id == done_job_id
+    assert repo.complete_job(done_claim.id, done_claim.lease_token) is True
+
+    # --- dead: direct SQL, mirroring this module's existing backdating idiom
+    dead_run_id = _seed_run_for_queue_proof()
+    dead_job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-mixed-dead:{uuid.uuid4()}",
+        run_id=dead_run_id,
+    )
+    assert dead_job_id is not None
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute("UPDATE jobs SET state = 'dead' WHERE id = %s", (str(dead_job_id),))
+
+    # --- pending: left untouched ---------------------------------------------
+    pending_run_id = _seed_run_for_queue_proof()
+    pending_job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-mixed-pending:{uuid.uuid4()}",
+        run_id=pending_run_id,
+    )
+    assert pending_job_id is not None
+
+    # --- verify each row's own state, by id, before trusting the count -----
+    assert repo.get_job(leased_job_id)["state"] == "leased"
+    assert repo.get_job(done_job_id)["state"] == "done"
+    assert repo.get_job(dead_job_id)["state"] == "dead"
+    assert repo.get_job(pending_job_id)["state"] == "pending"
+
+    assert repo.count_open_jobs() == 2, (
+        "count_open_jobs must count exactly the pending+leased rows "
+        "(leased_job_id, pending_job_id) and exclude done/dead — the live "
+        "behavioral half 17-02's FakeConnection test could not prove"
+    )
+
+    # --- prove it reads live state, not something memoized from the first
+    # call above: complete the leased job and confirm the count drops -------
+    assert repo.complete_job(leased_claim.id, leased_claim.lease_token) is True
+    assert repo.count_open_jobs() == 1, (
+        "count_open_jobs must reflect the completion live — dropping from 2 "
+        "to 1 once the leased job (not the still-pending one) transitions "
+        "to done"
+    )
