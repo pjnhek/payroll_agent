@@ -5,8 +5,8 @@ milestone_name: — Durable Execution
 current_phase: 17
 current_phase_name: The Pump
 status: executing
-stopped_at: Phase 16 context gathered
-last_updated: "2026-07-14T21:26:49.901Z"
+stopped_at: Phase 17 context gathered
+last_updated: "2026-07-15T01:07:10.835Z"
 last_activity: 2026-07-14
 last_activity_desc: Phase 16 complete, transitioned to Phase 17
 progress:
@@ -222,9 +222,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-14T14:52:28.385Z
-Stopped at: Phase 16 context gathered
-Resume file: .planning/phases/16-queue-substrate-unblocked-webhook/16-CONTEXT.md
+Last session: 2026-07-15T01:07:10.826Z
+Stopped at: Phase 17 context gathered
+Resume file: .planning/phases/17-the-pump/17-CONTEXT.md
 
 ## Operator Next Steps
 
