@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from app.models.status import RunStatus
 from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 
 @pytest.fixture
@@ -196,7 +197,7 @@ def test_retrigger_from_error_backgrounds_pipeline(client, fake_repo):
         "not have already advanced — proving the enqueue, not an inline run, "
         "is what the route did"
     )
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job retrigger enqueued"
     )
     assert fake_repo.jobs[str(job["id"])]["state"] == "done", (
@@ -222,7 +223,7 @@ def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
         f"retrigger from APPROVED must return 303; got {r.status_code}"
     )
     _assert_run_pipeline_job_enqueued(fake_repo, run_id)
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job retrigger enqueued"
     )
 
@@ -248,7 +249,7 @@ def test_second_retrigger_enqueues_a_second_job(client, fake_repo, monkeypatch):
     r1 = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
     assert r1.status_code == 303
     first_job = _assert_run_pipeline_job_enqueued(fake_repo, run_id)
-    assert drain.drain_once() is True
+    assert drain.drain_once() == DrainOutcome.DONE
     assert fake_repo.jobs[str(first_job["id"])]["state"] == "done", (
         "sanity: the first job must be done before the second retrigger fires, or "
         "this test cannot distinguish 'a second job was enqueued' from 'the first "

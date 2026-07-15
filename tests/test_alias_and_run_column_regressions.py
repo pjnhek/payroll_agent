@@ -40,6 +40,7 @@ from app.db.repo import RUN_COLS, load_business_name, update_known_alias
 from app.models.status import RunStatus
 from app.pipeline.compose_email import confirmation_subject
 from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 
 @pytest.fixture
@@ -503,7 +504,7 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
         "the pipeline must not run before the enqueued job is drained"
     )
 
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job retrigger enqueued"
     )
     assert dispatched == [run_id], (
@@ -558,7 +559,7 @@ def test_retrigger_clears_context_on_stale_inflight_claim(
         "the pipeline must not run before the enqueued job is drained"
     )
 
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job retrigger enqueued"
     )
     assert dispatched == [run_id], (

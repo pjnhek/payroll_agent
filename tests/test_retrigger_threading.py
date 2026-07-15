@@ -38,6 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 # The seeded business whose roster the run is scored against.
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
@@ -205,7 +206,7 @@ def _crash_after_send_then_retrigger(
     )
     assert matching[0]["state"] == "pending" and matching[0]["kind"] == "run_pipeline"
 
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job retrigger enqueued"
     )
 

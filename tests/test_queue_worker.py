@@ -42,6 +42,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.db import repo
 from app.queue import drain, wake, worker
+from app.queue.drain import DrainOutcome
 
 # A generous, deterministic upper bound for every Event.wait()/Thread.join()
 # in this file — never a time.sleep poll. Long enough that a slow CI runner
@@ -592,3 +593,64 @@ def test_a_wake_arriving_during_the_drain_is_not_erased(
         "first drain must be observed immediately, not slept through "
         "(QUEUE_POLL_SECONDS=30 here, so a trailing clear() shows up as a ~30s gap)"
     )
+
+
+# ---------------------------------------------------------------------------
+# 11. A propagated drain_once() exception (a fail_job()-itself-fails infra
+#     outage that re-raises rather than mapping to a truthy DrainOutcome)
+#     does not kill the worker loop.
+# ---------------------------------------------------------------------------
+
+
+def test_worker_survives_a_propagated_drain_once_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """worker.py:203's `except Exception` must catch a `drain_once()` call
+    that RAISES and keep the loop polling.
+
+    `thread.is_alive()` ALONE is explicitly NOT the property under test: a
+    thread that is merely still an object in memory says nothing about
+    whether its run loop actually resumed calling drain_once() after the
+    exception, versus having wedged or silently stopped iterating while
+    technically not yet reaped. This test instead proves a SECOND, real
+    `drain_once()` invocation happened AFTER the raising first call — the
+    second-Event/`calls >= 2` handshake below — and only THEN asserts
+    liveness, so a worker that "looks alive" but never resumed polling
+    cannot pass.
+    """
+    calls = 0
+    first_call_raised = threading.Event()
+    second_call_happened = threading.Event()
+
+    def _raise_once_then_signal() -> DrainOutcome:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_call_raised.set()
+            raise RuntimeError("simulated double-failure: fail_job itself failed")
+        second_call_happened.set()
+        return DrainOutcome.EMPTY
+
+    monkeypatch.setattr(drain, "drain_once", _raise_once_then_signal)
+
+    try:
+        worker.start(1)
+        assert first_call_raised.wait(timeout=_TIMEOUT), (
+            "the worker never reached the raising first drain_once() call"
+        )
+        # The load-bearing wait: a SECOND real drain_once() invocation, not
+        # merely the thread object surviving — proves worker.py:203's except
+        # caught the propagated exception, logged, and the loop RESUMED
+        # polling rather than dying silently after the first iteration.
+        assert second_call_happened.wait(timeout=_TIMEOUT), (
+            "the worker never ran a second drain_once() after the first one "
+            "raised — worker.py:203's except did not keep the loop polling"
+        )
+        assert calls >= 2, f"expected at least 2 drain_once() calls, got {calls}"
+        thread = worker._threads[0]
+        assert thread.is_alive(), (
+            "the worker thread died after a propagated drain_once() exception"
+        )
+    finally:
+        worker.stop(grace_seconds=_TIMEOUT)
+    assert _live_worker_threads() == []

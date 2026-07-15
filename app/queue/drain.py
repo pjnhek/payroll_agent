@@ -120,7 +120,7 @@ class DrainOutcome(enum.StrEnum):
     """The per-call outcome of `drain_once()` — a pure in-process value, never
     persisted anywhere. `EMPTY` is the ONLY falsy member (see `__bool__`), so
     `worker.py:198`'s `if drain.drain_once():` keeps behaving exactly as it
-    did when `drain_once()` returned a bare `bool` (D-04).
+    did when `drain_once()` returned a bare `bool`.
 
     This reuses the strings "done"/"dead" coincidentally with `JobState`
     (app/models/job.py) — it is a DIFFERENT vocabulary layer (a per-call
@@ -220,8 +220,8 @@ def drain_once() -> DrainOutcome:
                 "strand the job for the full lease.",
                 job.id,
             )
-            # RE-RAISE (D-10, review finding #1): an infra failure, never a settled
-            # fence — worker.py:203 survives it, the pump route (17-04) turns it 503.
+            # RE-RAISE: an infra failure, never a settled fence — worker.py:203
+            # catches and survives this rather than reporting a false success.
             raise
     finally:
         if lease_settled:

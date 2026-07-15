@@ -51,6 +51,7 @@ from app.db import repo
 from app.models.job import Job, JobKind
 from app.models.status import RunStatus
 from app.queue import dispatch, drain
+from app.queue.drain import DrainOutcome
 from app.queue.handlers import pipeline
 from app.routes import pipeline_glue
 
@@ -234,7 +235,7 @@ def test_catastrophic_start_failure_is_retried_not_marked_done(fake_repo, monkey
     )
     assert job_id is not None
 
-    assert drain.drain_once() is True
+    assert drain.drain_once() == DrainOutcome.RETRIED
 
     job_row = fake_repo.get_job(job_id)
     assert job_row is not None
@@ -281,7 +282,7 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
         kind=JobKind.RUN_PIPELINE, dedup_key=f"run_pipeline:{run_id}:0", run_id=run_id
     )
     assert job_id is not None
-    assert drain.drain_once() is True
+    assert drain.drain_once() == DrainOutcome.DONE
 
     job_row = fake_repo.get_job(job_id)
     assert job_row is not None
@@ -305,7 +306,7 @@ def test_drain_once_empty_queue_returns_false_and_dispatches_nothing(fake_repo, 
     calls: list[Job] = []
     monkeypatch.setattr(dispatch, "handle", calls.append)
 
-    assert drain.drain_once() is False
+    assert drain.drain_once() == DrainOutcome.EMPTY
     assert calls == []
 
 
@@ -330,7 +331,7 @@ def test_drain_once_claims_dispatches_and_completes_with_the_same_token(fake_rep
 
     monkeypatch.setattr(repo, "complete_job", _spy_complete)
 
-    assert drain.drain_once() is True
+    assert drain.drain_once() == DrainOutcome.DONE
 
     assert len(handled) == 1
     claimed_job = handled[0]
@@ -356,7 +357,7 @@ def test_held_tokens_populated_during_handler_and_cleared_after(fake_repo, monke
     monkeypatch.setattr(dispatch, "handle", _stub_handle)
 
     assert drain.held_tokens() == []
-    assert drain.drain_once() is True
+    assert drain.drain_once() == DrainOutcome.DONE
     assert captured["held_during"] == [captured["token"]]
     assert drain.held_tokens() == []
 
@@ -401,12 +402,61 @@ def test_drain_once_handler_raises_calls_fail_job_not_complete_job(fake_repo, mo
     monkeypatch.setattr(repo, "fail_job", _spy_fail)
     monkeypatch.setattr(repo, "complete_job", _spy_complete)
 
-    assert drain.drain_once() is True
+    assert drain.drain_once() == DrainOutcome.RETRIED
 
     assert complete_calls == []
     assert len(fail_calls) == 1
     assert fail_calls[0]["backoff_seconds"] > 0
     assert fake_repo.jobs[str(job_id)]["state"] == "pending"  # attempts=1 < max_attempts=5
+
+
+def test_drain_once_dispatch_raises_at_max_attempts_returns_dead(fake_repo, monkeypatch):
+    """`fail_job`'s own MAX_ATTEMPTS CASE moves the row to `dead`, not
+    `pending` — `drain_once()` must capture that specific `JobState.DEAD`
+    return as `DrainOutcome.DEAD`, distinct from the backoff `RETRIED` case
+    above."""
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    dedup_key = f"run_pipeline:{run_id}:0"
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id, max_attempts=1
+    )
+    assert job_id is not None
+
+    def _raising_handle(job: Job) -> None:
+        raise RuntimeError("simulated dispatch failure")
+
+    monkeypatch.setattr(dispatch, "handle", _raising_handle)
+
+    assert drain.drain_once() == DrainOutcome.DEAD
+
+    job_row = fake_repo.get_job(job_id)
+    assert job_row is not None
+    assert job_row["state"] == "dead", (
+        "attempts (1) reached max_attempts (1) at claim — the job must "
+        f"dead-letter, got {job_row['state']!r}"
+    )
+
+
+def test_drain_once_complete_job_fenced_out_returns_fenced(fake_repo, monkeypatch):
+    """`complete_job` returning `False` means this worker's lease was
+    reclaimed by someone else while it was still running the job — a
+    SETTLED fence (drain.py's own docstring distinguishes this from the
+    double-failure infra-outage branch, which re-raises instead). `drain_once()`
+    must report the truthy `DrainOutcome.FENCED`, never raise and never
+    silently report `DONE`."""
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    dedup_key = f"run_pipeline:{run_id}:0"
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id
+    )
+    assert job_id is not None
+
+    monkeypatch.setattr(dispatch, "handle", lambda job: None)
+    monkeypatch.setattr(
+        repo, "complete_job", lambda job_id, lease_token, conn=None: False
+    )
+
+    assert drain.drain_once() == DrainOutcome.FENCED
 
 
 def test_backoff_seconds_exponential_capped_jittered_and_deterministic() -> None:
@@ -829,8 +879,13 @@ def test_a_failed_fail_job_keeps_the_lease_recorded(monkeypatch):
     monkeypatch.setattr(repo, "fail_job", _outage)     # ...and so does the failure write
 
     try:
-        # drain_once must not let the outage escape and kill the worker loop.
-        assert drain.drain_once() is True
+        # drain_once lets the outage ESCAPE by design: the double-failure is a
+        # genuine infra failure, not a settled fence, so it RE-RAISES rather than
+        # returning a truthy DrainOutcome.FENCED. The worker loop (worker.py:203)
+        # is what catches it and survives — proved separately by the worker-loop
+        # survival test in tests/test_queue_worker.py.
+        with pytest.raises(RuntimeError, match="simulated database outage"):
+            drain.drain_once()
 
         assert drain.held_tokens() == [token], (
             "fail_job raised, so the row is still `leased` in the database — but the "

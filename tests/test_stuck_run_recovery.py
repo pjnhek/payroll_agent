@@ -332,6 +332,7 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     import app.routes.pipeline_glue as pipeline_glue_mod
     from app.db.supabase import get_connection
     from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
     dispatched: list[uuid.UUID] = []
     monkeypatch.setattr(
@@ -368,7 +369,7 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
         f"the enqueued job's dedup_key must carry this run_id; got {job_row[2]!r}"
     )
 
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job the retrigger route enqueued"
     )
     assert dispatched == [run_id], (

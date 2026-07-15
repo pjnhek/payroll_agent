@@ -991,7 +991,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
       (a) strip `OR (c.state = 'leased' AND c.leased_until < now())` from
           claim_job's WHERE (app/db/repo/jobs.py) — the job is never
           reclaimed, step 5's drain claims nothing, and this test must go
-          red on `drain.drain_once() is True`.
+          red on `drain.drain_once() != DrainOutcome.DONE`.
       (b) strip the `if job.attempts > 1: repo.rewind_for_reclaim(run_id)`
           preamble from handle_run_pipeline (app/queue/handlers/pipeline.py)
           — the run stays at EXTRACTING (from step 3's own CAS), the
@@ -1007,6 +1007,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
     from app.db import repo
     from app.models.status import RunStatus
     from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
     # --- Step 1: seed an ERROR run, retrigger it -----------------------------
     run_id = _seed_run_for_queue_proof()
@@ -1094,7 +1095,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
         )
 
     # --- Step 5: a second worker (or a manual drain) picks the job back up --
-    assert drain.drain_once() is True, (
+    assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once() must claim and dispatch the reclaimed job — a job "
         "that was never actually reclaimable would leave nothing to drain"
     )
