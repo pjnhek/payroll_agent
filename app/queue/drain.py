@@ -212,12 +212,17 @@ def drain_once() -> DrainOutcome:
             else:
                 outcome = DrainOutcome.RETRIED
             lease_settled = True
-        except Exception:  # noqa: BLE001 — the failure write ITSELF failed
-            logger.exception(
-                "queue: fail_job itself failed for job=%s — the row is still `leased` "
-                "and this worker still owns it. KEEPING the lease token so a graceful "
-                "shutdown can still hand it back; discarding it here is what would "
-                "strand the job for the full lease.",
+        except Exception as exc:  # noqa: BLE001 — the failure write ITSELF failed
+            # Log the exception TYPE only, never the exception object/str: on an
+            # infra outage fail_job's error can carry a DB connection string, and
+            # the pump surfaces this same branch as a 503 whose disclosure discipline
+            # is type-name-only. The full exception still propagates via the re-raise.
+            logger.error(
+                "queue: fail_job itself failed (%s) for job=%s — the row is still "
+                "`leased` and this worker still owns it. KEEPING the lease token so a "
+                "graceful shutdown can still hand it back; discarding it here is what "
+                "would strand the job for the full lease.",
+                type(exc).__name__,
                 job.id,
             )
             # RE-RAISE: an infra failure, never a settled fence — worker.py:203
