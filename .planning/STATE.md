@@ -3,17 +3,17 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 current_phase: 17
-current_phase_name: The Pump
+current_phase_name: the-pump
 status: executing
 stopped_at: Phase 17 context gathered
-last_updated: "2026-07-15T02:12:05.320Z"
-last_activity: 2026-07-14
-last_activity_desc: Phase 16 complete, transitioned to Phase 17
+last_updated: "2026-07-15T14:26:41.208Z"
+last_activity: 2026-07-15
+last_activity_desc: Phase 17 execution started
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 10
-  completed_plans: 10
+  total_plans: 15
+  completed_plans: 11
   percent: 17
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 16 — queue-substrate-unblocked-webhook
+**Current focus:** Phase 17 — the-pump
 
 ## Current Position
 
-Phase: 17 — The Pump
-Plan: Not started
+Phase: 17 (the-pump) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-07-14 — Phase 16 complete, transitioned to Phase 17
+Last activity: 2026-07-15 — Phase 17 execution started
 
 ## Performance Metrics
 
@@ -91,6 +91,7 @@ Last activity: 2026-07-14 — Phase 16 complete, transitioned to Phase 17
 | Phase 14 P04 | 7min | 3 tasks | 5 files |
 | Phase 14 P05 | 8 | 2 tasks | 5 files |
 | Phase 14 P10 | resumed closeout | 4 tasks | 3 files |
+| Phase 17 P01 | 20min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -157,6 +158,7 @@ Recent decisions affecting current work:
 - [Phase 14]: Use concrete route response/domain types and explicit None narrowing at optional database-result boundaries.
 - [Phase 14]: Plan 14-05 uses TypedDicts for stable eval scoring and aggregation shapes, with Any retained only at JSON and DB dynamic boundaries.
 - [Phase 14]: Operational scripts are verified with side-effect-free py_compile rather than execution because they touch the live database.
+- [Phase ?]: v4 Phase 17 Plan 01: the fail_job()-itself-fails double-failure branch RE-RAISES out of drain_once() rather than mapping to a truthy DrainOutcome.FENCED — an infra outage must never look like a settled success to a caller (worker or the eventual pump route).
 
 ### Pending Todos
 
@@ -222,7 +224,7 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-15T01:07:10.826Z
+Last session: 2026-07-15T14:25:55.983Z
 Stopped at: Phase 17 context gathered
 Resume file: .planning/phases/17-the-pump/17-CONTEXT.md
 

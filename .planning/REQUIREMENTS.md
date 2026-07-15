@@ -47,7 +47,7 @@ constraint — and none could supply the failure contract, which is the actual w
 
 ### PUMP — Turning durable storage into durable execution
 
-- [ ] **PUMP-01**: An authenticated pump endpoint claims and drains due jobs, sharing **one** `drain_once()`
+- [x] **PUMP-01**: An authenticated pump endpoint claims and drains due jobs, sharing **one** `drain_once()`
   implementation with the worker threads. It is the **primary** execution trigger, not a redundancy: on a
   cold-started Render instance the worker threads may not exist when a retried job's `available_at` matures.
 
@@ -159,7 +159,7 @@ limitation honestly is itself the differentiator.
 | QUEUE-02 | Phase 16 | Complete |
 | QUEUE-03 | Phase 16 | Complete |
 | QUEUE-05 | Phase 16 | Complete |
-| PUMP-01 | Phase 17 | Pending |
+| PUMP-01 | Phase 17 | Complete |
 | PUMP-02 | Phase 17 | Pending |
 | FAIL-01 | Phase 18 | Pending |
 | FAIL-02 | Phase 18 | Pending |
