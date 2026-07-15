@@ -302,6 +302,6 @@ def count_open_jobs(conn: psycopg.Connection | None = None) -> int:
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
-            "SELECT count(*) FROM jobs WHERE state IN ('pending', 'leased')"
+            "SELECT count(*) FROM jobs WHERE state IN ('pending', 'leased')", ()
         ).fetchone()
     return int(row[0]) if row else 0

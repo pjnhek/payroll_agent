@@ -191,7 +191,7 @@ def test_get_job_sql_shape(fake_conn) -> None:
 
 
 def test_no_function_builds_sql_with_an_fstring(fake_conn) -> None:
-    """Every recorded execute() call across all six functions must pass its
+    """Every recorded execute() call across all seven functions must pass its
     values through a params tuple/dict — never bake a value into the SQL text
     itself via an f-string."""
     from app.db.repo import jobs
@@ -217,6 +217,8 @@ def test_no_function_builds_sql_with_an_fstring(fake_conn) -> None:
     jobs.release_leases([token], conn=fake_conn)
     fake_conn.script_fetchone({"id": job_id})
     jobs.get_job(job_id, conn=fake_conn)
+    fake_conn.script_fetchone((3,))
+    jobs.count_open_jobs(conn=fake_conn)
 
     for sql, params in fake_conn.executed:
         assert isinstance(params, (tuple, dict)), (
@@ -225,7 +227,7 @@ def test_no_function_builds_sql_with_an_fstring(fake_conn) -> None:
         )
 
 
-def test_facade_exports_all_six_functions() -> None:
+def test_facade_exports_all_seven_functions() -> None:
     from app.db import repo
 
     for name in (
@@ -235,6 +237,7 @@ def test_facade_exports_all_six_functions() -> None:
         "fail_job",
         "release_leases",
         "get_job",
+        "count_open_jobs",
     ):
         assert hasattr(repo, name), f"app.db.repo is missing facade export {name!r}"
 
@@ -254,6 +257,7 @@ def test_every_function_takes_conn_and_uses_conn_ctx() -> None:
         "fail_job",
         "release_leases",
         "get_job",
+        "count_open_jobs",
     ):
         fn = getattr(jobs, name)
         sig = inspect.signature(fn)
@@ -261,3 +265,35 @@ def test_every_function_takes_conn_and_uses_conn_ctx() -> None:
         assert sig.parameters["conn"].default is None
         source = inspect.getsource(fn)
         assert "_conn_ctx(conn)" in source, f"{name} does not open with _conn_ctx(conn)"
+
+
+def test_count_open_jobs_maps_scalar_row_to_int_and_scopes_the_where(
+    fake_conn,
+) -> None:
+    """HONEST hermetic coverage only: a FakeConnection records the (sql,
+    params) pair, it does not execute the count, so this proves exactly two
+    things — the return→int conversion, and the literal WHERE text (pending +
+    leased counted, done/dead excluded BY the WHERE). It does NOT and cannot
+    prove that Postgres actually counts a mixed pending/leased/done/dead
+    population correctly; that behavioral proof is live-Postgres and lands in
+    17-05.
+    """
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchone((3,))
+    result = jobs.count_open_jobs(conn=fake_conn)
+    assert result == 3
+    assert isinstance(result, int)
+    sql, params = fake_conn.last()
+    assert "state IN ('pending', 'leased')" in str(sql)
+
+
+def test_count_open_jobs_empty_row_returns_zero(fake_conn) -> None:
+    """No/None row (the FakeConnection's empty-scripted-result stand-in for
+    "no rows matched") maps to 0, not a crash or a None leak."""
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchone(None)
+    result = jobs.count_open_jobs(conn=fake_conn)
+    assert result == 0
+    assert isinstance(result, int)
