@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 17
-current_phase_name: the-pump
+current_phase: 18
+current_phase_name: Failure Policy & Sweep Deletion
 status: verifying
 stopped_at: Completed 17-03-PLAN.md
-last_updated: "2026-07-15T15:13:14.618Z"
+last_updated: "2026-07-15T15:38:29.719Z"
 last_activity: 2026-07-15
-last_activity_desc: Phase 17 execution started
+last_activity_desc: Phase 17 complete, transitioned to Phase 18
 progress:
   total_phases: 6
   completed_phases: 2
@@ -28,16 +28,16 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 
 ## Current Position
 
-Phase: 17 (the-pump) — EXECUTING
-Plan: 5 of 5
+Phase: 18 — Failure Policy & Sweep Deletion
+Plan: Not started
 Status: Phase complete — ready for verification
-Last activity: 2026-07-15 — Phase 17 execution started
+Last activity: 2026-07-15 — Phase 17 complete, transitioned to Phase 18
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 82
+- Total plans completed: 87
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -61,6 +61,7 @@ Last activity: 2026-07-15 — Phase 17 execution started
 | 14 | 10 | - | - |
 | 15 | 11 | - | - |
 | 16 | 10 | - | - |
+| 17 | 5 | - | - |
 
 **Recent Trend:**
 
