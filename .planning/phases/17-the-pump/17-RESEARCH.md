@@ -57,7 +57,7 @@ The real cost is elsewhere: **~15 existing test assertions use `assert drain.dra
 
 Second finding worth flagging: CONTEXT.md's canonical-refs ask the planner to "confirm the existing constant-time-compare seam (the webhook HMAC path) to reuse." **No such reusable seam exists.** The webhook's signature check delegates entirely to `resend.Webhooks.verify()` (the svix SDK) — there is no in-repo `hmac.compare_digest`/`secrets.compare_digest` helper anywhere in `app/`. The Bearer-token compare must be written from scratch using Python's stdlib (`hmac.compare_digest`), which is a two-line addition, not a "reuse."
 
-Third: the pump's own drain loop must be bounded by both a job-count cap and a wall-clock cap (D-05), and the wall-clock cap interacts with GitHub Actions' `curl --max-time`, which `keepalive.yml` already sets to `90` for its two health checks. The pipeline's own documented worst-case single-job runtime is **210 seconds** (`app/config.py`'s `LEASE_SECONDS` comment, cross-referencing `runs.py:34-68`). Copying `--max-time 90` onto the pump's own curl step would produce a false RED on a pump that is still correctly draining a slow job — the pump step's timeout must be sized well above the health-check steps', not copied uniformly across all three `pump.yml` steps.
+Third: the pump's own drain loop must be bounded by both a job-count cap and a wall-clock cap (D-05), and the wall-clock cap interacts with GitHub Actions' `curl --max-time`, which `keepalive.yml` already sets to `90` for its two health checks. **CORRECTION (17-REVIEWS findings #1 & #2 — supersedes this doc's original 210s/360s framing throughout):** the 210s figure is the max inter-write STALL GAP (a stall threshold in `runs.py:37-72`), **NOT** a total single-job runtime — do not size the curl timeout from it. The pump step's curl budget is `--max-time 420`, an HONEST NOMINAL accounting = Render cold-start ≤60s + the pump's 120s between-jobs cap + one worst-case job's ≈240s external-call allowance (summed provider timeouts), with deterministic/DB/overhead ON TOP — so 60+120+240 = 420 already, **NO "~60s headroom" is claimed** and a rare worst-case-clarification request can overrun 420. That is safe because CORRECTNESS rests on lease-reclaim (`lease_seconds=900`), not the curl budget: a job with attempts remaining is idempotently re-run next cadence (SKIP LOCKED). 420 is a NOMINAL budget, PROVISIONAL until the live smoke confirms Render's undocumented server-side ceiling (A1), not a proven containment bound. Copying `--max-time 90` onto the pump step would false-RED a pump that is still correctly draining a slow job — size the pump step well above the two health-check steps', not uniformly across all three `pump.yml` steps.
 
 **Primary recommendation:** Ship D-04 as a pure capture-and-map change inside `drain_once()` (no signature changes to `complete_job`/`fail_job`), define the new outcome type as a small `StrEnum` with an overridden `__bool__` living in `app/queue/drain.py` (not `app/models/job.py` — it mirrors nothing in SQL, unlike `JobKind`/`JobState`), rewrite the ~15 `is True`/`is False` assertions to assert the *specific* expected outcome (free proof-strengthening, not just mechanical repair), write the pump route as a plain sync `def` (not `async def`, matching the health-route convention and the codebase's established "blocking work goes off the loop" discipline), and size the pump-step `curl --max-time` independently of the two health-check steps.
 
@@ -201,9 +201,12 @@ def drain_once() -> DrainOutcome:
         return DrainOutcome.EMPTY
 
     lease_settled = False
-    outcome = DrainOutcome.FENCED  # the "failure write itself failed" edge case —
-    # see Common Pitfalls: the taxonomy has no 6th slot for a double-failure and
-    # this default is the least-wrong of the five per D-04's locked vocabulary.
+    # NOTE (17-REVIEWS finding #1 — supersedes an earlier draft that seeded
+    # `outcome = DrainOutcome.FENCED` and let the double-failure fall through as FENCED):
+    # do NOT seed a FENCED catch-all. Set `outcome` EXPLICITLY on each SETTLED branch,
+    # and RE-RAISE the double-failure (fail_job's own write failed) so the pump surfaces
+    # 503 and the worker loop (worker.py:203) survives. Mapping it to FENCED would let a
+    # real DB outage return HTTP 200 (violates D-10).
     try:
         dispatch.handle(job)
         completed = repo.complete_job(job.id, job.lease_token)
@@ -220,16 +223,17 @@ def drain_once() -> DrainOutcome:
                 outcome = DrainOutcome.FENCED
             else:
                 outcome = DrainOutcome.DEAD if state is JobState.DEAD else DrainOutcome.RETRIED
-        except Exception:  # noqa: BLE001 — the failure write ITSELF failed
-            logger.exception(...)  # unchanged message
+        except Exception:  # noqa: BLE001 — the failure write ITSELF failed (DB outage)
+            logger.exception(...)  # unchanged message; lease_settled stays False
+            raise                  # RE-RAISE: infra failure → pump 503; worker.py:203 survives
     finally:
         if lease_settled:
             with _held_tokens_lock:
                 _held_tokens.discard(job.lease_token)
-    return outcome
+    return outcome  # reached only when no exception propagated; mypy sees `outcome` bound
 ```
 
-`worker.py:198`'s `if drain.drain_once():` needs **zero changes** — `DrainOutcome.__bool__` preserves the exact truthiness contract.
+`worker.py:198`'s `if drain.drain_once():` needs **zero changes** — `DrainOutcome.__bool__` preserves the exact truthiness contract. The double-failure branch RE-RAISES rather than returning, so `return outcome` is reached only on a settled branch (`outcome` is always bound there).
 
 ### Pattern 2: The pump route — thin, sync, bounded
 
@@ -290,7 +294,7 @@ def pump(request: Request) -> JSONResponse:
 ```
 
 ### Anti-Patterns to Avoid
-- **Blindly copying `keepalive.yml`'s `curl -f --max-time 90` onto the pump step.** The pipeline's own documented worst-case single-job runtime is 210s (see Common Pitfalls) — a 90s client timeout would false-RED a pump that is still correctly working.
+- **Blindly copying `keepalive.yml`'s `curl -f --max-time 90` onto the pump step.** A single pump request's nominal worst case is ≈420s (cold-start ≤60 + 120s between-jobs cap + ≈240s external-call allowance + overhead — NOT the 210s stall gap; see the CORRECTION in Summary and Pitfall 2) — a 90s client timeout would false-RED a pump that is still correctly working. Use `--max-time 420` (nominal, provisional-until-live-smoke); correctness rests on lease-reclaim, not the curl budget.
 - **A second, forked drain implementation for the pump.** PUMP-01 is explicit: "sharing ONE `drain_once()` implementation... never a fork." The route must call the exact same function the worker threads call, not a route-local copy of the claim/dispatch/complete/fail sequence.
 - **Widening `-m integration` collection to bring in the new durability test.** Already superseded by Phase 16 D-14 — use `@pytest.mark.queueproof` (registered in `pyproject.toml`, already collected by `concurrency-proof.yml`'s second step). No workflow edits needed.
 - **A `getattr(repo, ...)` or re-bound-name path to `repo.count_open_jobs`.** Phase 16's D-18 J-1 AST guard rejects files under `app/queue/` that defeat static resolution of repo calls — the pump route itself is under `app/routes/`, not `app/queue/`, so it is outside that specific guard's scope, but any new code added under `app/queue/drain.py` must keep calling `repo.<name>(...)` by plain attribute access.
@@ -321,9 +325,9 @@ def pump(request: Request) -> JSONResponse:
 **Warning signs:** A test suite that goes from ~600 passing to a wall of `AssertionError: assert <DrainOutcome.DONE: 'done'> is True` the moment `drain_once()`'s return type changes, in a diff that touched no test files.
 
 ### Pitfall 2: The drain-loop wall-clock cap and the workflow's `curl --max-time` are the same design decision, made in two different files
-**What goes wrong:** `keepalive.yml`'s existing `curl -f --max-time 90` pattern gets copy-pasted onto the new pump step in `pump.yml`. The pipeline's own documented worst-case single-job runtime is **210 seconds** [VERIFIED: `app/config.py`'s `LEASE_SECONDS` comment, cross-referencing `app/routes/runs.py:34-68`'s `STALE_THRESHOLD` derivation — "the resume path's back-to-back double extraction — 45s x 2 app-retries x 2 calls — plus a 30s clarification draft"]. If the pump's wall-clock cap is checked only *between* `drain_once()` calls (correct — never abort mid-job), the worst-case total pump request duration is `wall_clock_cap + one_job_worst_case`, e.g. `120 + 210 = 330s`. A `--max-time 90` on that step guarantees a false RED on the very first slow job, even though the server-side drain is proceeding correctly and safely (SKIP LOCKED + lease fencing make a client-side timeout harmless to correctness — the job simply finishes on the server and the next pump invocation, or the still-running worker threads, will find it already done).
+**What goes wrong:** `keepalive.yml`'s existing `curl -f --max-time 90` pattern gets copy-pasted onto the new pump step in `pump.yml`. **CORRECTION (17-REVIEWS #1/#2):** the 210s figure from `app/routes/runs.py:37-72`'s `STALE_THRESHOLD` is the max GAP between two consecutive DB writes (a stall threshold), **NOT** a total single-job runtime — do not size the curl timeout from it. Size the pump step from the explicit provider timeouts instead: a single request's nominal worst case ≈ cold-start ≤60s + the pump's 120s between-jobs cap + one worst-case job's ≈240s external-call allowance (extraction/suggestion ≤90s each = `_STRUCTURED_TIMEOUT_S`×2, clarification draft ≤30s, Resend send ≤30s) + deterministic/DB/overhead ON TOP — i.e. 60+120+240 = 420 already, with overhead pushing PAST 420. The wall-clock cap is checked only *between* `drain_once()` calls (correct — never abort mid-job), so a request can begin ONE final job just under the cap. A `--max-time 90` on that step guarantees a false RED on the very first slow job, even though the server-side drain is proceeding correctly and safely (SKIP LOCKED + lease fencing make a client-side timeout harmless to correctness — the job simply finishes on the server and the next pump invocation, or the still-running worker threads, will find it already done).
 **Why it happens:** Copying a working pattern verbatim across three near-identical `curl -f` steps in the same job feels like the obviously-safe move, and the two health-check steps genuinely should share `--max-time 90` (they're fast SELECT-only probes) — only the pump step is fundamentally different in worst-case shape.
-**How to avoid:** Size the pump step's `--max-time` independently, at or above `wall_clock_cap + single_job_worst_case` with headroom (e.g. `--max-time 360`), and say so in a comment at that step exactly like `keepalive.yml`'s existing comments explain `--max-time 90`'s own reasoning. Also note: if a client-side curl timeout fires, FastAPI/Starlette does **not** cancel a sync `def` route's in-flight AnyIO-threadpool work on client disconnect — the drain continues to completion server-side regardless of what the cron run reports. That is safe (idempotent, fenced) but worth documenting so a false RED from a slow demo-day event doesn't get misread as data loss.
+**How to avoid:** Size the pump step's `--max-time` independently at **`--max-time 420`**, documented as a NOMINAL operating budget (cold-start ≤60 + 120s cap + ≈240s external-call allowance = 420, with overhead ON TOP so **NO headroom is claimed** — the earlier "360 ceiling + ~60s headroom" framing is WITHDRAWN as false, 17-REVIEWS #1), and say so in a comment at that step exactly like `keepalive.yml`'s existing comments explain `--max-time 90`. The value is PROVISIONAL until the live smoke confirms Render's undocumented server-side ceiling (A1); a rare overrun goes RED but is safe because CORRECTNESS rests on lease-reclaim (`lease_seconds=900`), not the curl budget — a job with attempts remaining is idempotently re-run next cadence. Also note (17-REVIEWS #2): if a client-side curl timeout fires, FastAPI/Starlette does **not** cancel a sync `def` route's in-flight AnyIO-threadpool work on client disconnect — the drain continues to completion server-side, so a curl-overrun RED most likely means the job FINISHED SUCCESSFULLY server-side (RED-but-succeeded), a request-level signal only, NOT "auto-retried". That is safe (idempotent, fenced) but worth documenting so a false RED from a slow demo-day event doesn't get misread as data loss.
 **Warning signs:** A cron run reports RED on the pump step with a `curl: (28) Operation timed out` while the Render logs show the drain loop completing normally seconds later.
 
 ### Pitfall 3: "returns real counts" does not mean "N successful payrolls"
@@ -377,12 +381,15 @@ jobs:
           PUMP_TOKEN: ${{ secrets.PUMP_TOKEN }}
 
       - name: Drain due jobs via the authenticated pump
-        # --max-time is intentionally LARGER than the two health-check steps below:
-        # worst-case single job runtime is 210s (see app/config.py LEASE_SECONDS) and
-        # the pump's own drain-loop wall-clock cap is checked BETWEEN jobs, so total
-        # worst case is wall_clock_cap + one in-flight job. Do not copy --max-time 90
-        # from the steps below onto this one.
-        run: curl -f --max-time 360 -H "Authorization: Bearer $PUMP_TOKEN" "$RENDER_URL/internal/pump"
+        # --max-time is intentionally LARGER than the two health-check steps below, and
+        # is a NOMINAL budget, not a proven bound (17-REVIEWS #1): cold-start <=60s + the
+        # pump's 120s between-jobs cap + one worst-case job's ~240s external-call allowance
+        # = 420, with deterministic/DB/overhead ON TOP (so NO headroom). It is NOT the 210s
+        # inter-write stall gap. Correctness rests on lease-reclaim (lease_seconds=900),
+        # not this budget: a job with attempts remaining is re-run next cadence (SKIP LOCKED).
+        # Provisional until the live smoke confirms Render's server-side ceiling. Do not copy
+        # --max-time 90 from the steps below onto this one.
+        run: curl -f --max-time 420 -H "Authorization: Bearer $PUMP_TOKEN" "$RENDER_URL/internal/pump"
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
           PUMP_TOKEN: ${{ secrets.PUMP_TOKEN }}
@@ -456,23 +463,23 @@ with repo.get_connection() as conn, conn.transaction():
 
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
-| A1 | Render's free-tier reverse proxy has no documented hard request-duration limit shorter than the pump's own wall-clock + single-job worst case (~330s) | Pitfall 2 / Code Examples (`--max-time 360`) | If Render silently kills long requests server-side (undocumented), a slow pump run could 502 mid-drain even with a generous client `--max-time`. The drain itself is still safe (idempotent, fenced) but the pump would need to be re-run more often, or the cap tuned tighter, than this research assumes. Recommend a live smoke test against the deployed instance once shipped: simulate a slow job and confirm the request completes rather than 502ing. |
+| A1 | Render's free-tier reverse proxy has no documented hard request-duration limit shorter than the pump's own nominal worst case (~420s: cold-start ≤60 + 120s cap + ≈240s external-call allowance + overhead) | Pitfall 2 / Code Examples (`--max-time 420`) | If Render silently kills long requests server-side (undocumented), a slow pump run could 502 mid-drain even with a generous client `--max-time`. The drain itself is still safe (idempotent, fenced; a job with attempts remaining is lease-reclaimed) but the pump would need to be re-run more often, or the cap tuned tighter, than this research assumes. Live smoke (see VALIDATION.md, review finding #4): drive a DELIBERATELY long-running controlled request — a seeded job whose handler is stubbed/slowed to sleep TOWARD the ~420s cap, with NO paid-provider or duplicate-send behavior — and confirm the request completes rather than 502ing; a routine small backlog finishes in seconds and proves nothing about the ceiling. |
 | A2 | `MAX_JOBS_PER_PUMP=20` / `MAX_WALL_CLOCK_SECONDS=120` are reasonable static constants for ~1 email/client/week load | §Code Examples, §Common Pitfalls Pitfall 2 | These are ASSUMED defaults, not measured against a real backlog scenario — if the demo ever simulates a large backlog, the caps may need retuning. Low risk given the stated load. |
 | A3 | Placing `DrainOutcome` in `app/queue/drain.py` rather than `app/models/job.py` is the better home | §Pattern 1 | This is a judgment call, not a locked decision — reasonable engineers could put it in `app/models/job.py` for symmetry with `JobKind`/`JobState`. The risk if "wrong" is purely stylistic; no functional impact either way. |
 
 ## Open Questions (RESOLVED)
 
 1. **What should `drain_once()` return when `fail_job` itself raises (the double-failure branch)?**
-   - **RESOLVED:** Map to `FENCED` with an inline approximation comment, per the recommendation below — adopted verbatim in `17-01-PLAN.md` Task 1.
-   - What we know: today this branch logs at ERROR and leaves `lease_settled = False` (the token stays in `_held_tokens` for eventual shutdown release), then falls through to the function's single `return True`. D-04's locked vocabulary has exactly five values (`empty|done|retried|dead|fenced`) and none of them precisely describes "the completion write itself failed, unknown final state."
-   - What's unclear: whether the pump's `fenced` count should silently absorb this vanishingly-rare case (the sketch above does this) or whether it deserves a distinct signal.
-   - Recommendation: map it to `FENCED` with an inline comment noting the approximation (as shown in Pattern 1), since it is already rare (requires a DB failure at the exact moment of a failure-write) and pre-existing (not a regression this phase introduces) — but flag this explicitly to the user/planner rather than silently deciding it, since a money-adjacent count being slightly approximate deserves a conscious call.
+   - **RESOLVED — RE-RAISE (NOT FENCED). This supersedes the earlier "map to FENCED" text, which review round 1 overturned (17-REVIEWS finding #1) and round 3 re-confirmed. Do NOT map the double-failure to FENCED.**
+   - The double-failure branch (`fail_job()`'s own write failed — a genuine DB outage that intentionally RETAINS the lease, drain.py:180) is semantically distinct from a SETTLED fence (a write that landed but matched zero rows, drain.py:7). It is an infra failure, not a per-job outcome. Mapping it to a truthy `FENCED` would let the pump route return HTTP 200 during a real outage — a false GREEN cron over a live outage (violates D-10).
+   - **Adopted in `17-01-PLAN.md` Task 1:** the inner `except` (the "fail_job itself failed" branch) keeps its existing `logger.exception(...)` message, leaves `lease_settled = False` (token retained for graceful shutdown), then RE-RAISES (bare `raise`). The exception propagates out of `drain_once()`; the worker loop (worker.py:203) catches it and keeps polling, and the pump route's try/except turns it into 503 (RED cron over a real outage). `FENCED` stays reserved for a SETTLED fence.
+   - D-04's locked vocabulary stays at exactly five values (`empty|done|retried|dead|fenced`) — an infra failure is an EXCEPTION, not a sixth outcome.
 
 2. **Does Render's free-tier proxy impose an undocumented request-duration ceiling?**
-   - **RESOLVED (deferred to live smoke test):** Treat `--max-time 360` as provisional; the verification is a Manual-Only row in `17-VALIDATION.md` (live smoke against the deployed instance once shipped). Carried, not dropped.
+   - **RESOLVED (deferred to live smoke test):** Treat `--max-time 420` as provisional; the verification is a Manual-Only row in `17-VALIDATION.md` (live smoke against the deployed instance once shipped). Carried, not dropped.
    - What we know: no official Render documentation surfaced a specific number via search; only the well-documented 15-minute idle-spindown and ~750h/month budget. [CITED: render.com/docs/free]
    - What's unclear: the actual behavior of a single in-flight request running 3-5+ minutes on a free web service.
-   - Recommendation: treat the `--max-time 360` value as provisional and verify once deployed (see A1).
+   - Recommendation: treat the `--max-time 420` value as provisional and verify once deployed (see A1).
 
 ## Environment Availability
 
@@ -577,7 +584,7 @@ No missing dependencies — this phase introduces no new external tool, service,
 **Confidence breakdown:**
 - Standard stack: HIGH — zero new dependencies, every mechanism already stdlib or in-repo.
 - Architecture: HIGH — every code seam cited was read directly this session; the `drain_once()`/`fail_job` return-type finding directly contradicts CONTEXT.md's stated cost and is independently confirmed via `git log -p`.
-- Pitfalls: HIGH for the `is True`/`is False` breakage (exact line numbers enumerated via grep) and the missing constant-time-compare seam (confirmed absent via grep); MEDIUM for the `--max-time`/Render-timeout interaction (the 210s worst-case number is directly cited from existing code comments, but Render's own server-side ceiling is unverified — see Open Questions).
+- Pitfalls: HIGH for the `is True`/`is False` breakage (exact line numbers enumerated via grep) and the missing constant-time-compare seam (confirmed absent via grep); MEDIUM for the `--max-time`/Render-timeout interaction. NOTE (17-REVIEWS #1/#2): the 210s figure this doc originally cited is the max inter-write STALL gap, NOT a single-job runtime — the corrected pump budget is `--max-time 420` (nominal, provisional-until-live-smoke; NO headroom), and correctness rests on lease-reclaim, not the curl budget. Render's own server-side ceiling is unverified — see Open Questions / A1 / VALIDATION's live smoke.
 
 **Research date:** 2026-07-15
 **Valid until:** 30 days (stable stdlib/FastAPI/GitHub Actions mechanics; re-verify Render's 750h figure and any request-timeout behavior if this phase slips past a Render pricing-page change).

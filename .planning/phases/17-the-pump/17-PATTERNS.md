@@ -101,7 +101,7 @@ Use `TestClient(app_main.app)` (already the whole suite's convention per `tests/
 - The `Validate secrets are set` fail-fast step (`keepalive.yml:26-35`), extended to check both `RENDER_URL` and `PUMP_TOKEN`.
 - The `-f` (fail-on-non-2xx) discipline and the comment explaining why swallowing would make the check silently useless (`keepalive.yml:11-13`).
 - `workflow_dispatch` with the 60-day auto-disable rationale comment (`keepalive.yml:8-9`).
-- The `/health/ready` and `/health/schema` steps, copied verbatim including their `--max-time 90` (`keepalive.yml:37-51`) — RESEARCH.md's Pitfall 2 is explicit that only the *new* pump step needs a different, larger `--max-time` (360s, sized against `wall_clock_cap + single_job_worst_case = 120 + 210`); do not uniformly copy `90` onto all three steps.
+- The `/health/ready` and `/health/schema` steps, copied verbatim including their `--max-time 90` (`keepalive.yml:37-51`) — RESEARCH.md's Pitfall 2 is explicit that only the *new* pump step needs a different, larger `--max-time`. **CORRECTED (17-REVIEWS #1/#2):** use `--max-time 420` (a NOMINAL budget = cold-start ≤60 + 120s between-jobs cap + ≈240s external-call allowance + overhead — NOT the 210s inter-write STALL gap, and NO headroom is claimed); correctness rests on lease-reclaim (`lease_seconds=900`), not the curl budget; the value is provisional until the live smoke. Do not uniformly copy `90` onto all three steps.
 
 **Full target file:** already produced end-to-end in RESEARCH.md's "Code Examples → `pump.yml`". Use verbatim as the plan's action.
 
@@ -230,7 +230,7 @@ Do not spend planning time searching for an existing seam to reuse — RESEARCH.
 
 ### `-f` cron discipline (RED on failure, never swallow)
 **Source:** `.github/workflows/keepalive.yml:11-13`, `:37,50` (`curl -f`).
-**Apply to:** all three `pump.yml` steps, with the pump step's own `--max-time` sized independently (360s vs the health steps' 90s) per RESEARCH.md Pitfall 2.
+**Apply to:** all three `pump.yml` steps, with the pump step's own `--max-time` sized independently (**420s** — nominal, provisional-until-live-smoke — vs the health steps' 90s) per RESEARCH.md Pitfall 2 (17-REVIEWS #1: the 360s/headroom framing is withdrawn; 420 = cold-start ≤60 + 120s cap + ≈240s external-call allowance + overhead, correctness via lease-reclaim not the budget).
 
 ## No Analog Found
 
