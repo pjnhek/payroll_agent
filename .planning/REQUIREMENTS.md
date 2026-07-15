@@ -51,7 +51,7 @@ constraint — and none could supply the failure contract, which is the actual w
   implementation with the worker threads. It is the **primary** execution trigger, not a redundancy: on a
   cold-started Render instance the worker threads may not exist when a retried job's `available_at` matures.
 
-- [ ] **PUMP-02**: Cron drives the pump every **30 minutes**, and the README documents the duty-cycle math
+- [x] **PUMP-02**: Cron drives the pump every **30 minutes**, and the README documents the duty-cycle math
   (`awake ≈ 15 ÷ cadence`), the **750 instance-hour/month** ceiling that forces it, and the deliberately
   best-effort wording (GitHub Actions cron can be delayed and auto-disables after 60 quiet days; operator retry
   is the stated fallback).
@@ -160,7 +160,7 @@ limitation honestly is itself the differentiator.
 | QUEUE-03 | Phase 16 | Complete |
 | QUEUE-05 | Phase 16 | Complete |
 | PUMP-01 | Phase 17 | Complete |
-| PUMP-02 | Phase 17 | Pending |
+| PUMP-02 | Phase 17 | Complete |
 | FAIL-01 | Phase 18 | Pending |
 | FAIL-02 | Phase 18 | Pending |
 | FAIL-03 | Phase 18 | Pending |

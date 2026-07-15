@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 17
 current_phase_name: the-pump
 status: executing
-stopped_at: Phase 17 context gathered
-last_updated: "2026-07-15T14:36:08.413Z"
+stopped_at: Completed 17-03-PLAN.md
+last_updated: "2026-07-15T14:46:51.246Z"
 last_activity: 2026-07-15
 last_activity_desc: Phase 17 execution started
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 15
-  completed_plans: 12
+  completed_plans: 13
   percent: 17
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 17 (the-pump) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-07-15 — Phase 17 execution started
 
@@ -93,6 +93,7 @@ Last activity: 2026-07-15 — Phase 17 execution started
 | Phase 14 P10 | resumed closeout | 4 tasks | 3 files |
 | Phase 17 P01 | 20min | 2 tasks | 8 files |
 | Phase 17 P02 | 9min | 2 tasks | 3 files |
+| Phase 17 P03 | 15min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -161,6 +162,9 @@ Recent decisions affecting current work:
 - [Phase 14]: Operational scripts are verified with side-effect-free py_compile rather than execution because they touch the live database.
 - [Phase ?]: v4 Phase 17 Plan 01: the fail_job()-itself-fails double-failure branch RE-RAISES out of drain_once() rather than mapping to a truthy DrainOutcome.FENCED — an infra outage must never look like a settled success to a caller (worker or the eventual pump route).
 - [Phase 17]: count_open_jobs stays a plain state IN ('pending','leased') count -- no strand-exclusion special-casing, so queue_depth honestly reflects the documented final-attempt lease-strand residual until Phase 18's dead-letter transition reaps it.
+- [Phase 17]: pump.yml's --max-time 420 pump step is a NOMINAL operating budget (cold-start 60 + 120s between-jobs cap + ~240s external-call allowance, no headroom claimed); correctness rests on lease-reclaim (lease_seconds=900), not the curl timeout.
+- [Phase 17]: keepalive.yml deleted and folded into pump.yml as the sole 30-min cron with a workflow-level concurrency group; both keepalive jobs (wake + schema-drift) carried forward verbatim.
+- [Phase 17]: README's BackgroundTasks limitation bullet corrected to state the durable queue's true partial-migration state (proven only on operator Retrigger) rather than overclaiming a full cutover not yet shipped.
 
 ### Pending Todos
 
@@ -226,9 +230,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-15T14:34:01.512Z
-Stopped at: Phase 17 context gathered
-Resume file: .planning/phases/17-the-pump/17-CONTEXT.md
+Last session: 2026-07-15T14:46:51.237Z
+Stopped at: Completed 17-03-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
