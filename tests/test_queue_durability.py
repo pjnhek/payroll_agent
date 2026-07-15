@@ -1350,10 +1350,18 @@ def test_count_open_jobs_live_mixed_population(seeded_db) -> None:
     assert pending_job_id is not None
 
     # --- verify each row's own state, by id, before trusting the count -----
-    assert repo.get_job(leased_job_id)["state"] == "leased"
-    assert repo.get_job(done_job_id)["state"] == "done"
-    assert repo.get_job(dead_job_id)["state"] == "dead"
-    assert repo.get_job(pending_job_id)["state"] == "pending"
+    leased_row = repo.get_job(leased_job_id)
+    done_row = repo.get_job(done_job_id)
+    dead_row = repo.get_job(dead_job_id)
+    pending_row = repo.get_job(pending_job_id)
+    assert leased_row is not None
+    assert done_row is not None
+    assert dead_row is not None
+    assert pending_row is not None
+    assert leased_row["state"] == "leased"
+    assert done_row["state"] == "done"
+    assert dead_row["state"] == "dead"
+    assert pending_row["state"] == "pending"
 
     assert repo.count_open_jobs() == 2, (
         "count_open_jobs must count exactly the pending+leased rows "
