@@ -1,11 +1,12 @@
 """DB repo — the durable job queue's claim/lease/fencing protocol.
 
-Six functions, and this is the whole public surface: `enqueue_job`,
-`claim_job`, `complete_job`, `fail_job`, `release_leases`, `get_job`. Every
-one takes `conn: psycopg.Connection | None = None` and opens with this
-package's `_conn_ctx(conn)` / `_nulltx()` convention, so a caller that already
-owns a transaction (the retrigger route enqueuing a job as part of a larger
-commit) can pass its own connection straight through with zero new plumbing.
+Seven functions, and this is the whole public surface: `enqueue_job`,
+`claim_job`, `complete_job`, `fail_job`, `release_leases`, `get_job`,
+`count_open_jobs`. Every one takes `conn: psycopg.Connection | None = None`
+and opens with this package's `_conn_ctx(conn)` / `_nulltx()` convention, so a
+caller that already owns a transaction (the retrigger route enqueuing a job
+as part of a larger commit) can pass its own connection straight through with
+zero new plumbing.
 
 The `jobs` table carries transport identifiers only — no payload, no "next
 payroll status" column. `payroll_runs.status` stays the sole business state
@@ -283,3 +284,24 @@ def get_job(
     with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(sql, (str(job_id),))
         return cur.fetchone()
+
+
+def count_open_jobs(conn: psycopg.Connection | None = None) -> int:
+    """The point-in-time backlog count: rows in `state IN ('pending',
+    'leased')`. Used by the pump route's `queue_depth` response field and,
+    later, an ops view (OPS-01).
+
+    Deliberately backlog-scoped (total outstanding), NOT "claimable right
+    now" — it does not filter on `available_at <= now()` the way
+    `claim_job`'s subquery does. The useful ops signal here is total
+    outstanding depth, not the instantaneously-claimable subset.
+
+    This is a plain read, no fencing, no mutation — a
+    `SELECT count(*)` behind the same `_conn_ctx` convention every other
+    function in this module uses.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT count(*) FROM jobs WHERE state IN ('pending', 'leased')"
+        ).fetchone()
+    return int(row[0]) if row else 0

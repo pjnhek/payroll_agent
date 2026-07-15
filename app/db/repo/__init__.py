@@ -46,6 +46,7 @@ from app.db.repo.emails import (
 from app.db.repo.jobs import (
     claim_job,
     complete_job,
+    count_open_jobs,
     enqueue_job,
     fail_job,
     get_job,
@@ -135,6 +136,7 @@ __all__ = [
     "rewind_for_reclaim",
     "claim_job",
     "complete_job",
+    "count_open_jobs",
     "enqueue_job",
     "fail_job",
     "get_job",
