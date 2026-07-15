@@ -17,6 +17,7 @@ that must never be allowed to pin a pooled connection.
 """
 from __future__ import annotations
 
+import enum
 import logging
 import random
 import threading
@@ -25,6 +26,7 @@ import uuid
 from collections.abc import Callable
 
 from app.db import repo
+from app.models.job import JobState
 from app.queue import dispatch
 
 logger = logging.getLogger("payroll_agent.queue")
@@ -114,10 +116,34 @@ def held_tokens(*, settle_timeout: float = 2.0) -> list[uuid.UUID]:
         time.sleep(_CLAIM_SETTLE_POLL_SECONDS)
 
 
-def drain_once() -> bool:
-    """Claim one job, dispatch it, and complete or fail it. Returns whether a
-    job was claimed at all — False on an empty queue means there is nothing
-    left to do right now, not an error.
+class DrainOutcome(enum.StrEnum):
+    """The per-call outcome of `drain_once()` — a pure in-process value, never
+    persisted anywhere. `EMPTY` is the ONLY falsy member (see `__bool__`), so
+    `worker.py:198`'s `if drain.drain_once():` keeps behaving exactly as it
+    did when `drain_once()` returned a bare `bool` (D-04).
+
+    This reuses the strings "done"/"dead" coincidentally with `JobState`
+    (app/models/job.py) — it is a DIFFERENT vocabulary layer (a per-call
+    transport-of-transport outcome, not a persisted row state) and MUST NOT
+    be added to `tests/test_job_kind_drift.py`'s `JobKind`/`JobState`
+    collision guard; it mirrors no SQL column.
+    """
+
+    EMPTY = "empty"
+    DONE = "done"
+    RETRIED = "retried"
+    DEAD = "dead"
+    FENCED = "fenced"
+
+    def __bool__(self) -> bool:
+        return self is not DrainOutcome.EMPTY
+
+
+def drain_once() -> DrainOutcome:
+    """Claim one job, dispatch it, and complete or fail it. Returns the
+    specific `DrainOutcome` for what happened this call — `DrainOutcome.EMPTY`
+    on an empty queue means there is nothing left to do right now, not an
+    error, and is the only falsy member.
     """
     global _claims_in_flight
 
@@ -139,7 +165,7 @@ def drain_once() -> bool:
             _claims_in_flight -= 1
 
     if job is None:
-        return False
+        return DrainOutcome.EMPTY
 
     # Forget the token ONLY once the lease is genuinely settled — i.e. the database has
     # told us, in a write that actually landed, that this worker no longer owns it
@@ -152,12 +178,15 @@ def drain_once() -> bool:
     lease_settled = False
     try:
         dispatch.handle(job)
-        if not repo.complete_job(job.id, job.lease_token):
+        if repo.complete_job(job.id, job.lease_token):
+            outcome = DrainOutcome.DONE
+        else:
             logger.warning(
                 "queue: complete_job fenced out job=%s — lease was reclaimed "
                 "while this worker was still running it; dropping cleanly",
                 job.id,
             )
+            outcome = DrainOutcome.FENCED
         # Fenced out counts as settled: the lease demonstrably belongs to someone else
         # now, so there is nothing left for THIS worker to hand back.
         lease_settled = True
@@ -165,17 +194,23 @@ def drain_once() -> bool:
         # through the fenced fail_job write below, never escape and crash the
         # worker loop; a poison job must dead-letter, not take the process down.
         try:
-            if not repo.fail_job(
+            state = repo.fail_job(
                 job.id,
                 job.lease_token,
                 error=exc,
                 backoff_seconds=_backoff_seconds(job.attempts),
-            ):
+            )
+            if state is None:
                 logger.warning(
                     "queue: fail_job fenced out job=%s — lease was reclaimed "
                     "while this worker was still running it; dropping cleanly",
                     job.id,
                 )
+                outcome = DrainOutcome.FENCED
+            elif state is JobState.DEAD:
+                outcome = DrainOutcome.DEAD
+            else:
+                outcome = DrainOutcome.RETRIED
             lease_settled = True
         except Exception:  # noqa: BLE001 — the failure write ITSELF failed
             logger.exception(
@@ -185,8 +220,11 @@ def drain_once() -> bool:
                 "strand the job for the full lease.",
                 job.id,
             )
+            # RE-RAISE (D-10, review finding #1): an infra failure, never a settled
+            # fence — worker.py:203 survives it, the pump route (17-04) turns it 503.
+            raise
     finally:
         if lease_settled:
             with _held_tokens_lock:
                 _held_tokens.discard(job.lease_token)
-    return True
+    return outcome
