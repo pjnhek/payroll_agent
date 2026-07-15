@@ -1,9 +1,9 @@
-"""Committed static regression test for ROADMAP criterion #4 (Phase 17-03): the
-keepalive-into-pump fold-in must never silently drop a monitor.
+"""Committed static regression test for ROADMAP criterion #4: the keepalive-into-pump
+fold-in must never silently drop a monitor.
 
 A hermetic, text/structure guard over `.github/workflows/` — no live DB, no marker,
-no live-cron proof (the live cron firing itself stays a Manual-Only verification per
-17-VALIDATION.md). It asserts:
+no live-cron proof (the live cron firing itself stays a manual-only verification). It
+asserts:
 
 1. `.github/workflows/pump.yml` exists.
 2. `.github/workflows/keepalive.yml` does NOT exist (deleted, not deprecated-in-place).
