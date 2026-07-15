@@ -1151,8 +1151,9 @@ def test_pump_drains_future_due_job_with_zero_workers(
     (b) asserts the job is genuinely NOT claimable while future-dated, so the
     claim query is not trivially satisfied; (c) asserts `claimed == 1` and
     `done == 1` from the JSON body, plus a by-id row re-read — never merely
-    status_code == 200; (d) STUBS `pipeline_glue.run_pipeline_now` and asserts the handler-side observable `orchestrator_calls
-    == [run_id]` — the seeded job is kind `run_pipeline`, and an unstubbed
+    status_code == 200; (d) STUBS `pipeline_glue.run_pipeline_now` and asserts the
+    handler-side observable `orchestrator_calls == [run_id]` — the seeded job is kind
+    `run_pipeline`, and an unstubbed
     drain would hit the real orchestrator and paid LLM providers
     (app/queue/handlers/pipeline.py:159) AND could let `done == 1` pass on a
     run that ended in ERROR, since the pipeline catches stage failures and
