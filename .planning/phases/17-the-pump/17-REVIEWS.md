@@ -1,175 +1,199 @@
 ---
 phase: 17
 reviewers: [codex]
-review_round: 2
-reviewed_at: 2026-07-15T04:25:53Z
+review_round: 3
+reviewed_at: 2026-07-15T04:55:00Z
 plans_reviewed: [17-01-PLAN.md,17-02-PLAN.md,17-03-PLAN.md,17-04-PLAN.md,17-05-PLAN.md]
-supersedes: "round 1 (commit bdc91d9) — its 3 HIGH + mediums were incorporated in commit 9614161; round-1 detail lives in git history"
+supersedes: "round 1 (bdc91d9) + round 2 (e88af21); their findings were incorporated in 9614161 and 74bb023 respectively"
 ---
 
-# Cross-AI Plan Review — Phase 17 (Round 2, confirming)
+# Cross-AI Plan Review — Phase 17 (Round 3, confirming)
 
-> Round 1 (Codex) found 3 HIGH + 5 MEDIUM; all were incorporated or explicitly deferred/rejected in the replan (commit `9614161`). This round-2 confirming review checks those fixes against source and looks for fix-induced regressions. **Only the still-open findings below are actionable** — the CONFIRMED items require no further plan change.
+> Rounds 1–2 (Codex) found 3 HIGH + 6 MEDIUM/LOW across two replans (`9614161`, `74bb023`). This round-3 confirming pass verifies the round-2 fixes and looks for fix-induced/newly-exposed issues. **Verified against live source by the orchestrator** for the one HIGH.
 
-## Codex Review (Round 2)
+## Codex Review (Round 3)
 
 ## 1) Summary
 
-The revisions materially improve the plans, but two gaps remain:
+Round-2 fixes are largely implemented correctly in the plans, but the plans are not yet fully sound.
 
-- The `fail_job()` double-failure behavior is correct, though the planned route-level test is weaker than the plan’s own stated requirement.
-- The wall-clock derivation is still not a defensible upper bound. It omits cold-start time and treats external-call timeout totals as though they include application work.
-- The durability proof now correctly stubs the real pipeline and is non-vacuous.
+- The route-test, worker-survival, COMPUTED-label, and workflow-static-guard fixes are confirmed.
+- The revised timeout accounting is internally coherent and no longer claims fictional headroom.
+- However, its load-bearing lease-reclaim guarantee is not universally true: a job interrupted on its final permitted attempt becomes an expired `leased` row that `claim_job()` can never reclaim or dead-letter.
+- Several authoritative supporting artifacts still contain the rejected 360-second/headroom model and the obsolete double-failure→FENCED behavior.
 
-Overall risk: **HIGH**, driven by the unresolved request-timeout derivation.
+Overall: one new HIGH correctness issue and two MEDIUM documentation/verification issues remain.
 
 ## 2) Per-fix confirmation
 
-### Fix #1 — double failure must propagate: PARTIAL
+### HIGH — timeout method and lease-reclaim safety: PARTIAL
 
-The production design is correct.
+The accounting correction itself is confirmed:
 
-- `lease_settled` starts false at `app/queue/drain.py:152`.
-- The current double-failure branch logs but does not settle the lease at `app/queue/drain.py:180-187`.
-- Adding a bare `raise` there still executes the `finally`, but the token is discarded only when `lease_settled` is true at `app/queue/drain.py:188-191`. Therefore the token remains retained.
-- The worker catches exceptions around the entire iteration and continues the loop at `app/queue/worker.py:184-211`.
-- Shutdown releases the retained token once through `repo.release_leases(drain.held_tokens())` at `app/queue/worker.py:237-260`. The database release is token-fenced, so a stale token is harmless; the existing test documents that at `tests/test_queue_drain.py:808-811`.
-- No other production caller exists today: the only current application call is the worker at `app/queue/worker.py:198`. Direct test callers are explicitly scheduled for conversion.
+- 17-03 explicitly calls 420 seconds nominal, includes cold-start, identifies 240 seconds as external-call allowance, puts deterministic/DB overhead on top, and withdraws all headroom claims at [17-03-PLAN.md:48](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-03-PLAN.md:48>).
+- 17-04 uses the same `60 + 120 + 240 + overhead` model and explicitly admits it can exceed 420 seconds at [17-04-PLAN.md:54](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-04-PLAN.md:54>).
+- The source supports the stated provider terms: structured calls have a 45-second timeout and one application retry at [client.py:47](</Users/pnhek/usf msds/github/payroll_agent/app/llm/client.py:47>), while clarification drafting is capped at 30 seconds.
+- The source also confirms 210 seconds is an inter-write staleness gap, not total job runtime, at [runs.py:43](</Users/pnhek/usf msds/github/payroll_agent/app/routes/runs.py:43>).
 
-The unit-test reconciliation is also correct: the revised plan retains the token assertion and changes the call to `pytest.raises`.
+For ordinary non-exhausted jobs, the recovery chain is real:
 
-The remaining gap is the route test. The plan promises an end-to-end hermetic case—“handler raises AND fail_job raises → 503 + lease retained”—at `17-04-PLAN.md:26`, but the actual task only monkeypatches `drain_once()` to raise at `17-04-PLAN.md:197-200`. That proves exception-to-503 mapping, but not that the real double-failure path both propagates and retains its token through the HTTP call.
+1. The claim commits before work begins at [jobs.py:116](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/jobs.py:116>).
+2. Expired leases are eligible for atomic `FOR UPDATE SKIP LOCKED` reclaim at [jobs.py:154](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/jobs.py:154>).
+3. Completion and failure writes fence on the new lease token at [jobs.py:182](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/jobs.py:182>) and [jobs.py:204](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/jobs.py:204>).
+4. Reclaimed pipeline runs use recovery and forward CAS writes at [pipeline.py:126](</Users/pnhek/usf msds/github/payroll_agent/app/queue/handlers/pipeline.py:126>).
+5. The send guard refuses an uncertain duplicate send at [send_guard.py:40](</Users/pnhek/usf msds/github/payroll_agent/app/pipeline/send_guard.py:40>).
 
-The worker-survival test is underspecified too. It signals only the throwing first call, then says to assert that the worker “keeps polling” at `17-01-PLAN.md:194-198`. Merely checking `thread.is_alive()` would not prove a second iteration occurred.
+But the blanket claim that every interrupted job is reclaimed next cadence is false because the claim query first requires:
 
-### Fix #2 — 420-second curl derivation: REGRESSED
+```sql
+c.attempts < c.max_attempts
+```
 
-The revision correctly recognizes that 210 seconds is an inter-write gap, not an entire job-runtime bound. The source explicitly says so at `app/routes/runs.py:43-64`.
+at [jobs.py:157](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/jobs.py:157>). Since attempts increment at claim time at [jobs.py:148](</Users/pnhek/usf msds/github/payroll_agent/app/db/repo/jobs.py:148>), a worker dying during the final allowed attempt leaves:
 
-However, the replacement derivation still overclaims:
+```text
+state='leased'
+attempts == max_attempts
+leased_until < now()
+```
 
-- Structured extraction/suggestion can consume up to two 45-second attempts each; the shared timeout and retry structure are documented at `app/llm/client.py:47-71` and implemented at `app/llm/client.py:218-248`.
-- Clarification drafting adds a 30-second call at `app/pipeline/compose_email.py:33-39` and `app/pipeline/compose_email.py:177-183`.
-- The live clarification path then performs a Resend network send at `app/pipeline/clarification.py:492-503` and `app/email/gateway.py:339-340`.
-- The installed Resend client defaults to another 30-second requests timeout at `.venv/lib/python3.12/site-packages/resend/http_client_requests.py:13-14,33-42`.
+That row fails the claim predicate forever. `fail_job()` could turn it dead, but the dead worker never calls it; no other reaper exists. This makes the round-2 safety resolution incomplete.
 
-Thus 240 seconds is approximately the sum of external-call timeout allowances: `90 + 90 + 30 + 30`. It leaves no quantified time for deterministic calculation, PDF/data preparation where applicable, database calls, scheduling overhead, or network/SDK overhead. Calling it “conservative” is unsupported.
+There is also an accuracy problem in attributing interruption to curl: a client-side curl timeout does not normally cancel the sync server-side route. The current research correctly says server work continues after disconnect at [17-RESEARCH.md:326](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-RESEARCH.md:326>), while 17-04 says a curl-overrun RED means “auto-retried” at [17-04-PLAN.md:72](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-04-PLAN.md:72>). It may instead finish successfully server-side.
 
-More importantly, `curl --max-time 420` also includes Render cold start. The existing workflow itself budgets as much as 60 seconds for that at `.github/workflows/keepalive.yml:39-46`. The plan’s claimed request ceiling is:
+### MEDIUM — real double-failure route chain: CONFIRMED
 
-`120s between-jobs cap + 240s final job + up to 60s cold start = 420s`
+Both required tests are now unambiguously specified.
 
-That consumes the full curl limit before ordinary overhead. The claimed “~60s headroom” at `17-03-PLAN.md:54-58` and `17-04-PLAN.md:57-60` does not exist.
+The real-chain test:
 
-### Fix #3 — durability proof stubs the pipeline: CONFIRMED
+- Returns a real leased job from `repo.claim_job`.
+- Makes `dispatch.handle` raise.
+- Makes `repo.fail_job` raise.
+- Calls the production HTTP endpoint through `TestClient`.
+- Exercises the real `drain_once()` double-failure re-raise.
+- Asserts HTTP 503 and `held_tokens() == [token]` after the HTTP call.
 
-This correction is complete.
+This is specified at [17-04-PLAN.md:220](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-04-PLAN.md:220>).
 
-- The queue handler really invokes `pipeline_glue.run_pipeline_now(run_id)` at `app/queue/handlers/pipeline.py:154-159`.
-- The orchestrator catches normal stage failures, records ERROR, and returns at `app/pipeline/orchestrator.py:221-247`; therefore a job can otherwise reach `done` while payroll processing failed.
-- The proposed test patches the correct module-object seam and records `orchestrator_calls` at `17-05-PLAN.md:110-125`.
-- This mirrors the existing proven seam at `tests/test_queue_durability.py:1016-1027`.
-- Asserting `orchestrator_calls == [run_id]`, job state `done`, run status `computed`, `claimed == 1`, `done == 1`, and `queue_depth == 0` proves the intended handler ran exactly once and prevents an ERROR-run false positive.
-- `WORKER_COUNT=0` is hard-set before application import at `tests/conftest.py:37-45`, while the explicit thread scan at `tests/conftest.py:67-75` supplies the additional no-worker precondition.
-- The module already carries `integration` and `queueproof` markers at `tests/test_queue_durability.py:112-118`, and the CI marker-based gate already collects it at `.github/workflows/concurrency-proof.yml:105-159`.
+The separate narrow exception→503 mapping test remains specified at [17-04-PLAN.md:229](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-04-PLAN.md:229>). Acceptance requires both at [17-04-PLAN.md:240](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-04-PLAN.md:240>).
 
-### Round-1 MEDIUM bundle: CONFIRMED
+This correctly exercises the production re-raise path, not merely a route stub.
 
-The medium fixes are properly represented:
+### LOW — worker resumes polling after exception: CONFIRMED
 
-- All three stale six-function tests are identified from the actual locations at `tests/test_repo_jobs_sql.py:193-219`, `:228-239`, and `:242-263`, and the plan updates all three.
-- The hermetic `count_open_jobs` claim is honestly limited to integer conversion and exact SQL text; live mixed-state behavior is moved to the real-Postgres proof.
-- The workflow guard avoids the PyYAML 1.1 `on:` coercion trap and adds a committed criterion-#4 test.
-- Both pump test plans require settings-cache cleanup after the test, matching the existing before/after fixture at `tests/test_repo_jobs_sql.py:28-31`.
-- The pump response invariant `claimed == done + retried + dead + fenced` is explicitly constructed and tested.
-- The catch-all wording now acknowledges that unexpected programming errors also become 503.
+The plan requires:
+
+- First `drain_once()` call raises.
+- A second invocation signals a separate event.
+- The test waits for that second event or `calls >= 2`.
+- Only afterward does it assert thread liveness.
+
+See [17-01-PLAN.md:194](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-01-PLAN.md:194>) and its acceptance gate at [17-01-PLAN.md:215](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-01-PLAN.md:215>). This directly proves the production catch-and-continue behavior at [worker.py:203](</Users/pnhek/usf msds/github/payroll_agent/app/queue/worker.py:203>).
+
+### LOW — COMPUTED status wording: CONFIRMED
+
+17-05 consistently describes COMPUTED as observable post-handler state that is recoverable/in-flight, not terminal, at [17-05-PLAN.md:13](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-05-PLAN.md:13>) and [17-05-PLAN.md:110](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-05-PLAN.md:110>).
+
+That matches source: COMPUTED is included among fresh in-flight states at [runs.py:66](</Users/pnhek/usf msds/github/payroll_agent/app/routes/runs.py:66>).
+
+### LOW — comment-insensitive workflow guard: CONFIRMED
+
+The guard now explicitly strips every comment-only line before schedule and endpoint checks at [17-03-PLAN.md:219](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-03-PLAN.md:219>).
+
+If YAML is used, it requires `d.get(True, d.get("on"))`, addressing PyYAML’s YAML-1.1 coercion at [17-03-PLAN.md:221](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-03-PLAN.md:221>). This is complete.
 
 ## 3) New/missed concerns
 
-### HIGH — `--max-time 420` has zero demonstrated margin
+### HIGH — final-attempt crash strands the job permanently
 
-This is the main unresolved issue. The new derivation fixes the category error around 210 seconds but introduces another: it ignores cold-start time and describes the 240-second external-call total as though it also covers local work.
+As described above, `attempts` increments when the lease is acquired, while every candidate—including expired leased candidates—is filtered through `attempts < max_attempts`.
 
-A nominal worst case already reaches 420 seconds before ordinary overhead:
+Consequences:
 
-`60 cold start + 120 loop allowance + 240 external calls = 420`
+- The fifth claim with `max_attempts=5` succeeds and writes `attempts=5`.
+- If that worker dies before `complete_job()` or `fail_job()`, the lease eventually expires.
+- Future pump calls cannot claim it because `5 < 5` is false.
+- It remains `leased` indefinitely rather than being re-run or dead-lettered.
+- The planned `count_open_jobs()` will continue counting it because it counts all leased rows, creating permanent nonzero queue depth without progress.
 
-That can produce false-red cron runs against healthy but slow processing.
+This directly invalidates the categorical safety language in [17-03-PLAN.md:52](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-03-PLAN.md:52>) and [17-04-PLAN.md:56](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-04-PLAN.md:56>).
 
-### MEDIUM — route-level double-failure test contradicts its must-have
+This can be fixed without adding a sixth `DrainOutcome`; an exhausted expired lease naturally maps to the locked `DEAD` outcome.
 
-`17-04-PLAN.md:26` requires the real handler/failure-write chain and lease-retention assertion. The task at `17-04-PLAN.md:197-200` substitutes an already-raised exception. The latter is useful but does not replace the former.
+### MEDIUM — authoritative phase references still contradict the round-2 resolution
 
-This should either be corrected to exercise the real `drain_once()` path through `TestClient`, or the must-have should be weakened explicitly. Given the round-1 resolution, the former is appropriate.
+The current plans are coherent with each other, but their required reading remains stale:
 
-### LOW — worker survival proof needs a second-iteration handshake
+- Research still calls 210 seconds total single-job runtime and recommends 360 seconds with headroom at [17-RESEARCH.md:323](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-RESEARCH.md:323>).
+- Its example workflow still uses 360 seconds.
+- Its assumptions still discuss a ~330-second worst case at [17-RESEARCH.md:455](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-RESEARCH.md:455>).
+- Most seriously, its “resolved” double-failure decision still says to map the failure to FENCED and claims 17-01 adopted that behavior at [17-RESEARCH.md:463](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-RESEARCH.md:463>).
+- PATTERNS still instructs 360 seconds at [17-PATTERNS.md:104](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-PATTERNS.md:104>).
+- VALIDATION still asks the live smoke to prove a ~330-second ceiling at [17-VALIDATION.md:76](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-VALIDATION.md:76>).
 
-The planned first-call Event proves only that the exception occurred. Require a second Event or `calls >= 2` condition after the exception. Otherwise “thread remains alive” can pass while the worker never actually resumed polling.
+Because executors are explicitly told to read these files, this is more than archival prose drift.
 
-### LOW — `COMPUTED` is mislabeled as terminal
+### MEDIUM — the proposed live smoke cannot establish the server-side ceiling
 
-The revised durability plan repeatedly calls `COMPUTED` terminal. Source comments classify it as recoverable/in-flight at `app/routes/runs.py:66-69`, and normal processing immediately advances `COMPUTED` to `AWAITING_APPROVAL` at `app/pipeline/orchestrator.py:1010-1014`.
+The revised method makes 420 seconds provisional until live smoke, but the validation instruction only says to run “a small backlog” at [17-VALIDATION.md:76](</Users/pnhek/usf msds/github/payroll_agent/.planning/phases/17-the-pump/17-VALIDATION.md:76>). A normal small backlog may complete in seconds and proves nothing about a proxy ceiling near 330–420 seconds.
 
-This does not make the test vacuous—the status still distinguishes the stubbed success path from ERROR/EXTRACTING—but the plan should call it an observable post-handler status, not terminal.
-
-### LOW — scheduled-workflow static test should ignore comments
-
-The current keepalive file contains `schedule:` in both prose and YAML at `.github/workflows/keepalive.yml:5-19`. A simple “file contains `schedule:` or `cron:`” scan is comment-sensitive. The committed test should either strip comment-only lines or parse YAML using the documented `data.get(True, data.get("on"))` workaround.
+The smoke needs a controlled request whose duration crosses the threshold being validated, while avoiding paid or duplicate-send behavior.
 
 ## 4) Suggestions
 
-1. Rework the timeout arithmetic before execution:
+1. Add an explicit exhausted-expired-lease transition:
 
-   - Include cold start explicitly.
-   - Treat 240 seconds as external-call allowance, not complete job runtime.
-   - Either raise the curl ceiling with documented margin or reduce the route cap.
-   - If a hard bound is required, ensure every provider call has an explicit wall-clock timeout.
+   - Detect `state='leased' AND leased_until < now() AND attempts >= max_attempts`.
+   - Atomically move it to `dead`, clearing its lease fields.
+   - Surface the existing `DrainOutcome.DEAD`; do not add a sixth value.
+   - Add a live test with `max_attempts=1`: claim, simulate worker death by expiring the lease, pump again, and assert the row becomes `dead`, not permanently `leased`.
 
-2. Add two route tests:
+2. Narrow the timeout wording:
 
-   - A narrow `drain_once raises → 503` mapping test.
-   - A real fake-repo chain: handler raises, `fail_job` raises, endpoint returns 503, retained token is asserted.
+   - Curl timeout: request goes RED while sync server work may continue.
+   - Actual server/process interruption: lease recovery applies.
+   - Avoid saying every 420-second RED means “auto-retried.”
 
-3. Make the worker test wait for a confirmed second `drain_once()` invocation.
+3. Update 17-RESEARCH, 17-PATTERNS, and 17-VALIDATION to the accepted 420-second nominal model and double-failure re-raise behavior.
 
-4. Replace “terminal COMPUTED” with “observable COMPUTED status set by the stub.”
-
-5. Make the cron-count static guard comment-insensitive.
+4. Make the live smoke deliberately long-running enough to test the suspected proxy boundary; a routine backlog is insufficient.
 
 ## 5) Overall risk
 
-**HIGH**
+**HIGH until the exhausted-final-lease case is fixed.**
 
-The core queue semantics and durability proof are now strong. The remaining high risk is operational: the revised 420-second timeout is presented as safely derived, but source tracing shows no actual headroom and a credible healthy execution can exceed it.
+Apart from that queue-liveness defect and the stale supporting artifacts, the round-2 edits are careful and complete. The route-level double-failure coverage, second-poll worker proof, COMPUTED wording, and comment-insensitive workflow guard are now sound.
 
 ---
 
-## Consensus Summary (Round 2)
+## Consensus Summary (Round 3)
 
-Single source-grounded reviewer (Codex). It CONFIRMED Fix #3 (pipeline stub) and the whole MEDIUM bundle as complete and correct, CONFIRMED Fix #1's production design (traced lease retention + worker survival + token-fenced release + no other callers), but found the Fix #2 timeout re-derivation **REGRESSED** and surfaced one internal contradiction plus three LOWs. Overall risk **HIGH — operational**, driven entirely by the unresolved timeout margin.
+Single source-grounded reviewer (Codex). It **CONFIRMED** 4 of the 5 round-2 fixes (route double-failure chain test, worker second-poll handshake, COMPUTED relabel, comment-insensitive workflow guard) and confirmed the timeout *accounting* is now internally honest (no fictional headroom). But the round-2 **lease-reclaim safety claim is not universally true**, and the plans' required-reading artifacts still carry the old model.
 
 ### Still-open / actionable
 
-1. **HIGH — `--max-time 420` has no demonstrated margin (Fix #2 regressed) [17-03, 17-04].**
-   The re-derivation fixed the 210s category error but introduced another: ~240s is the *sum of external-call timeout allowances* on the clarification path (extraction 2×45 `app/llm/client.py:218-248`, suggestion 2×45, clarification draft 30 `app/pipeline/compose_email.py:177-183`, Resend send 30 `resend/http_client_requests.py:13-14`), leaving zero quantified time for deterministic compute, DB, and scheduling — so calling it "conservative total job runtime" is unsupported. Worse, `curl --max-time 420` also spans Render **cold-start** (up to 60s per `.github/workflows/keepalive.yml:39-46`): `60 + 120 loop + 240 external = 420`, consuming the full curl limit before overhead. The claimed "~60s headroom" (`17-03-PLAN.md:54-58`, `17-04-PLAN.md:57-60`) does not exist → a healthy-but-slow pump can go **false-RED**.
-   *Fix:* budget cold-start explicitly; treat 240s as external-call *allowance* not total runtime; either raise the curl ceiling with real documented margin OR lower the route cap; ideally hard-bound job runtime by ensuring every provider call has an explicit wall-clock timeout, then derive from that bound.
+1. **HIGH — final-attempt crash strands a job permanently [ORCHESTRATOR-VERIFIED against `app/db/repo/jobs.py:145-168`].**
+   `attempts` increments at claim (`jobs.py:148`), and the claim candidate filter requires `c.attempts < c.max_attempts` (`jobs.py:157`). A job whose worker/pump dies on its *final* allowed attempt becomes `state='leased', attempts=max_attempts, leased_until<now()` — which the claim predicate can never re-select and no code dead-letters (the dead worker never calls `fail_job`; no reaper exists). It stays `leased` forever and `count_open_jobs()` counts it forever (permanent nonzero queue depth, no progress). **This directly falsifies the round-2 categorical safety claim in `17-03-PLAN.md:52` / `17-04-PLAN.md:56`.**
+   - *Mandatory:* correct the false categorical claim (the "every interrupted job is reclaimed next cadence" language is wrong for the exhausted-attempt case).
+   - *Fix option (Codex's, maps to the locked DEAD — no 6th DrainOutcome):* detect `state='leased' AND leased_until<now() AND attempts>=max_attempts` and atomically move it to `dead`; surface `DrainOutcome.DEAD`; add a live `max_attempts=1` test (claim → expire lease → pump → assert `dead`, not permanently `leased`).
+   - *Scope note:* terminal-failure handling is fenced to Phase 18 (FAIL-01/02/03) in CONTEXT.md. The planner must decide: add the minimal reaper now (closes a real durability hole in the durability phase) OR defer to Phase 18 with a PROMINENT documented residual — but the false claim must be corrected either way.
 
-2. **MEDIUM — the 17-04 route double-failure test contradicts its own must-have.**
-   `17-04-PLAN.md:26` (must_haves) promises the real handler + `fail_job`-raises chain → 503 + lease retained, but the task at `17-04-PLAN.md:197-200` only monkeypatches `drain_once()` to raise — proving exception→503 mapping, not the real double-failure path + token retention through the HTTP call. *Fix:* add a second route test exercising the real fake-repo chain (handler raises, `fail_job` raises, 503, retained-token asserted), or weaken the must-have. The former is right given round-1's resolution.
+2. **HIGH-adjacent accuracy — curl timeout ≠ server cancellation [17-04].** A client-side `curl --max-time` overrun does NOT normally cancel the sync server-side route (RESEARCH.md:326 says server work continues after disconnect). So `17-04-PLAN.md:72`'s "a curl-overrun RED means auto-retried" is imprecise: the job likely *finishes successfully server-side* (RED-but-succeeded), not RED-but-reclaimed. Narrow the wording: curl RED = request-level signal; actual server/process interruption is what triggers lease recovery.
 
-3. **LOW — worker-survival test needs a second-iteration handshake [17-01].** `17-01-PLAN.md:194-198` signals only the throwing first call; `thread.is_alive()` can pass without the worker ever resuming polling. Require a second Event / `calls >= 2` after the exception.
+3. **MEDIUM — stale required-reading artifacts contradict the accepted model.** Executors are told to read these:
+   - `17-RESEARCH.md:323` still calls 210s total single-job runtime + recommends 360s/headroom; `:455` still discusses ~330s worst case; **`:463` still says "RESOLVED: map the double-failure to FENCED, adopted in 17-01" — doubly wrong (round 1 overturned it to re-raise).**
+   - `17-PATTERNS.md:104` still instructs 360s.
+   - `17-VALIDATION.md:76` still asks the live smoke to prove a ~330s ceiling.
+   Reconcile all to the accepted 420s-nominal + lease-reclaim + re-raise model.
 
-4. **LOW — `COMPUTED` mislabeled "terminal" [17-05].** Source classifies COMPUTED as recoverable/in-flight (`app/routes/runs.py:66-69`) and normal processing advances COMPUTED→AWAITING_APPROVAL (`app/pipeline/orchestrator.py:1010-1014`). Not vacuous (it still distinguishes the stubbed success path from ERROR), but relabel it "observable post-handler status set by the stub," not terminal.
-
-5. **LOW — criterion-#4 static cron guard is comment-sensitive [17-03].** `keepalive.yml` has `schedule:` in prose too (`:5-19`); a plain substring scan is comment-sensitive. Strip comment-only lines or use the documented `data.get(True, data.get("on"))` YAML parse.
+4. **MEDIUM — live smoke can't establish the proxy ceiling [17-VALIDATION.md:76].** "A small backlog" may finish in seconds and prove nothing about a 330–420s server-side request ceiling. The smoke needs a deliberately long-running controlled request that crosses the threshold, without paid/duplicate-send behavior.
 
 ### Confirmed complete (no further action)
-- **Fix #1 production design** — re-raise retains the token (`drain.py:188-191` discards only when `lease_settled`, which stays false), worker loop survives (`worker.py:184-211`), shutdown release is token-fenced, no other production caller. Unit-test reconciliation correct.
-- **Fix #3** — stub patches the correct seam (`17-05` ↔ `test_queue_durability.py:1016-1027`); `orchestrator_calls == [run_id]` + status assertion defeats the ERROR-run false positive.
-- **MEDIUM bundle** — all three six-function tests, honest hermetic count, PyYAML `on:` avoidance + committed criterion-#4 test, settings-cache teardown, `claimed==sum` invariant, honest catch-all wording.
+Timeout accounting honesty (17-03/17-04 coherent, headroom withdrawn); the real fake-repo double-failure chain test + narrow mapping test (17-04); the worker second-poll handshake (17-01); COMPUTED relabel (17-05); the comment-insensitive criterion-#4 guard (17-03); and everything CONFIRMED in rounds 1–2 (re-raise production design, Fix #3 stub, the MEDIUM bundle).
 
 ### My read (orchestrator triage)
-The timeout derivation has now been wrong **twice** — that's the "reviews keep hitting one spot → the approach is the bug" signal. Deriving a `curl --max-time` from a hand-estimated job runtime is fragile because the clarification path's real ceiling is the *sum of provider timeouts + cold-start*, which isn't a tidy number. The durable fix is to **hard-bound total job runtime** (every provider/Resend call already carries an explicit timeout — make that the derivation basis) and set curl = cold-start + that bound + real margin. Finding #2 is operational (false-RED cron), not money/correctness — but a cron that cries wolf is exactly what keepalive's `-f` discipline exists to prevent, so it's worth another pass. Findings #2–#5 are all cheap and localized. Recommend a final `--reviews` replan.
+Finding #1 is the real prize of the whole review loop — a genuine, verified durability bug (pre-existing in the Phase-16 substrate) that the round-2 safety *claim* dragged into the light. It needs the false claim corrected NOW; whether the reaper lands in Phase 17 or Phase 18 is a scope call the planner should make against CONTEXT.md's fence (my lean: it maps cleanly to the locked DEAD outcome and closes a hole in the *durability* phase, so a minimal in-scope reaper is attractive — but a prominently-documented deferral is defensible). #2–#4 are wording/artifact/verification hygiene and cheap. This is the last planned round; after incorporation the plans should be execution-ready.
 
 ### Divergent Views
 None — single reviewer.
