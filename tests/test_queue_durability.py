@@ -1151,15 +1151,14 @@ def test_pump_drains_future_due_job_with_zero_workers(
     (b) asserts the job is genuinely NOT claimable while future-dated, so the
     claim query is not trivially satisfied; (c) asserts `claimed == 1` and
     `done == 1` from the JSON body, plus a by-id row re-read — never merely
-    status_code == 200; (d) STUBS `pipeline_glue.run_pipeline_now` (review
-    finding #3) and asserts the handler-side observable `orchestrator_calls
+    status_code == 200; (d) STUBS `pipeline_glue.run_pipeline_now` and asserts the handler-side observable `orchestrator_calls
     == [run_id]` — the seeded job is kind `run_pipeline`, and an unstubbed
     drain would hit the real orchestrator and paid LLM providers
     (app/queue/handlers/pipeline.py:159) AND could let `done == 1` pass on a
     run that ended in ERROR, since the pipeline catches stage failures and
     returns normally (pipeline.py:74). The stub's OBSERVABLE side effect
     (advancing the run to COMPUTED — recoverable/in-flight per
-    app/routes/runs.py:66-69, NOT terminal; review LOW #4) is what lets the
+    app/routes/runs.py:66-69, NOT terminal) is what lets the
     run-status assertion in step 9 discriminate "the pump genuinely drove the
     correct handler" from "the row merely says done."
 
@@ -1180,7 +1179,7 @@ def test_pump_drains_future_due_job_with_zero_workers(
     from app.models.status import RunStatus
 
     # --- Step 0: stub the orchestrator BEFORE anything touches the endpoint —
-    # mandatory (review finding #3): the seeded job is kind run_pipeline, and
+    # mandatory: the seeded job is kind run_pipeline, and
     # an unstubbed drain hits the real orchestrator + paid LLM providers.
     orchestrator_calls: list[uuid.UUID] = []
 
@@ -1193,7 +1192,7 @@ def test_pump_drains_future_due_job_with_zero_workers(
 
     monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _stub_run_pipeline_now)
 
-    # --- settings-cache discipline (review MEDIUM): clear BEFORE and AFTER,
+    # --- settings-cache discipline: clear BEFORE and AFTER,
     # not only before — copying tests/test_repo_jobs_sql.py:20-31 — or a
     # cached PUMP_TOKEN leaks into a later test.
     token = f"queueproof-pump-token-{uuid.uuid4()}"
@@ -1273,7 +1272,7 @@ def test_pump_drains_future_due_job_with_zero_workers(
         assert final_run is not None
         assert final_run["status"] == "computed", (
             "the run must show the stub's OBSERVABLE post-handler status "
-            "(COMPUTED — in-flight, non-terminal; review LOW #4), never "
+            "(COMPUTED — in-flight, non-terminal), never "
             "merely 'the job row says done' while the run itself never ran"
         )
 
