@@ -1,0 +1,116 @@
+name: pump
+
+# Turns durable STORAGE into durable EXECUTION. Render free has no worker service type
+# and wakes only on inbound HTTP, so a job retried with a future available_at, or a
+# cold-started instance with no live worker threads, would otherwise never fire.
+#
+# This is the ONLY cron hitting the service (folds in both jobs formerly split out to
+# the now-deleted keepalive.yml — deleting it without carrying the schema-parity check
+# forward would silently drop the only monitor for a manual Supabase edit bypassing
+# deploy-migrate.yml).
+#
+# Two triggers:
+#   schedule: every 30 minutes (see README's cadence/750h duty-cycle math for why 30).
+#   workflow_dispatch: REQUIRED — GitHub auto-disables scheduled workflows after 60 days
+#     with no pushes, which is the normal state of a portfolio repo. Without
+#     workflow_dispatch, re-enabling means a trip into repo settings; with it, one click
+#     from the Actions tab re-fires the workflow.
+#
+# Every curl uses -f (fail on non-2xx) so a failed step exits non-zero and the run shows
+# RED. Swallowing a failure would make the pump silently useless during a real outage —
+# the workflow would stay green while the service was down.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:    # manual re-enable after GitHub's 60-day auto-disable
+
+# A scheduled and a manual pump run must never overlap: a single drain can run several
+# minutes, and SKIP LOCKED already protects DB-level correctness against two concurrent
+# drains — this concurrency group protects capacity (never burn two simultaneous drains
+# against the free-tier budget). `group` is a CONSTANT (not ${{ github.ref }}) so every
+# trigger (scheduled or manual) shares the one queue; cancel-in-progress: false means a
+# queued run WAITS for an in-flight drain rather than aborting a live one.
+concurrency:
+  group: pump
+  cancel-in-progress: false
+
+jobs:
+  pump:
+    name: "Pump due jobs + keep Render/Supabase alive"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate secrets are set
+        # Fail fast if either secret was never configured — surfaces misconfiguration
+        # early rather than silently making curl no-op with an empty URL/token.
+        run: |
+          if [ -z "$RENDER_URL" ]; then
+            echo "ERROR: RENDER_URL secret is not set in this repo's Actions secrets."
+            echo "Add it at: Settings -> Secrets and variables -> Actions -> New secret"
+            exit 1
+          fi
+          if [ -z "$PUMP_TOKEN" ]; then
+            echo "ERROR: PUMP_TOKEN secret is not set in this repo's Actions secrets."
+            echo "Add it at: Settings -> Secrets and variables -> Actions -> New secret"
+            echo "(must match the render.yaml PUMP_TOKEN value set in the Render dashboard)."
+            exit 1
+          fi
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
+          PUMP_TOKEN: ${{ secrets.PUMP_TOKEN }}
+
+      - name: Drain due jobs via the authenticated pump
+        # --max-time 420: intentionally larger than the two health steps' 90s below, and
+        # a NOMINAL operating budget, NOT a proven containment bound. The CORRECTNESS
+        # guarantee is lease-reclaim (lease_seconds=900, app/config.py:117) — a job this
+        # request does not finish (whether from --max-time, Render's undocumented
+        # server-side ceiling, or cold-start eating the budget) is held by its lease and,
+        # WHILE IT HAS ATTEMPTS REMAINING, idempotently re-run by the next 30-min cadence
+        # (SKIP LOCKED), so the exact --max-time is decoupled from data safety. (NOT a
+        # universal guarantee: a job whose worker dies on its FINAL allowed attempt is
+        # never re-selected by the current claim query — the documented final-attempt
+        # lease-strand residual, Phase-18/FAIL-02 — it still never loses/duplicates a
+        # payroll, an operator can retrigger.)
+        #
+        # The 420 accounting names its terms, no headroom claimed: Render cold-start
+        # ≤60s (the curl spans it before the request reaches the app — this workflow's
+        # own health-ready step below documents the same ceiling) + 17-04's
+        # _MAX_WALL_CLOCK_SECONDS between-jobs cap 120s (a request can begin ONE final
+        # job just under it) + a worst-case single job's ≈240s external-call allowance
+        # (the SUM of the explicit provider timeouts: extraction/suggestion ≤90s each,
+        # clarification draft ≤30s, Resend send ≤30s) — 60 + 120 + 240 = 420 already,
+        # BEFORE deterministic compute/DB/overhead on top. A rare worst-case-clarification
+        # request can therefore overrun 420 and go RED; that RED is acceptable-and-
+        # documented because the job is safely lease-reclaimed next cadence, not lost.
+        # This value is PROVISIONAL until a manual live-smoke confirms Render's
+        # undocumented server-side ceiling. It is NOT sized from the 210s inter-write
+        # STALL gap (app/routes/runs.py:37-72 — a max gap between two DB writes, not a
+        # job runtime). A 90s timeout (the health steps' budget) would false-RED even a
+        # routine pump.
+        run: curl -f --max-time 420 -H "Authorization: Bearer $PUMP_TOKEN" "$RENDER_URL/internal/pump"
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
+          PUMP_TOKEN: ${{ secrets.PUMP_TOKEN }}
+
+      - name: Ping /health/ready (wakes service + touches Supabase via SELECT)
+        # /health/ready runs SELECT 1 FROM businesses LIMIT 1, so this ping keeps both
+        # Render warm (only inbound HTTP wakes it) and Supabase un-paused (only a real
+        # query counts). Kept even though the pump step above already hits the DB —
+        # carried forward verbatim from keepalive.yml so a pump-route regression can't
+        # silently also lose this wake+touch signal.
+        # --max-time 90: Render cold start can take up to 60s; give headroom.
+        # -f: exit non-zero on HTTP 4xx/5xx, so an outage turns the run RED.
+        run: curl -f --max-time 90 "$RENDER_URL/health/ready"
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
+
+      - name: Check /health/schema (drift → RED)
+        # Layer 3 monitoring: /health/schema returns 503 on drift; -f makes curl
+        # exit non-zero so this scheduled run goes RED and the operator is notified.
+        # Catches drift from ANY source, including a manual Supabase edit that
+        # bypasses the deploy-migrate workflow (which only covers master merges).
+        # This is the check that would silently disappear if keepalive.yml's fold-in
+        # only carried the wake ping forward — carried over verbatim.
+        run: curl -f --max-time 90 "$RENDER_URL/health/schema"
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}

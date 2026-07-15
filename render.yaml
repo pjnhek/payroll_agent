@@ -27,6 +27,9 @@ services:
       - key: WEBHOOK_SIGNING_SECRET
         sync: false        # Resend inbound webhook signing secret (from resend.com webhook settings)
 
+      - key: PUMP_TOKEN
+        sync: false        # Shared secret the pump.yml cron sends as `Authorization: Bearer $PUMP_TOKEN`
+
       - key: EXTRACTION_API_KEY
         sync: false        # DeepSeek API key (extraction tier)
 
