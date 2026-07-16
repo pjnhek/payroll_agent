@@ -1,4 +1,4 @@
-"""DB repo — run lifecycle, status CAS, sweep, and error/scrub helpers."""
+"""DB repo — run lifecycle, status CAS, and error/scrub helpers."""
 from __future__ import annotations
 
 import logging
@@ -329,10 +329,11 @@ def load_inbound_email(
     return InboundEmail(**row) if row else None
 
 
-# payroll_runs.status is the state machine, so writes to it are deliberately
-# rationed to set_status (unguarded forward transitions inside a path that already
-# owns the run), claim_status (atomic guarded claims at contended gates), and the
-# fenced settlement coordinator. Anything else writing this column is a bug.
+# payroll_runs.status is the state machine, so the public transition API is
+# deliberately limited to two writers: set_status (unguarded forward transitions
+# inside an owned path) and claim_status (atomic guarded claims at contended gates).
+# Narrow context-reset and fenced-settlement coordinators own their own CAS-scoped
+# writes; adding another unguarded transition helper here would be a bug.
 def set_status(
     run_id: uuid.UUID,
     status: RunStatus,

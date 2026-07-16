@@ -24,7 +24,6 @@ import threading
 
 import pytest
 
-
 _RETIRED_RECOVERY_SYMBOLS = {
     "sweep_stranded_runs",
     "find_stranded_unconsumed_replies",
@@ -115,7 +114,7 @@ def sweep_stranded_runs():
 
 __all__ = ["find_stranded_unconsumed_replies"]
 """
-    assert _RETIRED_RECOVERY_SYMBOLS <= _defined_or_exported_names(synthetic)
+    assert _defined_or_exported_names(synthetic) >= _RETIRED_RECOVERY_SYMBOLS
 
 
 def test_durable_recovery_facade_and_fake_surfaces_remain_paired(fake_repo) -> None:
