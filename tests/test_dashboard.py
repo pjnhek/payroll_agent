@@ -490,10 +490,6 @@ def test_runs_list_uses_safe_failure_projection(monkeypatch):
 
     run_id = uuid.uuid4()
     hostile = "Traceback: payroll for Maria Chen maria@example.test"
-    monkeypatch.setattr(_repo, "sweep_stranded_runs", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(
-        _repo, "find_stranded_unconsumed_replies", lambda *args, **kwargs: []
-    )
     monkeypatch.setattr(
         _repo,
         "load_all_runs",

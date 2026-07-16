@@ -49,13 +49,13 @@ def test_runs_list_ast_is_read_only_and_has_no_background_tasks_parameter() -> N
     }
 
 
-def test_runs_route_has_no_legacy_recovery_callers_but_repo_symbols_remain() -> None:
-    """Caller subtraction lands before the repository API deletion wave."""
+def test_runs_route_and_repo_have_no_legacy_recovery_surface() -> None:
+    """Caller-first subtraction is closed by deleting the retired facade APIs."""
     source = inspect.getsource(runs_module)
     assert "sweep_stranded_runs" not in source
     assert "find_stranded_unconsumed_replies" not in source
-    assert callable(repo.sweep_stranded_runs)
-    assert callable(repo.find_stranded_unconsumed_replies)
+    assert not hasattr(repo, "sweep_stranded_runs")
+    assert not hasattr(repo, "find_stranded_unconsumed_replies")
 
 
 def test_runs_list_returns_200_without_touching_any_mutation_or_schedule_seam(
@@ -67,8 +67,6 @@ def test_runs_list_returns_200_without_touching_any_mutation_or_schedule_seam(
         raise AssertionError("GET /runs reached a forbidden side-effect seam")
 
     forbidden_repo_seams: tuple[str, ...] = (
-        "sweep_stranded_runs",
-        "find_stranded_unconsumed_replies",
         "load_run",
         "find_business_by_sender",
         "mark_reply_consumed",

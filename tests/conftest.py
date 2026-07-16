@@ -25,7 +25,7 @@ import contextlib
 import os
 import threading
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -316,12 +316,6 @@ def roster_from_seed() -> Roster:
 # persistence, the sole set_status writer, and record_run_error routing.
 
 
-# Mirrors app.db.repo._STRANDED_SCOPE_STATUSES — deliberately re-declared here
-# instead of imported, so this fake never silently inherits a scope change to the
-# stranded-run sweep without a corresponding InMemoryRepo test failure.
-_STRANDED_SCOPE_STATUSES = ["received", "extracting", "computed"]
-
-
 class InMemoryRepo:
     """Mirror of the repo surface the webhook + orchestrator exercise, in RAM."""
 
@@ -361,9 +355,9 @@ class InMemoryRepo:
         # Every fake email row carries direction (the real insert_inbound_email
         # hardcodes 'inbound' in its SQL, so kw never passes it), round (default
         # 0), and consumed_round (default None, meaning unconsumed), so
-        # find_stranded_unconsumed_replies / load_consumed_replies /
-        # mark_reply_consumed / get_inbound_by_message_id can read/write these
-        # exactly like the real repo does on the real email_messages columns.
+        # load_consumed_replies / mark_reply_consumed /
+        # get_inbound_by_message_id can read/write these exactly like the real
+        # repo does on the real email_messages columns.
         row = {
             "id": eid,
             "direction": "inbound",
@@ -511,30 +505,6 @@ class InMemoryRepo:
             return False
         run["status"] = RunStatus(new).value
         return True
-
-    def sweep_stranded_runs(self, threshold_seconds, conn=None):
-        """Mirror repo.sweep_stranded_runs (the stuck-run recovery sweep).
-
-        Scope is hardcoded to EXACTLY {received, extracting, computed} — matches
-        the real repo's scope-pin. error_detail is built from the same static
-        prefix concatenated with the run's OWN pre-mutation status value,
-        mirroring the real SQL's `%s || status` concatenation semantics (not a
-        Python `{status}` placeholder). This in-memory double has no real
-        `updated_at` age check — it sweeps every run currently in scope,
-        since tests script exactly the runs they want swept.
-        """
-        from app.models.status import RunStatus
-
-        swept: list[uuid.UUID] = []
-        prefix = "recovery: stranded in-flight (background task died) — swept from "
-        for _run_id_str, run in self.runs.items():
-            if run["status"] in _STRANDED_SCOPE_STATUSES:
-                old_status = run["status"]
-                run["error_reason"] = "StrandedRunSwept"
-                run["error_detail"] = prefix + old_status
-                run["status"] = RunStatus.ERROR.value
-                swept.append(run["id"])
-        return swept
 
     def record_run_error(
         self, run_id, reason, conn=None, *, detail_exc=None, stage=None, roster=None
@@ -1429,38 +1399,6 @@ class InMemoryRepo:
             raise ValueError("operator resume resolution is missing")
         return dict(stored)
 
-    def find_stranded_unconsumed_replies(self, threshold_seconds, conn=None):
-        """Stale unconsumed inbound replies against awaiting_reply runs.
-
-        Mirrors repo.find_stranded_unconsumed_replies: applies the awaiting_reply
-        + unconsumed + age filter using the row's created_at (every fake row
-        carries one, from insert_inbound_email/insert_email_message).
-
-        Also requires row.get("epoch", 0) == the run's CURRENT reply_epoch —
-        mirrors repo's `em.epoch = pr.reply_epoch` JOIN condition. A stale
-        epoch-0 unconsumed reply must never be auto-resumed against a run that
-        has since been retriggered into a NEW epoch-1 awaiting_reply state.
-        """
-        threshold = timedelta(seconds=threshold_seconds)
-        now = datetime.now(UTC)
-        found: list[dict[str, Any]] = []
-        for row in self.emails.values():
-            if row.get("direction") != "inbound" or row.get("consumed_round") is not None:
-                continue
-            run_id = row.get("run_id")
-            if run_id is None:
-                continue
-            run = self.runs.get(str(run_id))
-            if not run or run.get("status") != "awaiting_reply":
-                continue
-            if row.get("epoch", 0) != run.get("reply_epoch", 0):
-                continue
-            created_at = row.get("created_at")
-            if created_at is not None and now - created_at < threshold:
-                continue
-            found.append(row)
-        return found
-
     # --- crash-safe send ordering + durable threading ---
     def get_outbound_references_chain(self, run_id, conn=None):
         """Return the references_header of the most recent sent outbound for this run.
@@ -1589,8 +1527,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         # never patched in — no AttributeError, no failure, just a silent fall-through to
         # the real DB-backed repo. Adding the method is not enough; it must be named here.
         "set_hours_changes",
-        # stranded-run sweep + webhook-dedup loser lookup
-        "sweep_stranded_runs",
+        # webhook-dedup loser lookup
         "find_run_by_message_id",
         # reply/late-reply rows linked to their run
         "link_email_to_run",
@@ -1606,7 +1543,6 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "create_operator_resume_resolution",
         "load_operator_resume_resolution",
         "clear_reply_context",
-        "find_stranded_unconsumed_replies",
         # automatic-reclaim rewind (never bumps reply_epoch) + the durable
         # job queue's claim/lease/fencing surface. A method defined on
         # InMemoryRepo but missing from THIS tuple is silently never
