@@ -133,9 +133,11 @@
 
 ## Research Metadata
 
-**Researched:** 2026-07-16  
-**Domain:** transactional inbox/outbox-style ingest, Postgres job queue, FastAPI request boundary, deterministic concurrent authority  
-**Overall confidence:** HIGH for repository findings; MEDIUM for external API/framework details verified through primary-source web fallback  
+**Researched:** 2026-07-16
+
+**Domain:** transactional inbox/outbox-style ingest, Postgres job queue, FastAPI request boundary, deterministic concurrent authority
+
+**Overall confidence:** HIGH for repository findings; MEDIUM for external API/framework details verified through primary-source web fallback
 **Research mode:** codebase-first with official-document fallback; Context7 was selected by the research seam but unavailable in this runtime. [VERIFIED: `.research-plan-input.json` routing output and available-tool inventory]
 
 <phase_requirements>
@@ -593,7 +595,8 @@ One deployment-state fact is unknown: whether live `operator_resume_resolutions`
 - Architecture: HIGH — recommendations follow locked context and concrete Phase 16–18 interfaces; external SQL/stream semantics are primary-source cited. [VERIFIED/CITED]
 - Pitfalls: HIGH for code seams, MEDIUM for framework/database behavior obtained through web fallback rather than Context7. [VERIFIED: research helper classification]
 
-**Research date:** 2026-07-16  
+**Research date:** 2026-07-16
+
 **Valid until:** 2026-08-15 for repository architecture; recheck only if Phase 16–18 contracts or provider envelope shape changes. [VERIFIED: stable-phase assumption scoped to explicit change triggers]
 
 ## Operational Notes
@@ -602,5 +605,6 @@ The requested typed `gsd-phase-researcher` agent was unavailable in this runtime
 
 ---
 
-*Phase: 19-webhook-cutover-durable-ingest*  
+*Phase: 19-webhook-cutover-durable-ingest*
+
 *Research completed: 2026-07-16*
