@@ -25,6 +25,111 @@ import threading
 import pytest
 
 
+_RETIRED_RECOVERY_SYMBOLS = {
+    "sweep_stranded_runs",
+    "find_stranded_unconsumed_replies",
+}
+_DURABLE_RECOVERY_SYMBOLS = {
+    "get_inbound_email_by_id",
+    "create_operator_resume_resolution",
+    "load_operator_resume_resolution",
+    "enqueue_classified_retry",
+    "enqueue_operator_resume_retry",
+    "settle_pipeline_job",
+    "settle_background_terminal",
+    "settle_infrastructure_failure",
+    "reap_expired_final_attempt",
+}
+
+
+def _defined_or_exported_names(source: str) -> set[str]:
+    """Return concrete definitions, imports, assignments, and ``__all__`` names."""
+    tree = ast.parse(source)
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        ):
+            names.update(
+                item.value
+                for item in ast.walk(node.value)
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            )
+    return names
+
+
+def test_retired_recovery_symbols_are_absent_from_nonempty_production_sources() -> None:
+    """The queue is the only automatic recovery policy left in production."""
+    app_root = pathlib.Path(__file__).resolve().parents[1] / "app"
+    source_files = sorted(
+        path
+        for pattern in ("*.py", "*.html", "*.sql")
+        for path in app_root.rglob(pattern)
+        if "__pycache__" not in path.parts
+    )
+    assert source_files, "production source inventory must not be empty"
+
+    raw_matches: dict[str, list[str]] = {}
+    symbol_matches: dict[str, list[str]] = {}
+    nonempty_sources = 0
+    for path in source_files:
+        source = path.read_text(encoding="utf-8")
+        if not source.strip():
+            continue
+        nonempty_sources += 1
+        retired_in_text = sorted(
+            name for name in _RETIRED_RECOVERY_SYMBOLS if name in source
+        )
+        if retired_in_text:
+            raw_matches[str(path.relative_to(app_root.parent))] = retired_in_text
+        if path.suffix == ".py":
+            retired_in_symbols = sorted(
+                _RETIRED_RECOVERY_SYMBOLS.intersection(
+                    _defined_or_exported_names(source)
+                )
+            )
+            if retired_in_symbols:
+                symbol_matches[str(path.relative_to(app_root.parent))] = (
+                    retired_in_symbols
+                )
+
+    assert nonempty_sources, "production source inventory contains no content"
+    assert not raw_matches, f"retired recovery text remains: {raw_matches}"
+    assert not symbol_matches, (
+        "retired recovery definitions/exports remain: " f"{symbol_matches}"
+    )
+
+
+def test_retired_recovery_inventory_detects_reintroduced_definition_and_export() -> None:
+    """Prove the negative inventory reds on either public reintroduction shape."""
+    synthetic = """
+def sweep_stranded_runs():
+    pass
+
+__all__ = ["find_stranded_unconsumed_replies"]
+"""
+    assert _RETIRED_RECOVERY_SYMBOLS <= _defined_or_exported_names(synthetic)
+
+
+def test_durable_recovery_facade_and_fake_surfaces_remain_paired(fake_repo) -> None:
+    """Deletion cannot subtract the persisted-context or settlement replacements."""
+    from app.db import repo as repo_mod
+
+    for name in sorted(_DURABLE_RECOVERY_SYMBOLS):
+        facade_member = getattr(repo_mod, name, None)
+        assert callable(facade_member), f"durable facade seam is missing: {name}"
+        assert getattr(facade_member, "__self__", None) is fake_repo, (
+            f"durable fake seam is not paired through fake_repo: {name}"
+        )
+
+
 def test_every_inmemory_method_that_shadows_a_real_repo_name_is_actually_patched(
     fake_repo,
 ) -> None:
