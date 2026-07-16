@@ -393,17 +393,12 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
-    """Proves the full key link: a scripted DB row with error_detail set flows
-    through the REAL RUN_COLS-based load_run SQL and reaches the rendered
-    run_detail.html HTML — not just that the template has matching text.
+def test_run_detail_never_renders_raw_error_detail(fake_conn, monkeypatch):
+    """Persisted free-form diagnostics never cross the browser boundary.
 
-    Part 1: RUN_COLS actually includes error_detail in the SQL text, and the
-    scripted row round-trips through the real repo.load_run (not a hardcoded
-    dict route monkeypatch, proving the SQL text + shape both hold).
-    Part 2: the same run dict, fed through the run_detail route (the same
-    monkeypatch pattern as test_run_detail_inflight_run_renders_200_not_500),
-    renders the error_detail text into the response HTML.
+    ``RUN_COLS`` still carries the value for internal diagnostics, but the route must
+    reduce it to the bounded failure vocabulary before rendering.  This fixture
+    deliberately resembles provider text plus PII so a regression is unmistakable.
     """
     from app.db import repo as _repo
 
@@ -417,7 +412,7 @@ def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
         "decision": None,
         "reconciliation": None,
         "error_reason": "ValueError",
-        "error_detail": "pipeline: [REDACTED] failed validation",
+        "error_detail": "provider said Maria Chen <maria@example.test> is invalid",
         "pay_period_start": None,
         "pay_period_end": None,
         "updated_at": None,
@@ -429,9 +424,9 @@ def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
 
     # Part 1: RUN_COLS (and therefore the actual SQL text) includes error_detail.
     assert "error_detail" in fake_conn.all_sql()
-    assert run["error_detail"] == "pipeline: [REDACTED] failed validation"
+    assert "Maria Chen" in run["error_detail"]
 
-    # Part 2: the value load_run produced reaches the rendered HTML.
+    # Part 2: the same persisted value must stop at the route's safe mapping.
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: run)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
@@ -439,7 +434,113 @@ def test_run_detail_renders_error_detail_end_to_end(fake_conn, monkeypatch):
 
     response = client.get(f"/runs/{run_id}")
     assert response.status_code == 200
-    assert "pipeline: [REDACTED] failed validation" in response.text
+    assert "Maria Chen" not in response.text
+    assert "maria@example.test" not in response.text
+    assert "provider said" not in response.text
+    assert "Error" in response.text
+
+
+def test_retry_exhausted_diagnostics_are_bounded_across_html_and_polling(monkeypatch):
+    """Recognized failure codes render identically without exposing hostile fields."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    hostile = "SECRET provider response for Maria Chen <maria@example.test>"
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "error",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": "RetryExhausted",
+        "error_detail": "extract:provider_timeout;attempts=5/5",
+        "last_error": hostile,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: dict(run))
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    detail = client.get(f"/runs/{run_id}")
+    poll = client.get(f"/runs/{run_id}/status")
+
+    assert detail.status_code == 200
+    assert poll.status_code == 200
+    assert "Retries exhausted" in detail.text
+    assert "Extraction" in detail.text
+    assert "Provider timeout" in detail.text
+    assert "5 of 5 attempts" in detail.text
+    assert hostile not in detail.text
+    poll_text = poll.text
+    assert "Retries exhausted" in poll_text
+    assert "Extraction" in poll_text
+    assert "Provider timeout" in poll_text
+    assert "5 of 5 attempts" in poll_text
+    assert hostile not in poll_text
+
+
+def test_runs_list_uses_safe_failure_projection(monkeypatch):
+    """The list keeps Error canonical and exposes only the bounded projection."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    hostile = "Traceback: payroll for Maria Chen maria@example.test"
+    monkeypatch.setattr(_repo, "sweep_stranded_runs", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        _repo, "find_stranded_unconsumed_replies", lambda *args, **kwargs: []
+    )
+    monkeypatch.setattr(
+        _repo,
+        "load_all_runs",
+        lambda: [
+            {
+                "id": run_id,
+                "business_id": uuid.uuid4(),
+                "status": "error",
+                "created_at": None,
+                "updated_at": None,
+                "business_name": "Safe Co",
+                "summary_gate_reason": None,
+                "employee_count": 0,
+                "error_reason": "FinalAttemptLeaseExpired",
+                "error_detail": (
+                    "unknown:final_attempt_lease_expired;attempts=5/5"
+                ),
+                "job_attempts": 5,
+                "job_max_attempts": 5,
+                "last_error": hostile,
+            }
+        ],
+    )
+
+    response = client.get("/runs")
+
+    assert response.status_code == 200
+    assert ">Error<" in response.text
+    assert "Retries exhausted" in response.text
+    assert "Final attempt lease expired" in response.text
+    assert "5 of 5 attempts" in response.text
+    assert hostile not in response.text
+
+
+def test_load_all_runs_projects_only_bounded_failure_inputs(fake_conn):
+    """The list query projects run codes and latest-job attempt counters, not payloads."""
+    from app.db import repo
+
+    fake_conn.script_fetchall([])
+    repo.load_all_runs(conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    assert "pr.error_reason" in sql
+    assert "pr.error_detail" in sql
+    assert "job_attempts" in sql
+    assert "job_max_attempts" in sql
+    assert "last_error" not in sql
 
 
 @pytest.mark.parametrize(
