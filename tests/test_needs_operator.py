@@ -360,6 +360,52 @@ def test_operator_resume_same_resolution_redelivery_is_cas_idempotent(
     assert winners == [overrides]
 
 
+def test_fake_operator_resume_context_is_strict_stateful_and_recorded(fake_repo) -> None:
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    mapping = {"Jimmy": "e0000002-0000-0000-0000-000000000002"}
+
+    with pytest.raises(ValueError, match="operator_resume"):
+        fake_repo.enqueue_job(
+            kind=JobKind.OPERATOR_RESUME,
+            dedup_key=f"operator_resume:{uuid.uuid4()}",
+            run_id=run_id,
+        )
+    with pytest.raises(ValueError, match="operator_resume"):
+        fake_repo.enqueue_job(
+            kind=JobKind.OPERATOR_RESUME,
+            dedup_key=f"operator_resume:{uuid.uuid4()}",
+            run_id=run_id,
+            email_id=uuid.uuid4(),
+            operator_resolution_id=resolution_id,
+        )
+
+    fake_repo.create_operator_resume_resolution(run_id, resolution_id, mapping)
+    fake_repo.create_operator_resume_resolution(run_id, resolution_id, mapping)
+    loaded = fake_repo.load_operator_resume_resolution(run_id, resolution_id)
+    loaded["Jimmy"] = "mutated caller copy"
+
+    assert fake_repo.load_operator_resume_resolution(run_id, resolution_id) == mapping
+    assert [call[0] for call in fake_repo.context_calls[-4:]] == [
+        "create_operator_resume_resolution",
+        "create_operator_resume_resolution",
+        "load_operator_resume_resolution",
+        "load_operator_resume_resolution",
+    ]
+
+    claimed_id = fake_repo.enqueue_job(
+        kind=JobKind.OPERATOR_RESUME,
+        dedup_key=f"operator_resume:{resolution_id}",
+        run_id=run_id,
+        operator_resolution_id=resolution_id,
+    )
+    claimed = fake_repo.claim_job()
+    assert claimed is not None and claimed.id == claimed_id
+    assert claimed.run_id == run_id
+    assert claimed.email_id is None
+    assert claimed.operator_resolution_id == resolution_id
+
+
 def _bare_extracted(run_id: uuid.UUID) -> Extracted:
     return Extracted(
         run_id=run_id,

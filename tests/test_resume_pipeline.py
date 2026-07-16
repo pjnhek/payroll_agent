@@ -287,6 +287,44 @@ def test_resume_reply_dispatch_forwards_handler_result(monkeypatch) -> None:
     )
 
 
+def test_fake_resume_reply_context_is_strict_and_email_reads_are_copies(fake_repo) -> None:
+    with pytest.raises(ValueError, match="resume_reply"):
+        fake_repo.enqueue_job(
+            kind=JobKind.RESUME_REPLY,
+            dedup_key=f"resume_reply:{uuid.uuid4()}",
+            run_id=uuid.uuid4(),
+        )
+    with pytest.raises(ValueError, match="resume_reply"):
+        fake_repo.enqueue_job(
+            kind=JobKind.RESUME_REPLY,
+            dedup_key=f"resume_reply:{uuid.uuid4()}",
+            run_id=uuid.uuid4(),
+            email_id=uuid.uuid4(),
+            operator_resolution_id=uuid.uuid4(),
+        )
+
+    email_id, _ = fake_repo.insert_inbound_email(
+        message_id=f"<copy-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="copy proof",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="persisted body",
+    )
+    assert email_id is not None
+    first = fake_repo.get_inbound_email_by_id(email_id)
+    assert first is not None
+    first["body_text"] = "mutated caller copy"
+    second = fake_repo.get_inbound_email_by_id(email_id)
+
+    assert second is not None and second["body_text"] == "persisted body"
+    assert fake_repo.context_calls[-2:] == [
+        ("get_inbound_email_by_id", str(email_id)),
+        ("get_inbound_email_by_id", str(email_id)),
+    ]
+
+
 def _extraction_json(
     employees: list[dict[str, Any]],
     pay_period_start: str = "2026-06-15",
