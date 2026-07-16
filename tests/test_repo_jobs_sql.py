@@ -482,3 +482,63 @@ def test_count_open_jobs_empty_row_returns_zero(fake_conn) -> None:
     result = jobs.count_open_jobs(conn=fake_conn)
     assert result == 0
     assert isinstance(result, int)
+
+
+def _schema_sql() -> str:
+    from pathlib import Path
+
+    return Path("app/db/schema.sql").read_text()
+
+
+def test_operator_resume_schema_is_normalized_and_history_preserving() -> None:
+    schema = _schema_sql()
+    parent = schema.split("CREATE TABLE IF NOT EXISTS operator_resume_resolutions", 1)[1]
+    parent = parent.split(");", 1)[0]
+    child = schema.split("CREATE TABLE IF NOT EXISTS operator_resume_overrides", 1)[1]
+    child = child.split(");", 1)[0]
+
+    assert re.search(r"\bid\s+UUID\s+PRIMARY KEY", parent)
+    assert re.search(
+        r"\brun_id\s+UUID\s+NOT NULL\s+REFERENCES payroll_runs\(id\)", parent
+    )
+    assert "ON DELETE CASCADE" not in parent
+    assert re.search(
+        r"operator_resolution_id\s+UUID\s+NOT NULL\s+REFERENCES "
+        r"operator_resume_resolutions\(id\)",
+        child,
+    )
+    assert re.search(
+        r"submitted_name\s+TEXT\s+NOT NULL", child
+    ) and "btrim(submitted_name) <> ''" in child
+    assert re.search(
+        r"employee_id\s+UUID\s+NOT NULL\s+REFERENCES employees\(id\)", child
+    )
+    assert re.search(
+        r"PRIMARY KEY\s*\(operator_resolution_id,\s*submitted_name\)", child
+    )
+    assert "ON DELETE CASCADE" not in child
+    assert "JSON" not in parent.upper() and "JSON" not in child.upper()
+    assert "reply_epoch" not in parent and "reply_epoch" not in child
+
+
+def test_operator_resume_schema_has_live_migration_and_indexes() -> None:
+    schema = _schema_sql()
+    assert "idx_operator_resume_resolutions_run_id" in schema
+    assert re.search(
+        r"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS operator_resolution_id\s+UUID",
+        schema,
+    )
+    assert "fk_jobs_operator_resolution" in schema
+    assert re.search(
+        r"FOREIGN KEY \(operator_resolution_id\)\s+"
+        r"REFERENCES operator_resume_resolutions\(id\)",
+        schema,
+    )
+
+
+def test_operator_resume_schema_does_not_widen_job_kind_early() -> None:
+    schema = _schema_sql()
+    jobs = schema.split("CREATE TABLE IF NOT EXISTS jobs", 1)[1].split(");", 1)[0]
+    kind_check = re.search(r"CHECK \(kind IN \(([^)]*)\)\)", jobs)
+    assert kind_check is not None
+    assert kind_check.group(1) == "'run_pipeline'"
