@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 current_phase: 19
-current_phase_name: Webhook Cutover & Durable Ingest
+current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Phase 19 UI-SPEC approved
-last_updated: "2026-07-16T23:13:17.489Z"
+stopped_at: Completed 19-01-PLAN.md
+last_updated: "2026-07-16T23:29:46.101Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 18 complete, transitioned to Phase 19
+last_activity_desc: Phase 19 Plan 01 completed
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 29
-  completed_plans: 29
-  percent: 50
+  total_plans: 41
+  completed_plans: 30
+  percent: 73
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 
 ## Current Position
 
-Phase: 19 — Webhook Cutover & Durable Ingest
-Plan: Not started
+Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
+Plan: 2 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 18 complete, transitioned to Phase 19
+Last activity: 2026-07-16 — Phase 19 Plan 01 completed
 
 ## Performance Metrics
 
@@ -110,6 +110,7 @@ Last activity: 2026-07-16 — Phase 18 complete, transitioned to Phase 19
 | Phase 18 P11 | 21min | 2 tasks | 15 files |
 | Phase 18 P07 | 12min | 2 tasks | 6 files |
 | Phase 18 P08 | 10min | 2 tasks | 9 files |
+| Phase 19 P01 | 12min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -206,6 +207,9 @@ Recent decisions affecting current work:
 - [Phase 18]: Webhook redelivery and durable resume handlers remain the supported automatic resume entry points. — Caller subtraction removes page-load recovery without weakening sender, consumption, mapping, or epoch safeguards.
 - [Phase 18]: The durable queue is the only automatic recovery policy; no legacy age-based repository or fake fallback remains. — Complete caller-first deletion prevents competing recovery writers.
 - [Phase 18]: Durable persisted-context, operator-resolution, settlement, retry, and final-lease seams remain explicitly public and fake-paired. — Negative deletion gates are paired with positive replacement assertions.
+- [Phase 19]: Initialize the singleton writer fence with insert-if-absent semantics so schema reapplication cannot reopen a closed cutover boundary.
+- [Phase 19]: Classify only an unresolved run's sole legacy generation as authoritative; any multiple-generation history aborts before the first authority write.
+- [Phase 19]: Reopen requires a deployed revision plus schema, fence, and authority postflights under an access-exclusive lock.
 
 ### Pending Todos
 
@@ -271,9 +275,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T20:56:44.032Z
-Stopped at: Phase 19 UI-SPEC approved
-Resume file: .planning/phases/19-webhook-cutover-durable-ingest/19-UI-SPEC.md
+Last session: 2026-07-16T23:29:15.862Z
+Stopped at: Completed 19-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

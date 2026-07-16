@@ -36,7 +36,7 @@ constraint — and none could supply the failure contract, which is the actual w
   **release their leases on graceful shutdown**, so a routine redeploy does not strand every in-flight job for
   a full lease duration.
 
-- [ ] **QUEUE-04**: Every producer is migrated — all **8** `BackgroundTasks` route-signature producers across
+- [x] **QUEUE-04**: Every producer is migrated — all **8** `BackgroundTasks` route-signature producers across
   `webhook.py`, `demo.py` (×2), and `runs.py` (×5, including one hiding inside the `runs_list()` page render).
   No pipeline work is ever again scheduled into process memory.
 
@@ -164,7 +164,7 @@ limitation honestly is itself the differentiator.
 | FAIL-01 | Phase 18 | Complete |
 | FAIL-02 | Phase 18 | Complete |
 | FAIL-03 | Phase 18 | Complete |
-| QUEUE-04 | Phase 19 | Pending |
+| QUEUE-04 | Phase 19 | Complete |
 | SEND-01 | Phase 20 | Pending |
 | SEND-02 | Phase 20 | Pending |
 | SEND-03 | Phase 20 | Pending |
