@@ -275,7 +275,11 @@ def test_initial_background_retry_enqueues_once_and_wakes_after_commit(
 
 def test_background_ok_and_terminal_create_no_retry_job(fake_repo, monkeypatch):
     ok_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: None)
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: PipelineResult(outcome=PipelineOutcome.OK),
+    )
     pipeline_glue.run_pipeline_bg(ok_run)
     assert fake_repo.jobs == {}
     assert fake_repo.runs[str(ok_run)]["status"] == RunStatus.EXTRACTING.value
@@ -348,7 +352,11 @@ def test_background_bridges_do_not_retry_in_memory_or_schedule_recursively():
 def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+    )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
 
@@ -359,7 +367,11 @@ def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monke
 def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.COMPUTED)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+    )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
 
@@ -370,7 +382,11 @@ def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
 def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+    )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
 
@@ -381,7 +397,11 @@ def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypa
 def test_handler_attempts_2_reconciled_rewind_is_a_noop_cas_loses(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECONCILED)
     calls: list[uuid.UUID] = []
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: calls.append(rid))
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+    )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
 
@@ -393,7 +413,11 @@ def test_reply_epoch_unchanged_across_every_handler_path(fake_repo, monkeypatch)
     """Neither the forward CAS nor the reclaim rewind ever bumps reply_epoch
     — only a human retrigger, through clear_reply_context, may grant the
     licence to email the client a second time."""
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: None)
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: PipelineResult(outcome=PipelineOutcome.OK),
+    )
 
     for status, attempts in (
         (RunStatus.RECEIVED, 1),
@@ -436,7 +460,11 @@ def test_first_durable_action_is_a_cas_on_both_branches(fake_repo, monkeypatch):
 
     monkeypatch.setattr(repo, "claim_status", _spy_claim_status)
     monkeypatch.setattr(repo, "rewind_for_reclaim", _spy_rewind)
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: None)
+    monkeypatch.setattr(
+        pipeline_glue,
+        "run_pipeline_now",
+        lambda rid: PipelineResult(outcome=PipelineOutcome.OK),
+    )
 
     run_id_first_attempt = _seed_run(fake_repo, status=RunStatus.RECEIVED)
     pipeline.handle_run_pipeline(_job(run_id=run_id_first_attempt, attempts=1))
@@ -517,10 +545,15 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
 
     invocations: list[uuid.UUID] = []
 
-    def _stage_failure_handled_internally(rid: uuid.UUID) -> None:
+    def _stage_failure_handled_internally(rid: uuid.UUID) -> PipelineResult:
         # Mirrors the orchestrator's own error-wrap: it persists ERROR and RETURNS.
         invocations.append(rid)
         fake_repo.set_status(rid, RunStatus.ERROR)
+        return PipelineResult(
+            outcome=PipelineOutcome.TERMINAL,
+            stage=PipelineStage.COMPUTE,
+            reason=PipelineReason.UNCLASSIFIED,
+        )
 
     monkeypatch.setattr(
         pipeline_glue, "run_pipeline_now", _stage_failure_handled_internally
@@ -651,7 +684,6 @@ def test_final_attempt_reap_ignores_near_miss_rows(
 @pytest.mark.parametrize(
     ("result", "max_attempts", "expected_outcome", "expected_job", "expected_run"),
     [
-        (None, 5, DrainOutcome.DONE, "done", RunStatus.EXTRACTING),
         (
             PipelineResult(outcome=PipelineOutcome.OK),
             5,
@@ -840,11 +872,12 @@ def test_held_tokens_populated_during_handler_and_cleared_after(fake_repo, monke
 
     captured: dict[str, Any] = {}
 
-    def _stub_handle(job: Job) -> None:
+    def _stub_handle(job: Job) -> PipelineResult:
         # Asserted FROM INSIDE the handler, not by inspection after the fact —
         # held_tokens() must be non-empty WHILE the handler is running.
         captured["token"] = job.lease_token
         captured["held_during"] = list(drain.held_tokens())
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(dispatch, "handle", _stub_handle)
 
@@ -926,7 +959,11 @@ def test_drain_once_complete_job_fenced_out_returns_fenced(fake_repo, monkeypatc
     )
     assert job_id is not None
 
-    monkeypatch.setattr(dispatch, "handle", lambda job: None)
+    monkeypatch.setattr(
+        dispatch,
+        "handle",
+        lambda job: PipelineResult(outcome=PipelineOutcome.OK),
+    )
     from app.db.repo.job_settlement import SettlementOutcome
 
     monkeypatch.setattr(

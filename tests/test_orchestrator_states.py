@@ -174,20 +174,13 @@ def test_pipeline_result_never_retains_sensitive_exception_content():
 
 
 # ---------------------------------------------------------------------------
-# Temporary legacy-result compatibility adapter
+# Strict pipeline-result adapter
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_result_none_maps_to_one_coarse_ok_result():
-    first = normalize_pipeline_result(None)
-    second = normalize_pipeline_result(None)
-
-    assert first is second
-    assert first == PipelineResult(
-        outcome=PipelineOutcome.OK,
-        stage=PipelineStage.UNKNOWN,
-        reason=PipelineReason.UNCLASSIFIED,
-    )
+def test_pipeline_result_adapter_rejects_none_instead_of_inventing_success():
+    with pytest.raises(TypeError, match="expected PipelineResult, got NoneType"):
+        normalize_pipeline_result(None)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -206,14 +199,14 @@ def test_legacy_result_none_maps_to_one_coarse_ok_result():
         ),
     ],
 )
-def test_legacy_result_preserves_every_explicit_result(result):
+def test_pipeline_result_adapter_preserves_every_explicit_result(result):
     assert normalize_pipeline_result(result) is result
 
 
 @pytest.mark.parametrize("value", [False, 0, "ok", object()])
-def test_legacy_result_rejects_every_other_runtime_value(value):
-    with pytest.raises(TypeError, match="PipelineResult or None"):
-        normalize_pipeline_result(value)
+def test_pipeline_result_adapter_rejects_every_other_runtime_value(value):
+    with pytest.raises(TypeError, match="expected PipelineResult"):
+        normalize_pipeline_result(value)  # type: ignore[arg-type]
 
 
 def test_pipeline_result_source_guard_requires_explicit_producers_without_error_persistence():

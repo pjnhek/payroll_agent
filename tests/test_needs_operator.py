@@ -169,6 +169,21 @@ def test_operator_resume_uses_complete_durable_mapping_not_alias_candidates(
     ]
 
 
+def test_operator_resume_dispatch_rejects_none_from_unsound_handler(monkeypatch) -> None:
+    from app.queue import dispatch
+    from app.queue.handlers import operator_resume
+
+    monkeypatch.setattr(operator_resume, "handle_operator_resume", lambda _job: None)
+
+    with pytest.raises(TypeError, match="expected PipelineResult, got NoneType"):
+        dispatch.handle(
+            _operator_resume_job(
+                run_id=uuid.uuid4(),
+                operator_resolution_id=uuid.uuid4(),
+            )
+        )
+
+
 def test_operator_resume_reclaims_without_advancing_epoch(fake_repo, monkeypatch) -> None:
     from app.pipeline import orchestrator
     from app.queue.handlers import operator_resume
@@ -190,19 +205,17 @@ def test_operator_resume_reclaims_without_advancing_epoch(fake_repo, monkeypatch
     monkeypatch.setattr(
         orchestrator,
         "resume_pipeline",
-        lambda _rid, _inbound, *, overrides, **_kwargs: calls.append(overrides),
+        lambda _rid, _inbound, *, overrides, **_kwargs: calls.append(overrides)
+        or PipelineResult(outcome=PipelineOutcome.OK),
     )
 
-    assert (
-        operator_resume.handle_operator_resume(
-            _operator_resume_job(
-                run_id=run_id,
-                operator_resolution_id=resolution_id,
-                attempts=2,
-            )
+    assert operator_resume.handle_operator_resume(
+        _operator_resume_job(
+            run_id=run_id,
+            operator_resolution_id=resolution_id,
+            attempts=2,
         )
-        is None
-    )
+    ) == PipelineResult(outcome=PipelineOutcome.OK)
     assert calls == [{"Jimmy": "e0000002-0000-0000-0000-000000000002"}]
     assert run["reply_epoch"] == 9
 
@@ -462,29 +475,21 @@ def test_operator_resume_background_retry_is_identifier_only_and_durable(
     assert "Jimmy" not in repr(job)
 
 
-@pytest.mark.parametrize(
-    ("producer_result", "expected_status"),
-    [
-        (None, RunStatus.NEEDS_OPERATOR.value),
-        (PipelineResult(), RunStatus.ERROR.value),
-    ],
-)
-def test_operator_resume_background_normalizes_legacy_and_terminal_results(
-    fake_repo, monkeypatch, producer_result, expected_status
+def test_operator_resume_background_consumes_terminal_result(
+    fake_repo, monkeypatch
 ) -> None:
     from app.routes import pipeline_glue
 
     run_id, resolution_id = _seed_operator_background_context(fake_repo)
 
     def producer(*_args, **_kwargs):
-        if producer_result is not None:
-            fake_repo.runs[str(run_id)]["status"] = RunStatus.EXTRACTING.value
-        return producer_result
+        fake_repo.runs[str(run_id)]["status"] = RunStatus.EXTRACTING.value
+        return PipelineResult()
 
     monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", producer)
     pipeline_glue.operator_resume_bg(run_id, resolution_id)
 
-    assert fake_repo.runs[str(run_id)]["status"] == expected_status
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.ERROR.value
     assert fake_repo.jobs == {}
 
 

@@ -224,7 +224,8 @@ def test_resume_reply_handler_reclaims_without_advancing_epoch(
     monkeypatch.setattr(
         orchestrator,
         "resume_pipeline",
-        lambda _rid, inbound, **_kwargs: calls.append(inbound),
+        lambda _rid, inbound, **_kwargs: calls.append(inbound)
+        or PipelineResult(outcome=PipelineOutcome.OK),
     )
 
     assert (
@@ -287,6 +288,18 @@ def test_resume_reply_dispatch_forwards_handler_result(monkeypatch) -> None:
         )
         is explicit
     )
+
+
+def test_resume_reply_dispatch_rejects_none_from_unsound_handler(monkeypatch) -> None:
+    from app.queue import dispatch
+    from app.queue.handlers import resume_reply
+
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", lambda _job: None)
+
+    with pytest.raises(TypeError, match="expected PipelineResult, got NoneType"):
+        dispatch.handle(
+            _resume_reply_job(run_id=uuid.uuid4(), email_id=uuid.uuid4())
+        )
 
 
 def test_fake_resume_reply_context_is_strict_and_email_reads_are_copies(fake_repo) -> None:
