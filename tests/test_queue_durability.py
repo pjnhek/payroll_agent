@@ -108,6 +108,7 @@ import psycopg
 import pytest
 
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineOutcome, PipelineResult
 from tests.conftest import QUEUE_WORKER_THREAD_PREFIX, live_queue_worker_threads
 
 # EVERY test in this file carries both markers via this module-level list, so a
@@ -1271,8 +1272,8 @@ def test_graceful_shutdown_releases_held_leases_immediately(
     called directly — that repo-level half already exists elsewhere) must hand
     it back to `pending` immediately, without waiting out LEASE_SECONDS. The
     straggler that stop() could not join is not corrupting anything: its own
-    eventual complete_job call is fenced on the lease token it was issued and
-    comes back False.
+    eventual settlement is fenced on the lease token it was issued and comes
+    back FENCED.
     """
     from app.db import repo
     from app.models.job import JobKind
@@ -1291,21 +1292,29 @@ def test_graceful_shutdown_releases_held_leases_immediately(
     release_me = live_worker.blocker()  # minted BY THE FIXTURE — its
     # teardown releases this even if the test body never reaches its own set()
 
-    def blocking_handler(job) -> None:
+    def blocking_handler(job) -> PipelineResult:
         handler_entered.set()
         release_me.wait(timeout=_BLOCKER_WAIT_SECONDS)
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(pipeline, "handle_run_pipeline", blocking_handler)
 
-    complete_results: list[bool] = []
-    real_complete_job = repo.complete_job
+    settlement_results: list[repo.SettlementOutcome] = []
+    real_settle_pipeline_job = repo.settle_pipeline_job
 
-    def spy_complete_job(job_id, lease_token, conn=None):  # noqa: ANN001
-        result = real_complete_job(job_id, lease_token, conn=conn)
-        complete_results.append(result)
-        return result
+    def spy_settle_pipeline_job(  # noqa: ANN001
+        job, result, *, backoff_seconds, conn=None
+    ) -> repo.SettlementOutcome:
+        settled = real_settle_pipeline_job(
+            job,
+            result,
+            backoff_seconds=backoff_seconds,
+            conn=conn,
+        )
+        settlement_results.append(settled)
+        return settled
 
-    monkeypatch.setattr(repo, "complete_job", spy_complete_job)
+    monkeypatch.setattr(repo, "settle_pipeline_job", spy_settle_pipeline_job)
 
     live_worker.start(n=1)  # never worker.start() directly
     assert handler_entered.wait(timeout=_BLOCKER_WAIT_SECONDS), (
@@ -1344,9 +1353,9 @@ def test_graceful_shutdown_releases_held_leases_immediately(
         "stop event is still set, so its next loop-boundary check returns"
     )
 
-    assert complete_results == [False], (
-        "the now-zombie worker's complete_job must be FENCED OUT (return "
-        f"False) rather than marking the job done; got {complete_results}"
+    assert settlement_results == [repo.SettlementOutcome.FENCED], (
+        "the now-zombie worker's pipeline settlement must be FENCED OUT rather "
+        f"than marking the job done; got {settlement_results}"
     )
     row = repo.get_job(enqueued_id)
     assert row is not None
@@ -1379,9 +1388,10 @@ def test_quiesce_releases_a_blocked_handler_and_joins_to_zero(
     handler_entered = threading.Event()
     release_me = live_worker.blocker()
 
-    def blocking_handler(job) -> None:
+    def blocking_handler(job) -> PipelineResult:
         handler_entered.set()
         release_me.wait(timeout=_BLOCKER_WAIT_SECONDS)
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(pipeline, "handle_run_pipeline", blocking_handler)
 
@@ -1405,8 +1415,8 @@ def test_quiesce_releases_a_blocked_handler_and_joins_to_zero(
     # `_quiesce_workers` releases every blocker BEFORE calling stop(), so a
     # handler that (like this one) returns immediately once unblocked can
     # legitimately race ahead and complete the job through the normal
-    # complete_job path before stop()'s own release_leases call ever sees it
-    # still leased — `complete_job` clears lease_token/leased_until exactly
+    # settle_pipeline_job path before stop()'s own release_leases call ever sees it
+    # still leased — successful settlement clears lease_token/leased_until exactly
     # like release_leases does. Both outcomes are SAFE and both are what this
     # assertion accepts: what matters is that no row is left `leased` with a
     # stale token once the process is quiescent.
@@ -1439,9 +1449,10 @@ def test_a_restarted_worker_claims_and_completes_a_real_job(
     handled_a: list[uuid.UUID] = []
     handled_a_event = threading.Event()
 
-    def stub_a(job) -> None:
+    def stub_a(job) -> PipelineResult:
         handled_a.append(job.id)
         handled_a_event.set()
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(pipeline, "handle_run_pipeline", stub_a)
 
@@ -1462,9 +1473,10 @@ def test_a_restarted_worker_claims_and_completes_a_real_job(
     handled_b: list[uuid.UUID] = []
     handled_b_event = threading.Event()
 
-    def stub_b(job) -> None:
+    def stub_b(job) -> PipelineResult:
         handled_b.append(job.id)
         handled_b_event.set()
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(pipeline, "handle_run_pipeline", stub_b)
 
@@ -1480,7 +1492,7 @@ def test_a_restarted_worker_claims_and_completes_a_real_job(
         "the restarted worker's dispatch was never invoked for job B — "
         "generation 2 likely observed generation 1's still-set stop event"
     )
-    worker.stop(grace_seconds=_BLOCKER_WAIT_SECONDS)  # joins: complete_job
+    worker.stop(grace_seconds=_BLOCKER_WAIT_SECONDS)  # joins: settle_pipeline_job
     # has provably already run by the time this join returns
 
     assert handled_b == [job_b], "the stub must have received job B's id, not a stranger's"
@@ -1617,7 +1629,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
 
     orchestrator_calls: list[uuid.UUID] = []
 
-    def _stub_run_pipeline_now(rid: uuid.UUID) -> None:
+    def _stub_run_pipeline_now(rid: uuid.UUID) -> PipelineResult:
         orchestrator_calls.append(rid)
         # Simulate ONLY the observable fact that a real orchestrator would
         # eventually advance the run past EXTRACTING — never a real
@@ -1625,6 +1637,7 @@ def test_retrigger_survives_worker_crash_mid_lease(
         # effect, not a bare no-op, is what makes "genuinely re-ran"
         # distinguishable from the stranded-mutation's own EXTRACTING value.
         repo.set_status(rid, RunStatus.COMPUTED)
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _stub_run_pipeline_now)
 
@@ -1785,12 +1798,13 @@ def test_pump_drains_future_due_job_with_zero_workers(
     # an unstubbed drain hits the real orchestrator + paid LLM providers.
     orchestrator_calls: list[uuid.UUID] = []
 
-    def _stub_run_pipeline_now(rid: uuid.UUID) -> None:
+    def _stub_run_pipeline_now(rid: uuid.UUID) -> PipelineResult:
         orchestrator_calls.append(rid)
         # The observable a real orchestrator would eventually produce — never
         # a bare no-op, or this test could not tell "the pump genuinely ran
         # the handler" apart from "the job row merely says done."
         repo.set_status(rid, RunStatus.COMPUTED)
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _stub_run_pipeline_now)
 
