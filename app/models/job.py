@@ -61,7 +61,7 @@ class JobState(enum.StrEnum):
     DEAD = "dead"
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Job:
     """A transport record — mirrors EXACTLY what the claim SQL's `RETURNING` yields.
 
@@ -80,8 +80,8 @@ class Job:
     id: uuid.UUID
     kind: JobKind
     run_id: uuid.UUID | None
-    email_id: uuid.UUID | None
-    operator_resolution_id: uuid.UUID | None
+    email_id: uuid.UUID | None = None
+    operator_resolution_id: uuid.UUID | None = None
     attempts: int
     max_attempts: int
     lease_token: uuid.UUID

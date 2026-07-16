@@ -336,7 +336,7 @@ class TestIndexStaticGuard:
 
         Replaces the former `test_exactly_three_new_indexes`
         (`sql.count("CREATE INDEX IF NOT EXISTS") == 3`), which the new
-        `idx_jobs_claimable` index detonates by simple arithmetic (3 -> 4). A future
+        queue and operator-resolution indexes detonate it by simple arithmetic. A future
         index addition now fails with the exact name missing from the assertion
         message — never a bare "4 != 5" — and the comparison is immune to false
         negatives from reordering, since it is a SET comparison, not a positional one.
@@ -347,6 +347,7 @@ class TestIndexStaticGuard:
             "idx_payroll_runs_status",
             "idx_email_messages_run_direction_state",
             "idx_jobs_claimable",
+            "idx_operator_resume_resolutions_run_id",
         }
         found = set(re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", sql))
         assert found == expected, f"index inventory drifted: {found ^ expected}"
