@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from pydantic import ValidationError
 
@@ -20,20 +21,27 @@ from app.routes.pipeline_glue import row_to_inbound
 logger = logging.getLogger("payroll_agent.queue")
 
 
-def _invalid_context(job: Job) -> PipelineResult:
-    """Return a bounded result and log correlation identifiers only."""
+def _invalid_context() -> PipelineResult:
+    """Return and log only the bounded invalid-context classification."""
     logger.warning(
-        "resume_reply invalid durable context: run_id=%s job_id=%s email_id=%s "
-        "code=%s",
-        job.run_id,
-        job.id,
-        job.email_id,
+        "resume_reply invalid durable context: code=%s",
         PipelineReason.INVALID_OPERATOR_OVERRIDE_CONTEXT.value,
     )
     return PipelineResult(
         stage=PipelineStage.LOAD,
         reason=PipelineReason.INVALID_OPERATOR_OVERRIDE_CONTEXT,
     )
+
+
+def _canonical_row_run_id(row: dict[str, object]) -> uuid.UUID | None:
+    """Return the persisted row owner as a UUID, failing closed on bad context."""
+    value = row.get("run_id")
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def handle_resume_reply(job: Job) -> PipelineResult:
@@ -47,11 +55,13 @@ def handle_resume_reply(job: Job) -> PipelineResult:
 
     row = repo.get_inbound_email_by_id(email_id)
     if row is None:
-        return _invalid_context(job)
+        return _invalid_context()
+    if _canonical_row_run_id(row) != run_id:
+        return _invalid_context()
     try:
         inbound = row_to_inbound(row)
     except (KeyError, TypeError, ValidationError):
-        return _invalid_context(job)
+        return _invalid_context()
 
     if job.attempts > 1:
         rewound = repo.rewind_for_reclaim(run_id)
