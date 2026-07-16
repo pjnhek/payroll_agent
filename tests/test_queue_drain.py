@@ -496,7 +496,7 @@ def test_catastrophic_start_failure_is_retried_not_marked_done(fake_repo, monkey
         "that was the run's only chance of ever executing was deleted from the queue."
     )
     assert job_row["attempts"] == 1
-    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECEIVED.value
 
 
 def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
@@ -1180,6 +1180,7 @@ def test_queue_tier_status_writers_are_cas_only() -> None:
         "rewind_for_reclaim",
         "settle_pipeline_job",
         "settle_infrastructure_failure",
+        "reap_expired_final_attempt",
     }
     observed_status_writers = func_names & status_writer_candidates
     permitted = {
@@ -1187,6 +1188,7 @@ def test_queue_tier_status_writers_are_cas_only() -> None:
         "rewind_for_reclaim",
         "settle_pipeline_job",
         "settle_infrastructure_failure",
+        "reap_expired_final_attempt",
     }
     assert observed_status_writers <= permitted, (
         "payroll_runs.status may be written from app/queue/ only through the "
@@ -1211,6 +1213,7 @@ def test_the_guard_actually_resolves_the_queue_tiers_real_calls() -> None:
     assert "rewind_for_reclaim" in func_names
     assert "settle_pipeline_job" in func_names
     assert "settle_infrastructure_failure" in func_names
+    assert "reap_expired_final_attempt" in func_names
 
 
 def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
@@ -1267,7 +1270,13 @@ def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
 
     monkeypatch.setattr(repo, "claim_job", _slow_claim)
     monkeypatch.setattr(dispatch, "handle", _blocking_handle)
-    monkeypatch.setattr(repo, "complete_job", lambda job_id, tok: True)
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    monkeypatch.setattr(
+        repo,
+        "settle_pipeline_job",
+        lambda job, result, *, backoff_seconds: SettlementOutcome.DONE,
+    )
 
     snapshot: list[list[uuid.UUID]] = []
     drainer = threading.Thread(target=drain.drain_once, name="f6-drainer")

@@ -449,6 +449,83 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert repo.load_run(terminal_run)["status"] == RunStatus.ERROR.value
 
 
+def test_final_attempt_reap_exact_predicate_fence_and_rollback(
+    seeded_db, monkeypatch
+) -> None:
+    from app.db import repo
+    from app.db.repo import job_settlement
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+
+    def _leased_job(*, max_attempts: int, expired: bool) -> tuple[uuid.UUID, uuid.UUID]:
+        run_id = _seed_run_for_queue_proof()
+        repo.set_status(run_id, RunStatus.EXTRACTING)
+        job_id = repo.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key=f"queueproof-final-attempt:{uuid.uuid4()}",
+            run_id=run_id,
+            max_attempts=max_attempts,
+        )
+        assert job_id is not None
+        claimed = repo.claim_job()
+        assert claimed is not None and claimed.id == job_id
+        with repo.get_connection() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE jobs SET leased_until = now() + (%s || ' seconds')::interval,"
+                " last_error = %s WHERE id = %s",
+                (-1 if expired else 60, "extract:provider_timeout", str(job_id)),
+            )
+        return run_id, job_id
+
+    exact_run, exact_job = _leased_job(max_attempts=1, expired=True)
+    unexpired_run, unexpired_job = _leased_job(max_attempts=1, expired=False)
+    below_run, below_job = _leased_job(max_attempts=2, expired=True)
+
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    exact_row = repo.get_job(exact_job)
+    exact_run_row = repo.load_run(exact_run)
+    assert exact_row["state"] == "dead"
+    assert exact_row["last_error"] == "extract:provider_timeout"
+    assert exact_run_row["status"] == RunStatus.ERROR.value
+    assert exact_run_row["error_reason"] == "FinalAttemptLeaseExpired"
+    assert "provider_timeout" not in exact_run_row["error_detail"]
+    assert repo.get_job(below_job)["state"] == "leased"
+    assert repo.load_run(below_run)["status"] == RunStatus.EXTRACTING.value
+    assert repo.get_job(unexpired_job)["state"] == "leased"
+    assert repo.load_run(unexpired_run)["status"] == RunStatus.EXTRACTING.value
+    assert repo.reap_expired_final_attempt() is None
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() + interval '60 seconds' WHERE id = %s",
+            (str(below_job),),
+        )
+
+    fenced_run, fenced_job = _leased_job(max_attempts=1, expired=True)
+    repo.set_status(fenced_run, RunStatus.COMPUTED)
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
+    assert repo.get_job(fenced_job)["state"] == "leased"
+    assert repo.load_run(fenced_run)["status"] == RunStatus.COMPUTED.value
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() + interval '60 seconds' WHERE id = %s",
+            (str(fenced_job),),
+        )
+
+    rollback_run, rollback_job = _leased_job(max_attempts=1, expired=True)
+    original_set_run_error = job_settlement._set_run_error
+
+    def _raise_after_run_write(*args, **kwargs):
+        assert original_set_run_error(*args, **kwargs)
+        raise RuntimeError("injected reap half-failure")
+
+    monkeypatch.setattr(job_settlement, "_set_run_error", _raise_after_run_write)
+    with pytest.raises(RuntimeError, match="injected reap half-failure"):
+        repo.reap_expired_final_attempt()
+    assert repo.get_job(rollback_job)["state"] == "leased"
+    assert repo.load_run(rollback_run)["status"] == RunStatus.EXTRACTING.value
+
+
 def test_operator_resume_retry_reloads_complete_resolution_and_dedupes_by_uuid(
     seeded_db,
 ) -> None:

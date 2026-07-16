@@ -134,6 +134,7 @@ class DrainOutcome(enum.StrEnum):
     RETRIED = "retried"
     DEAD = "dead"
     FENCED = "fenced"
+    REAPED_FINAL_LEASE = "reaped_final_lease"
 
     def __bool__(self) -> bool:
         return self is not DrainOutcome.EMPTY
@@ -146,7 +147,7 @@ def _map_settlement_outcome(outcome: enum.StrEnum) -> DrainOutcome:
         "retried": DrainOutcome.RETRIED,
         "dead": DrainOutcome.DEAD,
         "fenced": DrainOutcome.FENCED,
-        "reaped_final_lease": DrainOutcome.DEAD,
+        "reaped_final_lease": DrainOutcome.REAPED_FINAL_LEASE,
     }[outcome.value]
 
 
@@ -176,7 +177,10 @@ def drain_once() -> DrainOutcome:
             _claims_in_flight -= 1
 
     if job is None:
-        return DrainOutcome.EMPTY
+        reaped = repo.reap_expired_final_attempt()
+        if reaped is None:
+            return DrainOutcome.EMPTY
+        return _map_settlement_outcome(reaped)
 
     # Forget the token ONLY once the lease is genuinely settled — i.e. the database has
     # told us, in a write that actually landed, that this worker no longer owns it

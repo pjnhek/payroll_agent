@@ -1112,7 +1112,6 @@ class InMemoryRepo:
                 f"attempts={row['attempts']}/{row['max_attempts']}"
             )[:200]
             row["state"] = "dead"
-            row["last_error"] = "unknown:unclassified"
             row["lease_token"] = None
             return SettlementOutcome.REAPED_FINAL_LEASE
         return None

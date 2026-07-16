@@ -385,11 +385,6 @@ def reap_expired_final_attempt(
     *, conn: psycopg.Connection | None = None
 ) -> SettlementOutcome | None:
     """Atomically dead-letter one exact expired final-attempt lease."""
-    result = PipelineResult(
-        outcome=PipelineOutcome.RETRYABLE,
-        stage=PipelineStage.UNKNOWN,
-        reason=PipelineReason.UNCLASSIFIED,
-    )
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
             "SELECT id, run_id, attempts, max_attempts FROM jobs"
@@ -410,11 +405,11 @@ def reap_expired_final_attempt(
         ):
             return SettlementOutcome.FENCED
         updated = c.execute(
-            "UPDATE jobs SET state = 'dead', last_error = %s,"
+            "UPDATE jobs SET state = 'dead',"
             " lease_token = NULL, leased_until = NULL, updated_at = now()"
             " WHERE id = %s AND state = 'leased' AND attempts = max_attempts"
             " RETURNING id",
-            (result.diagnostic_code, str(job_id)),
+            (str(job_id),),
         ).fetchone()
         if updated is None:
             raise RuntimeError("locked final-attempt reap lost its row")
