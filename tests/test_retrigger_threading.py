@@ -6,7 +6,8 @@ It drives real code end to end: the real POST /runs/{run_id}/retrigger route, th
 real background pipeline the route schedules, the real clarify stage, and the real
 email gateway. The crashed state it recovers from is produced by real code too — a
 one-shot failure injected at the first persistence step AFTER the clarification email
-has already been sent, with the orchestrator's own error boundary persisting ERROR.
+has already been sent, with the background consumer settling the producer's bounded
+failure result to ERROR.
 
 The persistence it observes, however, is the IN-MEMORY test repo: the `fake_repo`
 fixture patches the whole `app.db.repo` surface, `insert_email_message` included, so
@@ -80,8 +81,8 @@ class _FailFirstCallOnly:
     when it fires the clarification email is already recorded as sent and the run's
     status has not yet advanced. That is precisely the window a real crash between a
     delivered email and its bookkeeping opens. It fails once and only once, so the
-    orchestrator's own error boundary can still persist ERROR on its way out, and the
-    later recovery pass runs against unmodified behavior.
+    background consumer can still settle the producer's terminal result to ERROR, and
+    the later recovery pass runs against unmodified behavior.
     """
 
     def __init__(self, delegate: Any) -> None:
@@ -127,7 +128,7 @@ def _crash_after_send_then_retrigger(
     import app.db.repo as repo_mod
     import app.email.gateway as gateway_mod
     import app.pipeline.clarification as clarification_mod
-    from app.pipeline import orchestrator
+    from app.routes import pipeline_glue
 
     run_id = _seed_client_email_and_run(fake_repo)
 
@@ -161,9 +162,10 @@ def _crash_after_send_then_retrigger(
     fail_once = _FailFirstCallOnly(real_snapshot_step)
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", fail_once)
 
-    # The crash pass — real pipeline, real clarify, real gateway. run_pipeline owns the
-    # error boundary that records the failure and does NOT re-raise, so this returns.
-    orchestrator.run_pipeline(run_id)
+    # The crash pass — real background consumer, producer, clarify, and gateway. The
+    # producer returns a bounded terminal result; the consumer owns the ERROR settlement
+    # and does not re-raise, so this returns just like the first-ingest webhook path.
+    pipeline_glue.run_pipeline_bg(run_id)
 
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", real_snapshot_step)
 

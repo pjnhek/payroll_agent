@@ -34,8 +34,8 @@ from typing import Any
 import pytest
 
 from app.models.contracts import InboundEmail
-from app.pipeline.orchestrator import run_pipeline
 from app.pipeline.send_guard import UnconfirmedSendError
+from app.routes import pipeline_glue
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
@@ -217,17 +217,18 @@ def test_get_unconfirmed_outbound_sql_shape(fake_conn):
 
 def test_a_reserved_row_blocks_the_rerun_and_escalates(fake_repo, mock_llm, monkeypatch):
     """A `reserved` clarification row at the CURRENT round + epoch must block the
-    rerun's send, land the run in ERROR, and persist UnconfirmedSendError as the
-    reason. All three are asserted together: a status assertion alone would pass if
-    the pipeline errored for an unrelated reason, and a count assertion alone would
-    pass if the pipeline never reached the send stage at all.
+    rerun's send, land the run in ERROR, and persist the bounded terminal diagnostic.
+    These are asserted together: a status assertion alone would pass if the pipeline
+    errored for an unrelated reason, and a count assertion alone would pass if the
+    pipeline never reached the send stage at all. The direct guard tests below prove
+    that the underlying exception is specifically UnconfirmedSendError.
     """
     send_calls = _spy_gateway_send_outbound(monkeypatch)
     mock_llm.script = _extract_only_script()
     run_id = _seed_metrodeli_run(fake_repo)
     _seed_unconfirmed_row(fake_repo, run_id, send_state="reserved")
 
-    run_pipeline(run_id)
+    pipeline_glue.run_pipeline_bg(run_id)
 
     assert len(send_calls) == 0, (
         "the provider must never be called when an unconfirmed row exists for this "
@@ -235,9 +236,10 @@ def test_a_reserved_row_blocks_the_rerun_and_escalates(fake_repo, mock_llm, monk
     )
     run = fake_repo.load_run(run_id)
     assert run["status"] == "error", "an unconfirmed reservation must escalate to ERROR"
-    assert run["error_reason"] == "UnconfirmedSendError", (
-        "the persisted reason must name the guard that fired, not some other failure"
+    assert run["error_reason"] == "unclassified", (
+        "unclassified guard failures must persist only the bounded reason code"
     )
+    assert run["error_detail"] == "clarification:unclassified"
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +262,7 @@ def test_no_reserved_row_means_the_send_DOES_fire(fake_repo, mock_llm, monkeypat
     # Deliberately NOT seeding an unconfirmed row — this is the only difference from
     # test_a_reserved_row_blocks_the_rerun_and_escalates.
 
-    run_pipeline(run_id)
+    pipeline_glue.run_pipeline_bg(run_id)
 
     assert len(send_calls) == 1, (
         "with no unconfirmed row present, clarify() must actually call "
@@ -287,12 +289,13 @@ def test_a_failed_row_blocks_the_rerun_too(fake_repo, mock_llm, monkeypatch):
     run_id = _seed_metrodeli_run(fake_repo)
     _seed_unconfirmed_row(fake_repo, run_id, send_state="failed")
 
-    run_pipeline(run_id)
+    pipeline_glue.run_pipeline_bg(run_id)
 
     assert len(send_calls) == 0
     run = fake_repo.load_run(run_id)
     assert run["status"] == "error"
-    assert run["error_reason"] == "UnconfirmedSendError"
+    assert run["error_reason"] == "unclassified"
+    assert run["error_detail"] == "clarification:unclassified"
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +317,7 @@ def test_a_sent_row_takes_the_EXISTING_guard_not_this_one(fake_repo, mock_llm, m
     run_id = _seed_metrodeli_run(fake_repo)
     _seed_unconfirmed_row(fake_repo, run_id, send_state="sent")
 
-    run_pipeline(run_id)
+    pipeline_glue.run_pipeline_bg(run_id)
 
     assert len(send_calls) == 0
     run = fake_repo.load_run(run_id)
