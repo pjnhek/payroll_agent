@@ -3,6 +3,7 @@
 from typing import Any, cast
 
 import psycopg
+import pytest
 
 from app.db.schema_introspect import (
     SchemaDiff,
@@ -23,6 +24,13 @@ def test_expected_schema_columns_include_create_and_alter():
     assert {"round", "consumed_round", "epoch"} <= exp.tables["email_messages"]
     # record_only is ALTER-ONLY in schema.sql (schema.sql:125) — proves the ALTER parse works
     assert "record_only" in exp.tables["payroll_runs"]
+    assert "operator_resolution_id" in exp.tables["jobs"]
+    assert exp.tables["operator_resume_resolutions"] == frozenset(
+        {"id", "run_id", "created_at"}
+    )
+    assert exp.tables["operator_resume_overrides"] == frozenset(
+        {"operator_resolution_id", "submitted_name", "employee_id", "created_at"}
+    )
 
 
 def test_expected_schema_excludes_table_constraints_as_columns():
@@ -41,6 +49,42 @@ def test_expected_schema_check_and_unique_values():
     assert "received" in exp.status_values
     assert "clarification_field_regression" in exp.purpose_values
     assert "uq_email_run_purpose_round_epoch" in exp.unique_constraints
+    assert exp.required_indexes == {
+        "idx_operator_resume_resolutions_run_id": (
+            "operator_resume_resolutions",
+            ("run_id",),
+        )
+    }
+    assert exp.required_constraints == {
+        "fk_jobs_operator_resolution": (
+            "jobs",
+            "f",
+            ("operator_resolution_id",),
+            "operator_resume_resolutions",
+            ("id",),
+        ),
+        "operator_resume_overrides_pkey": (
+            "operator_resume_overrides",
+            "p",
+            ("operator_resolution_id", "submitted_name"),
+            None,
+            (),
+        ),
+        "operator_resume_overrides_operator_resolution_id_fkey": (
+            "operator_resume_overrides",
+            "f",
+            ("operator_resolution_id",),
+            "operator_resume_resolutions",
+            ("id",),
+        ),
+        "operator_resume_overrides_employee_id_fkey": (
+            "operator_resume_overrides",
+            "f",
+            ("employee_id",),
+            "employees",
+            ("id",),
+        ),
+    }
 
 
 LIVE_STATUS_DEF = (
@@ -66,33 +110,74 @@ def _script_in_sync(
     conn: FakeConnection,
     *,
     drop_status: str | None = None,
-    drop_col: str | None = None,
+    drop_column: tuple[str, str] | None = None,
+    drop_table: str | None = None,
     drop_uq: bool = False,
+    drop_index: str | None = None,
+    malformed_index: str | None = None,
+    drop_constraint: str | None = None,
+    malformed_constraint: str | None = None,
 ) -> None:
-    """Script a FakeConnection to answer the 5 diff_against_live queries in order:
-    1) payroll_runs columns  2) email_messages columns  3) jobs columns
-    4) status+purpose constraint defs  5) unique-constraint names present.
+    """Script the 9 diff_against_live queries in their explicit order.
 
-    The column-fetch queries (1-3) run one per exp.tables entry, in dict
-    insertion order — "jobs" is the third entry, so it needs its own scripted
-    fetchall or the queue shifts and Q4/Q5 read the wrong rows.
+    Queries 1-5 fetch one column set for each expected table in insertion order.
+    Queries 6-9 fetch status/purpose checks, legacy unique constraints, required
+    named indexes, and required named constraints respectively.
     """
     from app.db.schema_introspect import expected_schema
+
     exp = expected_schema()
-    pr_cols = set(exp.tables["payroll_runs"])
-    em_cols = set(exp.tables["email_messages"])
-    jobs_cols = set(exp.tables["jobs"])
-    if drop_col:
-        pr_cols.discard(drop_col)
+    live_tables = {table: set(columns) for table, columns in exp.tables.items()}
+    if drop_table:
+        live_tables[drop_table].clear()
+    if drop_column:
+        table, column = drop_column
+        live_tables[table].discard(column)
     status_def = LIVE_STATUS_DEF
     if drop_status:
         status_def = status_def.replace(f", '{drop_status}'::text", "")
     uq_present = set() if drop_uq else {"uq_email_run_purpose_round_epoch"}
-    conn.script_fetchall([(c,) for c in pr_cols])                 # Q1
-    conn.script_fetchall([(c,) for c in em_cols])                 # Q2
-    conn.script_fetchall([(c,) for c in jobs_cols])                # Q3
-    conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])  # Q4
-    conn.script_fetchall([(n,) for n in uq_present])              # Q5
+    for table in exp.tables:
+        conn.script_fetchall([(column,) for column in live_tables[table]])
+    conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])
+    conn.script_fetchall([(name,) for name in uq_present])
+
+    index_rows = [
+        (name, table, list(columns))
+        for name, (table, columns) in exp.required_indexes.items()
+        if name != drop_index
+    ]
+    if malformed_index:
+        index_rows = [
+            (name, table, ["created_at"] if name == malformed_index else columns)
+            for name, table, columns in index_rows
+        ]
+    conn.script_fetchall(index_rows)
+
+    constraint_rows = [
+        (name, table, kind, list(columns), ref_table, list(ref_columns))
+        for name, (
+            table,
+            kind,
+            columns,
+            ref_table,
+            ref_columns,
+        ) in exp.required_constraints.items()
+        if name != drop_constraint
+    ]
+    if malformed_constraint:
+        constraint_rows = [
+            (
+                name,
+                table,
+                kind,
+                columns,
+                "businesses" if name == malformed_constraint else ref_table,
+                ref_columns,
+            )
+            for name, table, kind, columns, ref_table, ref_columns in constraint_rows
+        ]
+    conn.script_fetchall(constraint_rows)
 
 
 def _diff(conn: FakeConnection) -> SchemaDiff:
@@ -110,14 +195,39 @@ def test_diff_in_sync():
     diff = _diff(conn)
     assert diff.is_in_sync
     assert diff.as_missing_dict() == {}
+    assert len(conn.executed) == 9
+    assert [params for _, params in conn.executed[:5]] == [
+        (table,) for table in expected_schema().tables
+    ]
+    assert "pg_index" in str(conn.executed[7][0])
+    assert "pg_constraint" in str(conn.executed[8][0])
 
 
 def test_diff_missing_column():
     conn = FakeConnection()
-    _script_in_sync(conn, drop_col="clarification_round")
+    _script_in_sync(conn, drop_column=("payroll_runs", "clarification_round"))
     diff = _diff(conn)
     assert not diff.is_in_sync
     assert "clarification_round" in diff.missing_columns["payroll_runs"]
+
+
+@pytest.mark.parametrize(
+    "table", ["operator_resume_resolutions", "operator_resume_overrides"]
+)
+def test_diff_missing_operator_resume_table(table: str):
+    conn = FakeConnection()
+    _script_in_sync(conn, drop_table=table)
+    diff = _diff(conn)
+    assert not diff.is_in_sync
+    assert diff.missing_columns[table] == sorted(expected_schema().tables[table])
+
+
+def test_diff_missing_operator_resolution_key_column():
+    conn = FakeConnection()
+    _script_in_sync(conn, drop_column=("jobs", "operator_resolution_id"))
+    diff = _diff(conn)
+    assert not diff.is_in_sync
+    assert diff.missing_columns["jobs"] == ["operator_resolution_id"]
 
 
 def test_diff_missing_status_value_live_form():
@@ -132,6 +242,36 @@ def test_diff_missing_unique_constraint():
     _script_in_sync(conn, drop_uq=True)
     diff = _diff(conn)
     assert "uq_email_run_purpose_round_epoch" in diff.missing_unique_constraints
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_diff_missing_or_malformed_required_index(malformed: bool):
+    name = "idx_operator_resume_resolutions_run_id"
+    conn = FakeConnection()
+    _script_in_sync(
+        conn,
+        drop_index=None if malformed else name,
+        malformed_index=name if malformed else None,
+    )
+    diff = _diff(conn)
+    assert not diff.is_in_sync
+    assert diff.missing_required_indexes == [name]
+    assert diff.as_missing_dict()["required_indexes"] == [name]
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_diff_missing_or_malformed_required_constraint(malformed: bool):
+    name = "operator_resume_overrides_employee_id_fkey"
+    conn = FakeConnection()
+    _script_in_sync(
+        conn,
+        drop_constraint=None if malformed else name,
+        malformed_constraint=name if malformed else None,
+    )
+    diff = _diff(conn)
+    assert not diff.is_in_sync
+    assert diff.missing_required_constraints == [name]
+    assert diff.as_missing_dict()["required_constraints"] == [name]
 
 
 def test_diff_extra_live_column_is_not_drift():
