@@ -383,10 +383,10 @@ def clear_reply_context(
       conversation into the new run's context — hours from a payroll the client
       never re-submitted, i.e. a mispay.
 
-    The bump gives every round-machine read (get_outbound_for_round,
-    load_consumed_replies, find_stranded_unconsumed_replies) a scope boundary that
-    the retrigger crosses but no stale row can. The historical rows stay fully
-    queryable — just invisible to the CURRENT epoch's reads.
+    The bump gives every round-machine read (get_outbound_for_round and
+    load_consumed_replies) a scope boundary that the retrigger crosses but no stale
+    row can. The historical rows stay fully queryable — just invisible to the
+    CURRENT epoch's reads.
 
     This is a deliberate, reviewed, human-triggered residual risk (an operator
     retrigger CAN send the client a second confirmation if the earlier one

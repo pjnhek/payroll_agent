@@ -29,7 +29,6 @@ from app.db.repo.emails import (
     _pad_references,
     find_any_run_for_header,
     find_awaiting_reply_for_header,
-    find_stranded_unconsumed_replies,
     get_inbound_by_message_id,
     get_inbound_email_by_id,
     get_outbound_for_round,
@@ -101,7 +100,6 @@ from app.db.repo.runs import (
     load_source_email,
     record_run_error,
     set_status,
-    sweep_stranded_runs,
 )
 from app.db.supabase import get_connection
 
@@ -120,7 +118,6 @@ __all__ = [
     "_pad_references",
     "find_any_run_for_header",
     "find_awaiting_reply_for_header",
-    "find_stranded_unconsumed_replies",
     "get_inbound_email_by_id",
     "get_inbound_by_message_id",
     "get_outbound_for_round",
@@ -182,5 +179,4 @@ __all__ = [
     "load_source_email",
     "record_run_error",
     "set_status",
-    "sweep_stranded_runs",
 ]

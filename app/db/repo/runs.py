@@ -330,10 +330,9 @@ def load_inbound_email(
 
 
 # payroll_runs.status is the state machine, so writes to it are deliberately
-# rationed to two writers: set_status (unguarded forward transitions inside a path
-# that already owns the run) and claim_status (atomic guarded claim at every
-# CONTENDED gate). sweep_stranded_runs is a sanctioned third, using the same CAS
-# idiom as claim_status. Anything else writing this column is a bug.
+# rationed to set_status (unguarded forward transitions inside a path that already
+# owns the run), claim_status (atomic guarded claims at contended gates), and the
+# fenced settlement coordinator. Anything else writing this column is a bug.
 def set_status(
     run_id: uuid.UUID,
     status: RunStatus,
@@ -379,61 +378,6 @@ def claim_status(
             (RunStatus(new).value, str(run_id), RunStatus(expected).value),
         ).fetchone()
     return row is not None
-
-
-# Stranded-run scope: EXACTLY these three in-flight statuses are eligible for the
-# recovery sweep. A run parked in awaiting_reply/awaiting_approval/approved is
-# waiting on a HUMAN (client reply or operator approval) — that is normal, not
-# stranded — so those statuses must NEVER appear here; sweeping them would error
-# out payrolls that are simply waiting their turn. An explicit unit test pins the
-# list, asserting both the presence of these three and the absence of the three
-# parked statuses.
-_STRANDED_SCOPE_STATUSES: list[str] = ["received", "extracting", "computed"]
-
-
-def sweep_stranded_runs(
-    threshold_seconds: int,
-    conn: psycopg.Connection | None = None,
-) -> list[uuid.UUID]:
-    """Recover runs stranded mid-flight by a dead background task.
-
-    The SANCTIONED third status writer (alongside set_status/claim_status), using
-    the same single-statement CAS-UPDATE-WHERE-RETURNING idiom as claim_status, so
-    there is no read-then-write TOCTOU window.
-
-    Scope is hardcoded to EXACTLY {received, extracting, computed}: a run sitting
-    in awaiting_reply/awaiting_approval/approved is waiting on a human, not
-    stranded, and must never be swept. The scope list is NOT caller-supplied —
-    widening it means editing this function's own body, which the scope-pin unit
-    test immediately fails.
-
-    error_detail is built by SQL CONCATENATION of a static prefix with the run's
-    OWN `status` column (`%s || status`), NOT by Python string formatting. Postgres
-    evaluates every SET expression against the row's OLD values, so `%s || status`
-    captures the PRE-update status even though the same statement's SET clause
-    overwrites status to 'error'. That is ordinary SQL UPDATE semantics (the SET
-    list is evaluated once per row against the pre-statement values), not a
-    row-order effect — which is why the recorded detail names the stage the run
-    actually died in.
-
-    Returns the list of run ids that were swept (possibly empty).
-    """
-    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
-        rows = c.execute(
-            "UPDATE payroll_runs SET status = %s, error_reason = %s,"
-            " error_detail = %s || status, updated_at = now()"
-            " WHERE status = ANY(%s)"
-            " AND updated_at < now() - (%s || ' seconds')::interval"
-            " RETURNING id",
-            (
-                RunStatus.ERROR.value,
-                "StrandedRunSwept",
-                "recovery: stranded in-flight (background task died) — swept from ",
-                _STRANDED_SCOPE_STATUSES,
-                str(threshold_seconds),
-            ),
-        ).fetchall()
-    return [uuid.UUID(str(r[0])) for r in rows]
 
 
 # ---------------------------------------------------------------------------

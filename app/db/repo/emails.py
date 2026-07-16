@@ -386,56 +386,6 @@ def get_inbound_email_by_id(
         return cur.fetchone()
 
 
-# Auto-resume sweep scope: EXACTLY this stale + unconsumed + awaiting_reply
-# combination is eligible. This is a deliberately DIFFERENT scope from
-# _STRANDED_SCOPE_STATUSES (received/extracting/computed) and from the retrigger
-# stale_statuses list — widening any of the three to match the others would sweep
-# healthy in-flight runs. A reply sitting unconsumed against an awaiting_reply run
-# past the staleness threshold means the resume webhook never fired (dead
-# background task or missed redelivery), not a normal in-flight run. An explicit
-# unit test pins this scope, as it does for the other two.
-_STRANDED_REPLY_SCOPE_STATUS = "awaiting_reply"
-
-
-def find_stranded_unconsumed_replies(
-    threshold_seconds: int,
-    conn: psycopg.Connection | None = None,
-) -> list[dict[str, Any]]:
-    """Find stale unconsumed inbound replies against awaiting_reply runs.
-
-    Joins email_messages (direction='inbound', consumed_round IS NULL,
-    run_id IS NOT NULL, created_at older than the staleness threshold) to
-    payroll_runs (status = 'awaiting_reply'). Returns reply-row dicts with the
-    same fields as get_inbound_by_message_id plus run_id, so the sweep hook can
-    re-schedule resume_pipeline for each one — the CAS claim inside
-    resume_pipeline absorbs any double-schedule.
-
-    The column list matches get_inbound_by_message_id (the FULL InboundEmail field
-    set) so `_row_to_inbound` builds a valid InboundEmail from either query's rows.
-
-    The JOIN also requires em.epoch = pr.reply_epoch (a column comparison across
-    the existing join, not a subquery). A genuinely stale epoch-0 unconsumed reply
-    must never be auto-resumed against a run that has since been retriggered into
-    a NEW epoch awaiting_reply state — that would feed the new conversation an
-    answer to a question nobody asked.
-    """
-    sql = (
-        "SELECT em.id, em.run_id, em.message_id, em.in_reply_to,"
-        " em.references_header, em.subject, em.body_text,"
-        " em.from_addr, em.to_addr, em.consumed_round, em.created_at"
-        " FROM email_messages em"
-        " JOIN payroll_runs pr ON pr.id = em.run_id AND em.epoch = pr.reply_epoch"
-        " WHERE em.direction = 'inbound'"
-        "   AND em.consumed_round IS NULL"
-        "   AND em.run_id IS NOT NULL"
-        "   AND pr.status = %s"
-        "   AND em.created_at < now() - (%s || ' seconds')::interval"
-    )
-    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
-        cur.execute(sql, (_STRANDED_REPLY_SCOPE_STATUS, str(threshold_seconds)))
-        return cur.fetchall() or []
-
-
 def update_email_message_sent(
     message_id: str, conn: psycopg.Connection | None = None
 ) -> None:

@@ -31,10 +31,8 @@ class RunStatus(enum.StrEnum):
     # resolvable reply: the system asked as many times as it is allowed to and still cannot
     # proceed without a human.
     #
-    # Terminal for every AUTOMATED path. It is deliberately excluded from
-    # sweep_stranded_runs' scope, from the retrigger stale_statuses list, and from
-    # IN_FLIGHT_STATUSES, because it is a SETTLED GATE state (like awaiting_approval)
-    # waiting on a human operator — not a dead background task. Any sweeper that treated it
-    # as stranded would keep resurrecting a run that is correctly parked. Only an explicit
-    # operator resolve+resume (or a reject) moves a run out of this state.
+    # Terminal for every automated path. It is deliberately excluded from the
+    # retrigger stale_statuses list and IN_FLIGHT_STATUSES because it is a settled
+    # gate state (like awaiting_approval) waiting on a human operator. Only an
+    # explicit operator resolve+resume (or a reject) moves a run out of this state.
     NEEDS_OPERATOR = "needs_operator"
