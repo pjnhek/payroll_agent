@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: failure-policy-sweep-deletion
 status: executing
-stopped_at: Completed 18-11-PLAN.md
-last_updated: "2026-07-16T04:01:42.381Z"
+stopped_at: Completed 18-07-PLAN.md
+last_updated: "2026-07-16T04:20:05.134Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 27
-  completed_plans: 25
+  completed_plans: 26
   percent: 33
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
-Plan: 11 of 12
+Plan: 12 of 12
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 18 execution started
 
@@ -107,6 +107,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | Phase 18 P05 | 8min | 2 tasks | 3 files |
 | Phase 18 P10 | 9min | 1 tasks | 3 files |
 | Phase 18 P11 | 21min | 2 tasks | 15 files |
+| Phase 18 P07 | 12min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -199,6 +200,8 @@ Recent decisions affecting current work:
 - [Phase 18]: Both orchestrator producers classify and return bounded outcomes; background wrappers and the queue drain remain the sole terminal persistence owners. — This preserves one failure persistence owner per execution mode after the producer cutover.
 - [Phase 18]: Dynamic forwarding boundaries validate PipelineResult at runtime even though static annotations are exact, so unsound values fail loudly instead of becoming success. — Static typing cannot protect dynamic handler lookup or injected test doubles.
 - [Phase 18]: Background wrappers remain None-returning terminal procedures, while every value-producing seam is PipelineResult-only. — Procedures exhaustively consume and settle policy values rather than forwarding them.
+- [Phase 18]: GET /runs is strictly read-only and owns no automatic recovery behavior. — Durable queue workers own automatic recovery; explicit mutation routes own operator recovery.
+- [Phase 18]: Webhook redelivery and durable resume handlers remain the supported automatic resume entry points. — Caller subtraction removes page-load recovery without weakening sender, consumption, mapping, or epoch safeguards.
 
 ### Pending Todos
 
@@ -264,8 +267,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T04:01:42.373Z
-Stopped at: Completed 18-11-PLAN.md
+Last session: 2026-07-16T04:19:37.882Z
+Stopped at: Completed 18-07-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

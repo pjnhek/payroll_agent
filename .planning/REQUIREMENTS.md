@@ -69,7 +69,7 @@ constraint — and none could supply the failure contract, which is the actual w
   **not** `needs_operator`, which the resolve route cannot service without `decision.unresolved_names`
   (`runs.py:203-213`).
 
-- [ ] **FAIL-03**: `sweep_stranded_runs` is **DELETED**, replaced by the dead-letter transition. Keeping it
+- [x] **FAIL-03**: `sweep_stranded_runs` is **DELETED**, replaced by the dead-letter transition. Keeping it
   alongside the queue *is* the hazard: two status writers, both firing at ~15 minutes, with the sweep winning by
   flipping a run to `ERROR` exactly as the queue reclaims it — defeating the headline claim with its own safety
   net. Net effect: a deletion of three recovery hacks, including the dashboard-page-load-as-cron block at
@@ -163,7 +163,7 @@ limitation honestly is itself the differentiator.
 | PUMP-02 | Phase 17 | Complete |
 | FAIL-01 | Phase 18 | Complete |
 | FAIL-02 | Phase 18 | Complete |
-| FAIL-03 | Phase 18 | Pending |
+| FAIL-03 | Phase 18 | Complete |
 | QUEUE-04 | Phase 19 | Pending |
 | SEND-01 | Phase 20 | Pending |
 | SEND-02 | Phase 20 | Pending |
