@@ -709,6 +709,121 @@ def test_final_attempt_reap_ignores_near_miss_rows(
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
 
 
+_FINAL_LEASE_ERROR_STATUSES = {
+    RunStatus.RECEIVED,
+    RunStatus.EXTRACTING,
+    RunStatus.COMPUTED,
+    RunStatus.APPROVED,
+}
+_FINAL_LEASE_PRESERVE_STATUSES = {
+    RunStatus.SENT,
+    RunStatus.AWAITING_REPLY,
+    RunStatus.AWAITING_APPROVAL,
+    RunStatus.NEEDS_OPERATOR,
+    RunStatus.RECONCILED,
+    RunStatus.REJECTED,
+    RunStatus.ERROR,
+}
+
+
+def test_final_attempt_status_matrix_is_disjoint_and_exhaustive() -> None:
+    from app.db.repo import job_settlement
+
+    assert job_settlement._FINAL_LEASE_ERROR_STATUSES == _FINAL_LEASE_ERROR_STATUSES
+    assert (
+        job_settlement._FINAL_LEASE_PRESERVE_STATUSES
+        == _FINAL_LEASE_PRESERVE_STATUSES
+    )
+    assert not (
+        job_settlement._FINAL_LEASE_ERROR_STATUSES
+        & job_settlement._FINAL_LEASE_PRESERVE_STATUSES
+    )
+    assert (
+        job_settlement._FINAL_LEASE_ERROR_STATUSES
+        | job_settlement._FINAL_LEASE_PRESERVE_STATUSES
+    ) == set(RunStatus)
+
+
+@pytest.mark.parametrize("status", list(RunStatus))
+def test_final_attempt_reap_settles_every_run_status(
+    fake_repo, status: RunStatus
+) -> None:
+    run_id = _seed_run(fake_repo, status=status)
+    run = fake_repo.runs[str(run_id)]
+    run["error_reason"] = "existing_reason"
+    run["error_detail"] = "existing_detail"
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"reap-status-matrix:{status.value}:{uuid.uuid4()}",
+        run_id=run_id,
+        max_attempts=1,
+    )
+    assert job_id is not None
+    job = fake_repo.jobs[str(job_id)]
+    job.update(
+        state="leased",
+        attempts=1,
+        lease_token=uuid.uuid4(),
+        lease_expired=True,
+        leased_until="expired",
+        last_error="extract:provider_timeout",
+    )
+
+    assert drain.drain_once() == DrainOutcome.REAPED_FINAL_LEASE
+    assert job["state"] == "dead"
+    assert job["lease_token"] is None
+    assert job["leased_until"] is None
+    assert job["last_error"] == "extract:provider_timeout"
+
+    if status in _FINAL_LEASE_ERROR_STATUSES:
+        assert run["status"] == RunStatus.ERROR.value
+        assert run["error_reason"] == "FinalAttemptLeaseExpired"
+        assert run["error_detail"] == (
+            "unknown:final_attempt_lease_expired;attempts=1/1"
+        )
+    else:
+        assert run["status"] == status.value
+        assert run["error_reason"] == "existing_reason"
+        assert run["error_detail"] == "existing_detail"
+
+
+def test_final_attempt_preserved_oldest_does_not_starve_next_active_candidate(
+    fake_repo,
+) -> None:
+    awaiting_run = _seed_run(fake_repo, status=RunStatus.AWAITING_APPROVAL)
+    extracting_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    job_ids: list[uuid.UUID] = []
+    for order, run_id in enumerate((awaiting_run, extracting_run), start=1):
+        job_id = fake_repo.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key=f"reap-starvation:{order}:{uuid.uuid4()}",
+            run_id=run_id,
+            max_attempts=1,
+        )
+        assert job_id is not None
+        fake_repo.jobs[str(job_id)].update(
+            state="leased",
+            attempts=1,
+            lease_token=uuid.uuid4(),
+            lease_expired=True,
+            leased_until="expired",
+            leased_until_order=order,
+            last_error=f"attempt-{order}",
+        )
+        job_ids.append(job_id)
+
+    assert drain.drain_once() == DrainOutcome.REAPED_FINAL_LEASE
+    assert fake_repo.get_job(job_ids[0])["state"] == "dead"
+    assert fake_repo.get_job(job_ids[1])["state"] == "leased"
+    assert fake_repo.runs[str(awaiting_run)]["status"] == RunStatus.AWAITING_APPROVAL.value
+
+    assert drain.drain_once() == DrainOutcome.REAPED_FINAL_LEASE
+    assert fake_repo.get_job(job_ids[1])["state"] == "dead"
+    assert fake_repo.runs[str(extracting_run)]["status"] == RunStatus.ERROR.value
+
+    assert drain.drain_once() == DrainOutcome.EMPTY
+
+
 @pytest.mark.parametrize(
     ("result", "max_attempts", "expected_outcome", "expected_job", "expected_run"),
     [
