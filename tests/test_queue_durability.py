@@ -526,6 +526,82 @@ def test_final_attempt_reap_exact_predicate_fence_and_rollback(
     assert repo.load_run(rollback_run)["status"] == RunStatus.EXTRACTING.value
 
 
+def test_pump_reaps_expired_final_attempt_once(
+    seeded_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real HTTP pump reports one exact final-lease reap exactly once."""
+    from fastapi.testclient import TestClient
+
+    import app.main as app_main
+    from app.config import get_settings
+    from app.db import repo
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+
+    token = f"queueproof-reap-token-{uuid.uuid4()}"
+    monkeypatch.setenv("PUMP_TOKEN", token)
+    get_settings.cache_clear()
+    try:
+        run_id = _seed_run_for_queue_proof()
+        repo.set_status(run_id, RunStatus.EXTRACTING)
+        job_id = repo.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key=f"queueproof-pump-reap:{uuid.uuid4()}",
+            run_id=run_id,
+            max_attempts=1,
+        )
+        assert job_id is not None
+        claimed = repo.claim_job()
+        assert claimed is not None and claimed.id == job_id
+        assert claimed.attempts == claimed.max_attempts == 1
+
+        with repo.get_connection() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE jobs SET leased_until = now() - interval '1 second',"
+                " last_error = %s WHERE id = %s",
+                ("extract:provider_timeout", str(job_id)),
+            )
+
+        assert live_queue_worker_threads() == []
+        client = TestClient(app_main.app)
+        response = client.get(
+            "/internal/pump", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "claimed": 0,
+            "done": 0,
+            "retried": 0,
+            "dead": 1,
+            "fenced": 0,
+            "reaped_final_lease": 1,
+            "queue_depth": 0,
+        }
+
+        job_row = repo.get_job(job_id)
+        run_row = repo.load_run(run_id)
+        assert job_row is not None and job_row["state"] == "dead"
+        assert run_row is not None and run_row["status"] == RunStatus.ERROR.value
+        assert run_row["error_reason"] == "FinalAttemptLeaseExpired"
+
+        second = client.get(
+            "/internal/pump", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert second.status_code == 200, second.text
+        assert second.json() == {
+            "claimed": 0,
+            "done": 0,
+            "retried": 0,
+            "dead": 0,
+            "fenced": 0,
+            "reaped_final_lease": 0,
+            "queue_depth": 0,
+        }
+    finally:
+        get_settings.cache_clear()
+
+
 def test_operator_resume_retry_reloads_complete_resolution_and_dedupes_by_uuid(
     seeded_db,
 ) -> None:
