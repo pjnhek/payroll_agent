@@ -552,10 +552,9 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
     "make every failure retry".
 
     A STAGE failure (the LLM refuses, the calc raises) is caught by the pipeline's
-    OWN catch-all, which persists ERROR on the run and returns normally. The run is
-    already visible to a human in that state, so the job has genuinely finished its
-    work and must complete — retrying it would re-run a pipeline that already
-    recorded its error, and would keep re-running it until it dead-lettered.
+    OWN catch-all and returned as a bounded TERMINAL result. The drain's fenced
+    settlement coordinator atomically records ERROR on the run and completes the job.
+    Retrying it would re-run a terminal pipeline failure until dead-lettering.
 
     Only the catastrophic-START case (the pipeline never began at all) is a retry.
     This test is what stops a future "just retry everything" edit from turning every
@@ -566,9 +565,9 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
     invocations: list[uuid.UUID] = []
 
     def _stage_failure_handled_internally(rid: uuid.UUID) -> PipelineResult:
-        # Mirrors the orchestrator's own error-wrap: it persists ERROR and RETURNS.
+        # Mirrors the orchestrator's own error-wrap: classify and return, leaving the
+        # drain's coordinator as the sole terminal persistence owner.
         invocations.append(rid)
-        fake_repo.set_status(rid, RunStatus.ERROR)
         return PipelineResult(
             outcome=PipelineOutcome.TERMINAL,
             stage=PipelineStage.COMPUTE,
@@ -588,8 +587,8 @@ def test_a_stage_failure_still_completes_the_job(fake_repo, monkeypatch):
     job_row = fake_repo.get_job(job_id)
     assert job_row is not None
     assert job_row["state"] == "done", (
-        "a stage failure is handled and persisted by the pipeline itself — the job "
-        "did its work and must complete, not retry a run that already recorded ERROR"
+        "a terminal stage failure is atomically persisted by the drain coordinator — "
+        "the job must complete, not retry a run that already recorded ERROR"
     )
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.ERROR.value
     # EXACTLY once. Without this, a handler that invoked the pipeline twice would
@@ -871,7 +870,12 @@ def test_drain_once_claims_dispatches_and_completes_with_the_same_token(fake_rep
     assert job_id is not None
 
     handled: list[Job] = []
-    monkeypatch.setattr(dispatch, "handle", handled.append)
+
+    def _handle(job: Job) -> PipelineResult:
+        handled.append(job)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(dispatch, "handle", _handle)
 
     seen_settlement_tokens: list[uuid.UUID] = []
     orig_settle = repo.settle_pipeline_job
@@ -1529,10 +1533,11 @@ def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
         time.sleep(claim_held_s)
         return claimed_job
 
-    def _blocking_handle(job):
+    def _blocking_handle(job) -> PipelineResult:
         # Hold the job in flight until the snapshot lands, so the drain's own
         # finally-discard cannot race the assertion.
         assert snapshot_taken.wait(timeout=5.0)
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(repo, "claim_job", _slow_claim)
     monkeypatch.setattr(dispatch, "handle", _blocking_handle)

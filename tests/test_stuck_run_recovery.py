@@ -17,6 +17,7 @@ import pytest
 
 from app.db import repo
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineOutcome, PipelineResult
 from tests.conftest import FakeConnection
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
@@ -335,8 +336,13 @@ def test_stranded_run_swept_and_retriggerable(seeded_db, monkeypatch):
     from app.queue.drain import DrainOutcome
 
     dispatched: list[uuid.UUID] = []
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        dispatched.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
-        pipeline_glue_mod, "run_pipeline_now", lambda rid: dispatched.append(rid)
+        pipeline_glue_mod, "run_pipeline_now", _run
     )
 
     client = TestClient(app_main.app)

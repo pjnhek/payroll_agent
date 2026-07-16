@@ -39,6 +39,7 @@ import app.db.repo as repo_mod
 from app.db.repo import RUN_COLS, load_business_name, update_known_alias
 from app.models.status import RunStatus
 from app.pipeline.compose_email import confirmation_subject
+from app.pipeline.result import PipelineOutcome, PipelineResult
 from app.queue import drain
 from app.queue.drain import DrainOutcome
 
@@ -471,7 +472,12 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     import app.routes.pipeline_glue as app_main
 
     dispatched: list[uuid.UUID] = []
-    monkeypatch.setattr(app_main, "run_pipeline_now", lambda rid: dispatched.append(rid))
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        dispatched.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(app_main, "run_pipeline_now", _run)
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
     epoch_before = fake_repo.load_run(run_id).get("reply_epoch", 0)
@@ -530,7 +536,12 @@ def test_retrigger_clears_context_on_stale_inflight_claim(
     import app.routes.pipeline_glue as app_main
 
     dispatched: list[uuid.UUID] = []
-    monkeypatch.setattr(app_main, "run_pipeline_now", lambda rid: dispatched.append(rid))
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        dispatched.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(app_main, "run_pipeline_now", _run)
 
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
