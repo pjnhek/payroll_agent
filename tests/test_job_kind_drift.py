@@ -221,11 +221,11 @@ class TestDispatchTableMatchesJobKind:
 
         assert {m.value for m in JobKind} == set(dispatch.HANDLERS.keys())
 
-    def test_resume_reply_kind_sql_and_handler_land_atomically(self) -> None:
-        """The first Plan 18-09 boundary exposes exactly two runnable kinds."""
+    def test_all_resume_kinds_sql_and_handlers_land_atomically(self) -> None:
+        """The final Plan 18-09 boundary exposes exactly three runnable kinds."""
         from app.queue import dispatch
 
-        expected = {"run_pipeline", "resume_reply"}
+        expected = {"run_pipeline", "resume_reply", "operator_resume"}
         sql_values = _inline_check_values(_clean_sql(), "jobs", "kind")
 
         assert {member.value for member in JobKind} == expected
@@ -235,6 +235,10 @@ class TestDispatchTableMatchesJobKind:
         module, name = dispatch.HANDLERS[JobKind.RESUME_REPLY]
         assert module.__name__ == "app.queue.handlers.resume_reply"
         assert name == "handle_resume_reply"
+
+        module, name = dispatch.HANDLERS[JobKind.OPERATOR_RESUME]
+        assert module.__name__ == "app.queue.handlers.operator_resume"
+        assert name == "handle_operator_resume"
 
 
 def test_resume_reply_sql_requires_exact_identifier_context() -> None:
@@ -246,3 +250,14 @@ def test_resume_reply_sql_requires_exact_identifier_context() -> None:
     assert "run_id is not null" in body
     assert "email_id is not null" in body
     assert "operator_resolution_id is null" in body
+
+
+def test_operator_resume_sql_requires_exact_identifier_context() -> None:
+    """An operator retry carries only its run and immutable resolution ids."""
+    body = _create_body(_clean_sql(), "jobs").lower()
+
+    assert "ck_jobs_operator_resume_context" in body
+    assert "kind <> 'operator_resume'" in body
+    assert "run_id is not null" in body
+    assert "operator_resolution_id is not null" in body
+    assert "email_id is null" in body

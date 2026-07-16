@@ -38,14 +38,17 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
+from app.models.job import Job, JobKind
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
 from app.pipeline.clarification import MAX_CLARIFICATION_ROUNDS
 from app.pipeline.clarification import clarify as _clarify
+from app.pipeline.result import PipelineOutcome, PipelineResult
 from app.routes.runs import IN_FLIGHT_STATUSES
 from tests.conftest import InMemoryRepo
 
@@ -91,6 +94,235 @@ def _bare_decision() -> Decision:
             )
         ],
     )
+
+
+def _operator_resume_job(
+    *,
+    run_id: uuid.UUID | None,
+    operator_resolution_id: uuid.UUID | None,
+    attempts: int = 1,
+) -> Job:
+    return Job(
+        id=uuid.uuid4(),
+        kind=JobKind.OPERATOR_RESUME,
+        run_id=run_id,
+        operator_resolution_id=operator_resolution_id,
+        attempts=attempts,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+
+
+def test_operator_resume_uses_complete_durable_mapping_not_alias_candidates(
+    fake_repo, monkeypatch
+) -> None:
+    from app.pipeline import orchestrator
+    from app.queue.handlers import operator_resume
+
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy", "Maria C"]
+    )
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.RECEIVED.value
+    fake_repo.runs[str(run_id)]["alias_candidates"] = {
+        "Jimmy": {"bound": "not-authority"}
+    }
+    resolution_id = uuid.uuid4()
+    complete = {
+        "Jimmy": "e0000002-0000-0000-0000-000000000002",
+        "Maria C": "e0000001-0000-0000-0000-000000000001",
+    }
+    fake_repo.create_operator_resume_resolution(run_id, resolution_id, complete)
+
+    calls: list[dict[str, Any]] = []
+    explicit = PipelineResult(outcome=PipelineOutcome.OK)
+
+    def _resume(rid, inbound, *, from_status, overrides, **kwargs):
+        calls.append(
+            {
+                "run_id": rid,
+                "inbound": inbound,
+                "from_status": from_status,
+                "overrides": overrides,
+            }
+        )
+        return explicit
+
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _resume)
+
+    result = operator_resume.handle_operator_resume(
+        _operator_resume_job(
+            run_id=run_id,
+            operator_resolution_id=resolution_id,
+        )
+    )
+
+    assert result is explicit
+    assert calls == [
+        {
+            "run_id": run_id,
+            "inbound": None,
+            "from_status": RunStatus.RECEIVED,
+            "overrides": complete,
+        }
+    ]
+
+
+def test_operator_resume_reclaims_without_advancing_epoch(fake_repo, monkeypatch) -> None:
+    from app.pipeline import orchestrator
+    from app.queue.handlers import operator_resume
+
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+    run = fake_repo.runs[str(run_id)]
+    run["status"] = RunStatus.EXTRACTING.value
+    run["reply_epoch"] = 9
+    resolution_id = uuid.uuid4()
+    fake_repo.create_operator_resume_resolution(
+        run_id,
+        resolution_id,
+        {"Jimmy": "e0000002-0000-0000-0000-000000000002"},
+    )
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "resume_pipeline",
+        lambda _rid, _inbound, *, overrides, **_kwargs: calls.append(overrides),
+    )
+
+    assert (
+        operator_resume.handle_operator_resume(
+            _operator_resume_job(
+                run_id=run_id,
+                operator_resolution_id=resolution_id,
+                attempts=2,
+            )
+        )
+        is None
+    )
+    assert calls == [{"Jimmy": "e0000002-0000-0000-0000-000000000002"}]
+    assert run["reply_epoch"] == 9
+
+
+def test_operator_resume_rejects_partial_extra_cross_business_and_wrong_run_context(
+    fake_repo, monkeypatch, caplog
+) -> None:
+    from app.pipeline import orchestrator
+    from app.queue.handlers import operator_resume
+
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["SECRET Jimmy", "SECRET Maria"]
+    )
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.RECEIVED.value
+    calls: list[object] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "resume_pipeline",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    invalid_mappings = [
+        {"SECRET Jimmy": "e0000002-0000-0000-0000-000000000002"},
+        {
+            "SECRET Jimmy": "e0000002-0000-0000-0000-000000000002",
+            "SECRET Maria": "e0000001-0000-0000-0000-000000000001",
+            "SECRET Extra": "e0000001-0000-0000-0000-000000000001",
+        },
+        {
+            "SECRET Jimmy": "e0000003-0000-0000-0000-000000000003",
+            "SECRET Maria": "e0000001-0000-0000-0000-000000000001",
+        },
+    ]
+    results: list[PipelineResult] = []
+    for mapping in invalid_mappings:
+        resolution_id = uuid.uuid4()
+        fake_repo.create_operator_resume_resolution(run_id, resolution_id, mapping)
+        results.append(
+            operator_resume.handle_operator_resume(
+                _operator_resume_job(
+                    run_id=run_id,
+                    operator_resolution_id=resolution_id,
+                )
+            )
+        )
+
+    wrong_run_resolution = uuid.uuid4()
+    other_run_id = uuid.uuid4()
+    fake_repo.create_operator_resume_resolution(
+        other_run_id,
+        wrong_run_resolution,
+        {
+            "SECRET Jimmy": "e0000002-0000-0000-0000-000000000002",
+            "SECRET Maria": "e0000001-0000-0000-0000-000000000001",
+        },
+    )
+    results.append(
+        operator_resume.handle_operator_resume(
+            _operator_resume_job(
+                run_id=run_id,
+                operator_resolution_id=wrong_run_resolution,
+            )
+        )
+    )
+
+    assert not calls
+    assert all(result.outcome is PipelineOutcome.TERMINAL for result in results)
+    assert all(
+        result.diagnostic_code == "load:invalid_operator_override_context"
+        for result in results
+    )
+    assert "SECRET" not in caplog.text
+
+
+def test_operator_resume_requires_both_durable_identifiers(fake_repo) -> None:
+    from app.queue.handlers import operator_resume
+
+    with pytest.raises(ValueError, match="run_id"):
+        operator_resume.handle_operator_resume(
+            _operator_resume_job(
+                run_id=None,
+                operator_resolution_id=uuid.uuid4(),
+            )
+        )
+    with pytest.raises(ValueError, match="operator_resolution_id"):
+        operator_resume.handle_operator_resume(
+            _operator_resume_job(
+                run_id=uuid.uuid4(),
+                operator_resolution_id=None,
+            )
+        )
+
+
+def test_operator_resume_resolution_uuid_scopes_distinct_same_epoch_jobs(fake_repo) -> None:
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    run_id = uuid.uuid4()
+
+    first_job = fake_repo.enqueue_job(
+        kind=JobKind.OPERATOR_RESUME,
+        dedup_key=f"operator_resume:{first}",
+        run_id=run_id,
+        operator_resolution_id=first,
+    )
+    duplicate = fake_repo.enqueue_job(
+        kind=JobKind.OPERATOR_RESUME,
+        dedup_key=f"operator_resume:{first}",
+        run_id=run_id,
+        operator_resolution_id=first,
+    )
+    second_job = fake_repo.enqueue_job(
+        kind=JobKind.OPERATOR_RESUME,
+        dedup_key=f"operator_resume:{second}",
+        run_id=run_id,
+        operator_resolution_id=second,
+    )
+
+    assert first_job is not None
+    assert duplicate is None
+    assert second_job is not None and second_job != first_job
 
 
 def _bare_extracted(run_id: uuid.UUID) -> Extracted:
