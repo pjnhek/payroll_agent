@@ -136,6 +136,8 @@ assert _BLOCKER_WAIT_SECONDS > _QUIESCE_JOIN_BUDGET_SECONDS
 
 _COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 _COASTAL_EMAIL = "payroll@coastalcleaning.example"
+_METRO_BIZ_ID = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+_METRO_EMAIL = "hr@metrodeli.example"
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +329,11 @@ def test_the_delete_gate_runs_on_both_sides_of_the_yield() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _seed_run_for_queue_proof() -> uuid.UUID:
+def _seed_run_for_queue_proof(
+    *,
+    business_id: uuid.UUID = _COASTAL_BIZ_ID,
+    from_addr: str = _COASTAL_EMAIL,
+) -> uuid.UUID:
     """Insert an inbound email + run against the REAL DB (repo.*, no conn=) —
     adapted from tests/test_concurrency_proof.py's own seed helper. Every
     proof in this file needs a real run_id: a run_pipeline job cannot exist
@@ -340,11 +346,11 @@ def _seed_run_for_queue_proof() -> uuid.UUID:
         in_reply_to=None,
         references_header=None,
         subject="payroll hours",
-        from_addr=_COASTAL_EMAIL,
+        from_addr=from_addr,
         to_addr="agent@payroll-agent.local",
         body_text="Maria Chen 40 regular hours.",
     )
-    return repo.create_run(business_id=_COASTAL_BIZ_ID, source_email_id=eid)
+    return repo.create_run(business_id=business_id, source_email_id=eid)
 
 
 def _read_reply_epoch(run_id: uuid.UUID) -> int:
@@ -705,6 +711,138 @@ def test_pump_reaps_expired_final_attempt_once(
         }
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("reply_business_id", "reply_from_addr"),
+    [
+        (_COASTAL_BIZ_ID, _COASTAL_EMAIL),
+        (_METRO_BIZ_ID, _METRO_EMAIL),
+    ],
+    ids=("same-business-wrong-run", "cross-business"),
+)
+def test_resume_reply_association_rejects_real_wrong_run_before_orchestration(
+    seeded_db,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    reply_business_id: uuid.UUID,
+    reply_from_addr: str,
+) -> None:
+    from app.db import repo
+    from app.models.job import Job, JobKind
+    from app.pipeline import orchestrator
+    from app.pipeline.result import PipelineOutcome
+    from app.queue.handlers import resume_reply
+
+    job_run_id = _seed_run_for_queue_proof()
+    reply_run_id = _seed_run_for_queue_proof(
+        business_id=reply_business_id,
+        from_addr=reply_from_addr,
+    )
+    reply_email_id, inserted = repo.insert_inbound_email(
+        message_id=f"<queueproof-secret-{uuid.uuid4()}@test.example>",
+        in_reply_to="<queueproof-clarification@test.example>",
+        references_header="<queueproof-clarification@test.example>",
+        subject="SECRET ASSOCIATION SUBJECT",
+        from_addr=reply_from_addr,
+        to_addr="secret-recipient@example.test",
+        body_text="SECRET ASSOCIATION BODY Maria Chen payroll",
+    )
+    assert inserted and reply_email_id is not None
+    repo.link_email_to_run(reply_email_id, reply_run_id)
+
+    def _fail_resume(*_args, **_kwargs):
+        raise AssertionError("wrong-run persisted content reached orchestration")
+
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _fail_resume)
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.RESUME_REPLY,
+        run_id=job_run_id,
+        email_id=reply_email_id,
+        attempts=1,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+
+    terminal = resume_reply.handle_resume_reply(job)
+
+    assert terminal.outcome is PipelineOutcome.TERMINAL
+    assert terminal.diagnostic_code == "load:invalid_operator_override_context"
+    job_run = repo.load_run(job_run_id)
+    reply_run = repo.load_run(reply_run_id)
+    assert job_run is not None and job_run["status"] == RunStatus.RECEIVED.value
+    assert reply_run is not None and reply_run["status"] == RunStatus.RECEIVED.value
+    forbidden = (
+        str(job.id),
+        str(job_run_id),
+        str(reply_run_id),
+        str(reply_email_id),
+        str(reply_business_id),
+        "SECRET",
+        "Maria Chen",
+        "secret-recipient",
+    )
+    assert all(token not in caplog.text for token in forbidden)
+
+
+def test_resume_reply_association_accepts_real_same_run_control(
+    seeded_db,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db import repo
+    from app.models.contracts import InboundEmail
+    from app.models.job import Job, JobKind
+    from app.pipeline import orchestrator
+    from app.pipeline.result import PipelineOutcome, PipelineResult
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run_for_queue_proof()
+    reply_email_id, inserted = repo.insert_inbound_email(
+        message_id=f"<queueproof-control-{uuid.uuid4()}@test.example>",
+        in_reply_to="<queueproof-clarification@test.example>",
+        references_header="<queueproof-clarification@test.example>",
+        subject="control reply",
+        from_addr=_COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="persisted same-run control",
+    )
+    assert inserted and reply_email_id is not None
+    repo.link_email_to_run(reply_email_id, run_id)
+    calls: list[tuple[uuid.UUID, InboundEmail, RunStatus]] = []
+
+    def _resume(
+        received_run_id: uuid.UUID,
+        inbound: InboundEmail,
+        *,
+        from_status: RunStatus,
+        **_kwargs,
+    ) -> PipelineResult:
+        calls.append((received_run_id, inbound, from_status))
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _resume)
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.RESUME_REPLY,
+        run_id=run_id,
+        email_id=reply_email_id,
+        attempts=1,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+
+    result = resume_reply.handle_resume_reply(job)
+
+    assert result.outcome is PipelineOutcome.OK
+    assert len(calls) == 1
+    called_run_id, called_inbound, called_status = calls[0]
+    assert called_run_id == run_id
+    assert called_inbound.id == reply_email_id
+    assert called_inbound.body_text == "persisted same-run control"
+    assert called_status is RunStatus.RECEIVED
+    run = repo.load_run(run_id)
+    assert run is not None and run["status"] == RunStatus.RECEIVED.value
 
 
 def test_operator_resume_retry_reloads_complete_resolution_and_dedupes_by_uuid(
