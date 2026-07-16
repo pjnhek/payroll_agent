@@ -1,5 +1,6 @@
 # The schema checker accepts a runtime DB connection protocol; FakeConnection is
 # the hermetic test double for that boundary.
+import pathlib
 from typing import Any, cast
 
 import psycopg
@@ -7,7 +8,9 @@ import pytest
 
 from app.db.schema_introspect import (
     SchemaDiff,
+    _create_body,
     _parse_any_array_values,
+    _strip_line_comments,
     diff_against_live,
     expected_schema,
 )
@@ -478,10 +481,34 @@ def test_bootstrap_reset_drops_jobs_before_inbound_events():
     )
 
 
+def test_schema_reapply_never_reopens_closed_writer_fence():
+    schema = pathlib.Path("app/db/schema.sql").read_text()
+    fence_seed = schema.split(
+        "INSERT INTO operator_resolution_writer_fence", 1
+    )[1].split("CREATE OR REPLACE FUNCTION", 1)[0]
+    assert "ON CONFLICT (singleton) DO NOTHING" in fence_seed
+    assert "UPDATE" not in fence_seed.upper()
+
+
+def test_phase19_columns_exist_in_fresh_and_additive_paths():
+    schema = pathlib.Path("app/db/schema.sql").read_text()
+    clean = _strip_line_comments(schema)
+    assert "event_id" in _create_body(clean, "jobs")
+    assert "authoritative" in _create_body(clean, "operator_resume_resolutions")
+    assert "remember" in _create_body(clean, "operator_resume_overrides")
+    for statement in (
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS event_id UUID",
+        "ADD COLUMN IF NOT EXISTS authoritative BOOLEAN NOT NULL DEFAULT FALSE",
+        "ADD COLUMN IF NOT EXISTS superseded_by UUID",
+        "ADD COLUMN IF NOT EXISTS remember BOOLEAN NOT NULL DEFAULT FALSE",
+    ):
+        assert statement in clean
+
+
 def test_diff_extra_live_column_is_not_drift():
     conn = FakeConnection()
     _script_in_sync(conn)
     # inject an extra column not in schema.sql into Q1's result
-    conn._fetchall_q[0].append(("some_future_column",))
+    conn._fetchall_q[0].append(("some_future_column", "text", "YES"))
     diff = _diff(conn)
     assert diff.is_in_sync  # extras are not drift

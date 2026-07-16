@@ -26,14 +26,31 @@ _CONSTRAINT_KEYWORDS = frozenset(
 # (the Phase-11 ON CONFLICT (run_id, purpose, round, epoch) arbiter).
 _REQUIRED_UNIQUE_CONSTRAINTS = frozenset({"uq_email_run_purpose_round_epoch"})
 
-IndexSpec = tuple[str, tuple[str, ...]]
+ColumnSpec = tuple[str, bool]
+IndexSpec = tuple[str, tuple[str, ...], bool, str | None]
 ConstraintSpec = tuple[
     str,
     str,
     tuple[str, ...],
     str | None,
     tuple[str, ...],
+    str | None,
+    str | None,
 ]
+TriggerSpec = tuple[str, str, str, bool, bool]
+
+_REQUIRED_COLUMN_SPECS: dict[tuple[str, str], ColumnSpec] = {
+    ("inbound_events", "id"): ("uuid", False),
+    ("inbound_events", "external_event_id"): ("text", False),
+    ("inbound_events", "payload"): ("jsonb", False),
+    ("inbound_events", "received_at"): ("timestamp with time zone", False),
+    ("jobs", "event_id"): ("uuid", True),
+    ("operator_resume_resolutions", "authoritative"): ("boolean", False),
+    ("operator_resume_resolutions", "superseded_by"): ("uuid", True),
+    ("operator_resume_overrides", "remember"): ("boolean", False),
+    ("operator_resolution_writer_fence", "singleton"): ("boolean", False),
+    ("operator_resolution_writer_fence", "writes_open"): ("boolean", False),
+}
 
 # These are the relationships schema health must prove before queue handlers
 # depend on typed operator resolution persistence. Checking the complete catalog
@@ -42,6 +59,20 @@ _REQUIRED_INDEXES: dict[str, IndexSpec] = {
     "idx_operator_resume_resolutions_run_id": (
         "operator_resume_resolutions",
         ("run_id",),
+        False,
+        None,
+    ),
+    "idx_inbound_events_received_at": (
+        "inbound_events",
+        ("received_at",),
+        False,
+        None,
+    ),
+    "uq_operator_resume_authoritative_run": (
+        "operator_resume_resolutions",
+        ("run_id",),
+        True,
+        "authoritative",
     ),
 }
 _REQUIRED_CONSTRAINTS: dict[str, ConstraintSpec] = {
@@ -51,6 +82,17 @@ _REQUIRED_CONSTRAINTS: dict[str, ConstraintSpec] = {
         ("operator_resolution_id",),
         "operator_resume_resolutions",
         ("id",),
+        "a",
+        None,
+    ),
+    "fk_jobs_inbound_event": (
+        "jobs",
+        "f",
+        ("event_id",),
+        "inbound_events",
+        ("id",),
+        "n",
+        None,
     ),
     "operator_resume_overrides_pkey": (
         "operator_resume_overrides",
@@ -58,6 +100,8 @@ _REQUIRED_CONSTRAINTS: dict[str, ConstraintSpec] = {
         ("operator_resolution_id", "submitted_name"),
         None,
         (),
+        None,
+        None,
     ),
     "operator_resume_overrides_operator_resolution_id_fkey": (
         "operator_resume_overrides",
@@ -65,6 +109,8 @@ _REQUIRED_CONSTRAINTS: dict[str, ConstraintSpec] = {
         ("operator_resolution_id",),
         "operator_resume_resolutions",
         ("id",),
+        "a",
+        None,
     ),
     "operator_resume_overrides_employee_id_fkey": (
         "operator_resume_overrides",
@@ -72,7 +118,54 @@ _REQUIRED_CONSTRAINTS: dict[str, ConstraintSpec] = {
         ("employee_id",),
         "employees",
         ("id",),
+        "a",
+        None,
     ),
+    "fk_operator_resume_superseded_by": (
+        "operator_resume_resolutions",
+        "f",
+        ("superseded_by",),
+        "operator_resume_resolutions",
+        ("id",),
+        "a",
+        None,
+    ),
+    "uq_inbound_events_external_event_id": (
+        "inbound_events",
+        "u",
+        ("external_event_id",),
+        None,
+        (),
+        None,
+        None,
+    ),
+    "operator_resolution_writer_fence_pkey": (
+        "operator_resolution_writer_fence",
+        "p",
+        ("singleton",),
+        None,
+        (),
+        None,
+        None,
+    ),
+    "ck_operator_resolution_writer_fence_singleton": (
+        "operator_resolution_writer_fence",
+        "c",
+        ("singleton",),
+        None,
+        (),
+        None,
+        "CHECK (singleton)",
+    ),
+}
+_REQUIRED_TRIGGERS: dict[str, TriggerSpec] = {
+    "trg_operator_resolution_writer_fence": (
+        "operator_resume_resolutions",
+        "enforce_operator_resolution_writer_fence",
+        "O",
+        True,
+        True,
+    )
 }
 
 
@@ -84,6 +177,8 @@ class ExpectedSchema:
     unique_constraints: frozenset[str]
     required_indexes: dict[str, IndexSpec]
     required_constraints: dict[str, ConstraintSpec]
+    required_column_specs: dict[tuple[str, str], ColumnSpec]
+    required_triggers: dict[str, TriggerSpec]
 
 
 def _strip_line_comments(sql: str) -> str:
@@ -198,11 +293,15 @@ def expected_schema() -> ExpectedSchema:
         # /health/schema instead of the endpoint reporting in_sync with the
         # newest, most concurrency-critical table entirely unchecked.
         "jobs": frozenset(_columns_for_table(sql, "jobs")),
+        "inbound_events": frozenset(_columns_for_table(sql, "inbound_events")),
         "operator_resume_resolutions": frozenset(
             _columns_for_table(sql, "operator_resume_resolutions")
         ),
         "operator_resume_overrides": frozenset(
             _columns_for_table(sql, "operator_resume_overrides")
+        ),
+        "operator_resolution_writer_fence": frozenset(
+            _columns_for_table(sql, "operator_resolution_writer_fence")
         ),
     }
     status_values = frozenset(
@@ -218,6 +317,8 @@ def expected_schema() -> ExpectedSchema:
         unique_constraints=_REQUIRED_UNIQUE_CONSTRAINTS,
         required_indexes=dict(_REQUIRED_INDEXES),
         required_constraints=dict(_REQUIRED_CONSTRAINTS),
+        required_column_specs=dict(_REQUIRED_COLUMN_SPECS),
+        required_triggers=dict(_REQUIRED_TRIGGERS),
     )
 
 
@@ -229,6 +330,8 @@ class SchemaDiff:
     missing_unique_constraints: list[str]
     missing_required_indexes: list[str] = field(default_factory=list)
     missing_required_constraints: list[str] = field(default_factory=list)
+    missing_required_columns: list[str] = field(default_factory=list)
+    missing_required_triggers: list[str] = field(default_factory=list)
 
     @property
     def is_in_sync(self) -> bool:
@@ -239,6 +342,8 @@ class SchemaDiff:
             or self.missing_unique_constraints
             or self.missing_required_indexes
             or self.missing_required_constraints
+            or self.missing_required_columns
+            or self.missing_required_triggers
         )
 
     def as_missing_dict(self) -> dict[str, list[str]]:
@@ -256,6 +361,10 @@ class SchemaDiff:
             out["required_indexes"] = sorted(self.missing_required_indexes)
         if self.missing_required_constraints:
             out["required_constraints"] = sorted(self.missing_required_constraints)
+        if self.missing_required_columns:
+            out["required_columns"] = sorted(self.missing_required_columns)
+        if self.missing_required_triggers:
+            out["required_triggers"] = sorted(self.missing_required_triggers)
         return out
 
 
@@ -278,13 +387,13 @@ def _parse_any_array_values(constraintdef: str) -> set[str]:
     return out
 
 
-def _live_columns(conn: psycopg.Connection, table: str) -> set[str]:
+def _live_columns(conn: psycopg.Connection, table: str) -> dict[str, ColumnSpec]:
     rows = conn.execute(
-        "SELECT column_name FROM information_schema.columns "
+        "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
         "WHERE table_schema = 'public' AND table_name = %s",
         (table,),
     ).fetchall()
-    return {r[0] for r in rows}
+    return {name: (data_type, nullable == "YES") for name, data_type, nullable in rows}
 
 
 def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
@@ -292,9 +401,16 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
 
     # Q1-Q5: columns per table, in ExpectedSchema.tables insertion order.
     missing_columns: dict[str, list[str]] = {}
+    live_columns: dict[tuple[str, str], ColumnSpec] = {}
     for table, expected_cols in exp.tables.items():
         live = _live_columns(conn, table)
-        missing_columns[table] = sorted(set(expected_cols) - live)
+        missing_columns[table] = sorted(set(expected_cols) - set(live))
+        live_columns.update(((table, name), spec) for name, spec in live.items())
+    missing_required_columns = sorted(
+        f"{table}.{column}"
+        for (table, column), spec in exp.required_column_specs.items()
+        if live_columns.get((table, column)) != spec
+    )
 
     # Q6: status + purpose CHECK defs (selected by conkey — column set — not name).
     # Deliberately still exactly these two tables. The CASE WHEN below can only
@@ -336,7 +452,8 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
     # ordered key columns. A matching name alone is not sufficient.
     rows = conn.execute(
         "SELECT idx.relname, tbl.relname, "
-        "       array_agg(a.attname ORDER BY key.ordinality) "
+        "       array_agg(a.attname ORDER BY key.ordinality), "
+        "       i.indisunique, pg_get_expr(i.indpred, i.indrelid) "
         "FROM pg_index i "
         "JOIN pg_class idx ON idx.oid = i.indexrelid "
         "JOIN pg_class tbl ON tbl.oid = i.indrelid "
@@ -346,11 +463,12 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
         "     AS key(attnum, ordinality) "
         "JOIN pg_attribute a ON a.attrelid = tbl.oid AND a.attnum = key.attnum "
         "WHERE ns.nspname = 'public' AND idx.relname = ANY (%s) "
-        "GROUP BY idx.relname, tbl.relname",
+        "GROUP BY idx.relname, tbl.relname, i.indisunique, i.indpred, i.indrelid",
         (sorted(exp.required_indexes),),
     ).fetchall()
     live_indexes: dict[str, IndexSpec] = {
-        name: (table, tuple(columns)) for name, table, columns in rows
+        name: (table, tuple(columns), unique, predicate)
+        for name, table, columns, unique, predicate in rows
     }
     missing_indexes = sorted(
         name
@@ -372,7 +490,9 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
         "             FROM unnest(c.confkey) WITH ORDINALITY AS key(attnum, ordinality) "
         "             JOIN pg_attribute a "
         "               ON a.attrelid = c.confrelid AND a.attnum = key.attnum "
-        "             ORDER BY key.ordinality) "
+        "             ORDER BY key.ordinality), "
+        "       CASE WHEN c.contype = 'f' THEN c.confdeltype::text ELSE NULL END, "
+        "       CASE WHEN c.contype = 'c' THEN pg_get_constraintdef(c.oid) ELSE NULL END "
         "FROM pg_constraint c "
         "JOIN pg_class rel ON rel.oid = c.conrelid "
         "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
@@ -387,13 +507,46 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
             tuple(columns),
             ref_table,
             tuple(ref_columns),
+            delete_action,
+            definition,
         )
-        for name, table, kind, columns, ref_table, ref_columns in rows
+        for (
+            name,
+            table,
+            kind,
+            columns,
+            ref_table,
+            ref_columns,
+            delete_action,
+            definition,
+        ) in rows
     }
     missing_constraints = sorted(
         name
         for name, spec in exp.required_constraints.items()
         if live_constraints.get(name) != spec
+    )
+
+    rows = conn.execute(
+        "SELECT t.tgname, rel.relname, p.proname, t.tgenabled, "
+        "       (t.tgtype & 2) <> 0 AS is_before, "
+        "       (t.tgtype & 4) <> 0 AS fires_on_insert "
+        "FROM pg_trigger t "
+        "JOIN pg_class rel ON rel.oid = t.tgrelid "
+        "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
+        "JOIN pg_proc p ON p.oid = t.tgfoid "
+        "WHERE NOT t.tgisinternal AND ns.nspname = 'public' "
+        "  AND t.tgname = ANY (%s)",
+        (sorted(exp.required_triggers),),
+    ).fetchall()
+    live_triggers: dict[str, TriggerSpec] = {
+        name: (table, function, enabled, before, insert)
+        for name, table, function, enabled, before, insert in rows
+    }
+    missing_triggers = sorted(
+        name
+        for name, spec in exp.required_triggers.items()
+        if live_triggers.get(name) != spec
     )
 
     return SchemaDiff(
@@ -403,4 +556,6 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
         missing_unique_constraints=missing_uq,
         missing_required_indexes=missing_indexes,
         missing_required_constraints=missing_constraints,
+        missing_required_columns=missing_required_columns,
+        missing_required_triggers=missing_triggers,
     )

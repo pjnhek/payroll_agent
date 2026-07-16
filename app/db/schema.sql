@@ -449,7 +449,23 @@ CREATE TABLE IF NOT EXISTS eval_results (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ── 7. jobs (NEW — durable queue transport substrate) ───────────────────────
+-- ── 7. durable inbound receipts ──────────────────────────────────────────────
+-- The webhook persists one bounded, signature-verified transport envelope here
+-- before any payroll run exists. external_event_id is the provider delivery key
+-- (or the explicitly enabled fixture-mode digest); RFC Message-ID dedup remains
+-- independently enforced by email_messages.uq_message_id after delayed parsing.
+CREATE TABLE IF NOT EXISTS inbound_events (
+    id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_event_id TEXT        NOT NULL,
+    payload           JSONB       NOT NULL,
+    received_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_inbound_events_external_event_id UNIQUE (external_event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbound_events_received_at
+    ON inbound_events (received_at);
+
+-- ── 8. jobs (durable queue transport substrate) ─────────────────────────────
 -- The durable transport layer the async worker claims work from. The
 -- authoritative external design for this table has FOUR DOCUMENTED DEVIATIONS
 -- applied below — each a correction, not an improvisation. See the inline
@@ -494,16 +510,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- can reject accidental payload mixing at the initial CREATE boundary.
     -- The history-preserving FK is installed after the target table exists.
     operator_resolution_id UUID,
-    -- DEVIATION 2: an earlier full design also declares an `event_id` column
-    -- with a REFERENCES clause pointing at a durable-ingest events table.
-    -- OMITTED ENTIRELY — that table does NOT EXIST in this schema yet (grep
-    -- CREATE TABLE: businesses, employees, payroll_runs, paystub_line_items,
-    -- email_messages, eval_results, demo_sender_bindings, jobs). A FK to a
-    -- non-existent relation fails the bootstrap outright. A future durable
-    -- ingest effort creates that events table AND adds this column together,
-    -- via the ALTER TABLE ... ADD COLUMN IF NOT EXISTS idiom this file already
-    -- documents (see the comments above payroll_runs's and email_messages's
-    -- idempotent column-add blocks).
+    -- Phase 19 durable-ingest receipt identifier. Nullable because the three
+    -- pre-existing run-associated kinds do not own a transport event. SET NULL
+    -- lets the bounded retention job remove a terminal envelope while preserving
+    -- append-only job history.
+    event_id      UUID        CONSTRAINT fk_jobs_inbound_event
+                              REFERENCES inbound_events(id) ON DELETE SET NULL,
     --
     -- Reserved for the same future ingest work. Nullable and unused today; its
     -- FK target (businesses) already exists, so declaring it now is free for
@@ -576,14 +588,17 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claimable
     ON jobs (priority, available_at)
     WHERE state IN ('pending','leased');
 
--- ── 8. operator resume context ───────────────────────────────────────────────
+-- ── 9. operator resume context ───────────────────────────────────────────────
 -- Each operator submission gets a caller-generated immutable UUID generation.
 -- The complete validated submitted-name mapping lives in typed child rows, not
 -- jobs JSON, alias_candidates, or reply_epoch-scoped mutable state.
 CREATE TABLE IF NOT EXISTS operator_resume_resolutions (
-    id          UUID        PRIMARY KEY,
-    run_id      UUID        NOT NULL REFERENCES payroll_runs(id),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    id             UUID        PRIMARY KEY,
+    run_id         UUID        NOT NULL REFERENCES payroll_runs(id),
+    authoritative  BOOLEAN     NOT NULL DEFAULT FALSE,
+    superseded_by  UUID        CONSTRAINT fk_operator_resume_superseded_by
+                                REFERENCES operator_resume_resolutions(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_operator_resume_resolutions_run_id
@@ -593,14 +608,69 @@ CREATE TABLE IF NOT EXISTS operator_resume_overrides (
     operator_resolution_id UUID        NOT NULL REFERENCES operator_resume_resolutions(id),
     submitted_name         TEXT        NOT NULL CHECK (btrim(submitted_name) <> ''),
     employee_id            UUID        NOT NULL REFERENCES employees(id),
+    remember               BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (operator_resolution_id, submitted_name)
 );
+
+-- Persistent deployment writer fence. The singleton starts open only on first
+-- creation. Reapplying schema never UPDATEs the row, so a fence closed by the
+-- Phase 19 cutover procedure remains closed across bootstrap retries/redeploys.
+CREATE TABLE IF NOT EXISTS operator_resolution_writer_fence (
+    singleton   BOOLEAN     NOT NULL DEFAULT TRUE,
+    writes_open BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT operator_resolution_writer_fence_pkey PRIMARY KEY (singleton),
+    CONSTRAINT ck_operator_resolution_writer_fence_singleton CHECK (singleton)
+);
+
+INSERT INTO operator_resolution_writer_fence (singleton, writes_open)
+VALUES (TRUE, TRUE)
+ON CONFLICT (singleton) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION enforce_operator_resolution_writer_fence()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM operator_resolution_writer_fence
+         WHERE singleton IS TRUE AND writes_open IS TRUE
+    ) THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '55000',
+            MESSAGE = 'operator resolution writes are fenced';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_operator_resolution_writer_fence
+    ON operator_resume_resolutions;
+CREATE TRIGGER trg_operator_resolution_writer_fence
+BEFORE INSERT ON operator_resume_resolutions
+FOR EACH ROW
+EXECUTE FUNCTION enforce_operator_resolution_writer_fence();
 
 -- Live-database migration: CREATE TABLE IF NOT EXISTS jobs is a no-op when
 -- jobs already exists, so install the nullable identifier and its
 -- history-preserving FK explicitly and idempotently.
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS operator_resolution_id UUID;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS event_id UUID;
+ALTER TABLE operator_resume_resolutions
+    ADD COLUMN IF NOT EXISTS authoritative BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE operator_resume_resolutions
+    ADD COLUMN IF NOT EXISTS superseded_by UUID;
+ALTER TABLE operator_resume_overrides
+    ADD COLUMN IF NOT EXISTS remember BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- This must follow the additive authoritative-column ALTER: on an existing
+-- Phase 18 table, CREATE TABLE IF NOT EXISTS above is a no-op and the index
+-- would otherwise reference a column that has not been installed yet.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_resume_authoritative_run
+    ON operator_resume_resolutions (run_id)
+    WHERE authoritative;
 
 -- Live-database migration: widen the canonical kind vocabulary and install
 -- the exact resume-reply identifier contract. The kind constraint is found
@@ -657,6 +727,33 @@ BEGIN
         ALTER TABLE jobs
             ADD CONSTRAINT fk_jobs_operator_resolution
             FOREIGN KEY (operator_resolution_id)
+            REFERENCES operator_resume_resolutions(id);
+    END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_jobs_inbound_event'
+          AND conrelid = 'jobs'::regclass
+    ) THEN
+        ALTER TABLE jobs
+            ADD CONSTRAINT fk_jobs_inbound_event
+            FOREIGN KEY (event_id)
+            REFERENCES inbound_events(id)
+            ON DELETE SET NULL;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_operator_resume_superseded_by'
+          AND conrelid = 'operator_resume_resolutions'::regclass
+    ) THEN
+        ALTER TABLE operator_resume_resolutions
+            ADD CONSTRAINT fk_operator_resume_superseded_by
+            FOREIGN KEY (superseded_by)
             REFERENCES operator_resume_resolutions(id);
     END IF;
 END;

@@ -148,10 +148,9 @@ class TestJobsDdlInventory:
             "append-only audit log (matching the email_messages precedent) "
             "cannot silently vaporize a run's attempt history"
         )
-        assert "event_id" not in body, (
-            "jobs.event_id must not exist — its FK target (a durable-ingest "
-            "events table) does not exist in this schema yet, and a FK to a "
-            "non-existent relation fails the bootstrap outright"
+        assert "event_id" in body, (
+            "Phase 19 durable ingest requires jobs.event_id to point at the "
+            "verified inbound envelope before any payroll run exists"
         )
 
     def test_bootstrap_drop_order_includes_jobs(self) -> None:

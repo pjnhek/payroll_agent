@@ -9,7 +9,6 @@ import pytest
 
 from tests.conftest import FakeConnection
 
-
 SCRIPT = pathlib.Path("scripts/check_operator_resolution_inventory.py")
 EXPECTED_FIELDS = (
     "unresolved_run_count",
