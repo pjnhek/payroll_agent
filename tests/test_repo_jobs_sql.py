@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import types
 import uuid
+from typing import cast
 
 import pytest
 
@@ -36,7 +38,16 @@ def _claim_sql(fake_conn) -> str:
     from app.db.repo import jobs
 
     fake_conn.script_fetchone(
-        (uuid.uuid4(), "run_pipeline", uuid.uuid4(), 1, 5, uuid.uuid4())
+        (
+            uuid.uuid4(),
+            "run_pipeline",
+            uuid.uuid4(),
+            None,
+            None,
+            1,
+            5,
+            uuid.uuid4(),
+        )
     )
     jobs.claim_job(conn=fake_conn)
     sql, _params = fake_conn.last()
@@ -62,6 +73,27 @@ def test_claim_returning_maps_bijectively_onto_the_job_dataclass(fake_conn) -> N
         f"Job's fields.\n  RETURNING: {returned_cols}\n  Job fields: {job_fields}\n"
         f"  symmetric difference: {set(returned_cols) ^ set(job_fields)}"
     )
+
+
+def test_job_claim_contract_is_identifier_only() -> None:
+    fields = [field.name for field in dataclasses.fields(Job)]
+    assert fields == [
+        "id",
+        "kind",
+        "run_id",
+        "email_id",
+        "operator_resolution_id",
+        "attempts",
+        "max_attempts",
+        "lease_token",
+    ]
+    assert not set(fields) & {
+        "payload",
+        "overrides",
+        "submitted_name",
+        "employee_id",
+        "next_status",
+    }
 
 
 def test_claim_sql_shape(fake_conn) -> None:
@@ -159,6 +191,150 @@ def test_enqueue_run_pipeline_without_a_run_id_raises_before_touching_the_db(
     assert fake_conn.executed == []
 
 
+@pytest.mark.parametrize(
+    ("kind_value", "run_id", "email_id", "operator_resolution_id"),
+    [
+        ("resume_reply", None, uuid.uuid4(), None),
+        ("resume_reply", uuid.uuid4(), None, None),
+        ("resume_reply", uuid.uuid4(), uuid.uuid4(), uuid.uuid4()),
+        ("operator_resume", None, None, uuid.uuid4()),
+        ("operator_resume", uuid.uuid4(), None, None),
+        ("operator_resume", uuid.uuid4(), uuid.uuid4(), uuid.uuid4()),
+    ],
+)
+def test_future_identifier_contracts_fail_before_sql(
+    fake_conn,
+    kind_value: str,
+    run_id: uuid.UUID | None,
+    email_id: uuid.UUID | None,
+    operator_resolution_id: uuid.UUID | None,
+) -> None:
+    """Future kinds are validated by bounded values without widening JobKind early."""
+    future_kind = cast(JobKind, types.SimpleNamespace(value=kind_value))
+    with pytest.raises(ValueError, match=kind_value):
+        from app.db.repo import jobs
+
+        jobs.enqueue_job(
+            kind=future_kind,
+            dedup_key="future-kind-invalid",
+            run_id=run_id,
+            email_id=email_id,
+            operator_resolution_id=operator_resolution_id,
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
+@pytest.mark.parametrize(
+    ("kind_value", "email_id", "operator_resolution_id"),
+    [
+        ("resume_reply", uuid.uuid4(), None),
+        ("operator_resume", None, uuid.uuid4()),
+    ],
+)
+def test_future_identifier_contracts_accept_complete_identifier_sets(
+    fake_conn,
+    kind_value: str,
+    email_id: uuid.UUID | None,
+    operator_resolution_id: uuid.UUID | None,
+) -> None:
+    from app.db.repo import jobs
+
+    future_kind = cast(JobKind, types.SimpleNamespace(value=kind_value))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    jobs.enqueue_job(
+        kind=future_kind,
+        dedup_key=f"{kind_value}:complete",
+        run_id=uuid.uuid4(),
+        email_id=email_id,
+        operator_resolution_id=operator_resolution_id,
+        conn=fake_conn,
+    )
+    _sql, params = fake_conn.last()
+    assert operator_resolution_id is None or str(operator_resolution_id) in params
+
+
+@pytest.mark.parametrize(
+    "kind_value",
+    ["ingest", "unexpected", "received"],
+)
+def test_unregistered_kind_values_fail_before_sql(fake_conn, kind_value: str) -> None:
+    from app.db.repo import jobs
+
+    unknown_kind = cast(JobKind, types.SimpleNamespace(value=kind_value))
+    with pytest.raises(ValueError, match="unsupported job kind"):
+        jobs.enqueue_job(
+            kind=unknown_kind,
+            dedup_key="unknown-kind",
+            run_id=uuid.uuid4(),
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
+def test_enqueue_delay_and_safe_diagnostic_are_parameterized(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    jobs.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key="run_pipeline:delayed",
+        run_id=uuid.uuid4(),
+        available_in_seconds=12.5,
+        safe_last_error="extract:provider_timeout",
+        conn=fake_conn,
+    )
+    sql, params = fake_conn.last()
+    sql_text = str(sql)
+    assert "available_in_seconds" in sql_text
+    assert "safe_last_error" in sql_text
+    assert "12.5" not in sql_text
+    assert "extract:provider_timeout" not in sql_text
+    assert params["available_in_seconds"] == 12.5
+    assert params["safe_last_error"] == "extract:provider_timeout"
+
+
+@pytest.mark.parametrize("delay", [-1, float("inf"), float("nan"), 300.01, True])
+def test_enqueue_rejects_unsafe_delay_before_sql(fake_conn, delay: object) -> None:
+    from app.db.repo import jobs
+
+    with pytest.raises((TypeError, ValueError), match="available_in_seconds"):
+        jobs.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key="run_pipeline:bad-delay",
+            run_id=uuid.uuid4(),
+            available_in_seconds=delay,  # type: ignore[arg-type]
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "",
+        "raw provider said David Reyes",
+        "extract:made_up_reason",
+        "made_up_stage:provider_timeout",
+        "extract:provider_timeout:extra",
+    ],
+)
+def test_enqueue_rejects_unbounded_diagnostic_before_sql(
+    fake_conn, diagnostic: str
+) -> None:
+    from app.db.repo import jobs
+
+    with pytest.raises(ValueError, match="safe_last_error"):
+        jobs.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key="run_pipeline:unsafe-diagnostic",
+            run_id=uuid.uuid4(),
+            safe_last_error=diagnostic,
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
 def test_release_leases_empty_sequence_issues_no_statement(fake_conn) -> None:
     from app.db.repo import jobs
 
@@ -206,7 +382,16 @@ def test_no_function_builds_sql_with_an_fstring(fake_conn) -> None:
         conn=fake_conn,
     )
     fake_conn.script_fetchone(
-        (uuid.uuid4(), "run_pipeline", uuid.uuid4(), 1, 5, uuid.uuid4())
+        (
+            uuid.uuid4(),
+            "run_pipeline",
+            uuid.uuid4(),
+            None,
+            None,
+            1,
+            5,
+            uuid.uuid4(),
+        )
     )
     jobs.claim_job(conn=fake_conn)
     fake_conn.script_fetchone((job_id,))
