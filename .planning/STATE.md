@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: failure-policy-sweep-deletion
 status: executing
-stopped_at: Completed 18-10-PLAN.md
-last_updated: "2026-07-16T03:18:23.237Z"
+stopped_at: Completed 18-11-PLAN.md
+last_updated: "2026-07-16T04:01:42.381Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 27
-  completed_plans: 24
+  completed_plans: 25
   percent: 33
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
-Plan: 10 of 12
+Plan: 11 of 12
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 18 execution started
 
@@ -106,6 +106,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | Phase 18 P06 | 7min | 2 tasks | 7 files |
 | Phase 18 P05 | 8min | 2 tasks | 3 files |
 | Phase 18 P10 | 9min | 1 tasks | 3 files |
+| Phase 18 P11 | 21min | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -196,6 +197,8 @@ Recent decisions affecting current work:
 - [Phase 18]: Use a separate drained counter for the request cap so final-lease reaps remain bounded without inflating claimed work. — This preserves both the 20-outcome request bound and the operator-facing meaning of claimed.
 - [Phase 18]: Represent final-lease maintenance as dead plus reaped_final_lease while preserving every legacy outcome counter exactly. — D-14 requires dead-letter visibility without pretending the maintenance path executed a claimed job.
 - [Phase 18]: Both orchestrator producers classify and return bounded outcomes; background wrappers and the queue drain remain the sole terminal persistence owners. — This preserves one failure persistence owner per execution mode after the producer cutover.
+- [Phase 18]: Dynamic forwarding boundaries validate PipelineResult at runtime even though static annotations are exact, so unsound values fail loudly instead of becoming success. — Static typing cannot protect dynamic handler lookup or injected test doubles.
+- [Phase 18]: Background wrappers remain None-returning terminal procedures, while every value-producing seam is PipelineResult-only. — Procedures exhaustively consume and settle policy values rather than forwarding them.
 
 ### Pending Todos
 
@@ -261,8 +264,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T03:17:28.537Z
-Stopped at: Completed 18-10-PLAN.md
+Last session: 2026-07-16T04:01:42.373Z
+Stopped at: Completed 18-11-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
