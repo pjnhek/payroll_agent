@@ -66,8 +66,16 @@
 {# --- Decision reason banner (full-width, above grid) --- #}
 {% if run.status == 'error' %}
 <div class="banner banner-error banner-mb">
-  <strong>Error</strong> — {{ run.error_reason }}. Use the Re-trigger button below to restart this run from the beginning.
-  {% if run.error_detail %}<div class="banner-divider">{{ run.error_detail }}</div>{% endif %}
+  <strong>Error</strong>
+  {% if run.failure.secondary_label %}<span class="badge badge-neutral">{{ run.failure.secondary_label }}</span>{% endif %}
+  — An internal failure stopped this run. Use the Re-trigger button below to restart this run from the beginning.
+  {% if run.failure.stage or run.failure.reason or run.failure.attempts %}
+  <div class="banner-divider">
+    {% if run.failure.stage %}<span><strong>Stage:</strong> {{ run.failure.stage }}</span>{% endif %}
+    {% if run.failure.reason %}<span><strong>Reason:</strong> {{ run.failure.reason }}</span>{% endif %}
+    {% if run.failure.attempts %}<span><strong>Attempts:</strong> {{ run.failure.attempts }}</span>{% endif %}
+  </div>
+  {% endif %}
 </div>
 {% elif run.status == 'needs_operator' %}
 <div class="banner banner-clarify banner-mb">

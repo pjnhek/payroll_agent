@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import Any
+from typing import Any, TypedDict
 
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
@@ -82,6 +82,138 @@ STALE_THRESHOLD_SECONDS = int(STALE_THRESHOLD.total_seconds())
 IN_FLIGHT_STATUSES: frozenset[str] = frozenset(
     {"received", "extracting", "computed", "awaiting_reply"}
 )
+
+
+class FailurePresentation(TypedDict):
+    """Browser-safe projection of persisted terminal diagnostics."""
+
+    secondary_label: str | None
+    stage: str | None
+    reason: str | None
+    attempts: str | None
+
+
+_STAGE_LABELS = {
+    "unknown": "Unknown stage",
+    "load": "Load",
+    "extract": "Extraction",
+    "persist": "Persistence",
+    "clarification": "Clarification",
+    "compute": "Computation",
+    "delivery": "Delivery",
+}
+_REASON_LABELS = {
+    "unclassified": "Unclassified failure",
+    "provider_connection_failure": "Provider connection failure",
+    "provider_timeout": "Provider timeout",
+    "provider_rate_limit": "Provider rate limit",
+    "provider_server_failure": "Provider server failure",
+    "schema_or_parse_failure": "Schema or parse failure",
+    "client_request_failure": "Client request failure",
+    "ambiguous_send_failure": "Ambiguous send failure",
+    "invalid_operator_override_context": "Invalid operator override context",
+    "final_attempt_lease_expired": "Final attempt lease expired",
+}
+_DIAGNOSTIC_CODE_RE = re.compile(
+    r"^(?P<stage>[a-z_]+):(?P<reason>[a-z_]+)"
+    r"(?:;attempts=(?P<attempts>[0-9]+)/(?P<max_attempts>[0-9]+))?$"
+)
+_EXHAUSTION_REASONS = frozenset({"RetryExhausted", "FinalAttemptLeaseExpired"})
+
+
+def _bounded_attempts(attempts: object, max_attempts: object) -> str | None:
+    """Format only small, internally consistent integer attempt counters."""
+    if isinstance(attempts, bool) or isinstance(max_attempts, bool):
+        return None
+
+    def _as_int(value: object) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isascii() and value.isdigit():
+            return int(value)
+        return None
+
+    current = _as_int(attempts)
+    maximum = _as_int(max_attempts)
+    if current is None or maximum is None:
+        return None
+    if not (1 <= current <= maximum <= 100):
+        return None
+    return f"{current} of {maximum} attempts"
+
+
+def _safe_failure_presentation(run: dict[str, Any]) -> FailurePresentation:
+    """Reduce persisted diagnostics to the fixed browser-visible vocabulary.
+
+    ``error_detail`` and any future ``last_error`` value are treated as hostile.  A
+    value is rendered only when the entire diagnostic string matches the fixed
+    stage/reason grammar and the run-level reason agrees with that grammar.
+    """
+    generic: FailurePresentation = {
+        "secondary_label": None,
+        "stage": None,
+        "reason": None,
+        "attempts": None,
+    }
+    if run.get("status") != RunStatus.ERROR.value:
+        return generic
+
+    error_reason = run.get("error_reason")
+    detail = run.get("error_detail")
+    if not isinstance(error_reason, str) or not isinstance(detail, str):
+        return generic
+    match = _DIAGNOSTIC_CODE_RE.fullmatch(detail)
+    if match is None:
+        return generic
+    stage_code = match.group("stage")
+    detail_reason = match.group("reason")
+    stage = _STAGE_LABELS.get(stage_code)
+    reason = _REASON_LABELS.get(detail_reason)
+    if stage is None or reason is None:
+        return generic
+
+    if error_reason == "FinalAttemptLeaseExpired":
+        if (stage_code, detail_reason) != (
+            "unknown",
+            "final_attempt_lease_expired",
+        ):
+            return generic
+    elif error_reason == "RetryExhausted":
+        if detail_reason == "final_attempt_lease_expired":
+            return generic
+    elif error_reason != detail_reason:
+        return generic
+
+    attempts = _bounded_attempts(
+        match.group("attempts"), match.group("max_attempts")
+    )
+    if attempts is None:
+        attempts = _bounded_attempts(
+            run.get("job_attempts"), run.get("job_max_attempts")
+        )
+    return {
+        "secondary_label": (
+            "Retries exhausted" if error_reason in _EXHAUSTION_REASONS else None
+        ),
+        "stage": stage,
+        "reason": reason,
+        "attempts": attempts,
+    }
+
+
+def _safe_run_for_browser(run: dict[str, Any]) -> dict[str, Any]:
+    """Copy a run and remove every raw diagnostic before template/JSON use."""
+    safe_run = dict(run)
+    safe_run["failure"] = _safe_failure_presentation(run)
+    for field in (
+        "error_reason",
+        "error_detail",
+        "last_error",
+        "job_attempts",
+        "job_max_attempts",
+    ):
+        safe_run.pop(field, None)
+    return safe_run
 
 
 @router.post("/runs/{run_id}/approve")
@@ -558,7 +690,7 @@ def runs_list(request: Request, background_tasks: BackgroundTasks) -> Response:
     except Exception:
         logger.debug("sweep_stranded_runs unavailable — skipping this page load")
     try:
-        runs = repo.load_all_runs()
+        runs = [_safe_run_for_browser(run) for run in repo.load_all_runs()]
     except Exception:
         # DB unavailable (no pool / no connection): render empty list rather than 500.
         # This keeps the dashboard functional during test runs and Render cold-starts
@@ -596,12 +728,14 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    status = run.get("status", "")
+    safe_run = _safe_run_for_browser(run)
+    status = safe_run.get("status", "")
     return JSONResponse(
         content={
             "status": status,
             "badge_class": badge_class_filter(status),
             "badge_label": badge_label_filter(status),
+            "failure": safe_run["failure"],
         }
     )
 
@@ -690,7 +824,7 @@ def run_detail(request: Request, run_id: uuid.UUID) -> Response:
         request,
         "run_detail.html",
         {
-            "run": run,
+            "run": _safe_run_for_browser(run),
             "raw_email": raw_email,
             "paystubs": paystubs,
             "outbound_emails": outbound_emails,

@@ -25,6 +25,17 @@
             badge.className = 'badge badge-' + data.badge_class + ' status-badge';
             badge.textContent = data.badge_label;
           }
+          var secondary = document.querySelector('[data-run-id="' + runId + '"] .failure-secondary');
+          if (secondary) {
+            secondary.textContent = data.failure.secondary_label || '';
+            secondary.hidden = !data.failure.secondary_label;
+          }
+          var failureSummary = document.querySelector('[data-run-id="' + runId + '"] .failure-summary');
+          if (failureSummary) {
+            var parts = [data.failure.stage, data.failure.reason, data.failure.attempts].filter(Boolean);
+            failureSummary.textContent = parts.join(' · ');
+            failureSummary.hidden = parts.length === 0;
+          }
           if (!IN_FLIGHT.has(data.status)) {
             clearInterval(timer);
           }
@@ -60,9 +71,12 @@
       <td>{{ run.business_name }}</td>
       <td>
         <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
+        <span class="badge badge-neutral failure-secondary" {% if not run.failure.secondary_label %}hidden{% endif %}>{{ run.failure.secondary_label or '' }}</span>
       </td>
       <td class="text-muted">
-        {% if run.summary_gate_reason %}
+        {% if run.failure.stage or run.failure.reason or run.failure.attempts %}
+          <span class="failure-summary">{{ [run.failure.stage, run.failure.reason, run.failure.attempts] | select | join(' · ') }}</span>
+        {% elif run.summary_gate_reason %}
           {{ run.summary_gate_reason }}
         {% elif run.employee_count %}
           {{ run.employee_count }} employee{{ 's' if run.employee_count != 1 else '' }}

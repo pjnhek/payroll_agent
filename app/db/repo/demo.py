@@ -160,13 +160,21 @@ def load_all_runs(conn: psycopg.Connection | None = None) -> list[dict[str, Any]
     """
     sql = (
         "SELECT pr.id, pr.business_id, pr.status, pr.created_at, pr.updated_at,"
+        " pr.error_reason, pr.error_detail,"
         " b.name AS business_name,"
         " pr.decision->'gate_reasons'->>0 AS summary_gate_reason,"
         " CASE WHEN jsonb_typeof(pr.extracted_data->'employees') = 'array'"
         "      THEN jsonb_array_length(pr.extracted_data->'employees')"
-        "      ELSE 0 END AS employee_count"
+        "      ELSE 0 END AS employee_count,"
+        " latest_job.attempts AS job_attempts,"
+        " latest_job.max_attempts AS job_max_attempts"
         " FROM payroll_runs pr"
         " JOIN businesses b ON pr.business_id = b.id"
+        " LEFT JOIN LATERAL ("
+        "   SELECT j.attempts, j.max_attempts"
+        "   FROM jobs j WHERE j.run_id = pr.id"
+        "   ORDER BY j.created_at DESC, j.id DESC LIMIT 1"
+        " ) latest_job ON TRUE"
         " ORDER BY pr.created_at DESC"
     )
     with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
