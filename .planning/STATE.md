@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 18
-current_phase_name: failure-policy-sweep-deletion
-status: verifying
+current_phase: 19
+current_phase_name: Webhook Cutover & Durable Ingest
+status: planning
 stopped_at: Completed 18-08-PLAN.md
-last_updated: "2026-07-16T16:27:17.839Z"
+last_updated: "2026-07-16T16:50:19.470Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 18 execution started
+last_activity_desc: Phase 18 complete, transitioned to Phase 19
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 29
-  completed_plans: 27
-  percent: 33
+  completed_plans: 29
+  percent: 50
 ---
 
 # Project State
@@ -24,20 +24,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 18 — failure-policy-sweep-deletion
+**Current focus:** Phase 19 — webhook-cutover-durable-ingest
 
 ## Current Position
 
-Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
-Plan: 14 of 14
-Status: verifying
-Last activity: 2026-07-16 — Phase 18 execution started
+Phase: 19 — Webhook Cutover & Durable Ingest
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-16 — Phase 18 complete, transitioned to Phase 19
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 87
+- Total plans completed: 101
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -62,6 +62,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | 15 | 11 | - | - |
 | 16 | 10 | - | - |
 | 17 | 5 | - | - |
+| 18 | 14 | - | - |
 
 **Recent Trend:**
 
