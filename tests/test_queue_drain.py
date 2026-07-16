@@ -44,12 +44,14 @@ import pathlib
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from app.db import repo
 from app.models.job import Job, JobKind
+from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
 from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 from app.queue import dispatch, drain
@@ -227,6 +229,98 @@ def test_settlement_lost_fences_leave_both_aggregates_unchanged(fake_repo):
     ) is SettlementOutcome.FENCED
     assert fake_repo.get_job(claimed.id) == before_job
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
+def _reply_inbound() -> InboundEmail:
+    return InboundEmail(
+        id=uuid.uuid4(),
+        message_id=f"<{uuid.uuid4()}@test.example>",
+        in_reply_to="<asked@test.example>",
+        references_header="<asked@test.example>",
+        subject="Re: payroll question",
+        from_addr="payroll@coastalcleaning.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="The exact persisted reply body.",
+        created_at=datetime.now(UTC),
+    )
+
+
+def test_initial_background_retry_enqueues_once_and_wakes_after_commit(
+    fake_repo, monkeypatch
+):
+    from app.queue import wake
+
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: retryable)
+    observed: list[tuple[str, int]] = []
+
+    def _wake_after_commit() -> None:
+        observed.append((fake_repo.runs[str(run_id)]["status"], len(fake_repo.jobs)))
+
+    monkeypatch.setattr(wake, "wake", _wake_after_commit)
+    pipeline_glue.run_pipeline_bg(run_id)
+
+    assert observed == [(RunStatus.RECEIVED.value, 1)]
+    job = next(iter(fake_repo.jobs.values()))
+    assert job["kind"] == JobKind.RUN_PIPELINE.value
+    assert job["email_id"] is None
+    assert job["last_error"] == retryable.diagnostic_code
+
+
+def test_background_ok_and_terminal_create_no_retry_job(fake_repo, monkeypatch):
+    ok_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: None)
+    pipeline_glue.run_pipeline_bg(ok_run)
+    assert fake_repo.jobs == {}
+    assert fake_repo.runs[str(ok_run)]["status"] == RunStatus.EXTRACTING.value
+
+    terminal_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    terminal = PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.COMPUTE,
+        reason=PipelineReason.UNCLASSIFIED,
+    )
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: terminal)
+    pipeline_glue.run_pipeline_bg(terminal_run)
+    assert fake_repo.jobs == {}
+    assert fake_repo.runs[str(terminal_run)]["status"] == RunStatus.ERROR.value
+    assert fake_repo.runs[str(terminal_run)]["error_reason"] == terminal.reason.value
+
+
+def test_reply_background_retry_preserves_exact_email_and_body(fake_repo, monkeypatch):
+    from app.queue import wake
+
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    inbound = _reply_inbound()
+    seen: list[tuple[uuid.UUID, InboundEmail]] = []
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_RATE_LIMIT,
+    )
+
+    def _resume_now(rid: uuid.UUID, reply: InboundEmail):
+        seen.append((rid, reply))
+        return retryable
+
+    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", _resume_now, raising=False)
+    wake_calls: list[bool] = []
+    monkeypatch.setattr(wake, "wake", lambda: wake_calls.append(True))
+    pipeline_glue.resume_pipeline_bg(run_id, inbound)
+
+    assert seen == [(run_id, inbound)]
+    assert seen[0][1].body_text == "The exact persisted reply body."
+    job = next(iter(fake_repo.jobs.values()))
+    assert job["kind"] == JobKind.RESUME_REPLY.value
+    assert job["email_id"] == inbound.id
+    assert job["operator_resolution_id"] is None
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECEIVED.value
+    assert wake_calls == [True]
 
 
 # ── handle_run_pipeline: the five behaviors ─────────────────────────────
