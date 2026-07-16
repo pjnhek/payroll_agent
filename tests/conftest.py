@@ -340,6 +340,7 @@ class InMemoryRepo:
         self.operator_resume_resolutions: dict[
             tuple[str, str], dict[str, str]
         ] = {}
+        self.context_calls: list[tuple[Any, ...]] = []
         # Seed businesses for sender matching.
         from app.db.seed import seed
 
@@ -800,24 +801,41 @@ class InMemoryRepo:
         safe_last_error=None,
         conn=None,
     ):
-        """Mirror repo.enqueue_job: raises before touching self.jobs on a
-        run-less run_pipeline job, and is idempotent on dedup_key (a second
-        enqueue with the same key returns None, like ON CONFLICT DO NOTHING).
+        """Mirror repo.enqueue_job's exact kind-specific identifier contracts.
+
+        Validation happens before touching ``self.jobs``. A second enqueue with
+        the same dedup key returns None, matching ON CONFLICT DO NOTHING.
         """
         from app.models.job import JobKind
 
+        if not isinstance(kind, JobKind):
+            raise ValueError(f"enqueue_job: unsupported job kind {kind!r}")
+        kind_value = kind.value
         if kind is JobKind.RUN_PIPELINE and run_id is None:
             raise ValueError(
                 f"enqueue_job: kind={kind.value!r} requires a run_id — a "
                 "run_pipeline job with no run would be claimed and marked "
                 "done without processing any payroll."
             )
+        if kind is JobKind.RESUME_REPLY and (
+            run_id is None or email_id is None or operator_resolution_id is not None
+        ):
+            raise ValueError(
+                "enqueue_job: kind='resume_reply' requires run_id and email_id only"
+            )
+        if kind is JobKind.OPERATOR_RESUME and (
+            run_id is None or operator_resolution_id is None or email_id is not None
+        ):
+            raise ValueError(
+                "enqueue_job: kind='operator_resume' requires run_id and "
+                "operator_resolution_id only"
+            )
         if dedup_key in self._job_dedup_keys:
             return None
         jid = uuid.uuid4()
         self.jobs[str(jid)] = {
             "id": jid,
-            "kind": kind.value if hasattr(kind, "value") else kind,
+            "kind": kind_value,
             "dedup_key": dedup_key,
             "run_id": run_id,
             "email_id": email_id,
@@ -1131,10 +1149,11 @@ class InMemoryRepo:
 
     def get_inbound_email_by_id(self, email_id, conn=None):
         """Return one stored inbound row by its durable UUID."""
+        self.context_calls.append(("get_inbound_email_by_id", str(email_id)))
         row = self.email_by_id.get(str(email_id))
         if row is None or row.get("direction") != "inbound":
             return None
-        return row
+        return dict(row)
 
     def create_operator_resume_resolution(
         self, run_id, operator_resolution_id, overrides, conn=None
@@ -1147,6 +1166,14 @@ class InMemoryRepo:
             operator_resolution_id, "operator_resolution_id"
         )
         normalized = _normalize_overrides(overrides)
+        self.context_calls.append(
+            (
+                "create_operator_resume_resolution",
+                run_id_text,
+                resolution_id_text,
+                dict(normalized),
+            )
+        )
         key = (resolution_id_text, run_id_text)
         conflicting_keys = [
             stored_key
@@ -1169,6 +1196,9 @@ class InMemoryRepo:
         key = (
             _uuid_text(operator_resolution_id, "operator_resolution_id"),
             _uuid_text(run_id, "run_id"),
+        )
+        self.context_calls.append(
+            ("load_operator_resume_resolution", key[1], key[0])
         )
         stored = self.operator_resume_resolutions.get(key)
         if not stored:
