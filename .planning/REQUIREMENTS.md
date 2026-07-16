@@ -64,7 +64,7 @@ constraint — and none could supply the failure contract, which is the actual w
   success. Critically, **`request_clarification` is `ok`, not a failure** — a worker retrying a deterministic
   gate's decision to clarify would email the client the same question five times.
 
-- [ ] **FAIL-02**: Retries use exponential backoff + jitter via `available_at`; an attempt cap moves the job to
+- [x] **FAIL-02**: Retries use exponential backoff + jitter via `available_at`; an attempt cap moves the job to
   a `dead` state surfaced to the operator. Infrastructure failures stay in `error` with a durable retrigger —
   **not** `needs_operator`, which the resolve route cannot service without `decision.unresolved_names`
   (`runs.py:203-213`).
@@ -162,7 +162,7 @@ limitation honestly is itself the differentiator.
 | PUMP-01 | Phase 17 | Complete |
 | PUMP-02 | Phase 17 | Complete |
 | FAIL-01 | Phase 18 | Complete |
-| FAIL-02 | Phase 18 | Pending |
+| FAIL-02 | Phase 18 | Complete |
 | FAIL-03 | Phase 18 | Pending |
 | QUEUE-04 | Phase 19 | Pending |
 | SEND-01 | Phase 20 | Pending |

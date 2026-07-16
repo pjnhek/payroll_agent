@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: failure-policy-sweep-deletion
 status: executing
-stopped_at: Completed 18-01-PLAN.md
-last_updated: "2026-07-16T00:23:12.920Z"
+stopped_at: Completed 18-02-PLAN.md
+last_updated: "2026-07-16T00:53:27.071Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 27
-  completed_plans: 16
+  completed_plans: 17
   percent: 33
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
-Plan: 2 of 12
+Plan: 3 of 12
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 18 execution started
 
@@ -98,6 +98,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | Phase 17 P04 | ~12min | 2 tasks | 4 files |
 | Phase 17 P05 | 9min | 2 tasks | 1 files |
 | Phase 18 P01 | 4min | 2 tasks | 2 files |
+| Phase 18 P02 | 15min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -174,6 +175,8 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 17]: 17-05: falsifying mutation targeted /internal/pump's drain while-loop (while False:) — a smaller, more surgical revert than claim_job's SQL — RED confirmed claimed==0, GREEN confirmed byte-identical revert.
 - [Phase 18]: Only extraction-stage connection, timeout, rate-limit, and 5xx provider failures are retryable; unclassified failures and ambiguous sends fail closed. — Extraction is replay-safe, while clarification and delivery can be ambiguous after provider acceptance.
 - [Phase 18]: Legacy None has one temporary meaning through normalize_pipeline_result; explicit results preserve identity and invalid values raise. — One compatibility seam prevents consumers from inventing conflicting None policies before producer cutover.
+- [Phase 18]: Future resume kinds remain dormant bounded kind.value branches until Plan 18-09 atomically widens JobKind, SQL, and dispatch. — Keeps the one-kind drift equality green while making identifier validation ready.
+- [Phase 18]: Operator mappings persist as immutable UUID generations with typed submitted-name child rows independent of reply_epoch. — Allows exact idempotent replay and multiple valid same-epoch submissions without jobs payloads or alias-candidate authority.
 
 ### Pending Todos
 
@@ -239,8 +242,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T00:22:42.488Z
-Stopped at: Completed 18-01-PLAN.md
+Last session: 2026-07-16T00:53:17.023Z
+Stopped at: Completed 18-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
