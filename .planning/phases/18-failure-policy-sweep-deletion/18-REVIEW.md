@@ -1,6 +1,6 @@
 ---
 phase: 18-failure-policy-sweep-deletion
-reviewed: 2026-07-16T04:43:54Z
+reviewed: 2026-07-16T16:34:01Z
 depth: standard
 files_reviewed: 41
 files_reviewed_list:
@@ -46,54 +46,47 @@ files_reviewed_list:
   - tests/test_schema_introspect.py
   - tests/test_stuck_run_recovery.py
 findings:
-  critical: 2
-  warning: 1
+  critical: 0
+  warning: 0
   info: 0
-  total: 3
-status: issues_found
+  total: 0
+status: clean
 ---
 
 # Phase 18: Code Review Report
 
-**Reviewed:** 2026-07-16T04:43:54Z
+**Reviewed:** 2026-07-16T16:34:01Z
 **Depth:** standard
 **Files Reviewed:** 41
-**Status:** issues_found
+**Status:** clean
 
 ## Summary
 
-The bounded result and atomic-settlement architecture is coherent, but two fail-closed gaps remain in the durable retry path. An expired final-attempt lease can become permanently unreapable after the handler has advanced the run, and a persisted reply is not checked against the job's run before its body is replayed. The Phase 18 regression module also hides a confirmed stale assertion behind its module-wide database skip.
+All reviewed files meet the applicable correctness, security, and robustness standards. No actionable issues were found.
 
-## Critical Issues
+The two prior critical findings and the skipped-regression warning are closed:
 
-### CR-01: Final-attempt reaper can fence the same expired lease forever
+- Final-attempt settlement now locks the selected transport row and its associated run in one transaction, applies a disjoint and exhaustive `RunStatus` disposition, preserves authoritative human-wait/completed/error states, transitions active crash states to bounded `ERROR`, and dead-letters every valid selected transport row. The update clears both lease fields while preserving `last_error`; the oldest preserved-state candidate can no longer starve the next candidate.
+- Persisted reply handling canonicalizes `row["run_id"]` and requires exact equality with `job.run_id` before `row_to_inbound`, reclaim, or orchestration. Null, malformed, same-business wrong-run, and cross-business ownership all fail closed with one bounded, identifier-free diagnostic.
+- `tests/test_resume_pipeline.py` no longer has a module-wide `DATABASE_URL` guard, and the reclaim assertion requires the explicit `PipelineOutcome.OK` contract.
 
-**File:** `/Users/pnhek/usf msds/github/payroll_agent/app/db/repo/job_settlement.py:389-406`
+The transaction and lock ordering is coherent across normal settlement and final-lease reaping: both acquire the job row before the associated run row, the exact expired-final-attempt predicate is established under `FOR UPDATE SKIP LOCKED`, and any failure after the run write rolls back the transport and business-state changes together.
 
-**Issue:** The reaper always selects the oldest expired `attempts = max_attempts` lease, but it can settle that row only when `_set_run_error` wins an `EXTRACTING -> ERROR` CAS. A worker may complete the business transition to `AWAITING_REPLY` or `AWAITING_APPROVAL` and then die before `settle_pipeline_job` clears the transport lease; a reclaimed attempt may also leave the run at `COMPUTED` or `SENT`. In every such case `_set_run_error` returns false, the function returns `FENCED`, and the job remains `leased` with an expired final-attempt lease. `claim_job` excludes it because `attempts < max_attempts` is false, while every later reaper call selects the same oldest row again. This makes the row permanent, can consume every pump drain slot as repeated `FENCED` outcomes, and can starve later expired final leases. The live test at `tests/test_queue_durability.py:525-533` currently codifies the stranded state instead of proving eventual settlement.
+## Verification Evidence
 
-**Fix:** Lock the associated run and apply an explicit status-aware final-lease matrix in the same transaction. Active crash states should CAS to `ERROR` and dead-letter the job; business-complete or human-wait states should settle the transport row without overwriting authoritative business state. In no valid status may the exact expired final-attempt row remain eligible for selection forever. Add live cases for `COMPUTED`, `SENT`, `AWAITING_REPLY`, and `AWAITING_APPROVAL`, plus a second eligible row to prove one fenced candidate cannot starve the queue.
+- Hermetic focused run with `DATABASE_URL` unset: **99 passed** (`tests/test_resume_pipeline.py`, `tests/test_queue_drain.py`, and `tests/test_pump_route.py`).
+- Complete resume module with a harmless `DATABASE_URL` stub: **31 passed**.
+- Broader reviewed offline selection: **322 passed, 2 skipped**; the two skips were guarded live-database cases, not hermetic reply-handler regressions.
+- Ruff passed for all reviewed Python files.
+- Mypy passed for the two gap-closure production files.
+- The guarded Postgres matrix, rollback, starvation, and reply-association tests were reviewed for substance. They remain environment-gated by both `DATABASE_URL` and `ALLOW_DB_RESET=1`; this review does not claim a live-database execution that was unavailable in the current environment.
 
-### CR-02: Resume-reply jobs can replay an email belonging to another run
+## Narrative Findings (AI reviewer)
 
-**File:** `/Users/pnhek/usf msds/github/payroll_agent/app/queue/handlers/resume_reply.py:48-54`
-
-**Issue:** The handler loads an inbound row by `job.email_id` and immediately forwards its body to `resume_pipeline(job.run_id, ...)`, but never checks the row's persisted `run_id` against `job.run_id`. The database has independent foreign keys for `jobs.run_id` and `jobs.email_id`; it has no cross-row constraint tying the email to that run. A malformed, manually inserted, or corrupted queue row can therefore feed one run's client reply into another run's deterministic payroll pipeline. This violates the exact durable-context boundary and can cross business boundaries in a money-moving path.
-
-**Fix:** Before `row_to_inbound`, require a non-null persisted `row["run_id"]` whose canonical UUID equals `job.run_id`; otherwise return the bounded terminal invalid-context result. Add hermetic and live wrong-run/cross-business counterexamples, and keep the body and identifiers out of the diagnostic.
-
-## Warnings
-
-### WR-01: The resume-handler regression module skips a confirmed failing Phase 18 test
-
-**File:** `/Users/pnhek/usf msds/github/payroll_agent/tests/test_resume_pipeline.py:50-56,235-240`
-
-**Issue:** The module-wide `DATABASE_URL` skip also suppresses the newly added fake-repository handler tests, even though they are hermetic. One skipped test still expects `handle_resume_reply` to return `None` after the strict `PipelineResult` cutover. Running the focused case with any `DATABASE_URL` value produces a real assertion failure: the handler correctly returns `PipelineResult(OK)`. The reported default full-suite pass therefore does not exercise this Phase 18 reclaim contract.
-
-**Fix:** Move the fake-repository handler/result tests into an always-run hermetic module (or narrow the skip to tests that truly require a configured database), and change the reclaim assertion to require the explicit `PipelineResult.OK`. Run the focused module both with and without `DATABASE_URL` so environment gating cannot hide contract drift.
+No Critical, Warning, or Info findings. The review is clean.
 
 ---
 
-_Reviewed: 2026-07-16T04:43:54Z_
+_Reviewed: 2026-07-16T16:34:01Z_
 _Reviewer: the agent (gsd-code-reviewer, generic-agent workaround)_
 _Depth: standard_
