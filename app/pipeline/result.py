@@ -116,3 +116,22 @@ def classify_pipeline_exception(stage: PipelineStage, exc: Exception) -> Pipelin
             )
 
     return PipelineResult(stage=stage)
+
+
+_LEGACY_OK_RESULT = PipelineResult(outcome=PipelineOutcome.OK)
+
+
+def normalize_pipeline_result(value: PipelineResult | None) -> PipelineResult:
+    """Normalize the temporary producer contract without collapsing explicit failures.
+
+    The ``None`` branch is compatibility-only while producers still own terminal-error
+    persistence. Plan 18-10 owns removing this branch when both producers return
+    ``PipelineResult`` on every path. Future consumers must use this adapter instead of
+    assigning another meaning to ``None``.
+    """
+
+    if value is None:
+        return _LEGACY_OK_RESULT
+    if isinstance(value, PipelineResult):
+        return value
+    raise TypeError(f"expected PipelineResult or None, got {type(value).__name__}")
