@@ -2,9 +2,9 @@
 
 In-memory mocked-LLM assertions (always run, DB-free via fake_repo): the clean run
 drives received → ... → awaiting_approval, persists Extracted + Decision +
-reconciliation then advances via set_status SEPARATELY; a stage raise routes
-through record_run_error; the orchestrator branches on final_action only; extract
-is called with the code-owned run_id.
+reconciliation then advances via set_status SEPARATELY; a stage raise returns a
+bounded PipelineResult without terminal persistence; the orchestrator branches on
+final_action only; extract is called with the code-owned run_id.
 
 The reconcile + decide stages are PURE deterministic code — they take no
 llm and make no model call — so the only LLM-scripted calls in these flows are the
@@ -326,7 +326,7 @@ def test_clean_run_reaches_awaiting_approval(fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# A stage raise → record_run_error (error_reason + ERROR via set_status)
+# Stage failures → bounded results without orchestrator-owned terminal persistence
 # ---------------------------------------------------------------------------
 
 
@@ -366,17 +366,6 @@ def test_extraction_result_classification_is_retryable_without_persisting_error(
     assert run["error_reason"] is None
     assert persisted_errors == []
     assert "SECRET-NAME" not in repr(result)
-
-
-# ---------------------------------------------------------------------------
-# Behavioral argument-flow spy test for the roster-scope guarantee.
-#
-# The plan's own acceptance criteria already grep-prove the call-site TEXT says
-# `roster=roster`. This test instead proves the ACTUAL RUNTIME VALUE
-# record_run_error receives is a real, populated Roster — per this project's
-# A grep/prose check on a money-adjacent data path is not
-# sufficient; trace argument flow against live execution).
-# ---------------------------------------------------------------------------
 
 
 def test_compute_result_classification_is_terminal_without_persisting_error(

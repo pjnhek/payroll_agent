@@ -14,11 +14,9 @@ Invariants this module exists to hold:
   ONLY; state advances exclusively through `repo.set_status`, which is the sole status
   writer. A clean run reaching `awaiting_approval` therefore never leaves reconciliation
   NULL.
-- **No failure is silent.** Both entry points wrap their whole body in try/except and
-  route any unhandled stage exception through `repo.record_run_error`, which persists
-  `payroll_runs.error_reason` and advances to ERROR. The persisted reason is a
-  stage/exception summary, never the raw email body, so no PII leaks into the error
-  column.
+- **Failures cross one bounded boundary.** Both entry points return `PipelineResult`
+  values classified by their active stage. They never persist terminal state themselves;
+  background wrappers and the durable drain each own exactly one settlement path.
 - **The run_id is never model-supplied.** `extract(..., run_id=run_id, ...)` stamps the
   code-owned run id onto the result.
 
@@ -59,6 +57,12 @@ from app.pipeline.calculate import calculate
 from app.pipeline.decide import decide
 from app.pipeline.extract import extract
 from app.pipeline.reconcile_names import reconcile_names
+from app.pipeline.result import (
+    PipelineOutcome,
+    PipelineResult,
+    PipelineStage,
+    classify_pipeline_exception,
+)
 from app.pipeline.validate import (
     HOURS_FIELDS,
     detect_field_regression,
@@ -87,6 +91,16 @@ class _RunStagesResult:
     clarify_deferred: bool = False
     matches: list[NameMatchResult] | None = None
     issues: list[ValidationIssue] | None = None
+
+
+@dataclass
+class _StageTracker:
+    """Mutable bounded stage shared with the outer exception boundary."""
+
+    active: PipelineStage = PipelineStage.LOAD
+
+
+_OK_RESULT = PipelineResult(outcome=PipelineOutcome.OK)
 
 
 def backfill_extracted(
@@ -192,34 +206,23 @@ def backfill_extracted(
     )
 
 
-def run_pipeline(run_id: uuid.UUID, *, llm: Any = None) -> None:
+def run_pipeline(run_id: uuid.UUID, *, llm: Any = None) -> PipelineResult:
     """Drive one run from received → awaiting_approval (or awaiting_reply on a clarification).
 
     `llm` is the client module the stages call; defaults to each stage's own
     bound client. Tests inject a mocked client by patching app.llm.client.OpenAI.
 
-    Deliberately a thin, non-raising delegator: the error-wrap boundary lives INSIDE
-    `_run` rather than here, because `_run`'s error path needs to see the `roster` it
-    already loaded — a local this outer scope never has. `_run` never lets an exception
-    escape, so no try/except is needed here; the external contract (never raises) holds.
+    Deliberately a thin, non-raising delegator: the classification boundary lives inside
+    `_run`, which returns one bounded outcome on every path.
     """
-    _run(run_id, llm=llm)
+    return _run(run_id, llm=llm)
 
 
-def _run(run_id: uuid.UUID, *, llm: Any) -> None:
-    """Load the run, run the four judgment stages, and self-contain any failure.
-
-    This function owns its OWN try/except so that whatever `roster` it has already
-    loaded before a failure is visible to its own error path: record_run_error(roster=…)
-    then sees a real, populated Roster for any failure after the load line instead of
-    always None, which is what lets the error scrubber redact real employee names rather
-    than falling back to email-regex-only scrubbing.
-
-    `roster = None` is the first statement so the name is always bound, even if
-    `load_run`/`load_inbound_email` raise before the roster is ever loaded.
-    """
-    roster = None
+def _run(run_id: uuid.UUID, *, llm: Any) -> PipelineResult:
+    """Load and execute a run, reducing every exception to a bounded result."""
+    stage = _StageTracker()
     try:
+        stage.active = PipelineStage.LOAD
         run = repo.load_run(run_id)
         if run is None:
             raise ValueError(f"run {run_id} not found")
@@ -229,22 +232,15 @@ def _run(run_id: uuid.UUID, *, llm: Any) -> None:
             raise ValueError(f"run {run_id} has no source email")
         roster = repo.load_roster_for_business(run["business_id"])
 
+        stage.active = PipelineStage.PERSIST
         repo.set_status(run_id, RunStatus.EXTRACTING)
         # discard return — first run, no field-regression
-        _ = _run_stages(run_id, email, roster, llm=llm)
-    except Exception as exc:  # noqa: BLE001 — this IS the catch-all error boundary: every
-        # stage exception must land in error_reason and route the run to ERROR, so no
-        # exception type may escape it.
-        # PII-safe summary: the exception TYPE only — str(exc) can echo prompt text,
-        # submitted names, or model output, and this `reason` is BOTH logged AND
-        # persisted to payroll_runs.error_reason. run_id is the correlation key for
-        # deeper debugging. `roster`, whatever this function had already loaded before
-        # the failure, is passed through so record_run_error's scrub step can exclude
-        # real employee names/aliases instead of falling back to email-regex-only
-        # scrubbing.
-        reason = type(exc).__name__
-        logger.warning("run %s failed: %s", run_id, reason)
-        repo.record_run_error(run_id, reason, detail_exc=exc, stage="pipeline", roster=roster)
+        _ = _run_stages(run_id, email, roster, llm=llm, stage_tracker=stage)
+        return _OK_RESULT
+    except Exception as exc:  # noqa: BLE001 — one bounded producer catch boundary
+        result = classify_pipeline_exception(stage.active, exc)
+        logger.warning("run %s failed: %s", run_id, result.diagnostic_code)
+        return result
 
 
 def resume_pipeline(
@@ -254,7 +250,7 @@ def resume_pipeline(
     llm: Any = None,
     from_status: RunStatus = RunStatus.AWAITING_REPLY,
     overrides: dict[str, str] | None = None,
-) -> None:
+) -> PipelineResult:
     """Re-enter a paused run at extraction — on a clarification reply, or on an
     operator's needs_operator resolve+resume action.
 
@@ -292,16 +288,12 @@ def resume_pipeline(
     check-and-transition atomic. The losing concurrent caller gets False and drops
     cleanly — no re-run, no ERROR route.
     """
-    # Initialize roster=None as the first statement inside the try block, so the name is
-    # always bound in the enclosing scope even if the exception fires before the roster
-    # load line below (unlike _run, resume_pipeline's roster load already happens inside
-    # the same try block its except clause guards, so the unbound window is narrower —
-    # but it is not zero).
-    roster = None
+    stage_tracker = _StageTracker()
     try:
         # Atomic compare-and-swap: claim the run from from_status → EXTRACTING.
         # A duplicate or late reply/resolve sees claim=False and drops cleanly — no
         # re-run, no error.
+        stage_tracker.active = PipelineStage.PERSIST
         claimed = repo.claim_status(run_id, from_status, RunStatus.EXTRACTING)
         if not claimed:
             logger.info(
@@ -310,7 +302,7 @@ def resume_pipeline(
                 run_id,
                 from_status,
             )
-            return
+            return _OK_RESULT
 
         # Operator resume has no NEW reply to consume — substitute a synthetic empty-body
         # InboundEmail so every downstream line that reads `inbound.message_id` /
@@ -345,11 +337,13 @@ def resume_pipeline(
         # work below. Without this write, load_consumed_replies returns empty forever and the
         # multi-round context accumulation below is a runtime no-op, even though hermetic
         # tests seeded with fake consumed rows would still pass.
+        stage_tracker.active = PipelineStage.PERSIST
         repo.mark_reply_consumed(
             inbound.message_id, round=repo.get_clarification_round(run_id)
         )
 
         # load_run is still needed for business_id and other metadata.
+        stage_tracker.active = PipelineStage.LOAD
         run = repo.load_run(run_id)
         if run is None:
             raise ValueError(f"run {run_id} not found after claim")
@@ -455,6 +449,7 @@ def resume_pipeline(
                 resolved_drops=None,      # no confirmed_dropped pairs yet
                 overrides=overrides,      # operator mapping, else None
                 alias_candidates=_pre_candidates,  # the identity bridge (see _run_stages)
+                stage_tracker=stage_tracker,
             )
             # NOTE: no extracted= kwarg on Round-1. _run_stages calls extract() internally.
 
@@ -463,10 +458,11 @@ def resume_pipeline(
                 # clarification_field_regression email — the ordering that guarantees a fast
                 # reply can never arrive against an unrecorded question. Factored out so the
                 # Round-1 and Round-2 paths cannot drift apart.
+                stage_tracker.active = PipelineStage.CLARIFICATION
                 clarification.defer_field_regression_clarification(
                     run_id, clarified, stage, combined_email, roster, llm=llm
                 )
-                return  # run is at AWAITING_REPLY — do not fall through to alias binding
+                return _OK_RESULT  # do not fall through to alias binding
 
             # stage.clarify_deferred is False: fall through to the alias-binding steps.
 
@@ -493,9 +489,11 @@ def resume_pipeline(
             # Extraction 1 (CLASSIFY): reply body ONLY — uncombined.
             # `inbound` is the raw reply InboundEmail BEFORE combination (resume_pipeline param).
             # Use it directly so the classify step sees ONLY what the client said in the reply.
+            stage_tracker.active = PipelineStage.EXTRACT
             raw_reply_extracted = extract(inbound, roster, **extract_kwargs_r2)
 
             # Extraction 2 (PROCESS/BACKFILL): combined body — retains original employees/hours.
+            stage_tracker.active = PipelineStage.EXTRACT
             raw_extracted = extract(combined_email, roster, **extract_kwargs_r2)
 
             # STEP 1: CLASSIFY the raw REPLY (reply-only) for asked fields ONLY.
@@ -515,6 +513,7 @@ def resume_pipeline(
             # dict comprehension is last-wins, so current overrides prior for any shared
             # submitted_name — "current wins", i.e. a restated name takes the CURRENT
             # resolution. Reversing the order silently makes it prior-wins.
+            stage_tracker.active = PipelineStage.COMPUTE
             raw_reply_submitted = [e.submitted_name for e in raw_reply_extracted.employees]
             current_matches_for_classify = reconcile_names(raw_reply_submitted, roster)
             name_to_id_for_classify: dict[str, str] = {
@@ -736,6 +735,7 @@ def resume_pipeline(
             # _run_stages runs at all, is safe, and it mirrors the same invariant
             # defer_field_regression_clarification relies on: the state write commits and
             # closes strictly before any LLM/provider-touching call.
+            stage_tracker.active = PipelineStage.PERSIST
             with repo.get_connection() as conn, conn.transaction():
                 repo.set_clarified_fields(run_id, clarified, conn=conn)
 
@@ -752,6 +752,7 @@ def resume_pipeline(
                 extracted=raw_extracted,                # combined-body extraction, lossless
                 overrides=overrides,                    # operator mapping, else None
                 alias_candidates=_pre_candidates,       # the identity bridge
+                stage_tracker=stage_tracker,
             )
 
             # STEP 4: check clarify_deferred AFTER persisting terminals. If _run_stages
@@ -762,10 +763,11 @@ def resume_pipeline(
             # 'asked' entries for the regression detected THIS round, in its own separate
             # closed transaction, before sending the clarification.
             if stage.clarify_deferred:
+                stage_tracker.active = PipelineStage.CLARIFICATION
                 clarification.defer_field_regression_clarification(
                     run_id, clarified, stage, combined_email, roster, llm=llm
                 )
-                return  # run is at AWAITING_REPLY — do not run the alias binding
+                return _OK_RESULT  # do not run the alias binding
 
             # Not deferred: the terminal outcomes from classify-first STEP 1 were already
             # persisted above, strictly before _run_stages was called. Fall through to alias
@@ -803,6 +805,7 @@ def resume_pipeline(
             if cand.get("bound") is None and cand.get("suggested") is not None
         ]
         if _pending_tokens:
+            stage_tracker.active = PipelineStage.LOAD
             post_run_data = repo.load_run(run_id)
             _post_reconciliation = (
                 (post_run_data.get("reconciliation") or []) if post_run_data else []
@@ -846,17 +849,13 @@ def resume_pipeline(
                         run_id,
                     )
             if _any_bound:
+                stage_tracker.active = PipelineStage.PERSIST
                 repo.set_alias_candidates(run_id, _updated_candidates)
-    except Exception as exc:  # noqa: BLE001 — this IS the catch-all error boundary for the
-        # resume path: every exception must land in error_reason and route the run to ERROR.
-        # PII-safe: exception TYPE only — str(exc) can echo submitted names / prompt text,
-        # and `reason` is logged AND persisted to error_reason. `roster` is guaranteed
-        # bound (either None from the top-of-try initialization, or the real Roster if the
-        # exception fired after the load line above), so the error scrubber can redact real
-        # employee names.
-        reason = type(exc).__name__
-        logger.warning("resume of run %s failed: %s", run_id, reason)
-        repo.record_run_error(run_id, reason, detail_exc=exc, stage="resume", roster=roster)
+        return _OK_RESULT
+    except Exception as exc:  # noqa: BLE001 — one bounded producer catch boundary
+        result = classify_pipeline_exception(stage_tracker.active, exc)
+        logger.warning("resume of run %s failed: %s", run_id, result.diagnostic_code)
+        return result
 
 
 def _run_stages(
@@ -872,6 +871,7 @@ def _run_stages(
     extracted: Extracted | None = None,
     overrides: dict[str, str] | None = None,
     alias_candidates: dict[str, Any] | None = None,
+    stage_tracker: _StageTracker | None = None,
 ) -> _RunStagesResult:
     """The shared gate path: extract → reconcile → validate → decide → persist → branch.
 
@@ -917,12 +917,16 @@ def _run_stages(
     # LLM extraction call. run_pipeline and Round-1 pass no extracted kwarg, so the internal
     # extract() runs.
     if extracted is None:
+        if stage_tracker is not None:
+            stage_tracker.active = PipelineStage.EXTRACT
         extract_kwargs = {"run_id": run_id}
         if llm is not None:
             extract_kwargs["llm"] = llm
         extracted = extract(email, roster, **extract_kwargs)
     # else: use the supplied pre-extracted value directly (no LLM call)
 
+    if stage_tracker is not None:
+        stage_tracker.active = PipelineStage.COMPUTE
     submitted_names = [e.submitted_name for e in extracted.employees]
     # pure code — no model call, no score
     matches = reconcile_names(submitted_names, roster, overrides=overrides)
@@ -986,6 +990,8 @@ def _run_stages(
     # anything that can raise for a business reason.
     line_items: list[PaystubLineItem] | None = None
     if decision.final_action == "process":
+        if stage_tracker is not None:
+            stage_tracker.active = PipelineStage.COMPUTE
         line_items = _compute_line_items(run_id, extracted, matches, roster)
 
     # --- persist DATA on EVERY run BEFORE branching; OVERWRITES on resume ---
@@ -996,6 +1002,8 @@ def _run_stages(
     # including the persists that "already succeeded" before the crash — never just the later
     # ones. A partial commit here is exactly the half-written run (paystubs replaced, status
     # stale) the transaction exists to prevent.
+    if stage_tracker is not None:
+        stage_tracker.active = PipelineStage.PERSIST
     with repo.get_connection() as conn, conn.transaction():
         repo.persist_extracted(run_id, extracted, conn=conn)
         repo.persist_decision(run_id, decision, conn=conn)  # data-only; status written separately
@@ -1038,6 +1046,8 @@ def _run_stages(
             # (normal path). This is a sibling statement AFTER the persist transaction
             # closes, never nested inside it — clarify performs two LLM calls plus a provider
             # send.
+            if stage_tracker is not None:
+                stage_tracker.active = PipelineStage.CLARIFICATION
             clarification.clarify(
                 run_id, email, decision, roster, extracted, llm=llm, purpose="clarification"
             )
