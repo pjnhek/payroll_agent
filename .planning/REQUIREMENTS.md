@@ -58,7 +58,7 @@ constraint — and none could supply the failure contract, which is the actual w
 
 ### FAIL — Failure policy
 
-- [ ] **FAIL-01**: The orchestrator returns an explicit **result type** — `ok` / `retryable` / `terminal`,
+- [x] **FAIL-01**: The orchestrator returns an explicit **result type** — `ok` / `retryable` / `terminal`,
   defaulting to `terminal` (the safe default in a money system). Today it catches stage failures, writes
   `ERROR`, and **returns normally** (`orchestrator.py:235-247`), so any worker wrapping it would record
   success. Critically, **`request_clarification` is `ok`, not a failure** — a worker retrying a deterministic
@@ -161,7 +161,7 @@ limitation honestly is itself the differentiator.
 | QUEUE-05 | Phase 16 | Complete |
 | PUMP-01 | Phase 17 | Complete |
 | PUMP-02 | Phase 17 | Complete |
-| FAIL-01 | Phase 18 | Pending |
+| FAIL-01 | Phase 18 | Complete |
 | FAIL-02 | Phase 18 | Pending |
 | FAIL-03 | Phase 18 | Pending |
 | QUEUE-04 | Phase 19 | Pending |

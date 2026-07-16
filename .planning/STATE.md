@@ -3,17 +3,17 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 current_phase: 18
-current_phase_name: Failure Policy & Sweep Deletion
+current_phase_name: failure-policy-sweep-deletion
 status: executing
-stopped_at: Phase 18 context gathered
-last_updated: "2026-07-15T23:46:23.478Z"
-last_activity: 2026-07-15
-last_activity_desc: Phase 17 complete, transitioned to Phase 18
+stopped_at: Completed 18-01-PLAN.md
+last_updated: "2026-07-16T00:23:12.920Z"
+last_activity: 2026-07-16
+last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
   completed_phases: 2
-  total_plans: 15
-  completed_plans: 15
+  total_plans: 27
+  completed_plans: 16
   percent: 33
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 18 — Failure Policy & Sweep Deletion (not started)
+**Current focus:** Phase 18 — failure-policy-sweep-deletion
 
 ## Current Position
 
-Phase: 18 — Failure Policy & Sweep Deletion
-Plan: Not started
+Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
+Plan: 2 of 12
 Status: Ready to execute
-Last activity: 2026-07-15 — Phase 17 complete, transitioned to Phase 18
+Last activity: 2026-07-16 — Phase 18 execution started
 
 ## Performance Metrics
 
@@ -97,6 +97,7 @@ Last activity: 2026-07-15 — Phase 17 complete, transitioned to Phase 18
 | Phase 17 P03 | 15min | 3 tasks | 4 files |
 | Phase 17 P04 | ~12min | 2 tasks | 4 files |
 | Phase 17 P05 | 9min | 2 tasks | 1 files |
+| Phase 18 P01 | 4min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -171,6 +172,8 @@ Recent decisions affecting current work:
 - [Phase 17]: 17-04: GET (not POST) for /internal/pump — simplest for a curl cron; the drain is idempotent (SKIP LOCKED).
 - [Phase 17]: 17-04: pump_token fail-closed logic lives in the route's _authorized(), not as Settings field validation (matches ALLOW_UNSIGNED_FIXTURES precedent).
 - [Phase ?]: [Phase 17]: 17-05: falsifying mutation targeted /internal/pump's drain while-loop (while False:) — a smaller, more surgical revert than claim_job's SQL — RED confirmed claimed==0, GREEN confirmed byte-identical revert.
+- [Phase 18]: Only extraction-stage connection, timeout, rate-limit, and 5xx provider failures are retryable; unclassified failures and ambiguous sends fail closed. — Extraction is replay-safe, while clarification and delivery can be ambiguous after provider acceptance.
+- [Phase 18]: Legacy None has one temporary meaning through normalize_pipeline_result; explicit results preserve identity and invalid values raise. — One compatibility seam prevents consumers from inventing conflicting None policies before producer cutover.
 
 ### Pending Todos
 
@@ -236,9 +239,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-15T20:47:49.680Z
-Stopped at: Phase 18 context gathered
-Resume file: .planning/phases/18-failure-policy-sweep-deletion/18-CONTEXT.md
+Last session: 2026-07-16T00:22:42.488Z
+Stopped at: Completed 18-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

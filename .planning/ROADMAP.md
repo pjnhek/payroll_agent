@@ -4,7 +4,7 @@
 
 - ✅ **v1.0 — MVP** (shipped 2026-06-25) — Email-driven payroll agent: messy email in, correct human-approved payroll out, every money-moving decision code-gated (deterministic, auditable, never guesses). 7 phases, deployed live on a free stack with a recorded demo. → [full archive](milestones/v1.0-ROADMAP.md) · [requirements](milestones/v1.0-REQUIREMENTS.md)
 - ✅ **v2 — Production Hardening** (shipped 2026-07-07) — Took the working v1.0 MVP and made its money-logic and data layer genuinely production-grade — correct under real, messy, concurrent load, not just the demo path. 6 phases (7, 7.5, 8, 9, 10, 11), 16 requirements, scope discovered via an adversarial audit. → [full archive](milestones/v2-ROADMAP.md) · [requirements](milestones/v2-REQUIREMENTS.md) · [audit](milestones/v2-MILESTONE-AUDIT.md)
-- ✅ **v3 — Production-Ready Codebase** (shipped 2026-07-13) — Made the codebase itself read as production-quality without changing a line of money behavior: enforced CI (ruff + full suite + `mypy --strict`, all blocking), the three god-files split into right-sized modules, the entire repo type-clean across 117 files, and provenance comments replaced with constraint-documenting ones behind a CI guard. 4 phases (12–15), 16/16 requirements, 227 commits. Found 3 real defects on the way — a lying eval chart, a path traversal, and a prompt-echo leak. → [full archive](milestones/v3-ROADMAP.md) · [requirements](milestones/v3-REQUIREMENTS.md) · [audit](v3-MILESTONE-AUDIT.md)
+- ✅ **v3 — Production-Ready Codebase** (shipped 2026-07-13) — Made the codebase itself read as production-quality without changing a line of money behavior: enforced CI (ruff + full suite + `mypy --strict`, all blocking), the three god-files split into right-sized modules, the entire repo type-clean across 117 files, and provenance comments replaced with constraint-documenting ones behind a CI guard. 4 phases (12–15), 16/16 requirements, 227 commits. Found 3 real defects on the way — a lying eval chart, a path traversal, and a prompt-echo leak. → [full archive](milestones/v3-ROADMAP.md) · [requirements](milestones/v3-REQUIREMENTS.md) · [audit](milestones/v3-MILESTONE-AUDIT.md)
 - 🚧 **v4 — Durable Execution** (started 2026-07-13) — No accepted email is ever lost; every failure recovers automatically within ~30 minutes without a human noticing; a client is sent at most one confirmation per approved run, per epoch. Origin: an adversarial audit found the pipeline's `BackgroundTask` handoff is durable in memory only, and the webhook blocks the event loop on a synchronous Resend fetch + a multi-query psycopg transaction. 6 phases (16–21), 19 requirements. Design: `docs/superpowers/specs/2026-07-13-durable-execution-design.md`.
 
 ## Active Milestone: v4 — Durable Execution
@@ -138,11 +138,11 @@ mechanism.
   4. `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the runs-list sweep block are removed from the codebase — there is exactly one recovery mechanism left, not two racing ones.
   5. Viewing the list of runs no longer has any side effect on any run's status — it is a read, not an accidental cron trigger.
 
-**Plans**: 12 plans
+**Plans**: 1/12 plans executed
 
 **Wave 1** (result contract foundation):
 
-- [ ] 18-01-PLAN.md — Define the bounded pipeline result contract, classifier, and temporary legacy adapter
+- [x] 18-01-PLAN.md — Define the bounded pipeline result contract, classifier, and temporary legacy adapter
 
 **Wave 2** (durable persistence foundation; blocked on 18-01):
 
@@ -267,7 +267,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
-| 18. Failure Policy & Sweep Deletion | v4 | 0/TBD | Not started | - |
+| 18. Failure Policy & Sweep Deletion | v4 | 1/12 | In Progress|  |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
