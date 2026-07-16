@@ -41,7 +41,12 @@ def test_runs_list_ast_is_read_only_and_has_no_background_tasks_parameter() -> N
         if isinstance(node, ast.Call)
         and (qualified := _qualified_call(node)) is not None
     }
-    assert calls == {"repo.load_all_runs", "templates.TemplateResponse"}
+    assert calls == {
+        "logger.debug",
+        "repo.load_all_runs",
+        "router.get",
+        "templates.TemplateResponse",
+    }
 
 
 def test_runs_route_has_no_legacy_recovery_callers_but_repo_symbols_remain() -> None:

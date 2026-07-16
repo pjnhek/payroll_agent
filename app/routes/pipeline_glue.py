@@ -35,8 +35,8 @@ logger = logging.getLogger("payroll_agent.webhook")
 def row_to_inbound(row: dict[str, Any]) -> InboundEmail:
     """Build an InboundEmail from a PERSISTED email_messages row dict.
 
-    The single conversion point reused by both the duplicate-redelivery re-schedule
-    and the stranded-unconsumed-reply runs-list auto-resume. Pure — no DB I/O.
+    The single conversion point reused by webhook duplicate redelivery and the durable
+    ``RESUME_REPLY`` queue handler. Pure — no DB I/O.
 
     Uses `row["body_text"]` VERBATIM. That column already holds the body cleaned at
     first ingest — the authoritative, actually-processed text. This helper must NEVER
@@ -45,9 +45,9 @@ def row_to_inbound(row: dict[str, Any]) -> InboundEmail:
 
     `row` must supply the full InboundEmail field set (id, message_id, in_reply_to,
     references_header, subject, from_addr, to_addr, body_text, created_at). Both
-    `repo.get_inbound_by_message_id` and `repo.find_stranded_unconsumed_replies`
-    return exactly this shape (plus run_id, which this helper ignores — the caller
-    already has it).
+    ``repo.get_inbound_by_message_id`` and ``repo.get_inbound_email_by_id`` return
+    exactly this shape (plus routing identifiers this helper ignores because the caller
+    already owns them).
     """
     return InboundEmail(
         id=row["id"],

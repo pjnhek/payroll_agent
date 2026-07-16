@@ -1,8 +1,4 @@
-"""Everything under /runs* — the operator gate + run detail.
-
-list, detail, status, approve, reject, resolve, retrigger, pdf, simulate-reply,
-plus the runs_list stranded-sweep block.
-"""
+"""Everything under /runs* — operator list, gate, recovery action, and detail."""
 from __future__ import annotations
 
 import json
@@ -34,15 +30,13 @@ logger = logging.getLogger("payroll_agent.webhook")
 
 router = APIRouter()
 
-# Staleness threshold for stale in-flight state recovery. SHARED by BOTH retrigger()'s
-# stale-in-flight claim AND runs_list()'s recovery sweep (repo.sweep_stranded_runs) —
-# ONE constant, two use sites. Keep it that way unless tracing shows the two sites
-# genuinely need different values; two drifting thresholds would let a run be swept by
-# one path while the other still considers it live.
+# Staleness threshold for the operator-authorized retrigger path. Automatic recovery is
+# queue-owned; this value exists only to decide whether a human may restart an in-flight
+# run through the explicit Retrigger action.
 #
 # The value must sit safely ABOVE the worst-case gap between two consecutive DB writes
-# on the longest real path, or the sweep will yank a run that is merely slow, not stuck
-# — restarting a payroll that is mid-flight. It is derived, not guessed:
+# on the longest real path, or Retrigger could restart a run that is merely slow, not
+# stuck. It is derived, not guessed:
 #   (a) call_structured (app/llm/client.py) — used for BOTH extraction AND the
 #       clarification suggestion (app/pipeline/suggest.py) — passes an explicit
 #       timeout=_STRUCTURED_TIMEOUT_S (45.0s) AND max_retries=0 to its OpenAI(...)
@@ -66,8 +60,8 @@ router = APIRouter()
 # 15 minutes is ~4x that ceiling. A run in a recoverable in-flight state
 # (RECEIVED/EXTRACTING/COMPUTED, plus SENT for retrigger only — see the
 # scope-divergence comment on retrigger's stale_statuses below) whose updated_at is
-# older than this may be claimed/swept for a fresh start; fresh in-flight runs are
-# never force-restarted.
+# older than this may be claimed for a fresh operator-authorized start; fresh in-flight
+# runs are never force-restarted.
 STALE_THRESHOLD = timedelta(minutes=15)
 STALE_THRESHOLD_SECONDS = int(STALE_THRESHOLD.total_seconds())
 
@@ -446,17 +440,11 @@ def _claim_stale_in_flight(run_id: uuid.UUID, conn: psycopg.Connection) -> bool:
         updated_at is not None
         and datetime.now(tz=UTC) - updated_at > STALE_THRESHOLD
     )
-    # This scope is FOUR statuses, including SENT — deliberately DIVERGENT
-    # from repo.sweep_stranded_runs's scope (EXACTLY THREE:
-    # received/extracting/computed). Sharing ONE threshold VALUE
-    # (STALE_THRESHOLD_SECONDS) does NOT mean sharing one scope LIST: the two
-    # lists diverge by design and must NOT be converged. A SENT run has already
-    # durably committed the provider-send evidence, so it belongs to retrigger's
-    # operator-initiated re-run path — safe only because delivery's already-sent
-    # idempotency guard suppresses a second confirmation. It does NOT belong to
-    # the sweep, whose scope is "the background task died before persisting
-    # anything durable". Adding SENT to the sweep would auto-re-run runs that
-    # already emailed the client. Do NOT "fix" this into parity.
+    # This operator-authorized scope is FOUR statuses, including SENT. A SENT run has
+    # already durably committed provider-send evidence, so it is safe to include only
+    # because delivery's already-sent idempotency guard suppresses a second
+    # confirmation. Automatic queue recovery has its own transport-state policy and
+    # must never copy this browser action's business-state scope.
     stale_statuses = {
         RunStatus.RECEIVED.value,
         RunStatus.EXTRACTING.value,
@@ -647,48 +635,12 @@ def _build_alias_rationale_notes(
 
 
 @router.get("/runs")
-def runs_list(request: Request, background_tasks: BackgroundTasks) -> Response:
-    """DASH-01: Render the reverse-chronological runs list with status badges.
+def runs_list(request: Request) -> Response:
+    """DASH-01: Read and render the reverse-chronological runs list.
 
-    Sweeps stranded in-flight runs to ERROR BEFORE loading the list, so a run whose
-    background task died mid-flight becomes visible as a diagnosable ERROR on the very
-    NEXT dashboard load. This route carries the sweep because GET /runs is the one HTTP
-    entry point Render's free tier guarantees will be hit periodically — there is no
-    cron. The sweep call is wrapped in the SAME swallow-on-DB-unavailable try/except the
-    route already uses for load_all_runs: a sweep failure must never 500 the dashboard.
-
-    The same try-block also re-schedules resume_pipeline_bg for every stale, unconsumed
-    reply against an awaiting_reply run (repo.find_stranded_unconsumed_replies) — the
-    recovery route for a redelivery that never arrived. Scope is EXACTLY
-    awaiting_reply + unconsumed + stale, which structurally EXCLUDES needs_operator runs:
-    those exit only via /resolve or reject, never via an autonomous re-schedule, because
-    an escalated run is waiting on a human judgment that no sweep can supply. The CAS
-    claim inside resume_pipeline absorbs any double-schedule.
+    This unauthenticated GET is deliberately side-effect free. Durable queue workers
+    own automatic recovery; operators use explicit mutation routes such as Retrigger.
     """
-    try:
-        repo.sweep_stranded_runs(STALE_THRESHOLD_SECONDS)
-        for reply_row in repo.find_stranded_unconsumed_replies(STALE_THRESHOLD_SECONDS):
-            # Re-assert the sender revalidation before dispatching this stranded-sweep
-            # re-schedule. A spoofed reply that already failed the sender check on
-            # first delivery is left linked+unconsumed — exactly what this sweep picks
-            # up — so without the re-check a mere dashboard load would auto-resume it.
-            # load_run is needed anyway to get business_id for the check.
-            candidate_run = repo.load_run(reply_row["run_id"])
-            if candidate_run is not None and pipeline_glue.reply_sender_ok(
-                reply_row, candidate_run
-            ):
-                background_tasks.add_task(
-                    pipeline_glue.resume_pipeline_bg,
-                    reply_row["run_id"],
-                    pipeline_glue.row_to_inbound(reply_row),
-                )
-            elif candidate_run is not None:
-                logger.warning(
-                    "run_id=%s stranded-sweep resume blocked — sender mismatch persists",
-                    reply_row["run_id"],
-                )
-    except Exception:
-        logger.debug("sweep_stranded_runs unavailable — skipping this page load")
     try:
         runs = [_safe_run_for_browser(run) for run in repo.load_all_runs()]
     except Exception:
