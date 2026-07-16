@@ -138,7 +138,7 @@ mechanism.
   4. `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the runs-list sweep block are removed from the codebase — there is exactly one recovery mechanism left, not two racing ones.
   5. Viewing the list of runs no longer has any side effect on any run's status — it is a read, not an accidental cron trigger.
 
-**Plans**: 13/14 plans executed
+**Plans**: 14/14 plans complete
 
 **Wave 1** (result contract foundation):
 
@@ -188,7 +188,7 @@ mechanism.
 
 **Wave 12** (resume-context and regression closure; blocked on 18-09, 18-11, and 18-13):
 
-- [ ] 18-14-PLAN.md — Bind persisted replies to their claimed run and restore always-run handler coverage
+- [x] 18-14-PLAN.md — Bind persisted replies to their claimed run and restore always-run handler coverage
 
 ### Phase 19: Webhook Cutover & Durable Ingest
 
@@ -275,7 +275,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
-| 18. Failure Policy & Sweep Deletion | v4 | 13/14 | In Progress|  |
+| 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete   | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
