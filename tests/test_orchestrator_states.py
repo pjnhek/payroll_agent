@@ -17,13 +17,154 @@ from __future__ import annotations
 # This module uses deliberately small dynamic test doubles and monkeypatch seams.
 import json
 import uuid
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+from pydantic import BaseModel, ValidationError
 
 from app.models.contracts import InboundEmail
 from app.pipeline.orchestrator import run_pipeline
+from app.pipeline.result import (
+    PipelineOutcome,
+    PipelineReason,
+    PipelineResult,
+    PipelineStage,
+    classify_pipeline_exception,
+)
+
+
+class _RequiredExtractionPayload(BaseModel):
+    employee_name: str
+
+
+def _provider_status_error(status_code: int, *, message: str = "provider failure") -> APIStatusError:
+    request = httpx.Request("POST", "https://provider.invalid/v1/chat/completions")
+    response = httpx.Response(status_code, request=request)
+    if status_code == 429:
+        return RateLimitError(message, response=response, body={"detail": "sensitive"})
+    return APIStatusError(message, response=response, body={"detail": "sensitive"})
+
+
+# ---------------------------------------------------------------------------
+# Pipeline result contract and exception classification
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_result_defaults_fail_closed_and_are_frozen():
+    result = PipelineResult()
+
+    assert result.outcome is PipelineOutcome.TERMINAL
+    assert result.stage is PipelineStage.UNKNOWN
+    assert result.reason is PipelineReason.UNCLASSIFIED
+    assert result.diagnostic_code == "unknown:unclassified"
+    with pytest.raises(FrozenInstanceError):
+        result.outcome = PipelineOutcome.OK  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (
+            APIConnectionError(
+                message="connection failed after employee SECRET-NAME",
+                request=httpx.Request("POST", "https://provider.invalid"),
+            ),
+            PipelineReason.PROVIDER_CONNECTION_FAILURE,
+        ),
+        (
+            APITimeoutError(httpx.Request("POST", "https://provider.invalid")),
+            PipelineReason.PROVIDER_TIMEOUT,
+        ),
+        (_provider_status_error(429), PipelineReason.PROVIDER_RATE_LIMIT),
+        (_provider_status_error(500), PipelineReason.PROVIDER_SERVER_FAILURE),
+        (_provider_status_error(503), PipelineReason.PROVIDER_SERVER_FAILURE),
+    ],
+)
+def test_extraction_provider_classification_is_retryable_only_for_named_cases(exc, reason):
+    result = classify_pipeline_exception(PipelineStage.EXTRACT, exc)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=reason,
+    )
+
+
+def test_extraction_schema_failure_classification_is_terminal():
+    with pytest.raises(ValidationError) as caught:
+        _RequiredExtractionPayload.model_validate({})
+
+    result = classify_pipeline_exception(PipelineStage.EXTRACT, caught.value)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.SCHEMA_OR_PARSE_FAILURE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (_provider_status_error(400), PipelineReason.CLIENT_REQUEST_FAILURE),
+        (_provider_status_error(401), PipelineReason.CLIENT_REQUEST_FAILURE),
+        (RuntimeError("employee SECRET-NAME in raw provider body"), PipelineReason.UNCLASSIFIED),
+    ],
+)
+def test_extraction_terminal_classification_counterexamples(exc, reason):
+    result = classify_pipeline_exception(PipelineStage.EXTRACT, exc)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.EXTRACT,
+        reason=reason,
+    )
+
+
+@pytest.mark.parametrize("stage", [PipelineStage.CLARIFICATION, PipelineStage.DELIVERY])
+@pytest.mark.parametrize(
+    "exc",
+    [
+        APIConnectionError(
+            message="provider accepted possibly-sensitive message",
+            request=httpx.Request("POST", "https://provider.invalid"),
+        ),
+        APITimeoutError(httpx.Request("POST", "https://provider.invalid")),
+        _provider_status_error(429),
+        _provider_status_error(503),
+    ],
+)
+def test_ambiguous_send_stage_classification_is_terminal(stage, exc):
+    result = classify_pipeline_exception(stage, exc)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=stage,
+        reason=PipelineReason.AMBIGUOUS_SEND_FAILURE,
+    )
+
+
+def test_pipeline_result_never_retains_sensitive_exception_content():
+    sensitive = "employee SECRET-NAME; provider body SECRET-BODY"
+    exc = APIConnectionError(
+        message=sensitive,
+        request=httpx.Request("POST", "https://provider.invalid"),
+    )
+
+    result = classify_pipeline_exception(PipelineStage.EXTRACT, exc)
+    serialized = f"{result!r}|{result}|{result.diagnostic_code}"
+
+    assert sensitive not in serialized
+    assert "SECRET-NAME" not in serialized
+    assert "SECRET-BODY" not in serialized
+    assert all(
+        isinstance(value, (PipelineOutcome, PipelineStage, PipelineReason))
+        for value in (result.outcome, result.stage, result.reason)
+    )
 
 
 def _seed_run(
