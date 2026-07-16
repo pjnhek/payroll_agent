@@ -3,14 +3,15 @@ live database. Powers GET /health/schema and the deploy-migrate CI post-flight.
 
 Scope (see spec): columns (CREATE + ALTER union), payroll_runs.status +
 email_messages.purpose CHECK value sets (from the executable DO-block re-add
-lists), and the one app-critical UNIQUE constraint uq_email_run_purpose_round_epoch.
-NOT column types / NOT NULL / indexes (backlog).
+lists), the app-critical UNIQUE constraint uq_email_run_purpose_round_epoch,
+and the narrow named index/constraint inventory required by typed operator
+resume persistence. NOT general column types / NOT NULL / index coverage.
 """
 from __future__ import annotations
 
 import pathlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import psycopg
 
@@ -25,6 +26,55 @@ _CONSTRAINT_KEYWORDS = frozenset(
 # (the Phase-11 ON CONFLICT (run_id, purpose, round, epoch) arbiter).
 _REQUIRED_UNIQUE_CONSTRAINTS = frozenset({"uq_email_run_purpose_round_epoch"})
 
+IndexSpec = tuple[str, tuple[str, ...]]
+ConstraintSpec = tuple[
+    str,
+    str,
+    tuple[str, ...],
+    str | None,
+    tuple[str, ...],
+]
+
+# These are the relationships schema health must prove before queue handlers
+# depend on typed operator resolution persistence. Checking the complete catalog
+# shape prevents a same-named but malformed index/constraint from passing.
+_REQUIRED_INDEXES: dict[str, IndexSpec] = {
+    "idx_operator_resume_resolutions_run_id": (
+        "operator_resume_resolutions",
+        ("run_id",),
+    ),
+}
+_REQUIRED_CONSTRAINTS: dict[str, ConstraintSpec] = {
+    "fk_jobs_operator_resolution": (
+        "jobs",
+        "f",
+        ("operator_resolution_id",),
+        "operator_resume_resolutions",
+        ("id",),
+    ),
+    "operator_resume_overrides_pkey": (
+        "operator_resume_overrides",
+        "p",
+        ("operator_resolution_id", "submitted_name"),
+        None,
+        (),
+    ),
+    "operator_resume_overrides_operator_resolution_id_fkey": (
+        "operator_resume_overrides",
+        "f",
+        ("operator_resolution_id",),
+        "operator_resume_resolutions",
+        ("id",),
+    ),
+    "operator_resume_overrides_employee_id_fkey": (
+        "operator_resume_overrides",
+        "f",
+        ("employee_id",),
+        "employees",
+        ("id",),
+    ),
+}
+
 
 @dataclass(frozen=True)
 class ExpectedSchema:
@@ -32,6 +82,8 @@ class ExpectedSchema:
     status_values: frozenset[str]
     purpose_values: frozenset[str]
     unique_constraints: frozenset[str]
+    required_indexes: dict[str, IndexSpec]
+    required_constraints: dict[str, ConstraintSpec]
 
 
 def _strip_line_comments(sql: str) -> str:
@@ -146,6 +198,12 @@ def expected_schema() -> ExpectedSchema:
         # /health/schema instead of the endpoint reporting in_sync with the
         # newest, most concurrency-critical table entirely unchecked.
         "jobs": frozenset(_columns_for_table(sql, "jobs")),
+        "operator_resume_resolutions": frozenset(
+            _columns_for_table(sql, "operator_resume_resolutions")
+        ),
+        "operator_resume_overrides": frozenset(
+            _columns_for_table(sql, "operator_resume_overrides")
+        ),
     }
     status_values = frozenset(
         _do_block_check_values(sql, "payroll_runs_status_check", "status")
@@ -158,6 +216,8 @@ def expected_schema() -> ExpectedSchema:
         status_values=status_values,
         purpose_values=purpose_values,
         unique_constraints=_REQUIRED_UNIQUE_CONSTRAINTS,
+        required_indexes=dict(_REQUIRED_INDEXES),
+        required_constraints=dict(_REQUIRED_CONSTRAINTS),
     )
 
 
@@ -167,6 +227,8 @@ class SchemaDiff:
     missing_status_values: list[str]
     missing_purpose_values: list[str]
     missing_unique_constraints: list[str]
+    missing_required_indexes: list[str] = field(default_factory=list)
+    missing_required_constraints: list[str] = field(default_factory=list)
 
     @property
     def is_in_sync(self) -> bool:
@@ -175,6 +237,8 @@ class SchemaDiff:
             or self.missing_status_values
             or self.missing_purpose_values
             or self.missing_unique_constraints
+            or self.missing_required_indexes
+            or self.missing_required_constraints
         )
 
     def as_missing_dict(self) -> dict[str, list[str]]:
@@ -188,6 +252,10 @@ class SchemaDiff:
             out["purpose_values"] = sorted(self.missing_purpose_values)
         if self.missing_unique_constraints:
             out["unique_constraints"] = sorted(self.missing_unique_constraints)
+        if self.missing_required_indexes:
+            out["required_indexes"] = sorted(self.missing_required_indexes)
+        if self.missing_required_constraints:
+            out["required_constraints"] = sorted(self.missing_required_constraints)
         return out
 
 
@@ -222,13 +290,13 @@ def _live_columns(conn: psycopg.Connection, table: str) -> set[str]:
 def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
     exp = expected_schema()
 
-    # Q1/Q2: columns per table.
+    # Q1-Q5: columns per table, in ExpectedSchema.tables insertion order.
     missing_columns: dict[str, list[str]] = {}
     for table, expected_cols in exp.tables.items():
         live = _live_columns(conn, table)
         missing_columns[table] = sorted(set(expected_cols) - live)
 
-    # Q3: status + purpose CHECK defs (selected by conkey — column set — not name).
+    # Q6: status + purpose CHECK defs (selected by conkey — column set — not name).
     # Deliberately still exactly these two tables. The CASE WHEN below can only
     # express a binary choice, so a third table needs a genuinely different query
     # shape, not a wider IN list — and jobs.kind/jobs.state have no DO-block
@@ -256,7 +324,7 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
     missing_status = sorted(set(exp.status_values) - live_status)
     missing_purpose = sorted(set(exp.purpose_values) - live_purpose)
 
-    # Q4: required unique constraints present on email_messages.
+    # Q7: required unique constraints present on email_messages.
     rows = conn.execute(
         "SELECT conname FROM pg_constraint "
         "WHERE contype = 'u' AND conrelid = to_regclass('public.email_messages')",
@@ -264,9 +332,75 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
     live_uq = {r[0] for r in rows}
     missing_uq = sorted(set(exp.unique_constraints) - live_uq)
 
+    # Q8: named operator-resolution indexes, including exact owning table and
+    # ordered key columns. A matching name alone is not sufficient.
+    rows = conn.execute(
+        "SELECT idx.relname, tbl.relname, "
+        "       array_agg(a.attname ORDER BY key.ordinality) "
+        "FROM pg_index i "
+        "JOIN pg_class idx ON idx.oid = i.indexrelid "
+        "JOIN pg_class tbl ON tbl.oid = i.indrelid "
+        "JOIN pg_namespace ns ON ns.oid = tbl.relnamespace "
+        "CROSS JOIN LATERAL "
+        "     unnest(i.indkey::smallint[]) WITH ORDINALITY "
+        "     AS key(attnum, ordinality) "
+        "JOIN pg_attribute a ON a.attrelid = tbl.oid AND a.attnum = key.attnum "
+        "WHERE ns.nspname = 'public' AND idx.relname = ANY (%s) "
+        "GROUP BY idx.relname, tbl.relname",
+        (sorted(exp.required_indexes),),
+    ).fetchall()
+    live_indexes: dict[str, IndexSpec] = {
+        name: (table, tuple(columns)) for name, table, columns in rows
+    }
+    missing_indexes = sorted(
+        name
+        for name, spec in exp.required_indexes.items()
+        if live_indexes.get(name) != spec
+    )
+
+    # Q9: named typed-resolution constraints with exact local and referenced
+    # table/column shapes. This detects both absence and malformed relationships.
+    rows = conn.execute(
+        "SELECT c.conname, rel.relname, c.contype, "
+        "       ARRAY(SELECT a.attname "
+        "             FROM unnest(c.conkey) WITH ORDINALITY AS key(attnum, ordinality) "
+        "             JOIN pg_attribute a "
+        "               ON a.attrelid = c.conrelid AND a.attnum = key.attnum "
+        "             ORDER BY key.ordinality), "
+        "       ref.relname, "
+        "       ARRAY(SELECT a.attname "
+        "             FROM unnest(c.confkey) WITH ORDINALITY AS key(attnum, ordinality) "
+        "             JOIN pg_attribute a "
+        "               ON a.attrelid = c.confrelid AND a.attnum = key.attnum "
+        "             ORDER BY key.ordinality) "
+        "FROM pg_constraint c "
+        "JOIN pg_class rel ON rel.oid = c.conrelid "
+        "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
+        "LEFT JOIN pg_class ref ON ref.oid = c.confrelid "
+        "WHERE ns.nspname = 'public' AND c.conname = ANY (%s)",
+        (sorted(exp.required_constraints),),
+    ).fetchall()
+    live_constraints: dict[str, ConstraintSpec] = {
+        name: (
+            table,
+            kind,
+            tuple(columns),
+            ref_table,
+            tuple(ref_columns),
+        )
+        for name, table, kind, columns, ref_table, ref_columns in rows
+    }
+    missing_constraints = sorted(
+        name
+        for name, spec in exp.required_constraints.items()
+        if live_constraints.get(name) != spec
+    )
+
     return SchemaDiff(
         missing_columns=missing_columns,
         missing_status_values=missing_status,
         missing_purpose_values=missing_purpose,
         missing_unique_constraints=missing_uq,
+        missing_required_indexes=missing_indexes,
+        missing_required_constraints=missing_constraints,
     )
