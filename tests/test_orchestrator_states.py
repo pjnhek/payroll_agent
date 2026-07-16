@@ -206,7 +206,7 @@ def test_pipeline_result_adapter_preserves_every_explicit_result(result):
 @pytest.mark.parametrize("value", [False, 0, "ok", object()])
 def test_pipeline_result_adapter_rejects_every_other_runtime_value(value):
     with pytest.raises(TypeError, match="expected PipelineResult"):
-        normalize_pipeline_result(value)  # type: ignore[arg-type]
+        normalize_pipeline_result(value)
 
 
 def test_pipeline_result_source_guard_requires_explicit_producers_without_error_persistence():
@@ -327,6 +327,7 @@ def test_extraction_result_classification_is_retryable_without_persisting_error(
     fake_repo, monkeypatch
 ):
     import app.pipeline.orchestrator as orchestrator_module
+    from app.db import repo as repo_module
 
     sensitive = "employee SECRET-NAME in provider payload"
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
@@ -342,7 +343,7 @@ def test_extraction_result_classification_is_retryable_without_persisting_error(
         ),
     )
     monkeypatch.setattr(
-        orchestrator_module.repo,
+        repo_module,
         "record_run_error",
         lambda *args, **_kwargs: persisted_errors.append(args),
     )
@@ -365,6 +366,7 @@ def test_compute_result_classification_is_terminal_without_persisting_error(
     fake_repo, mock_llm, monkeypatch
 ):
     import app.pipeline.orchestrator as orchestrator_module
+    from app.db import repo as repo_module
 
     _clean_script(mock_llm)
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
@@ -377,7 +379,7 @@ def test_compute_result_classification_is_terminal_without_persisting_error(
         ),
     )
     monkeypatch.setattr(
-        orchestrator_module.repo,
+        repo_module,
         "record_run_error",
         lambda *args, **_kwargs: persisted_errors.append(args),
     )
@@ -399,20 +401,20 @@ def test_compute_result_classification_is_terminal_without_persisting_error(
 def test_persist_result_classification_is_terminal_without_persisting_error(
     fake_repo, mock_llm, monkeypatch
 ):
-    import app.pipeline.orchestrator as orchestrator_module
+    from app.db import repo as repo_module
 
     _clean_script(mock_llm)
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
     persisted_errors: list[tuple[object, ...]] = []
     monkeypatch.setattr(
-        orchestrator_module.repo,
+        repo_module,
         "persist_extracted",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("employee SECRET-NAME in persistence failure")
         ),
     )
     monkeypatch.setattr(
-        orchestrator_module.repo,
+        repo_module,
         "record_run_error",
         lambda *args, **_kwargs: persisted_errors.append(args),
     )
@@ -431,7 +433,7 @@ def test_persist_result_classification_is_terminal_without_persisting_error(
 def test_clarification_result_classification_is_terminal_and_attempts_send_once(
     fake_repo, mock_llm, monkeypatch
 ):
-    import app.pipeline.orchestrator as orchestrator_module
+    from app.pipeline import clarification as clarification_module
 
     mock_llm.script = [
         json.dumps(
@@ -455,7 +457,7 @@ def test_clarification_result_classification_is_terminal_and_attempts_send_once(
             request=httpx.Request("POST", "https://provider.invalid"),
         )
 
-    monkeypatch.setattr(orchestrator_module.clarification, "clarify", _fail_ambiguous_send)
+    monkeypatch.setattr(clarification_module, "clarify", _fail_ambiguous_send)
 
     result = run_pipeline(run_id)
 

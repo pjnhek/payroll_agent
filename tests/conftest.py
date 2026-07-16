@@ -790,17 +790,17 @@ class InMemoryRepo:
     def enqueue_job(
         self,
         *,
-        kind,
-        dedup_key,
-        run_id=None,
-        email_id=None,
-        operator_resolution_id=None,
-        business_id=None,
-        max_attempts=None,
-        available_in_seconds=0.0,
-        safe_last_error=None,
-        conn=None,
-    ):
+        kind: Any,
+        dedup_key: str,
+        run_id: uuid.UUID | None = None,
+        email_id: uuid.UUID | None = None,
+        operator_resolution_id: uuid.UUID | None = None,
+        business_id: uuid.UUID | None = None,
+        max_attempts: int | None = None,
+        available_in_seconds: float = 0.0,
+        safe_last_error: str | None = None,
+        conn: Any = None,
+    ) -> uuid.UUID | None:
         """Mirror repo.enqueue_job's exact kind-specific identifier contracts.
 
         Validation happens before touching ``self.jobs``. A second enqueue with
@@ -997,8 +997,13 @@ class InMemoryRepo:
         return SettlementOutcome.RETRIED
 
     def settle_pipeline_job(
-        self, job, result, *, backoff_seconds, conn=None
-    ):
+        self,
+        job: Any,
+        result: Any,
+        *,
+        backoff_seconds: float,
+        conn: Any = None,
+    ) -> Any:
         """Mirror the fenced classified settlement matrix atomically."""
         from app.db.repo.job_settlement import SettlementOutcome
         from app.pipeline.result import PipelineOutcome
@@ -1404,8 +1409,11 @@ class InMemoryRepo:
         self.operator_resume_resolutions[key] = dict(normalized)
 
     def load_operator_resume_resolution(
-        self, run_id, operator_resolution_id, conn=None
-    ):
+        self,
+        run_id: uuid.UUID,
+        operator_resolution_id: uuid.UUID,
+        conn: Any = None,
+    ) -> dict[str, str]:
         """Return a defensive copy of one exact run/resolution mapping."""
         from app.db.repo.operator_resume_resolutions import _uuid_text
 

@@ -352,10 +352,15 @@ def test_background_bridges_do_not_retry_in_memory_or_schedule_recursively():
 def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
     calls: list[uuid.UUID] = []
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        calls.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
         pipeline_glue,
         "run_pipeline_now",
-        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+        _run,
     )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
@@ -367,10 +372,15 @@ def test_handler_attempts_1_received_cas_wins_and_pipeline_runs(fake_repo, monke
 def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.COMPUTED)
     calls: list[uuid.UUID] = []
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        calls.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
         pipeline_glue,
         "run_pipeline_now",
-        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+        _run,
     )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=1))
@@ -382,10 +392,15 @@ def test_handler_attempts_1_computed_cas_loses_no_run(fake_repo, monkeypatch):
 def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
     calls: list[uuid.UUID] = []
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        calls.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
         pipeline_glue,
         "run_pipeline_now",
-        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+        _run,
     )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
@@ -397,10 +412,15 @@ def test_handler_attempts_2_extracting_rewinds_then_cas_wins(fake_repo, monkeypa
 def test_handler_attempts_2_reconciled_rewind_is_a_noop_cas_loses(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECONCILED)
     calls: list[uuid.UUID] = []
+
+    def _run(rid: uuid.UUID) -> PipelineResult:
+        calls.append(rid)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
         pipeline_glue,
         "run_pipeline_now",
-        lambda rid: calls.append(rid) or PipelineResult(outcome=PipelineOutcome.OK),
+        _run,
     )
 
     pipeline.handle_run_pipeline(_job(run_id=run_id, attempts=2))
@@ -597,11 +617,20 @@ def test_final_attempt_reap_runs_only_after_empty_claim_and_stays_truthy(
     from app.db.repo.job_settlement import SettlementOutcome
 
     calls: list[str] = []
-    monkeypatch.setattr(repo, "claim_job", lambda: calls.append("claim") or None)
+
+    def _claim():
+        calls.append("claim")
+        return None
+
+    def _reap() -> SettlementOutcome:
+        calls.append("reap")
+        return SettlementOutcome.REAPED_FINAL_LEASE
+
+    monkeypatch.setattr(repo, "claim_job", _claim)
     monkeypatch.setattr(
         repo,
         "reap_expired_final_attempt",
-        lambda: calls.append("reap") or SettlementOutcome.REAPED_FINAL_LEASE,
+        _reap,
     )
 
     outcome = drain.drain_once()
@@ -1251,6 +1280,206 @@ def test_the_guard_actually_resolves_the_queue_tiers_real_calls() -> None:
     assert "settle_pipeline_job" in func_names
     assert "settle_infrastructure_failure" in func_names
     assert "reap_expired_final_attempt" in func_names
+
+
+# ── PipelineResult-only call graph guard ──────────────────────────────────
+
+
+_RESULT_PRODUCER_FUNCTIONS: dict[pathlib.Path, set[str]] = {
+    REPO_ROOT / "app/pipeline/orchestrator.py": {"run_pipeline", "resume_pipeline"},
+    REPO_ROOT / "app/routes/pipeline_glue.py": {
+        "run_pipeline_now",
+        "resume_pipeline_now",
+    },
+    REPO_ROOT / "app/queue/handlers/pipeline.py": {"handle_run_pipeline"},
+    REPO_ROOT / "app/queue/handlers/resume_reply.py": {"handle_resume_reply"},
+    REPO_ROOT / "app/queue/handlers/operator_resume.py": {"handle_operator_resume"},
+    REPO_ROOT / "app/queue/dispatch.py": {"handle"},
+}
+_RESULT_CONSUMER_FUNCTIONS: dict[pathlib.Path, set[str]] = {
+    REPO_ROOT / "app/routes/pipeline_glue.py": {
+        "_consume_background_result",
+        "run_pipeline_bg",
+        "resume_pipeline_bg",
+        "operator_resume_bg",
+    },
+    REPO_ROOT / "app/queue/drain.py": {"drain_once"},
+}
+_RESULT_CALL_NAMES = {
+    "_run",
+    "run_pipeline",
+    "resume_pipeline",
+    "run_pipeline_now",
+    "resume_pipeline_now",
+    "handler",
+    "handle",
+}
+
+
+def _final_call_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _result_contract_violations(
+    source: str,
+    *,
+    function_names: set[str],
+    strict_return_names: set[str],
+) -> tuple[list[str], set[str], set[str]]:
+    """Return violations, discovered functions, and result-bearing call targets."""
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in function_names
+    }
+    violations: list[str] = []
+    observed_calls: set[str] = set()
+
+    for name, function in functions.items():
+        if name in strict_return_names:
+            annotation = ast.unparse(function.returns) if function.returns else ""
+            if annotation != "PipelineResult":
+                violations.append(
+                    f"{name}: return annotation must be PipelineResult, got {annotation!r}"
+                )
+            for node in ast.walk(function):
+                if isinstance(node, ast.Return) and (
+                    node.value is None
+                    or isinstance(node.value, ast.Constant)
+                    and node.value.value is None
+                ):
+                    violations.append(f"{name}:{node.lineno}: returns None")
+
+        parents = _parent_map(function)
+        result_assignments: set[str] = set()
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = _final_call_name(node)
+            if call_name not in _RESULT_CALL_NAMES:
+                continue
+            observed_calls.add(call_name)
+
+            current: ast.AST = node
+            parent = parents.get(current)
+            while isinstance(parent, (ast.Call, ast.Attribute, ast.keyword)):
+                current = parent
+                parent = parents.get(current)
+            if not isinstance(parent, (ast.Return, ast.Assign, ast.AnnAssign)):
+                violations.append(
+                    f"{name}:{node.lineno}: result call {call_name} is discarded "
+                    "or consumed without assignment/return"
+                )
+            if isinstance(parent, (ast.Assign, ast.AnnAssign)):
+                targets = parent.targets if isinstance(parent, ast.Assign) else [parent.target]
+                result_assignments.update(
+                    target.id for target in targets if isinstance(target, ast.Name)
+                )
+
+        for node in ast.walk(function):
+            if not isinstance(node, (ast.If, ast.While)):
+                continue
+            test = node.test
+            shortcut = (
+                test.id
+                if isinstance(test, ast.Name)
+                else test.operand.id
+                if isinstance(test, ast.UnaryOp)
+                and isinstance(test.op, ast.Not)
+                and isinstance(test.operand, ast.Name)
+                else None
+            )
+            if shortcut in result_assignments:
+                violations.append(
+                    f"{name}:{node.lineno}: PipelineResult {shortcut} used as truthy/falsy"
+                )
+
+    return violations, set(functions), observed_calls
+
+
+def test_pipeline_result_call_graph_is_exact_non_vacuous_and_has_no_sinks() -> None:
+    """Every active result seam is exact, present, and mechanically consumed."""
+    all_specs: dict[pathlib.Path, set[str]] = {}
+    for path, names in (*_RESULT_PRODUCER_FUNCTIONS.items(), *_RESULT_CONSUMER_FUNCTIONS.items()):
+        all_specs.setdefault(path, set()).update(names)
+
+    violations: list[str] = []
+    discovered: set[tuple[pathlib.Path, str]] = set()
+    observed_calls: set[str] = set()
+    for path, names in all_specs.items():
+        file_violations, file_functions, file_calls = _result_contract_violations(
+            path.read_text(encoding="utf-8"),
+            function_names=names,
+            strict_return_names=_RESULT_PRODUCER_FUNCTIONS.get(path, set()),
+        )
+        violations.extend(f"{path.relative_to(REPO_ROOT)}: {item}" for item in file_violations)
+        discovered.update((path, name) for name in file_functions)
+        observed_calls.update(file_calls)
+
+    expected = {
+        (path, name)
+        for path, names in all_specs.items()
+        for name in names
+    }
+    assert discovered == expected, (
+        "result inventory drifted; missing="
+        f"{sorted((str(p), n) for p, n in expected - discovered)}, extra="
+        f"{sorted((str(p), n) for p, n in discovered - expected)}"
+    )
+    assert observed_calls >= {
+        "_run",
+        "run_pipeline",
+        "resume_pipeline",
+        "run_pipeline_now",
+        "resume_pipeline_now",
+        "handler",
+        "handle",
+    }, f"result call inventory was vacuous or incomplete: {sorted(observed_calls)}"
+    assert not violations, "PipelineResult call-graph violation(s):\n" + "\n".join(violations)
+
+    result_source = (REPO_ROOT / "app/pipeline/result.py").read_text(encoding="utf-8")
+    result_tree = ast.parse(result_source)
+    normalizer = next(
+        node
+        for node in result_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "normalize_pipeline_result"
+    )
+    assert normalizer.args.args[0].annotation is not None
+    assert normalizer.returns is not None
+    assert ast.unparse(normalizer.args.args[0].annotation) == "PipelineResult"
+    assert ast.unparse(normalizer.returns) == "PipelineResult"
+
+
+def test_pipeline_result_call_graph_guard_rejects_optional_discarded_and_truthy_results() -> None:
+    """Positive anti-vacuity proof: representative compatibility mutations fail closed."""
+    hostile = """
+def producer() -> PipelineResult | None:
+    return None
+
+def consumer() -> None:
+    run_pipeline()
+    result = resume_pipeline()
+    if result:
+        pass
+"""
+    violations, discovered, observed = _result_contract_violations(
+        hostile,
+        function_names={"producer", "consumer"},
+        strict_return_names={"producer"},
+    )
+
+    assert discovered == {"producer", "consumer"}
+    assert observed == {"run_pipeline", "resume_pipeline"}
+    assert any("return annotation" in violation for violation in violations)
+    assert any("returns None" in violation for violation in violations)
+    assert any("result call run_pipeline is discarded" in violation for violation in violations)
+    assert any("used as truthy/falsy" in violation for violation in violations)
 
 
 def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):

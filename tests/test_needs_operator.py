@@ -202,11 +202,15 @@ def test_operator_resume_reclaims_without_advancing_epoch(fake_repo, monkeypatch
         {"Jimmy": "e0000002-0000-0000-0000-000000000002"},
     )
     calls: list[dict[str, str]] = []
+
+    def _resume(_rid, _inbound, *, overrides, **_kwargs) -> PipelineResult:
+        calls.append(overrides)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
         orchestrator,
         "resume_pipeline",
-        lambda _rid, _inbound, *, overrides, **_kwargs: calls.append(overrides)
-        or PipelineResult(outcome=PipelineOutcome.OK),
+        _resume,
     )
 
     assert operator_resume.handle_operator_resume(
@@ -459,8 +463,10 @@ def test_operator_resume_background_retry_is_identifier_only_and_durable(
         return retry
 
     wakes: list[str] = []
+    from app.queue import wake
+
     monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", producer)
-    monkeypatch.setattr(pipeline_glue.wake, "wake", lambda: wakes.append("wake"))
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
 
     pipeline_glue.operator_resume_bg(run_id, resolution_id)
 

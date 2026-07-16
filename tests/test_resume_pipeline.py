@@ -221,11 +221,15 @@ def test_resume_reply_handler_reclaims_without_advancing_epoch(
     run["reply_epoch"] = 7
 
     calls: list[InboundEmail] = []
+
+    def _resume(_rid, inbound, **_kwargs) -> PipelineResult:
+        calls.append(inbound)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
     monkeypatch.setattr(
         orchestrator,
         "resume_pipeline",
-        lambda _rid, inbound, **_kwargs: calls.append(inbound)
-        or PipelineResult(outcome=PipelineOutcome.OK),
+        _resume,
     )
 
     assert (
@@ -489,6 +493,7 @@ def test_resume_result_classification_is_retryable_without_persisting_error(
     fake_repo, monkeypatch
 ):
     import app.pipeline.orchestrator as orch_mod
+    from app.db import repo as repo_module
 
     run_id = _seed_run(fake_repo, body="Maria Chen 40 regular")
     _set_run_awaiting_reply(fake_repo, run_id)
@@ -504,7 +509,7 @@ def test_resume_result_classification_is_retryable_without_persisting_error(
         ),
     )
     monkeypatch.setattr(
-        orch_mod.repo,
+        repo_module,
         "record_run_error",
         lambda *args, **_kwargs: persisted_errors.append(args),
     )

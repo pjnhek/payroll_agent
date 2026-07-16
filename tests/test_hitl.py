@@ -342,9 +342,10 @@ def test_retrigger_is_only_public_retry_action():
     from app.routes.runs import router
 
     mutation_paths = {
-        route.path
+        path
         for route in router.routes
         if "POST" in (getattr(route, "methods", None) or set())
+        if isinstance(path := getattr(route, "path", None), str)
     }
     assert "/runs/{run_id}/retrigger" in mutation_paths
     assert not any(path.endswith("/retry") for path in mutation_paths)

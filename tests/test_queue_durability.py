@@ -403,9 +403,13 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert repo.settle_pipeline_job(
         job, retryable, backoff_seconds=5.0
     ) is SettlementOutcome.RETRIED
-    assert repo.get_job(job_id)["state"] == "pending"
-    assert repo.load_run(run_id)["status"] == RunStatus.RECEIVED.value
-    assert repo.load_run(run_id)["error_reason"] is None
+    retry_job_row = repo.get_job(job_id)
+    retry_run_row = repo.load_run(run_id)
+    assert retry_job_row is not None
+    assert retry_run_row is not None
+    assert retry_job_row["state"] == "pending"
+    assert retry_run_row["status"] == RunStatus.RECEIVED.value
+    assert retry_run_row["error_reason"] is None
 
     exhausted_run = _seed_run_for_queue_proof()
     repo.set_status(exhausted_run, RunStatus.EXTRACTING)
@@ -421,8 +425,11 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert repo.settle_pipeline_job(
         exhausted, retryable, backoff_seconds=5.0
     ) is SettlementOutcome.DEAD
-    assert repo.get_job(exhausted_id)["state"] == "dead"
+    exhausted_job_row = repo.get_job(exhausted_id)
+    assert exhausted_job_row is not None
+    assert exhausted_job_row["state"] == "dead"
     exhausted_row = repo.load_run(exhausted_run)
+    assert exhausted_row is not None
     assert exhausted_row["status"] == RunStatus.ERROR.value
     assert exhausted_row["error_reason"] == "RetryExhausted"
     assert "1/1" in exhausted_row["error_detail"]
@@ -445,8 +452,12 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert repo.settle_pipeline_job(
         terminal_job, terminal, backoff_seconds=5.0
     ) is SettlementOutcome.DONE
-    assert repo.get_job(terminal_id)["state"] == "done"
-    assert repo.load_run(terminal_run)["status"] == RunStatus.ERROR.value
+    terminal_job_row = repo.get_job(terminal_id)
+    terminal_run_row = repo.load_run(terminal_run)
+    assert terminal_job_row is not None
+    assert terminal_run_row is not None
+    assert terminal_job_row["state"] == "done"
+    assert terminal_run_row["status"] == RunStatus.ERROR.value
 
 
 def test_final_attempt_reap_exact_predicate_fence_and_rollback(
@@ -485,15 +496,25 @@ def test_final_attempt_reap_exact_predicate_fence_and_rollback(
     assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
     exact_row = repo.get_job(exact_job)
     exact_run_row = repo.load_run(exact_run)
+    assert exact_row is not None
+    assert exact_run_row is not None
     assert exact_row["state"] == "dead"
     assert exact_row["last_error"] == "extract:provider_timeout"
     assert exact_run_row["status"] == RunStatus.ERROR.value
     assert exact_run_row["error_reason"] == "FinalAttemptLeaseExpired"
     assert "provider_timeout" not in exact_run_row["error_detail"]
-    assert repo.get_job(below_job)["state"] == "leased"
-    assert repo.load_run(below_run)["status"] == RunStatus.EXTRACTING.value
-    assert repo.get_job(unexpired_job)["state"] == "leased"
-    assert repo.load_run(unexpired_run)["status"] == RunStatus.EXTRACTING.value
+    below_job_row = repo.get_job(below_job)
+    below_run_row = repo.load_run(below_run)
+    unexpired_job_row = repo.get_job(unexpired_job)
+    unexpired_run_row = repo.load_run(unexpired_run)
+    assert below_job_row is not None
+    assert below_run_row is not None
+    assert unexpired_job_row is not None
+    assert unexpired_run_row is not None
+    assert below_job_row["state"] == "leased"
+    assert below_run_row["status"] == RunStatus.EXTRACTING.value
+    assert unexpired_job_row["state"] == "leased"
+    assert unexpired_run_row["status"] == RunStatus.EXTRACTING.value
     assert repo.reap_expired_final_attempt() is None
     with repo.get_connection() as conn, conn.transaction():
         conn.execute(
@@ -504,8 +525,12 @@ def test_final_attempt_reap_exact_predicate_fence_and_rollback(
     fenced_run, fenced_job = _leased_job(max_attempts=1, expired=True)
     repo.set_status(fenced_run, RunStatus.COMPUTED)
     assert repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
-    assert repo.get_job(fenced_job)["state"] == "leased"
-    assert repo.load_run(fenced_run)["status"] == RunStatus.COMPUTED.value
+    fenced_job_row = repo.get_job(fenced_job)
+    fenced_run_row = repo.load_run(fenced_run)
+    assert fenced_job_row is not None
+    assert fenced_run_row is not None
+    assert fenced_job_row["state"] == "leased"
+    assert fenced_run_row["status"] == RunStatus.COMPUTED.value
     with repo.get_connection() as conn, conn.transaction():
         conn.execute(
             "UPDATE jobs SET leased_until = now() + interval '60 seconds' WHERE id = %s",
@@ -522,8 +547,12 @@ def test_final_attempt_reap_exact_predicate_fence_and_rollback(
     monkeypatch.setattr(job_settlement, "_set_run_error", _raise_after_run_write)
     with pytest.raises(RuntimeError, match="injected reap half-failure"):
         repo.reap_expired_final_attempt()
-    assert repo.get_job(rollback_job)["state"] == "leased"
-    assert repo.load_run(rollback_run)["status"] == RunStatus.EXTRACTING.value
+    rollback_job_row = repo.get_job(rollback_job)
+    rollback_run_row = repo.load_run(rollback_run)
+    assert rollback_job_row is not None
+    assert rollback_run_row is not None
+    assert rollback_job_row["state"] == "leased"
+    assert rollback_run_row["status"] == RunStatus.EXTRACTING.value
 
 
 def test_pump_reaps_expired_final_attempt_once(
@@ -694,7 +723,9 @@ def test_operator_resume_retry_half_failure_rolls_back_run_and_preserves_resolut
             run_id, resolution_id, retryable, available_in_seconds=5.0
         )
 
-    assert repo.load_run(run_id)["status"] == RunStatus.EXTRACTING.value
+    run_row = repo.load_run(run_id)
+    assert run_row is not None
+    assert run_row["status"] == RunStatus.EXTRACTING.value
     assert repo.load_operator_resume_resolution(run_id, resolution_id) == {
         "private submitted name": str(employee_id)
     }
