@@ -275,6 +275,9 @@ def test_operator_resume_rejects_partial_extra_cross_business_and_wrong_run_cont
         for result in results
     )
     assert "SECRET" not in caplog.text
+    assert "e0000001" not in caplog.text
+    assert "e0000002" not in caplog.text
+    assert "e0000003" not in caplog.text
 
 
 def test_operator_resume_requires_both_durable_identifiers(fake_repo) -> None:
@@ -323,6 +326,38 @@ def test_operator_resume_resolution_uuid_scopes_distinct_same_epoch_jobs(fake_re
     assert first_job is not None
     assert duplicate is None
     assert second_job is not None and second_job != first_job
+
+
+def test_operator_resume_same_resolution_redelivery_is_cas_idempotent(
+    fake_repo, monkeypatch
+) -> None:
+    from app.pipeline import orchestrator
+    from app.queue.handlers import operator_resume
+
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.RECEIVED.value
+    resolution_id = uuid.uuid4()
+    overrides = {"Jimmy": "e0000002-0000-0000-0000-000000000002"}
+    fake_repo.create_operator_resume_resolution(run_id, resolution_id, overrides)
+    winners: list[dict[str, str]] = []
+
+    def _resume(rid, _inbound, *, from_status, overrides, **_kwargs):
+        if fake_repo.claim_status(rid, from_status, RunStatus.EXTRACTING):
+            winners.append(overrides)
+
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _resume)
+    job = _operator_resume_job(
+        run_id=run_id,
+        operator_resolution_id=resolution_id,
+    )
+
+    operator_resume.handle_operator_resume(job)
+    operator_resume.handle_operator_resume(job)
+
+    assert winners == [overrides]
 
 
 def _bare_extracted(run_id: uuid.UUID) -> Extracted:

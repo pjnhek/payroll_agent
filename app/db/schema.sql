@@ -465,7 +465,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     -- DEVIATION 1: an earlier full design lists four eventual kinds
     -- ('ingest','run_pipeline','resume_reply','operator_resume'). Only
-    -- 'run_pipeline' and 'resume_reply' have real handlers today, and the CI drift guard for this
+    -- All three declared values have real handlers today; the CI drift guard for this
     -- table asserts set(JobKind) == set(dispatch.HANDLERS) — set EQUALITY.
     -- Declaring three kinds with no handler makes that guard permanently
     -- unsatisfiable. Widening this CHECK later (once `jobs` holds live rows)
@@ -476,7 +476,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- inline CHECK is correct and deliberately adds NO third conkey-anchored
     -- DO-block (test_do_block_constraint_drops_are_column_anchored's count of
     -- 2 stays correct).
-    kind          TEXT        NOT NULL CHECK (kind IN ('run_pipeline','resume_reply')),
+    kind          TEXT        NOT NULL CHECK (kind IN ('run_pipeline','resume_reply','operator_resume')),
     dedup_key     TEXT        NOT NULL,
     -- DEVIATION 3: an earlier full design cascades this FK on delete. This
     -- table deliberately does NOT cascade, matching the email_messages
@@ -558,6 +558,12 @@ CREATE TABLE IF NOT EXISTS jobs (
             run_id IS NOT NULL AND email_id IS NOT NULL
             AND operator_resolution_id IS NULL
         )
+    ),
+    CONSTRAINT ck_jobs_operator_resume_context CHECK (
+        kind <> 'operator_resume' OR (
+            run_id IS NOT NULL AND operator_resolution_id IS NOT NULL
+            AND email_id IS NULL
+        )
     )
 );
 
@@ -621,13 +627,21 @@ BEGIN
     END LOOP;
 
     ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
-        CHECK (kind IN ('run_pipeline','resume_reply'));
+        CHECK (kind IN ('run_pipeline','resume_reply','operator_resume'));
 
     ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_resume_reply_context;
     ALTER TABLE jobs ADD CONSTRAINT ck_jobs_resume_reply_context CHECK (
         kind <> 'resume_reply' OR (
             run_id IS NOT NULL AND email_id IS NOT NULL
             AND operator_resolution_id IS NULL
+        )
+    );
+
+    ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_operator_resume_context;
+    ALTER TABLE jobs ADD CONSTRAINT ck_jobs_operator_resume_context CHECK (
+        kind <> 'operator_resume' OR (
+            run_id IS NOT NULL AND operator_resolution_id IS NOT NULL
+            AND email_id IS NULL
         )
     );
 END;

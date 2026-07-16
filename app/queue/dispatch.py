@@ -24,11 +24,12 @@ from typing import cast
 
 from app.models.job import Job, JobKind
 from app.pipeline.result import PipelineResult
-from app.queue.handlers import pipeline, resume_reply
+from app.queue.handlers import operator_resume, pipeline, resume_reply
 
 HANDLERS: dict[JobKind, tuple[ModuleType, str]] = {
     JobKind.RUN_PIPELINE: (pipeline, "handle_run_pipeline"),
     JobKind.RESUME_REPLY: (resume_reply, "handle_resume_reply"),
+    JobKind.OPERATOR_RESUME: (operator_resume, "handle_operator_resume"),
 }
 
 
