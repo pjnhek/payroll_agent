@@ -544,6 +544,18 @@ def test_operator_resume_schema_widens_when_handler_lands() -> None:
     assert kind_check.group(1) == "'run_pipeline','resume_reply','operator_resume'"
 
 
+def test_jobs_kind_live_migration_casts_catalog_names_to_text() -> None:
+    """The catalog column is PostgreSQL ``name``; compare text arrays to text arrays."""
+    schema = _schema_sql()
+    migration = schema.split(
+        "-- Live-database migration: widen the canonical kind vocabulary", 1
+    )[1].split("ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check", 1)[0]
+
+    assert re.search(
+        r"array_agg\(a\.attname::text\s+ORDER BY u\.ord\)", migration
+    ), "jobs kind discovery must cast pg_attribute.attname before array_agg"
+
+
 def test_get_inbound_email_by_id_uses_exact_uuid_and_inbound_scope(fake_conn) -> None:
     from app.db.repo.emails import get_inbound_email_by_id
 
