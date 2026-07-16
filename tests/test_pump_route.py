@@ -240,12 +240,13 @@ def test_infra_failure_real_double_failure_chain_through_testclient_returns_503_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The LOAD-BEARING double-failure proof: reuses the exact double-failure
-    fake-repo idiom from
-    tests/test_queue_drain.py (`test_a_failed_fail_job_keeps_the_lease_recorded`)
-    — claim returns a leased job, dispatch.handle raises, repo.fail_job ALSO
-    raises — but drives it through TestClient -> GET /internal/pump instead
-    of calling drain.drain_once() directly, so the REAL drain_once() runs
-    its double-failure branch and RE-RAISES into the route's try/except.
+    fake-repo idiom from tests/test_queue_drain.py
+    (`test_a_failed_infrastructure_settlement_keeps_the_lease_recorded`) —
+    claim returns a leased job, dispatch.handle raises, and
+    repo.settle_infrastructure_failure ALSO raises — but drives it through
+    TestClient -> GET /internal/pump instead of calling drain.drain_once()
+    directly, so the REAL drain_once() runs its double-failure branch and
+    RE-RAISES into the route's try/except.
 
     Neither the narrow drain_once-monkeypatched-to-raise test above, nor a
     count_open_jobs-only test, proves this: both bypass the real
@@ -265,15 +266,30 @@ def test_infra_failure_real_double_failure_chain_through_testclient_returns_503_
     def _outage(*args: object, **kwargs: object) -> None:
         raise RuntimeError("simulated database outage")
 
+    connection_calls = 0
+
+    def _unexpected_connection() -> None:
+        nonlocal connection_calls
+        connection_calls += 1
+        raise AssertionError(
+            "the double-failure proof must patch the settlement seam directly, "
+            "not pass incidentally because a real/fake DB connection raises"
+        )
+
     monkeypatch.setattr(repo, "claim_job", lambda: leased_job)
     monkeypatch.setattr(dispatch, "handle", _outage)  # the handler fails: DB is down
-    monkeypatch.setattr(repo, "fail_job", _outage)  # ...and so does the failure write
+    monkeypatch.setattr(repo, "settle_infrastructure_failure", _outage)
+    monkeypatch.setattr(repo, "get_connection", _unexpected_connection)
 
     client = _client_with_token(monkeypatch, "secret-token")
     try:
         resp = client.get(PUMP_PATH, headers=_auth_header("secret-token"))
 
         assert resp.status_code == 503
+        assert connection_calls == 0, (
+            "the proof reached a DB connection instead of the patched atomic "
+            "infrastructure-settlement seam"
+        )
         assert drain.held_tokens() == [token], (
             "the real drain_once() double-failure branch must RETAIN the lease "
             "token through the HTTP call — lease_settled stayed False, which is "
