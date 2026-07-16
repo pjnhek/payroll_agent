@@ -24,13 +24,41 @@ def test_expected_schema_columns_include_create_and_alter():
     assert {"round", "consumed_round", "epoch"} <= exp.tables["email_messages"]
     # record_only is ALTER-ONLY in schema.sql (schema.sql:125) — proves the ALTER parse works
     assert "record_only" in exp.tables["payroll_runs"]
-    assert "operator_resolution_id" in exp.tables["jobs"]
+    assert {"operator_resolution_id", "event_id"} <= exp.tables["jobs"]
+    assert exp.tables["inbound_events"] == frozenset(
+        {"id", "external_event_id", "payload", "received_at"}
+    )
     assert exp.tables["operator_resume_resolutions"] == frozenset(
-        {"id", "run_id", "created_at"}
+        {"id", "run_id", "authoritative", "superseded_by", "created_at"}
     )
     assert exp.tables["operator_resume_overrides"] == frozenset(
-        {"operator_resolution_id", "submitted_name", "employee_id", "created_at"}
+        {
+            "operator_resolution_id",
+            "submitted_name",
+            "employee_id",
+            "remember",
+            "created_at",
+        }
     )
+    assert exp.tables["operator_resolution_writer_fence"] == frozenset(
+        {"singleton", "writes_open", "updated_at"}
+    )
+
+
+def test_expected_schema_phase19_column_types_are_exact():
+    exp = expected_schema()
+    assert exp.required_column_specs == {
+        ("inbound_events", "id"): ("uuid", False),
+        ("inbound_events", "external_event_id"): ("text", False),
+        ("inbound_events", "payload"): ("jsonb", False),
+        ("inbound_events", "received_at"): ("timestamp with time zone", False),
+        ("jobs", "event_id"): ("uuid", True),
+        ("operator_resume_resolutions", "authoritative"): ("boolean", False),
+        ("operator_resume_resolutions", "superseded_by"): ("uuid", True),
+        ("operator_resume_overrides", "remember"): ("boolean", False),
+        ("operator_resolution_writer_fence", "singleton"): ("boolean", False),
+        ("operator_resolution_writer_fence", "writes_open"): ("boolean", False),
+    }
 
 
 def test_expected_schema_excludes_table_constraints_as_columns():
@@ -53,7 +81,21 @@ def test_expected_schema_check_and_unique_values():
         "idx_operator_resume_resolutions_run_id": (
             "operator_resume_resolutions",
             ("run_id",),
-        )
+            False,
+            None,
+        ),
+        "idx_inbound_events_received_at": (
+            "inbound_events",
+            ("received_at",),
+            False,
+            None,
+        ),
+        "uq_operator_resume_authoritative_run": (
+            "operator_resume_resolutions",
+            ("run_id",),
+            True,
+            "authoritative",
+        ),
     }
     assert exp.required_constraints == {
         "fk_jobs_operator_resolution": (
@@ -62,6 +104,17 @@ def test_expected_schema_check_and_unique_values():
             ("operator_resolution_id",),
             "operator_resume_resolutions",
             ("id",),
+            "a",
+            None,
+        ),
+        "fk_jobs_inbound_event": (
+            "jobs",
+            "f",
+            ("event_id",),
+            "inbound_events",
+            ("id",),
+            "n",
+            None,
         ),
         "operator_resume_overrides_pkey": (
             "operator_resume_overrides",
@@ -69,6 +122,8 @@ def test_expected_schema_check_and_unique_values():
             ("operator_resolution_id", "submitted_name"),
             None,
             (),
+            None,
+            None,
         ),
         "operator_resume_overrides_operator_resolution_id_fkey": (
             "operator_resume_overrides",
@@ -76,6 +131,8 @@ def test_expected_schema_check_and_unique_values():
             ("operator_resolution_id",),
             "operator_resume_resolutions",
             ("id",),
+            "a",
+            None,
         ),
         "operator_resume_overrides_employee_id_fkey": (
             "operator_resume_overrides",
@@ -83,7 +140,54 @@ def test_expected_schema_check_and_unique_values():
             ("employee_id",),
             "employees",
             ("id",),
+            "a",
+            None,
         ),
+        "fk_operator_resume_superseded_by": (
+            "operator_resume_resolutions",
+            "f",
+            ("superseded_by",),
+            "operator_resume_resolutions",
+            ("id",),
+            "a",
+            None,
+        ),
+        "uq_inbound_events_external_event_id": (
+            "inbound_events",
+            "u",
+            ("external_event_id",),
+            None,
+            (),
+            None,
+            None,
+        ),
+        "operator_resolution_writer_fence_pkey": (
+            "operator_resolution_writer_fence",
+            "p",
+            ("singleton",),
+            None,
+            (),
+            None,
+            None,
+        ),
+        "ck_operator_resolution_writer_fence_singleton": (
+            "operator_resolution_writer_fence",
+            "c",
+            ("singleton",),
+            None,
+            (),
+            None,
+            "CHECK (singleton)",
+        ),
+    }
+    assert exp.required_triggers == {
+        "trg_operator_resolution_writer_fence": (
+            "operator_resume_resolutions",
+            "enforce_operator_resolution_writer_fence",
+            "O",
+            True,
+            True,
+        )
     }
 
 
@@ -117,12 +221,15 @@ def _script_in_sync(
     malformed_index: str | None = None,
     drop_constraint: str | None = None,
     malformed_constraint: str | None = None,
+    drop_trigger: str | None = None,
+    malformed_trigger: str | None = None,
+    malformed_column: tuple[str, str] | None = None,
 ) -> None:
-    """Script the 9 diff_against_live queries in their explicit order.
+    """Script the Phase 19 diff queries in their explicit order.
 
-    Queries 1-5 fetch one column set for each expected table in insertion order.
-    Queries 6-9 fetch status/purpose checks, legacy unique constraints, required
-    named indexes, and required named constraints respectively.
+    The first queries fetch one typed column set per expected table in insertion
+    order. The final queries fetch status/purpose checks, legacy unique constraints,
+    required named indexes, constraints, and triggers respectively.
     """
     from app.db.schema_introspect import expected_schema
 
@@ -138,30 +245,54 @@ def _script_in_sync(
         status_def = status_def.replace(f", '{drop_status}'::text", "")
     uq_present = set() if drop_uq else {"uq_email_run_purpose_round_epoch"}
     for table in exp.tables:
-        conn.script_fetchall([(column,) for column in live_tables[table]])
+        rows = []
+        for column in live_tables[table]:
+            spec = exp.required_column_specs.get((table, column))
+            data_type, nullable = spec if spec is not None else ("text", True)
+            if malformed_column == (table, column):
+                data_type = "text" if data_type != "text" else "uuid"
+            rows.append((column, data_type, "YES" if nullable else "NO"))
+        conn.script_fetchall(rows)
     conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])
     conn.script_fetchall([(name,) for name in uq_present])
 
     index_rows = [
-        (name, table, list(columns))
-        for name, (table, columns) in exp.required_indexes.items()
+        (name, table, list(columns), unique, predicate)
+        for name, (table, columns, unique, predicate) in exp.required_indexes.items()
         if name != drop_index
     ]
     if malformed_index:
         index_rows = [
-            (name, table, ["created_at"] if name == malformed_index else columns)
-            for name, table, columns in index_rows
+            (
+                name,
+                table,
+                ["created_at"] if name == malformed_index else columns,
+                unique,
+                predicate,
+            )
+            for name, table, columns, unique, predicate in index_rows
         ]
     conn.script_fetchall(index_rows)
 
     constraint_rows = [
-        (name, table, kind, list(columns), ref_table, list(ref_columns))
+        (
+            name,
+            table,
+            kind,
+            list(columns),
+            ref_table,
+            list(ref_columns),
+            delete_action,
+            definition,
+        )
         for name, (
             table,
             kind,
             columns,
             ref_table,
             ref_columns,
+            delete_action,
+            definition,
         ) in exp.required_constraints.items()
         if name != drop_constraint
     ]
@@ -174,10 +305,40 @@ def _script_in_sync(
                 columns,
                 "businesses" if name == malformed_constraint else ref_table,
                 ref_columns,
+                delete_action,
+                definition,
             )
-            for name, table, kind, columns, ref_table, ref_columns in constraint_rows
+            for (
+                name,
+                table,
+                kind,
+                columns,
+                ref_table,
+                ref_columns,
+                delete_action,
+                definition,
+            ) in constraint_rows
         ]
     conn.script_fetchall(constraint_rows)
+
+    trigger_rows = [
+        (name, table, function, enabled, before, insert)
+        for name, (table, function, enabled, before, insert) in exp.required_triggers.items()
+        if name != drop_trigger
+    ]
+    if malformed_trigger:
+        trigger_rows = [
+            (
+                name,
+                table,
+                "wrong_function" if name == malformed_trigger else function,
+                enabled,
+                before,
+                insert,
+            )
+            for name, table, function, enabled, before, insert in trigger_rows
+        ]
+    conn.script_fetchall(trigger_rows)
 
 
 def _diff(conn: FakeConnection) -> SchemaDiff:
@@ -195,12 +356,14 @@ def test_diff_in_sync():
     diff = _diff(conn)
     assert diff.is_in_sync
     assert diff.as_missing_dict() == {}
-    assert len(conn.executed) == 9
-    assert [params for _, params in conn.executed[:5]] == [
+    expected_query_count = len(expected_schema().tables) + 5
+    assert len(conn.executed) == expected_query_count
+    assert [params for _, params in conn.executed[: len(expected_schema().tables)]] == [
         (table,) for table in expected_schema().tables
     ]
-    assert "pg_index" in str(conn.executed[7][0])
-    assert "pg_constraint" in str(conn.executed[8][0])
+    assert "pg_index" in str(conn.executed[-3][0])
+    assert "pg_constraint" in str(conn.executed[-2][0])
+    assert "pg_trigger" in str(conn.executed[-1][0])
 
 
 def test_diff_missing_column():
@@ -230,6 +393,24 @@ def test_diff_missing_operator_resolution_key_column():
     assert diff.missing_columns["jobs"] == ["operator_resolution_id"]
 
 
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("inbound_events", "payload"),
+        ("jobs", "event_id"),
+        ("operator_resume_resolutions", "authoritative"),
+        ("operator_resume_overrides", "remember"),
+        ("operator_resolution_writer_fence", "writes_open"),
+    ],
+)
+def test_diff_rejects_malformed_phase19_column_type(table: str, column: str):
+    conn = FakeConnection()
+    _script_in_sync(conn, malformed_column=(table, column))
+    diff = _diff(conn)
+    assert not diff.is_in_sync
+    assert f"{table}.{column}" in diff.missing_required_columns
+
+
 def test_diff_missing_status_value_live_form():
     conn = FakeConnection()
     _script_in_sync(conn, drop_status="needs_operator")
@@ -246,7 +427,7 @@ def test_diff_missing_unique_constraint():
 
 @pytest.mark.parametrize("malformed", [False, True])
 def test_diff_missing_or_malformed_required_index(malformed: bool):
-    name = "idx_operator_resume_resolutions_run_id"
+    name = "uq_operator_resume_authoritative_run"
     conn = FakeConnection()
     _script_in_sync(
         conn,
@@ -261,7 +442,7 @@ def test_diff_missing_or_malformed_required_index(malformed: bool):
 
 @pytest.mark.parametrize("malformed", [False, True])
 def test_diff_missing_or_malformed_required_constraint(malformed: bool):
-    name = "operator_resume_overrides_employee_id_fkey"
+    name = "fk_jobs_inbound_event"
     conn = FakeConnection()
     _script_in_sync(
         conn,
@@ -272,6 +453,29 @@ def test_diff_missing_or_malformed_required_constraint(malformed: bool):
     assert not diff.is_in_sync
     assert diff.missing_required_constraints == [name]
     assert diff.as_missing_dict()["required_constraints"] == [name]
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_diff_missing_or_malformed_writer_fence_trigger(malformed: bool):
+    name = "trg_operator_resolution_writer_fence"
+    conn = FakeConnection()
+    _script_in_sync(
+        conn,
+        drop_trigger=None if malformed else name,
+        malformed_trigger=name if malformed else None,
+    )
+    diff = _diff(conn)
+    assert not diff.is_in_sync
+    assert diff.missing_required_triggers == [name]
+    assert diff.as_missing_dict()["required_triggers"] == [name]
+
+
+def test_bootstrap_reset_drops_jobs_before_inbound_events():
+    from app.db import bootstrap
+
+    assert bootstrap._DROP_ORDER.index("jobs") < bootstrap._DROP_ORDER.index(
+        "inbound_events"
+    )
 
 
 def test_diff_extra_live_column_is_not_drift():
