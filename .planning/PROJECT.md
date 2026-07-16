@@ -12,6 +12,21 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 ## Current State
 
+**v4 — Durable Execution — IN PROGRESS.** Phase 18 is complete: 3 of 6 phases and 9 of 19 requirements
+are now finished. The queue substrate, external pump, and failure policy are in place before the Phase 19
+webhook cutover, preserving the milestone's required dependency order.
+
+- **Failures settle honestly** — both orchestration entry points return one explicit
+  `ok | retryable | terminal` contract; active consumers no longer accept `None` as success.
+- **Recovery is queue-owned** — replay-safe failures become bounded delayed retries, exhaustion and expired
+  final-attempt leases dead-letter atomically, and operator Retrigger starts a fresh generation without
+  rewriting dead history.
+- **Legacy sweep recovery is gone** — both sweep APIs and every caller/fake/export were deleted, and
+  `GET /runs` is now a side-effect-free read.
+- **Phase 18 evidence** — canonical verification passed **9/9** with a clean 41-file code review; the root
+  hermetic suite passed **900 tests** with 68 guarded skips. The reset-enabled live-Postgres environment was
+  unavailable, so its 17 selected queueproof cases remain additional evidence rather than claimed passes.
+
 **v3 — Production-Ready Codebase — SHIPPED 2026-07-13.** The codebase now reads as production-quality
 without a line of money behavior changed. 4 phases (12–15), 16/16 requirements, 227 commits, audit PASSED.
 
@@ -68,6 +83,16 @@ dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
 ## Requirements
 
 ### Validated
+
+- **Phase 18 (Failure Policy & Sweep Deletion), 2026-07-16:** Initial and clarification-resume orchestration
+  now share one bounded `PipelineResult`; replay-safe failures bridge into durable backoff while terminal work,
+  attempt exhaustion, and expired final-attempt leases settle atomically with bounded diagnostics. Persisted
+  clarification replies must prove exact run ownership before conversion or replay, pump accounting reports
+  final-lease reaping honestly, manual Retrigger preserves dead history while creating a fresh job generation,
+  and the legacy stuck-run sweep surfaces are deleted so viewing the runs list cannot mutate state. Gap closure
+  made final-lease settlement exhaustive and starvation-free and restored always-run resume-handler coverage.
+  Verified 9/9 with a clean standard-depth code review; full hermetic suite 900 passed / 68 guarded skips.
+  FAIL-01, FAIL-02, FAIL-03.
 
 - **Phase 1 (Thin Foundation), 2026-06-21:** The shared contract substrate exists and is proven by tests — the Postgres schema (6 tables, 11-value `payroll_runs.status` enum, `email_messages.message_id` idempotency UNIQUE), the shared `app/models/` Pydantic v2 contracts imported by both pipeline and eval, and seed data covering 3 businesses / 6 employees across every calc path and name-match case (happy-path + name-mismatch). FOUND-01, FOUND-02, FOUND-03, FOUND-05, FOUND-06. (Live-DB round-trip tests are written and skip-guarded pending Supabase credentials.)
 
@@ -212,17 +237,15 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-13 — **Milestone v4 — Durable Execution started.** Scoped from an adversarial audit
-finding two independent break-under-pressure defects: stage two is durable in memory only (a `BackgroundTask`
-dies with the process; recovery is externally triggered — dashboard page load, webhook redelivery, or operator
-retrigger), and the webhook blocks the event loop on a synchronous Resend fetch plus a multi-query psycopg
-transaction inside an `async def`. A queue fixes the first and nothing about the second. Four target features:
-durable handoff (jobs table + leases + worker pool, Resend fetch moved off the request path, Svix-keyed ingress
-dedup), the pump (authenticated endpoint + cron — Render free wakes only on inbound HTTP, so without it a queue
-is durable storage and never durable execution), failure policy (retryable/terminal result contract, backoff,
-dead-letter, exactly-once send via Resend's `Idempotency-Key` on the already-reserved `message_id`), and the
-proofs. Throughput machinery explicitly out of scope. Design: `docs/superpowers/specs/2026-07-13-durable-execution-design.md`.
-Prior: v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
+*Last updated: 2026-07-16 — **v4 Phase 18 (Failure Policy & Sweep Deletion) complete.** Both orchestrator
+entry points now return an explicit bounded result; retryable work is durably rescheduled, terminal/exhausted
+work settles atomically, final-attempt lease reaping is exhaustive and starvation-free, and the legacy sweep
+plus page-load mutation path are deleted. Canonical verification passed 9/9 after closing CR-01, CR-02, and
+WR-01; standard-depth code review is clean; root hermetic suite 900 passed / 68 guarded skips. Phase 19 is next:
+move webhook body-fetch and every remaining `BackgroundTask` producer onto durable ingest. Prior: Milestone v4
+started 2026-07-13; v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
+
+<!-- Prior footer (v4 start): Last updated: 2026-07-13 — Milestone v4 Durable Execution started. Scoped from an adversarial audit finding two independent break-under-pressure defects: in-memory BackgroundTask durability and synchronous webhook work blocking the event loop. Target features: durable handoff, authenticated external pump, explicit failure policy, exactly-once send, and durability proofs. Throughput machinery explicitly out of scope. Design: docs/superpowers/specs/2026-07-13-durable-execution-design.md. -->
 
 <!-- Prior footer (v3): Last updated: 2026-07-10 — **v3 Phase 13 (Module Structure & Boundaries) complete**; god-file splits landed behavior-neutral (suite 615 green), BOUND-01 guard live in CI. Milestone v3 started 2026-07-08: CI quality gates (ruff + full suite on push), god-file splits (main.py / repo.py / orchestrator.py), full mypy adoption wired into CI, comment-archaeology pass after the splits, public module boundaries, plus triaged v2 polish (Phase 05 review warnings, fixture-10 label). All refactors behavior-neutral against the 613-test suite. Prior: v2 — Production Hardening SHIPPED 2026-07-07. -->
 
@@ -231,4 +254,3 @@ Prior: v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
 <!-- Prior footer (Phase 9): Last updated: 2026-07-04 after Phase 9 (Atomic Data Integrity) complete — DATA-01/02/03 are live: every multi-write pipeline operation commits atomically (classify-first Round-2 resume persists `clarified_fields` in its own closed transaction before `_run_stages`; alias write isolated in a SAVEPOINT so a DB-level failure can't poison finalize), transactional webhook-dedup CAS (Resend redelivery never duplicates a run), and stuck-run sweep recovery for orphaned in-flight runs. Initial verification found 2 DATA-01 gaps (WR-01/WR-02); gap-closure plan 09-06 fixed both, independently re-proved via falsification testing against a real local Postgres. Re-verified 7/7; 547 tests passing offline (591 live), 0 regressions. Known follow-ups (advisory, 09-REVIEW.md): WR-05 round-blind clarify idempotency guard, WR-07 stale strict xfail in test_gateway.py. Prior: Phase 8 (Data-Layer Hygiene & Diagnostics) complete 2026-07-02 — OPS2-01/OPS2-02 are live: PII-safe `error_detail` written at all 3 error boundaries and surfaced on the run-detail page, 3 hot-path indexes + explicit-column `load_all_runs` projection, dead `needs_clarification` status removed, live Supabase migration applied at the blocking human checkpoint (schema-before-code order held). Verified 3/3; 515 tests passing, 0 regressions. Known follow-up: pre-existing CR-01 — `alias_candidates` missing from RUN_COLS makes the alias-learning WRITE side a production no-op (see 08-REVIEW.md). Prior: Phase 7.5 (Clarification-Reply Field-Regression) complete 2026-06-28 — MONEY-03 is live: the field-regression clarification state machine detects a dropped money field on the raw reply, clarifies exactly once (four `clarified_fields` outcomes, no re-clarify loop), and carries the original value forward or honors an explicit removal — money-safe (no overpay, no underpay) under restated names, on the `_run_stages` split-refactor seam. Two real money-path bugs (CR-01 overpay, R2-2 underpay) were caught + fixed mid-phase via `/gsd-code-review` + executor self-fix; CR-02 was a verified false positive. Verified 6/6; 507 tests passing (15/15 live integration tests), 0 regressions. Prior v2 phase: Phase 7 (MONEY-01 zero-hours gate, MONEY-02 Unicode NFC normalization), 2026-06-28. Prior milestone: v1.0 SHIPPED 2026-06-25 (all 7 v1 phases, live on Render + Supabase + Resend). -->
 
 <!-- Prior footer (v1.0): Last updated 2026-06-23 after Phase 5 (Dashboard & Delivery) complete — the operator gate + delivery path are live end-to-end: a 4-page Jinja2 dashboard (honest 3-column gate, live status polling, demo trigger), single-approval `approved → sent → reconciled` delivery with in-memory reportlab paystubs + idempotent confirmation email, atomic claim_status CAS across all gates, error path that never hangs, and the alias write-side learning loop. Verified 5/5 + human UAT approved; 5 code-review rounds converged clean; 409 tests passing. Prior: Phases 1, 2, 2.1, 3, 4 complete (contract substrate, walking skeleton, deterministic decisioning, penny-accurate Pub 15-T calc, the eval proof). Remaining: Phase 6 — real email provider + Docker/Render/Supabase deploy + README/demo.* -->
-
