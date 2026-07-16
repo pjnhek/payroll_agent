@@ -276,6 +276,81 @@ def test_second_retrigger_enqueues_a_second_job(client, fake_repo, monkeypatch):
     assert second_job["state"] == "pending"
 
 
+def test_retrigger_preserves_dead_job_and_mints_fresh_generation(
+    client, fake_repo
+):
+    """Manual recovery creates new work beside immutable terminal history."""
+    from app.models.job import JobKind
+
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+    run_before = dict(fake_repo.load_run(run_id))
+    run_count_before = len(fake_repo.runs)
+    inbound_count_before = len(fake_repo.emails)
+
+    prior_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        run_id=run_id,
+        dedup_key=f"run_pipeline:{run_id}:0",
+    )
+    assert prior_id is not None
+    prior = fake_repo.jobs[str(prior_id)]
+    prior.update(
+        {
+            "state": "dead",
+            "attempts": prior["max_attempts"],
+            "lease_token": None,
+            "last_error": "extract:provider_timeout",
+        }
+    )
+    audit_fields = (
+        "id",
+        "state",
+        "attempts",
+        "max_attempts",
+        "lease_token",
+        "last_error",
+        "dedup_key",
+    )
+    prior_snapshot = {field: prior[field] for field in audit_fields}
+
+    response = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+
+    assert response.status_code == 303
+    run_after = fake_repo.load_run(run_id)
+    assert run_after["id"] == run_before["id"] == run_id
+    assert run_after["status"] == RunStatus.RECEIVED.value
+    assert run_after["reply_epoch"] == run_before.get("reply_epoch", 0) + 1
+    assert len(fake_repo.runs) == run_count_before
+    assert len(fake_repo.emails) == inbound_count_before
+
+    jobs = [job for job in fake_repo.jobs.values() if job["run_id"] == run_id]
+    assert len(jobs) == 2
+    new_job = next(job for job in jobs if job["id"] != prior_id)
+    assert new_job["id"] != prior_id
+    assert new_job["dedup_key"] == f"run_pipeline:{run_id}:{run_after['reply_epoch']}"
+    assert new_job["state"] == "pending"
+    assert new_job["attempts"] == 0
+    assert 1 <= new_job["max_attempts"] <= 100
+    assert new_job["lease_token"] is None
+    assert {field: prior[field] for field in audit_fields} == prior_snapshot
+
+
+def test_retrigger_is_only_public_retry_action():
+    """No queue dashboard or parallel retry mutation surface is introduced."""
+    from app.routes.runs import router
+
+    mutation_paths = {
+        route.path
+        for route in router.routes
+        if "POST" in (getattr(route, "methods", None) or set())
+    }
+    assert "/runs/{run_id}/retrigger" in mutation_paths
+    assert not any(path.endswith("/retry") for path in mutation_paths)
+    assert not any(path.startswith("/jobs") for path in mutation_paths)
+
+
 def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, monkeypatch):
     """approve() forwards the delivery exception's stashed roster to record_run_error.
 

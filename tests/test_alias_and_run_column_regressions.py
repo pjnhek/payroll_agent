@@ -474,6 +474,7 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     monkeypatch.setattr(app_main, "run_pipeline_now", lambda rid: dispatched.append(rid))
 
     run_id = _run_at_error_with_stale_reply_context(fake_repo)
+    epoch_before = fake_repo.load_run(run_id).get("reply_epoch", 0)
 
     r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
     assert r.status_code == 303
@@ -491,6 +492,10 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
     assert run.get("alias_candidates") is None, (
         f"retrigger must clear alias_candidates; got {run.get('alias_candidates')!r}"
     )
+    assert run.get("reply_epoch") == epoch_before + 1, (
+        "the explicit operator retrigger must advance reply_epoch in the same "
+        "context-reset operation"
+    )
 
     # New coverage: a durable jobs row exists BEFORE the drain, and the pipeline
     # has not yet run.
@@ -500,6 +505,7 @@ def test_retrigger_clears_all_reply_context(client, fake_repo, monkeypatch):
         f"found {len(matching)}"
     )
     assert matching[0]["state"] == "pending" and matching[0]["kind"] == "run_pipeline"
+    assert matching[0]["dedup_key"] == f"run_pipeline:{run_id}:{run['reply_epoch']}"
     assert dispatched == [], (
         "the pipeline must not run before the enqueued job is drained"
     )
