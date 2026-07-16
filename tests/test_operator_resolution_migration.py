@@ -9,7 +9,6 @@ import pytest
 
 from tests.conftest import FakeConnection, FakeTransaction
 
-
 SCRIPT = pathlib.Path("scripts/migrate_operator_resolution_authority.py")
 POSTFLIGHT_FIELDS = (
     "affected_run_count",
