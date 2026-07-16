@@ -1044,7 +1044,9 @@ class InMemoryRepo:
         run["error_detail"] = result.diagnostic_code
         return SettlementOutcome.DONE
 
-    def settle_background_terminal(self, run_id, result, *, conn=None):
+    def settle_background_terminal(
+        self, run_id, result, *, expected_status=None, conn=None
+    ):
         """Mirror terminal settlement for a BackgroundTask with no job."""
         from app.db.repo.job_settlement import SettlementOutcome
         from app.pipeline.result import PipelineOutcome
@@ -1052,7 +1054,10 @@ class InMemoryRepo:
         if result.outcome is not PipelineOutcome.TERMINAL:
             raise ValueError("settle_background_terminal requires a terminal result")
         run = self.runs.get(str(run_id))
-        if run is None or run["status"] != "extracting":
+        expected_value = (
+            expected_status.value if expected_status is not None else "extracting"
+        )
+        if run is None or run["status"] != expected_value:
             return SettlementOutcome.FENCED
         run["status"] = "error"
         run["error_reason"] = result.reason.value

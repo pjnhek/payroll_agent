@@ -407,6 +407,105 @@ def test_fake_operator_resume_context_is_strict_stateful_and_recorded(fake_repo)
     assert claimed.operator_resolution_id == resolution_id
 
 
+def _seed_operator_background_context(fake_repo) -> tuple[uuid.UUID, uuid.UUID]:
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+    fake_repo.create_operator_resume_resolution(
+        run_id,
+        resolution_id,
+        {"Jimmy": "e0000002-0000-0000-0000-000000000002"},
+    )
+    return run_id, resolution_id
+
+
+def test_operator_resume_background_retry_is_identifier_only_and_durable(
+    fake_repo, monkeypatch
+) -> None:
+    from app.pipeline.result import PipelineReason, PipelineStage
+    from app.routes import pipeline_glue
+
+    run_id, resolution_id = _seed_operator_background_context(fake_repo)
+    retry = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+
+    def producer(rid, inbound, *, from_status, overrides):
+        assert rid == run_id
+        assert inbound is None
+        assert from_status is RunStatus.NEEDS_OPERATOR
+        assert overrides == {
+            "Jimmy": "e0000002-0000-0000-0000-000000000002"
+        }
+        fake_repo.runs[str(run_id)]["status"] = RunStatus.EXTRACTING.value
+        return retry
+
+    wakes: list[str] = []
+    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", producer)
+    monkeypatch.setattr(pipeline_glue.wake, "wake", lambda: wakes.append("wake"))
+
+    pipeline_glue.operator_resume_bg(run_id, resolution_id)
+
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECEIVED.value
+    assert wakes == ["wake"]
+    assert len(fake_repo.jobs) == 1
+    job = next(iter(fake_repo.jobs.values()))
+    assert job["kind"] == JobKind.OPERATOR_RESUME.value
+    assert job["run_id"] == run_id
+    assert job["operator_resolution_id"] == resolution_id
+    assert job["email_id"] is None
+    assert job["last_error"] == "extract:provider_timeout"
+    assert "Jimmy" not in repr(job)
+
+
+@pytest.mark.parametrize(
+    ("producer_result", "expected_status"),
+    [
+        (None, RunStatus.NEEDS_OPERATOR.value),
+        (PipelineResult(), RunStatus.ERROR.value),
+    ],
+)
+def test_operator_resume_background_normalizes_legacy_and_terminal_results(
+    fake_repo, monkeypatch, producer_result, expected_status
+) -> None:
+    from app.routes import pipeline_glue
+
+    run_id, resolution_id = _seed_operator_background_context(fake_repo)
+
+    def producer(*_args, **_kwargs):
+        if producer_result is not None:
+            fake_repo.runs[str(run_id)]["status"] = RunStatus.EXTRACTING.value
+        return producer_result
+
+    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", producer)
+    pipeline_glue.operator_resume_bg(run_id, resolution_id)
+
+    assert fake_repo.runs[str(run_id)]["status"] == expected_status
+    assert fake_repo.jobs == {}
+
+
+def test_operator_resume_background_missing_context_fails_closed(fake_repo) -> None:
+    from app.pipeline.result import PipelineReason
+    from app.routes import pipeline_glue
+
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+
+    pipeline_glue.operator_resume_bg(run_id, uuid.uuid4())
+
+    run = fake_repo.runs[str(run_id)]
+    assert run["status"] == RunStatus.ERROR.value
+    assert run["error_reason"] == PipelineReason.INVALID_OPERATOR_OVERRIDE_CONTEXT.value
+    assert run["error_detail"] == "load:invalid_operator_override_context"
+    assert fake_repo.jobs == {}
+
+
 def _bare_extracted(run_id: uuid.UUID) -> Extracted:
     return Extracted(
         run_id=run_id,

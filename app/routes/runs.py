@@ -179,14 +179,15 @@ async def resolve(
     page again. Applying a POST partially would silently route some hours to the wrong
     employee — a tampered request must be a clean no-op, not a partial misroute.
 
-    On a valid POST: apply the mapping as the per-run override (which drives resolution
-    via reconcile_names(overrides=...) inside resume_pipeline); for each remember-checked
-    token, ALSO pre-set the candidate's `bound` field so the existing single-human-gate
-    write path (_write_aliases_if_safe, called from delivery at approval) persists it.
-    Checkbox OFF means override-only — nothing is learned.
+    On a valid POST: persist a fresh immutable operator-resolution generation containing
+    the complete validated mapping. In that same transaction, each remember-checked
+    token gets a bound alias candidate for the existing approval-gate learning path.
+    Checkbox OFF means override-only — nothing is learned, but the token remains in the
+    complete durable mapping.
 
-    This route does NOT claim NEEDS_OPERATOR -> EXTRACTING itself. It unconditionally
-    schedules the operator-resume in the background, and resume_pipeline's own
+    This route does NOT claim NEEDS_OPERATOR -> EXTRACTING itself. After the transaction
+    commits, it schedules operator-resume with run_id plus operator_resolution_id only,
+    and resume_pipeline's own
     claim_status(NEEDS_OPERATOR -> EXTRACTING) CAS is the SOLE claim in the path —
     mirroring the webhook's reply-resume path, which likewise never pre-claims. A
     route-level pre-claim races resume_pipeline's own claim and always loses, which
@@ -244,25 +245,51 @@ async def resolve(
         if form.get(f"remember_{i}") is not None:
             remember_tokens.add(token)
 
-    # Apply the validated mapping as the per-run override (it drives resolution
-    # deterministically, ahead of reconcile_names's exact/alias tiers) AND, for each
-    # remember-checked token, pre-set `bound` on the candidate so the existing
-    # single-human-gate write path persists the alias at approval. Checkbox OFF =
-    # override only, nothing learned — an alias must never be persisted without the
-    # operator explicitly asking for it.
-    if remember_tokens:
-        existing_candidates = run.get("alias_candidates") or {}
-        updated_candidates = dict(existing_candidates)
-        for token in remember_tokens:
-            employee_id = overrides[token]
-            updated_candidates[token] = {"suggested": employee_id, "bound": employee_id}
-        repo.set_alias_candidates(run_id, updated_candidates)
+    operator_resolution_id = uuid.uuid4()
+    with repo.get_connection() as conn, conn.transaction():
+        # Re-check the authoritative generation inside the caller-owned transaction.
+        # A stale tab that raced another operator action must create neither a mapping,
+        # alias-learning state, nor process-local work.
+        conn.execute(
+            "SELECT id FROM payroll_runs WHERE id = %s FOR UPDATE",
+            (str(run_id),),
+        )
+        current = repo.load_run(run_id, conn=conn)
+        current_decision = (current or {}).get("decision") or {}
+        if (
+            current is None
+            or current.get("status") != RunStatus.NEEDS_OPERATOR.value
+            or str(current.get("business_id")) != str(run.get("business_id"))
+            or current_decision.get("unresolved_names") != unresolved_names
+        ):
+            return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-    # No route-level pre-claim (see the docstring). resume_pipeline — invoked via
-    # operator_resume_bg — performs its OWN claim_status(NEEDS_OPERATOR -> EXTRACTING)
-    # CAS exactly once, and that is the ONLY claim in the entire path. Schedule
-    # unconditionally; resume_pipeline's claim is what actually gates the advance.
-    background_tasks.add_task(pipeline_glue.operator_resume_bg, run_id, overrides)
+        # The immutable mapping is the COMPLETE money-moving authority. Optional
+        # alias_candidates is partial learning intent and can never substitute for it.
+        # Both writes join this transaction so persistence is all-or-nothing.
+        repo.create_operator_resume_resolution(
+            run_id,
+            operator_resolution_id,
+            overrides,
+            conn=conn,
+        )
+        if remember_tokens:
+            existing_candidates = current.get("alias_candidates") or {}
+            updated_candidates = dict(existing_candidates)
+            for token in remember_tokens:
+                employee_id = overrides[token]
+                updated_candidates[token] = {
+                    "suggested": employee_id,
+                    "bound": employee_id,
+                }
+            repo.set_alias_candidates(run_id, updated_candidates, conn=conn)
+
+    # The authoritative generation is committed before a worker can observe its id.
+    # No route-level pre-claim: resume_pipeline remains the sole owner of the forward
+    # NEEDS_OPERATOR -> EXTRACTING transition for this first attempt.
+    background_tasks.add_task(
+        pipeline_glue.operator_resume_bg, run_id, operator_resolution_id
+    )
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

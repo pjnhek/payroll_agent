@@ -68,6 +68,7 @@ def _set_run_error(
     *,
     reason: str,
     detail: str,
+    expected_status: RunStatus = RunStatus.EXTRACTING,
 ) -> bool:
     row = conn.execute(
         "UPDATE payroll_runs SET status = %s, error_reason = %s,"
@@ -78,7 +79,7 @@ def _set_run_error(
             reason,
             detail,
             str(run_id),
-            RunStatus.EXTRACTING.value,
+            expected_status.value,
         ),
     ).fetchone()
     return row is not None
@@ -341,6 +342,7 @@ def settle_background_terminal(
     run_id: uuid.UUID,
     result: PipelineResult,
     *,
+    expected_status: RunStatus = RunStatus.EXTRACTING,
     conn: psycopg.Connection | None = None,
 ) -> SettlementOutcome:
     """Apply a terminal first-attempt result when no leased job exists."""
@@ -352,6 +354,7 @@ def settle_background_terminal(
             run_id,
             reason=result.reason.value,
             detail=_bounded_detail(result),
+            expected_status=expected_status,
         ):
             return SettlementOutcome.FENCED
         return SettlementOutcome.DONE

@@ -15,12 +15,19 @@ from typing import Any, cast
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.db import repo
-from app.models.contracts import InboundEmail
+from app.models.contracts import Decision, InboundEmail
 from app.models.job import JobKind
 from app.models.status import RunStatus
-from app.pipeline.result import PipelineOutcome, PipelineResult, normalize_pipeline_result
+from app.pipeline.result import (
+    PipelineOutcome,
+    PipelineReason,
+    PipelineResult,
+    PipelineStage,
+    normalize_pipeline_result,
+)
 from app.queue import wake
 
 logger = logging.getLogger("payroll_agent.webhook")
@@ -316,20 +323,81 @@ def run_pipeline_bg(run_id: uuid.UUID) -> None:
         logger.error("pipeline failed to start for run_id=%s", run_id)
 
 
-def operator_resume_bg(run_id: uuid.UUID, overrides: dict[str, str]) -> None:
-    """Background wrapper for the operator-resume path (mirrors resume_pipeline_bg).
-
-    resume_pipeline owns its own try/except error-wrap; this outer guard only ensures
-    a catastrophic START failure cannot escape the BackgroundTask — the /resolve route
-    has already returned 303, so a background crash must be logged, never raised."""
+def _load_operator_resume_mapping(
+    run_id: uuid.UUID,
+    operator_resolution_id: uuid.UUID,
+) -> dict[str, str] | None:
+    """Reload and validate one complete durable operator authority generation."""
     try:
-        from app.pipeline.orchestrator import resume_pipeline
-
-        resume_pipeline(
-            run_id,
-            None,
-            from_status=RunStatus.NEEDS_OPERATOR,
-            overrides=overrides,
+        run = repo.load_run(run_id)
+        if run is None:
+            return None
+        decision = Decision.model_validate(run.get("decision"))
+        unresolved = decision.unresolved_names
+        if not unresolved or len(unresolved) != len(set(unresolved)):
+            return None
+        overrides = repo.load_operator_resume_resolution(
+            run_id, operator_resolution_id
         )
+        if set(overrides) != set(unresolved):
+            return None
+        roster = repo.load_roster_for_business(run["business_id"])
+        roster_ids = {str(employee.id) for employee in roster.employees}
+        if any(employee_id not in roster_ids for employee_id in overrides.values()):
+            return None
+        return overrides
+    except (KeyError, TypeError, ValueError, ValidationError):
+        return None
+
+
+def operator_resume_bg(
+    run_id: uuid.UUID, operator_resolution_id: uuid.UUID
+) -> None:
+    """Consume one committed operator generation through the durable result policy."""
+    try:
+        overrides = _load_operator_resume_mapping(run_id, operator_resolution_id)
+        if overrides is None:
+            invalid = PipelineResult(
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.INVALID_OPERATOR_OVERRIDE_CONTEXT,
+            )
+            repo.settle_background_terminal(
+                run_id,
+                invalid,
+                expected_status=RunStatus.NEEDS_OPERATOR,
+            )
+            logger.warning(
+                "operator resume context invalid for run_id=%s resolution_id=%s "
+                "code=%s",
+                run_id,
+                operator_resolution_id,
+                invalid.diagnostic_code,
+            )
+            return
+
+        result = normalize_pipeline_result(
+            resume_pipeline_now(
+                run_id,
+                None,
+                from_status=RunStatus.NEEDS_OPERATOR,
+                overrides=overrides,
+            )
+        )
+        if result.outcome is PipelineOutcome.OK:
+            return
+        if result.outcome is PipelineOutcome.TERMINAL:
+            repo.settle_background_terminal(run_id, result)
+            return
+
+        from app.queue.drain import _backoff_seconds
+
+        settled = repo.enqueue_operator_resume_retry(
+            run_id,
+            operator_resolution_id,
+            result,
+            available_in_seconds=_backoff_seconds(1),
+        )
+        if settled is repo.SettlementOutcome.RETRIED:
+            wake.wake()
     except Exception:  # noqa: BLE001 — background safety net; route already 303'd
-        logger.exception("operator resume failed to start for run_id=%s", run_id)
+        logger.error("operator resume failed to start for run_id=%s", run_id)
