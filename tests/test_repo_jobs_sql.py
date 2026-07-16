@@ -542,3 +542,187 @@ def test_operator_resume_schema_does_not_widen_job_kind_early() -> None:
     kind_check = re.search(r"CHECK \(kind IN \(([^)]*)\)\)", jobs)
     assert kind_check is not None
     assert kind_check.group(1) == "'run_pipeline'"
+
+
+def test_get_inbound_email_by_id_uses_exact_uuid_and_inbound_scope(fake_conn) -> None:
+    from app.db.repo.emails import get_inbound_email_by_id
+
+    email_id = uuid.uuid4()
+    expected = {"id": email_id, "direction": "inbound", "body_text": "persisted"}
+    fake_conn.script_fetchone(expected)
+    assert get_inbound_email_by_id(email_id, conn=fake_conn) == expected
+    sql, params = fake_conn.last()
+    assert "SELECT *" not in str(sql)
+    assert "WHERE id = %s AND direction = 'inbound'" in " ".join(str(sql).split())
+    assert params == (str(email_id),)
+
+
+class _DuplicateNameMapping:
+    def items(self):
+        employee_a = uuid.uuid4()
+        employee_b = uuid.uuid4()
+        return [("Alex", employee_a), ("Alex", employee_b)]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"": uuid.uuid4()},
+        {"   ": uuid.uuid4()},
+        {"Alex": "not-a-uuid"},
+        _DuplicateNameMapping(),
+    ],
+)
+def test_create_operator_resume_resolution_rejects_invalid_mapping_before_sql(
+    fake_conn, overrides: object
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        create_operator_resume_resolution,
+    )
+
+    with pytest.raises(ValueError):
+        create_operator_resume_resolution(
+            uuid.uuid4(), uuid.uuid4(), overrides, conn=fake_conn  # type: ignore[arg-type]
+        )
+    assert fake_conn.executed == []
+
+
+def test_create_operator_resume_resolution_inserts_typed_generation(fake_conn) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        create_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employees = {"Alex": uuid.uuid4(), "Sam": uuid.uuid4()}
+    fake_conn.script_fetchone((resolution_id,))
+
+    create_operator_resume_resolution(
+        run_id, resolution_id, employees, conn=fake_conn
+    )
+
+    all_sql = fake_conn.all_sql()
+    assert "INSERT INTO operator_resume_resolutions" in all_sql
+    assert all_sql.count("INSERT INTO operator_resume_overrides") == 2
+    assert "alias_candidates" not in all_sql
+    assert "JSON" not in all_sql.upper()
+    all_params = [params for _sql, params in fake_conn.executed]
+    assert any(str(run_id) in params for params in all_params)
+    assert any(str(resolution_id) in params for params in all_params)
+    for name, employee_id in employees.items():
+        assert any(name in params and str(employee_id) in params for params in all_params)
+
+
+def test_create_operator_resume_resolution_is_exactly_idempotent(fake_conn) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        create_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchall([(run_id, "Alex", employee_id)])
+    create_operator_resume_resolution(
+        run_id, resolution_id, {"Alex": employee_id}, conn=fake_conn
+    )
+    assert fake_conn.all_sql().count("INSERT INTO operator_resume_overrides") == 0
+
+
+def test_create_operator_resume_resolution_rejects_conflicting_duplicate(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        create_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchall([(run_id, "Alex", uuid.uuid4())])
+    with pytest.raises(ValueError, match="conflicting"):
+        create_operator_resume_resolution(
+            run_id, resolution_id, {"Alex": uuid.uuid4()}, conn=fake_conn
+        )
+
+
+def test_load_operator_resume_resolution_scopes_and_reconstructs_exactly(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import load_operator_resume_resolution
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employee_a = uuid.uuid4()
+    employee_b = uuid.uuid4()
+    fake_conn.script_fetchall(
+        [(run_id, "Alex", employee_a), (run_id, "Sam", employee_b)]
+    )
+    assert load_operator_resume_resolution(
+        run_id, resolution_id, conn=fake_conn
+    ) == {"Alex": str(employee_a), "Sam": str(employee_b)}
+    sql, params = fake_conn.last()
+    assert "SELECT *" not in str(sql)
+    assert "r.run_id = %s" in str(sql) and "r.id = %s" in str(sql)
+    assert params == (str(run_id), str(resolution_id))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [(uuid.uuid4(), None, None)],
+        [(uuid.uuid4(), "Alex", uuid.uuid4()), (uuid.uuid4(), "Alex", uuid.uuid4())],
+        [(uuid.uuid4(), "Alex", "not-a-uuid")],
+    ],
+)
+def test_load_operator_resume_resolution_rejects_missing_or_corrupt_rows(
+    fake_conn, rows: list[tuple[object, object, object]]
+) -> None:
+    from app.db.repo.operator_resume_resolutions import load_operator_resume_resolution
+
+    fake_conn.script_fetchall(rows)
+    with pytest.raises(ValueError):
+        load_operator_resume_resolution(uuid.uuid4(), uuid.uuid4(), conn=fake_conn)
+
+
+def test_operator_resolution_primitives_are_exported_and_fake_registered(
+    fake_repo,
+) -> None:
+    from app.db import repo
+
+    for name in (
+        "get_inbound_email_by_id",
+        "create_operator_resume_resolution",
+        "load_operator_resume_resolution",
+    ):
+        assert hasattr(repo, name)
+        assert callable(getattr(fake_repo, name))
+        assert getattr(repo, name).__self__ is fake_repo
+
+
+def test_in_memory_operator_resolution_generations_are_independent(fake_repo) -> None:
+    run_id = uuid.uuid4()
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    fake_repo.create_operator_resume_resolution(
+        run_id, first, {"Alex": employee_id}
+    )
+    fake_repo.create_operator_resume_resolution(
+        run_id, first, {"Alex": employee_id}
+    )
+    fake_repo.create_operator_resume_resolution(
+        run_id, second, {"Alex": employee_id}
+    )
+    loaded = fake_repo.load_operator_resume_resolution(run_id, first)
+    assert loaded == {"Alex": str(employee_id)}
+    loaded["Alex"] = str(uuid.uuid4())
+    assert fake_repo.load_operator_resume_resolution(run_id, first) == {
+        "Alex": str(employee_id)
+    }
+    with pytest.raises(ValueError, match="conflicting"):
+        fake_repo.create_operator_resume_resolution(
+            run_id, first, {"Alex": uuid.uuid4()}
+        )
