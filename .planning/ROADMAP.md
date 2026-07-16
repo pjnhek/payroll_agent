@@ -138,7 +138,7 @@ mechanism.
   4. `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the runs-list sweep block are removed from the codebase — there is exactly one recovery mechanism left, not two racing ones.
   5. Viewing the list of runs no longer has any side effect on any run's status — it is a read, not an accidental cron trigger.
 
-**Plans**: 6/12 plans executed
+**Plans**: 7/12 plans executed
 
 **Wave 1** (result contract foundation):
 
@@ -163,7 +163,7 @@ mechanism.
 **Wave 6** (queue policy and operator visibility; blocked on 18-03):
 
 - [x] 18-04-PLAN.md — Make queue drain result-aware and reap expired final-attempt leases
-- [ ] 18-06-PLAN.md — Surface bounded retry diagnostics and preserve same-run manual retrigger
+- [x] 18-06-PLAN.md — Surface bounded retry diagnostics and preserve same-run manual retrigger
 
 **Wave 7** (pump accounting and producer cutover; blocked on 18-04):
 
@@ -267,7 +267,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
-| 18. Failure Policy & Sweep Deletion | v4 | 6/12 | In Progress|  |
+| 18. Failure Policy & Sweep Deletion | v4 | 7/12 | In Progress|  |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |

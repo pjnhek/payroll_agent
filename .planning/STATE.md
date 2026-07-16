@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: failure-policy-sweep-deletion
 status: executing
-stopped_at: Completed 18-04-PLAN.md
-last_updated: "2026-07-16T02:14:57.225Z"
+stopped_at: Completed 18-06-PLAN.md
+last_updated: "2026-07-16T02:29:25.188Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 27
-  completed_plans: 21
+  completed_plans: 22
   percent: 33
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
-Plan: 7 of 12
+Plan: 8 of 12
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 18 execution started
 
@@ -103,6 +103,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | Phase 18 P09 | 17min | 3 tasks | 10 files |
 | Phase 18 P03 | 25min | 3 tasks | 9 files |
 | Phase 18 P04 | 11min | 2 tasks | 6 files |
+| Phase 18 P06 | 7min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -188,6 +189,8 @@ Recent decisions affecting current work:
 - [Phase 18]: Operator authority is a complete immutable UUID generation; remember choices affect only optional alias learning. — Keeps retries reconstructable without mapping payloads or alias_candidates authority.
 - [Phase 18]: Queue consumers normalize legacy None only through normalize_pipeline_result; every normalized result uses the fenced settlement coordinator. — One compatibility seam prevents queue consumers from assigning conflicting meanings before producer cutover.
 - [Phase 18]: Final-attempt reaping preserves jobs.last_error as prior-attempt history while assigning FinalAttemptLeaseExpired to the run. — The final diagnostic must identify lease expiry without discarding or misattributing an earlier attempt failure.
+- [Phase 18]: Browser routes derive a strict safe failure projection and remove raw diagnostics before template or JSON use.
+- [Phase 18]: Error remains canonical; exhausted retries are a bounded secondary label only.
 
 ### Pending Todos
 
@@ -253,8 +256,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T02:14:40.985Z
-Stopped at: Completed 18-04-PLAN.md
+Last session: 2026-07-16T02:29:02.748Z
+Stopped at: Completed 18-06-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
