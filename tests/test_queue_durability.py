@@ -107,6 +107,7 @@ from datetime import UTC, datetime
 import psycopg
 import pytest
 
+from app.models.status import RunStatus
 from tests.conftest import QUEUE_WORKER_THREAD_PREFIX, live_queue_worker_threads
 
 # EVERY test in this file carries both markers via this module-level list, so a
@@ -460,12 +461,118 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert terminal_run_row["status"] == RunStatus.ERROR.value
 
 
-def test_final_attempt_reap_exact_predicate_fence_and_rollback(
+@pytest.mark.parametrize("status", list(RunStatus))
+def test_final_attempt_reap_status_matrix(
+    seeded_db, status: RunStatus
+) -> None:
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+
+    error_statuses = {
+        RunStatus.RECEIVED,
+        RunStatus.EXTRACTING,
+        RunStatus.COMPUTED,
+        RunStatus.APPROVED,
+    }
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, status)
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE payroll_runs SET error_reason = %s, error_detail = %s"
+            " WHERE id = %s",
+            ("existing_reason", "existing_detail", str(run_id)),
+        )
+    job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-final-matrix:{status.value}:{uuid.uuid4()}",
+        run_id=run_id,
+        max_attempts=1,
+    )
+    assert job_id is not None
+    claimed = repo.claim_job()
+    assert claimed is not None and claimed.id == job_id
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '60 seconds',"
+            " last_error = %s WHERE id = %s",
+            ("extract:provider_timeout", str(job_id)),
+        )
+
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    job_row = repo.get_job(job_id)
+    run_row = repo.load_run(run_id)
+    assert job_row is not None
+    assert run_row is not None
+    assert job_row["state"] == "dead"
+    assert job_row["lease_token"] is None
+    assert job_row["leased_until"] is None
+    assert job_row["last_error"] == "extract:provider_timeout"
+    if status in error_statuses:
+        assert run_row["status"] == RunStatus.ERROR.value
+        assert run_row["error_reason"] == "FinalAttemptLeaseExpired"
+        assert run_row["error_detail"] == (
+            "unknown:final_attempt_lease_expired;attempts=1/1"
+        )
+    else:
+        assert run_row["status"] == status.value
+        assert run_row["error_reason"] == "existing_reason"
+        assert run_row["error_detail"] == "existing_detail"
+
+
+def test_final_attempt_reap_preserved_oldest_allows_second_candidate(
+    seeded_db,
+) -> None:
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+
+    candidates: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for status, lease_age in (
+        (RunStatus.AWAITING_APPROVAL, 120),
+        (RunStatus.EXTRACTING, 60),
+    ):
+        run_id = _seed_run_for_queue_proof()
+        repo.set_status(run_id, status)
+        job_id = repo.enqueue_job(
+            kind=JobKind.RUN_PIPELINE,
+            dedup_key=f"queueproof-final-starvation:{status.value}:{uuid.uuid4()}",
+            run_id=run_id,
+            max_attempts=1,
+        )
+        assert job_id is not None
+        claimed = repo.claim_job()
+        assert claimed is not None and claimed.id == job_id
+        with repo.get_connection() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE jobs SET leased_until = now() - (%s || ' seconds')::interval,"
+                " last_error = %s WHERE id = %s",
+                (lease_age, f"attempt-{lease_age}", str(job_id)),
+            )
+        candidates.append((run_id, job_id))
+
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    first_run = repo.load_run(candidates[0][0])
+    assert first_run is not None
+    assert first_run["status"] == RunStatus.AWAITING_APPROVAL.value
+    assert repo.get_job(candidates[0][1])["state"] == "dead"
+    assert repo.get_job(candidates[1][1])["state"] == "leased"
+
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    second_run = repo.load_run(candidates[1][0])
+    assert second_run is not None
+    assert second_run["status"] == RunStatus.ERROR.value
+    assert repo.get_job(candidates[1][1])["state"] == "dead"
+    assert repo.reap_expired_final_attempt() is None
+
+
+def test_final_attempt_reap_exact_predicate_and_rollback(
     seeded_db, monkeypatch
 ) -> None:
     from app.db import repo
     from app.db.repo import job_settlement
-    from app.db.repo.job_settlement import SettlementOutcome
     from app.models.job import JobKind
     from app.models.status import RunStatus
 
@@ -474,7 +581,7 @@ def test_final_attempt_reap_exact_predicate_fence_and_rollback(
         repo.set_status(run_id, RunStatus.EXTRACTING)
         job_id = repo.enqueue_job(
             kind=JobKind.RUN_PIPELINE,
-            dedup_key=f"queueproof-final-attempt:{uuid.uuid4()}",
+            dedup_key=f"queueproof-final-predicate:{uuid.uuid4()}",
             run_id=run_id,
             max_attempts=max_attempts,
         )
@@ -485,56 +592,25 @@ def test_final_attempt_reap_exact_predicate_fence_and_rollback(
             conn.execute(
                 "UPDATE jobs SET leased_until = now() + (%s || ' seconds')::interval,"
                 " last_error = %s WHERE id = %s",
-                (-1 if expired else 60, "extract:provider_timeout", str(job_id)),
+                (-60 if expired else 60, "extract:provider_timeout", str(job_id)),
             )
         return run_id, job_id
 
-    exact_run, exact_job = _leased_job(max_attempts=1, expired=True)
     unexpired_run, unexpired_job = _leased_job(max_attempts=1, expired=False)
     below_run, below_job = _leased_job(max_attempts=2, expired=True)
-
-    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
-    exact_row = repo.get_job(exact_job)
-    exact_run_row = repo.load_run(exact_run)
-    assert exact_row is not None
-    assert exact_run_row is not None
-    assert exact_row["state"] == "dead"
-    assert exact_row["last_error"] == "extract:provider_timeout"
-    assert exact_run_row["status"] == RunStatus.ERROR.value
-    assert exact_run_row["error_reason"] == "FinalAttemptLeaseExpired"
-    assert "provider_timeout" not in exact_run_row["error_detail"]
-    below_job_row = repo.get_job(below_job)
-    below_run_row = repo.load_run(below_run)
-    unexpired_job_row = repo.get_job(unexpired_job)
-    unexpired_run_row = repo.load_run(unexpired_run)
-    assert below_job_row is not None
-    assert below_run_row is not None
-    assert unexpired_job_row is not None
-    assert unexpired_run_row is not None
-    assert below_job_row["state"] == "leased"
-    assert below_run_row["status"] == RunStatus.EXTRACTING.value
-    assert unexpired_job_row["state"] == "leased"
-    assert unexpired_run_row["status"] == RunStatus.EXTRACTING.value
     assert repo.reap_expired_final_attempt() is None
+    for run_id, job_id in (
+        (unexpired_run, unexpired_job),
+        (below_run, below_job),
+    ):
+        run_row = repo.load_run(run_id)
+        job_row = repo.get_job(job_id)
+        assert run_row is not None and run_row["status"] == RunStatus.EXTRACTING.value
+        assert job_row is not None and job_row["state"] == "leased"
     with repo.get_connection() as conn, conn.transaction():
         conn.execute(
             "UPDATE jobs SET leased_until = now() + interval '60 seconds' WHERE id = %s",
             (str(below_job),),
-        )
-
-    fenced_run, fenced_job = _leased_job(max_attempts=1, expired=True)
-    repo.set_status(fenced_run, RunStatus.COMPUTED)
-    assert repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
-    fenced_job_row = repo.get_job(fenced_job)
-    fenced_run_row = repo.load_run(fenced_run)
-    assert fenced_job_row is not None
-    assert fenced_run_row is not None
-    assert fenced_job_row["state"] == "leased"
-    assert fenced_run_row["status"] == RunStatus.COMPUTED.value
-    with repo.get_connection() as conn, conn.transaction():
-        conn.execute(
-            "UPDATE jobs SET leased_until = now() + interval '60 seconds' WHERE id = %s",
-            (str(fenced_job),),
         )
 
     rollback_run, rollback_job = _leased_job(max_attempts=1, expired=True)
