@@ -39,6 +39,7 @@ SEPARATE, POSITIVE proof that the resolver actually saw the real code.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import pathlib
 import threading
 import time
@@ -50,6 +51,7 @@ import pytest
 from app.db import repo
 from app.models.job import Job, JobKind
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 from app.queue import dispatch, drain
 from app.queue.drain import DrainOutcome
 from app.queue.handlers import pipeline
@@ -92,6 +94,131 @@ def _job(
         max_attempts=max_attempts,
         lease_token=uuid.uuid4(),
     )
+
+
+# ── Phase 18 classified settlement coordinator ───────────────────────────────
+
+
+def _claim_seeded_job(fake_repo: Any, run_id: uuid.UUID, *, max_attempts: int = 5) -> Job:
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"settlement:{run_id}:{uuid.uuid4()}",
+        run_id=run_id,
+        max_attempts=max_attempts,
+    )
+    assert job_id is not None
+    claimed = fake_repo.claim_job()
+    assert claimed is not None
+    assert claimed.id == job_id
+    return claimed
+
+
+def test_classified_settlement_matrix_is_atomic_in_fake_repo(fake_repo):
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    ok_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    ok_job = _claim_seeded_job(fake_repo, ok_run)
+    assert repo.settle_pipeline_job(
+        ok_job,
+        PipelineResult(outcome=PipelineOutcome.OK),
+        backoff_seconds=5.0,
+    ) is SettlementOutcome.DONE
+    assert fake_repo.get_job(ok_job.id)["state"] == "done"
+    assert fake_repo.runs[str(ok_run)]["status"] == RunStatus.EXTRACTING.value
+
+    retry_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    retry_job = _claim_seeded_job(fake_repo, retry_run)
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+    assert repo.settle_pipeline_job(
+        retry_job, retryable, backoff_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    assert fake_repo.get_job(retry_job.id)["state"] == "pending"
+    assert fake_repo.get_job(retry_job.id)["last_error"] == retryable.diagnostic_code
+    assert fake_repo.runs[str(retry_run)]["status"] == RunStatus.RECEIVED.value
+
+    dead_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    dead_job = _claim_seeded_job(fake_repo, dead_run, max_attempts=1)
+    assert repo.settle_pipeline_job(
+        dead_job, retryable, backoff_seconds=5.0
+    ) is SettlementOutcome.DEAD
+    assert fake_repo.get_job(dead_job.id)["state"] == "dead"
+    assert fake_repo.runs[str(dead_run)]["status"] == RunStatus.ERROR.value
+    assert fake_repo.runs[str(dead_run)]["error_reason"] == "RetryExhausted"
+
+    terminal_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    terminal_job = _claim_seeded_job(fake_repo, terminal_run)
+    terminal = PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.COMPUTE,
+        reason=PipelineReason.UNCLASSIFIED,
+    )
+    assert repo.settle_pipeline_job(
+        terminal_job, terminal, backoff_seconds=5.0
+    ) is SettlementOutcome.DONE
+    assert fake_repo.get_job(terminal_job.id)["state"] == "done"
+    assert fake_repo.runs[str(terminal_run)]["status"] == RunStatus.ERROR.value
+
+
+def test_operator_retry_uses_committed_resolution_identifier_only(fake_repo):
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    resolution_id = uuid.uuid4()
+    overrides = {"submitted worker": uuid.uuid4()}
+    fake_repo.create_operator_resume_resolution(run_id, resolution_id, overrides)
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_CONNECTION_FAILURE,
+    )
+
+    assert repo.enqueue_operator_resume_retry(
+        run_id, resolution_id, retryable, available_in_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECEIVED.value
+    rows = list(fake_repo.jobs.values())
+    assert len(rows) == 1
+    assert rows[0]["kind"] == JobKind.OPERATOR_RESUME.value
+    assert rows[0]["operator_resolution_id"] == resolution_id
+    assert rows[0]["email_id"] is None
+    assert "submitted worker" not in repr(rows[0])
+
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.EXTRACTING.value
+    assert repo.enqueue_operator_resume_retry(
+        run_id, resolution_id, retryable, available_in_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    assert len(fake_repo.jobs) == 1
+
+    second_resolution = uuid.uuid4()
+    fake_repo.create_operator_resume_resolution(run_id, second_resolution, overrides)
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.EXTRACTING.value
+    assert repo.enqueue_operator_resume_retry(
+        run_id, second_resolution, retryable, available_in_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    assert len(fake_repo.jobs) == 2
+
+
+def test_settlement_lost_fences_leave_both_aggregates_unchanged(fake_repo):
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    claimed = _claim_seeded_job(fake_repo, run_id)
+    stale = dataclasses.replace(claimed, lease_token=uuid.uuid4())
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+    before_job = dict(fake_repo.get_job(claimed.id))
+    assert repo.settle_pipeline_job(
+        stale, retryable, backoff_seconds=5.0
+    ) is SettlementOutcome.FENCED
+    assert fake_repo.get_job(claimed.id) == before_job
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
 
 
 # ── handle_run_pipeline: the five behaviors ─────────────────────────────
