@@ -5,8 +5,8 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: Webhook Cutover & Durable Ingest
 status: planning
-stopped_at: Phase 19 context gathered
-last_updated: "2026-07-16T20:19:11.720Z"
+stopped_at: Phase 19 UI-SPEC approved
+last_updated: "2026-07-16T20:56:44.045Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 complete, transitioned to Phase 19
 progress:
@@ -271,9 +271,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T20:19:11.707Z
-Stopped at: Phase 19 context gathered
-Resume file: .planning/phases/19-webhook-cutover-durable-ingest/19-CONTEXT.md
+Last session: 2026-07-16T20:56:44.032Z
+Stopped at: Phase 19 UI-SPEC approved
+Resume file: .planning/phases/19-webhook-cutover-durable-ingest/19-UI-SPEC.md
 
 ## Operator Next Steps
 
