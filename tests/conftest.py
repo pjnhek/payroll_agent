@@ -337,6 +337,9 @@ class InMemoryRepo:
         # standing in for the real table's UNIQUE(dedup_key) constraint.
         self.jobs: dict[str, dict[str, Any]] = {}
         self._job_dedup_keys: dict[str, uuid.UUID] = {}
+        self.operator_resume_resolutions: dict[
+            tuple[str, str], dict[str, str]
+        ] = {}
         # Seed businesses for sender matching.
         from app.db.seed import seed
 
@@ -790,8 +793,11 @@ class InMemoryRepo:
         dedup_key,
         run_id=None,
         email_id=None,
+        operator_resolution_id=None,
         business_id=None,
         max_attempts=None,
+        available_in_seconds=0.0,
+        safe_last_error=None,
         conn=None,
     ):
         """Mirror repo.enqueue_job: raises before touching self.jobs on a
@@ -815,12 +821,15 @@ class InMemoryRepo:
             "dedup_key": dedup_key,
             "run_id": run_id,
             "email_id": email_id,
+            "operator_resolution_id": operator_resolution_id,
             "business_id": business_id,
             "state": "pending",
             "attempts": 0,
             "max_attempts": max_attempts if max_attempts is not None else 5,
             "lease_token": None,
             "last_error": None,
+            "available_in_seconds": available_in_seconds,
+            "safe_last_error": safe_last_error,
         }
         self._job_dedup_keys[dedup_key] = jid
         return jid
@@ -840,6 +849,8 @@ class InMemoryRepo:
                     id=job["id"],
                     kind=JobKind(job["kind"]),
                     run_id=job["run_id"],
+                    email_id=job["email_id"],
+                    operator_resolution_id=job["operator_resolution_id"],
                     attempts=job["attempts"],
                     max_attempts=job["max_attempts"],
                     lease_token=job["lease_token"],
@@ -1118,6 +1129,52 @@ class InMemoryRepo:
             return None
         return row
 
+    def get_inbound_email_by_id(self, email_id, conn=None):
+        """Return one stored inbound row by its durable UUID."""
+        row = self.email_by_id.get(str(email_id))
+        if row is None or row.get("direction") != "inbound":
+            return None
+        return row
+
+    def create_operator_resume_resolution(
+        self, run_id, operator_resolution_id, overrides, conn=None
+    ):
+        """Store one immutable validated mapping with exact-id idempotency."""
+        from app.db.repo.operator_resume_resolutions import _normalize_overrides, _uuid_text
+
+        run_id_text = _uuid_text(run_id, "run_id")
+        resolution_id_text = _uuid_text(
+            operator_resolution_id, "operator_resolution_id"
+        )
+        normalized = _normalize_overrides(overrides)
+        key = (resolution_id_text, run_id_text)
+        conflicting_keys = [
+            stored_key
+            for stored_key in self.operator_resume_resolutions
+            if stored_key[0] == resolution_id_text and stored_key != key
+        ]
+        if conflicting_keys:
+            raise ValueError("conflicting operator resolution identifier")
+        existing = self.operator_resume_resolutions.get(key)
+        if existing is not None and existing != normalized:
+            raise ValueError("conflicting operator resolution mapping")
+        self.operator_resume_resolutions[key] = dict(normalized)
+
+    def load_operator_resume_resolution(
+        self, run_id, operator_resolution_id, conn=None
+    ):
+        """Return a defensive copy of one exact run/resolution mapping."""
+        from app.db.repo.operator_resume_resolutions import _uuid_text
+
+        key = (
+            _uuid_text(operator_resolution_id, "operator_resolution_id"),
+            _uuid_text(run_id, "run_id"),
+        )
+        stored = self.operator_resume_resolutions.get(key)
+        if not stored:
+            raise ValueError("operator resume resolution is missing")
+        return dict(stored)
+
     def find_stranded_unconsumed_replies(self, threshold_seconds, conn=None):
         """Stale unconsumed inbound replies against awaiting_reply runs.
 
@@ -1291,6 +1348,9 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "mark_reply_consumed",
         "load_consumed_replies",
         "get_inbound_by_message_id",
+        "get_inbound_email_by_id",
+        "create_operator_resume_resolution",
+        "load_operator_resume_resolution",
         "clear_reply_context",
         "find_stranded_unconsumed_replies",
         # automatic-reclaim rewind (never bumps reply_epoch) + the durable

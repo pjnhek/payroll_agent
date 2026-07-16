@@ -372,6 +372,20 @@ def get_inbound_by_message_id(
         return cur.fetchone()
 
 
+def get_inbound_email_by_id(
+    email_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> dict[str, Any] | None:
+    """Load one persisted inbound row by its durable database identifier."""
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            "SELECT id, run_id, message_id, in_reply_to, references_header,"
+            " subject, body_text, from_addr, to_addr, consumed_round, created_at"
+            " FROM email_messages WHERE id = %s AND direction = 'inbound'",
+            (str(email_id),),
+        )
+        return cur.fetchone()
+
+
 # Auto-resume sweep scope: EXACTLY this stale + unconsumed + awaiting_reply
 # combination is eligible. This is a deliberately DIFFERENT scope from
 # _STRANDED_SCOPE_STATUSES (received/extracting/computed) and from the retrigger

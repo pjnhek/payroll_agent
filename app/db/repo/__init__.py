@@ -31,6 +31,7 @@ from app.db.repo.emails import (
     find_awaiting_reply_for_header,
     find_stranded_unconsumed_replies,
     get_inbound_by_message_id,
+    get_inbound_email_by_id,
     get_outbound_for_round,
     get_outbound_message_id,
     get_outbound_references_chain,
@@ -51,6 +52,10 @@ from app.db.repo.jobs import (
     fail_job,
     get_job,
     release_leases,
+)
+from app.db.repo.operator_resume_resolutions import (
+    create_operator_resume_resolution,
+    load_operator_resume_resolution,
 )
 from app.db.repo.pipeline_state import (
     clear_reply_context,
@@ -107,6 +112,7 @@ __all__ = [
     "find_any_run_for_header",
     "find_awaiting_reply_for_header",
     "find_stranded_unconsumed_replies",
+    "get_inbound_email_by_id",
     "get_inbound_by_message_id",
     "get_outbound_for_round",
     "get_outbound_message_id",
@@ -119,6 +125,8 @@ __all__ = [
     "mark_reply_consumed",
     "update_email_message_sent",
     "update_email_message_state",
+    "create_operator_resume_resolution",
+    "load_operator_resume_resolution",
     "clear_reply_context",
     "get_clarification_round",
     "load_clarified_fields",
