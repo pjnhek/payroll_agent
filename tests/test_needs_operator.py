@@ -32,6 +32,7 @@ DB holds something else entirely.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import uuid
 from datetime import UTC, datetime
@@ -821,6 +822,170 @@ def test_resolve_rejects_whole_post_on_invalid_employee_id(monkeypatch, fake_rep
         "needs_operator, not silently claim/advance. Client-supplied employee ids are "
         "untrusted: an id off this business's roster would pay the wrong person."
     )
+
+
+def test_operator_resume_bg_signature_and_resolve_caller_are_identifier_only() -> None:
+    """The route/wrapper boundary carries identifiers, never payroll mappings."""
+    from app.routes import pipeline_glue, runs
+
+    assert list(inspect.signature(pipeline_glue.operator_resume_bg).parameters) == [
+        "run_id",
+        "operator_resolution_id",
+    ]
+
+    tree = ast.parse(inspect.getsource(runs.resolve))
+    add_task_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_task"
+    ]
+    assert len(add_task_calls) == 1
+    call = add_task_calls[0]
+    assert len(call.args) == 3
+    assert isinstance(call.args[0], ast.Attribute)
+    assert call.args[0].attr == "operator_resume_bg"
+    assert isinstance(call.args[1], ast.Name) and call.args[1].id == "run_id"
+    assert isinstance(call.args[2], ast.Name)
+    assert call.args[2].id == "operator_resolution_id"
+
+
+def test_resolve_persists_complete_mapping_before_identifier_only_dispatch(
+    monkeypatch, fake_repo
+) -> None:
+    """Remember choices affect alias learning, never durable override completeness."""
+    from app.models.roster import Employee, Roster
+    from app.routes import pipeline_glue
+
+    biz_id = COASTAL_BIZ_ID
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+
+    def employee(employee_id: uuid.UUID, name: str) -> Employee:
+        return Employee(
+            id=employee_id,
+            business_id=biz_id,
+            full_name=name,
+            known_aliases=[],
+            pay_type="hourly",
+            hourly_rate=Decimal("20.00"),
+            annual_salary=None,
+            retirement_contribution_pct=Decimal("0.00"),
+            filing_status="single",
+            step_2_checkbox=False,
+            step_3_dependents=Decimal("0"),
+            step_4a_other_income=Decimal("0"),
+            step_4b_deductions=Decimal("0"),
+            ytd_ss_wages=Decimal("0.00"),
+            pay_periods_per_year=52,
+        )
+
+    roster = Roster(
+        business_id=biz_id,
+        employees=[employee(first_id, "First"), employee(second_id, "Second")],
+    )
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, biz_id, ["Jimmy", "Maria C"]
+    )
+
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+    dispatched: list[tuple[uuid.UUID, uuid.UUID, dict[str, str]]] = []
+
+    def capture(rid: uuid.UUID, resolution_id: uuid.UUID) -> None:
+        dispatched.append(
+            (
+                rid,
+                resolution_id,
+                fake_repo.load_operator_resume_resolution(rid, resolution_id),
+            )
+        )
+
+    monkeypatch.setattr(pipeline_glue, "operator_resume_bg", capture)
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={
+            "employee_id_0": str(first_id),
+            "remember_0": "on",
+            "employee_id_1": str(second_id),
+        },
+    )
+
+    assert response.status_code in (200, 303)
+    assert len(dispatched) == 1
+    dispatched_run_id, resolution_id, mapping = dispatched[0]
+    assert dispatched_run_id == run_id
+    assert isinstance(resolution_id, uuid.UUID)
+    assert mapping == {"Jimmy": str(first_id), "Maria C": str(second_id)}
+    assert fake_repo.runs[str(run_id)]["alias_candidates"] == {
+        "Jimmy": {"suggested": str(first_id), "bound": str(first_id)}
+    }
+
+
+def test_resolve_persistence_failure_schedules_nothing(monkeypatch, fake_repo) -> None:
+    """A failed authoritative mapping write cannot leak a process-local resume."""
+    from app.models.roster import Employee, Roster
+    from app.routes import pipeline_glue
+
+    employee_id = uuid.uuid4()
+    roster = Roster(
+        business_id=COASTAL_BIZ_ID,
+        employees=[
+            Employee(
+                id=employee_id,
+                business_id=COASTAL_BIZ_ID,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "create_operator_resume_resolution",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("injected")),
+    )
+    dispatched: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        pipeline_glue,
+        "operator_resume_bg",
+        lambda *args: dispatched.append(args),
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(employee_id), "remember_0": "on"},
+    )
+
+    assert response.status_code == 500
+    assert dispatched == []
+    assert fake_repo.operator_resume_resolutions == {}
+    assert fake_repo.runs[str(run_id)]["alias_candidates"] == {}
 
 
 def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_repo):
