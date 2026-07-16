@@ -31,8 +31,11 @@ WHAT THIS MODULE PROVES (assert REAL re-schedule facts, never a log string):
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -43,6 +46,32 @@ from app.models.status import RunStatus
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
+
+
+def test_supported_recovery_entry_points_exclude_runs_list() -> None:
+    """Recovery remains explicit and durable; no test preserves list-page recovery."""
+    import app.queue.handlers.operator_resume as operator_resume
+    import app.queue.handlers.resume_reply as resume_reply
+    import app.routes.runs as runs_module
+    import app.routes.webhook as webhook_module
+
+    test_tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    test_names = {
+        node.name for node in ast.walk(test_tree) if isinstance(node, ast.FunctionDef)
+    }
+    assert not any(name.startswith("test_runs_list_") for name in test_names)
+
+    supported_sources = {
+        "webhook_redelivery": inspect.getsource(webhook_module),
+        "durable_reply_resume": inspect.getsource(resume_reply.handle_resume_reply),
+        "durable_operator_resume": inspect.getsource(
+            operator_resume.handle_operator_resume
+        ),
+    }
+    assert "resume_pipeline_bg" in supported_sources["webhook_redelivery"]
+    assert "row_to_inbound" in supported_sources["durable_reply_resume"]
+    assert "_validated_mapping" in supported_sources["durable_operator_resume"]
+    assert "resume_pipeline_bg" not in inspect.getsource(runs_module.runs_list)
 
 
 @pytest.fixture
