@@ -29,6 +29,7 @@ Two independent guarantees this module provides, both proven by
 """
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -40,11 +41,12 @@ from app.config import get_settings
 from app.db.repo._shared import _conn_ctx, _nulltx
 from app.db.repo.runs import _build_error_detail
 from app.models.job import Job, JobKind, JobState
+from app.pipeline.result import PipelineReason, PipelineStage
 
 # Explicit column list for get_job's plain single-row read (no SELECT *),
 # mirroring runs.py's RUN_COLS convention.
 _JOB_COLS = (
-    "id, kind, dedup_key, run_id, email_id, business_id, priority, state,"
+    "id, kind, dedup_key, run_id, email_id, operator_resolution_id, business_id, priority, state,"
     " attempts, max_attempts, available_at, lease_token, leased_until,"
     " last_error, created_at, updated_at"
 )
@@ -56,8 +58,11 @@ def enqueue_job(
     dedup_key: str,
     run_id: uuid.UUID | None = None,
     email_id: uuid.UUID | None = None,
+    operator_resolution_id: uuid.UUID | None = None,
     business_id: uuid.UUID | None = None,
     max_attempts: int | None = None,
+    available_in_seconds: float = 0.0,
+    safe_last_error: str | None = None,
     conn: psycopg.Connection | None = None,
 ) -> uuid.UUID | None:
     """Insert a job row, idempotent on `dedup_key`. Returns the new id, or
@@ -77,32 +82,77 @@ def enqueue_job(
     `run_pipeline` job with no run is unrepresentable, checked BEFORE any SQL
     is issued.
     """
-    if kind is JobKind.RUN_PIPELINE and run_id is None:
+    kind_value = kind.value
+    if kind_value not in {"run_pipeline", "resume_reply", "operator_resume"}:
+        raise ValueError(f"enqueue_job: unsupported job kind {kind_value!r}")
+    if kind_value == "run_pipeline" and run_id is None:
         raise ValueError(
-            f"enqueue_job: kind={kind.value!r} requires a run_id. A "
+            f"enqueue_job: kind={kind_value!r} requires a run_id. A "
             "run_pipeline job with no run would be claimed, dispatched, "
             "no-op through the run-status CAS, and recorded done — a job "
             "that processed no payroll, marked a success."
         )
+    if kind_value == "resume_reply" and (
+        run_id is None or email_id is None or operator_resolution_id is not None
+    ):
+        raise ValueError(
+            "enqueue_job: kind='resume_reply' requires run_id and email_id only"
+        )
+    if kind_value == "operator_resume" and (
+        run_id is None or operator_resolution_id is None or email_id is not None
+    ):
+        raise ValueError(
+            "enqueue_job: kind='operator_resume' requires run_id and "
+            "operator_resolution_id only"
+        )
+    if (
+        isinstance(available_in_seconds, bool)
+        or not isinstance(available_in_seconds, (int, float))
+        or not math.isfinite(available_in_seconds)
+        or not 0 <= available_in_seconds <= 300
+    ):
+        raise ValueError("available_in_seconds must be a finite number from 0 to 300")
+    if safe_last_error is not None:
+        try:
+            stage_value, reason_value = safe_last_error.split(":")
+            PipelineStage(stage_value)
+            PipelineReason(reason_value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "safe_last_error must be one bounded '<stage>:<reason>' diagnostic code"
+            ) from exc
     max_attempts = (
         max_attempts if max_attempts is not None else get_settings().max_attempts
     )
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
             """
-                INSERT INTO jobs (kind, dedup_key, run_id, email_id, business_id, max_attempts)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO jobs (
+                    kind, dedup_key, run_id, email_id, operator_resolution_id,
+                    business_id, max_attempts, available_at, last_error
+                )
+                VALUES (
+                    %(kind)s, %(dedup_key)s, %(run_id)s, %(email_id)s,
+                    %(operator_resolution_id)s, %(business_id)s, %(max_attempts)s,
+                    now() + (%(available_in_seconds)s || ' seconds')::interval,
+                    %(safe_last_error)s
+                )
                 ON CONFLICT (dedup_key) DO NOTHING
                 RETURNING id
                 """,
-            (
-                kind.value,
-                dedup_key,
-                str(run_id) if run_id else None,
-                str(email_id) if email_id else None,
-                str(business_id) if business_id else None,
-                max_attempts,
-            ),
+            {
+                "kind": kind_value,
+                "dedup_key": dedup_key,
+                "run_id": str(run_id) if run_id else None,
+                "email_id": str(email_id) if email_id else None,
+                "operator_resolution_id": (
+                    str(operator_resolution_id) if operator_resolution_id else None
+                ),
+                "business_id": str(business_id) if business_id else None,
+                "max_attempts": max_attempts,
+                "available_in_seconds": float(available_in_seconds),
+                "safe_last_error": safe_last_error,
+            },
         ).fetchone()
     if row is None:
         return None
@@ -136,8 +186,8 @@ def claim_job(
       letters instead of looping forever. The completion path must never
       also increment.
 
-    `RETURNING` yields EXACTLY the six columns `Job` declares, in the same
-    order — no `email_id`, no `event_id`. `tests/test_repo_jobs_sql.py`
+    `RETURNING` yields EXACTLY the eight columns `Job` declares, in the same
+    order. `tests/test_repo_jobs_sql.py`
     machine-checks this bijection so it cannot silently drift.
     """
     lease_seconds = (
@@ -164,7 +214,8 @@ def claim_job(
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                  )
-                RETURNING j.id, j.kind, j.run_id, j.attempts, j.max_attempts, j.lease_token
+                RETURNING j.id, j.kind, j.run_id, j.email_id, j.operator_resolution_id,
+                          j.attempts, j.max_attempts, j.lease_token
                 """,
             {"lease_seconds": lease_seconds},
         ).fetchone()
@@ -174,9 +225,13 @@ def claim_job(
         id=uuid.UUID(str(row[0])),
         kind=JobKind(row[1]),
         run_id=uuid.UUID(str(row[2])) if row[2] is not None else None,
-        attempts=int(row[3]),
-        max_attempts=int(row[4]),
-        lease_token=uuid.UUID(str(row[5])),
+        email_id=uuid.UUID(str(row[3])) if row[3] is not None else None,
+        operator_resolution_id=(
+            uuid.UUID(str(row[4])) if row[4] is not None else None
+        ),
+        attempts=int(row[5]),
+        max_attempts=int(row[6]),
+        lease_token=uuid.UUID(str(row[7])),
     )
 
 

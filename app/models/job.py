@@ -65,12 +65,10 @@ class JobState(enum.StrEnum):
 class Job:
     """A transport record — mirrors EXACTLY what the claim SQL's `RETURNING` yields.
 
-    SIX fields, in this order: `id`, `kind`, `run_id`, `attempts`,
-    `max_attempts`, `lease_token`. Nothing else — no `email_id`, no payload, no
-    next-state field. `jobs.email_id` still exists as a table COLUMN (reserved
-    for a future ingest kind), but no field for it lives here: nothing today
-    reads it, and a dataclass field with no consumer is a lie about the
-    contract this docstring states — that `Job` mirrors `RETURNING`.
+    Eight fields, in this order: `id`, `kind`, `run_id`, `email_id`,
+    `operator_resolution_id`, `attempts`, `max_attempts`, `lease_token`.
+    The optional UUIDs identify persisted context; they never carry a payload,
+    submitted-name mapping, or next business state.
 
     This bijection is machine-enforced, not left to care:
     `tests/test_repo_jobs_sql.py` parses `claim_job`'s `RETURNING` clause and
@@ -82,6 +80,8 @@ class Job:
     id: uuid.UUID
     kind: JobKind
     run_id: uuid.UUID | None
+    email_id: uuid.UUID | None
+    operator_resolution_id: uuid.UUID | None
     attempts: int
     max_attempts: int
     lease_token: uuid.UUID

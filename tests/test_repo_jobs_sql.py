@@ -251,7 +251,7 @@ def test_future_identifier_contracts_accept_complete_identifier_sets(
         conn=fake_conn,
     )
     _sql, params = fake_conn.last()
-    assert operator_resolution_id is None or str(operator_resolution_id) in params
+    assert operator_resolution_id is None or str(operator_resolution_id) in params.values()
 
 
 @pytest.mark.parametrize(
