@@ -738,10 +738,10 @@ def test_final_attempt_status_matrix_is_disjoint_and_exhaustive() -> None:
         job_settlement._FINAL_LEASE_ERROR_STATUSES
         & job_settlement._FINAL_LEASE_PRESERVE_STATUSES
     )
-    assert (
+    assert set(RunStatus) == (
         job_settlement._FINAL_LEASE_ERROR_STATUSES
         | job_settlement._FINAL_LEASE_PRESERVE_STATUSES
-    ) == set(RunStatus)
+    )
 
 
 @pytest.mark.parametrize("status", list(RunStatus))

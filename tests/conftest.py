@@ -1068,26 +1068,42 @@ class InMemoryRepo:
 
     def reap_expired_final_attempt(self, *, conn=None):
         """Mirror one exact expired final-attempt lease settlement."""
-        from app.db.repo.job_settlement import SettlementOutcome
+        from app.db.repo.job_settlement import (
+            _FINAL_LEASE_ERROR_STATUSES,
+            _FINAL_LEASE_PRESERVE_STATUSES,
+            SettlementOutcome,
+        )
+        from app.models.status import RunStatus
 
-        for row in self.jobs.values():
-            if not (
-                row["state"] == "leased"
-                and row["attempts"] == row["max_attempts"]
-                and row.get("lease_expired") is True
-            ):
-                continue
+        candidates = [
+            (index, row)
+            for index, row in enumerate(self.jobs.values())
+            if row["state"] == "leased"
+            and row["attempts"] == row["max_attempts"]
+            and row.get("lease_expired") is True
+        ]
+        candidates.sort(
+            key=lambda candidate: candidate[1].get(
+                "leased_until_order", candidate[0]
+            )
+        )
+        for _index, row in candidates:
             run = self.runs.get(str(row["run_id"]))
-            if run is None or run["status"] != "extracting":
+            if run is None:
                 return SettlementOutcome.FENCED
-            run["status"] = "error"
-            run["error_reason"] = "FinalAttemptLeaseExpired"
-            run["error_detail"] = (
-                "unknown:final_attempt_lease_expired;"
-                f"attempts={row['attempts']}/{row['max_attempts']}"
-            )[:200]
+            run_status = RunStatus(run["status"])
+            if run_status in _FINAL_LEASE_ERROR_STATUSES:
+                run["status"] = RunStatus.ERROR.value
+                run["error_reason"] = "FinalAttemptLeaseExpired"
+                run["error_detail"] = (
+                    "unknown:final_attempt_lease_expired;"
+                    f"attempts={row['attempts']}/{row['max_attempts']}"
+                )[:200]
+            else:
+                assert run_status in _FINAL_LEASE_PRESERVE_STATUSES
             row["state"] = "dead"
             row["lease_token"] = None
+            row["leased_until"] = None
             return SettlementOutcome.REAPED_FINAL_LEASE
         return None
 

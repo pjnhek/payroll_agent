@@ -34,6 +34,31 @@ class SettlementOutcome(enum.StrEnum):
     REAPED_FINAL_LEASE = "reaped_final_lease"
 
 
+_FINAL_LEASE_ERROR_STATUSES = frozenset(
+    {
+        RunStatus.RECEIVED,
+        RunStatus.EXTRACTING,
+        RunStatus.COMPUTED,
+        RunStatus.APPROVED,
+    }
+)
+_FINAL_LEASE_PRESERVE_STATUSES = frozenset(
+    {
+        RunStatus.SENT,
+        RunStatus.AWAITING_REPLY,
+        RunStatus.AWAITING_APPROVAL,
+        RunStatus.NEEDS_OPERATOR,
+        RunStatus.RECONCILED,
+        RunStatus.REJECTED,
+        RunStatus.ERROR,
+    }
+)
+assert not (_FINAL_LEASE_ERROR_STATUSES & _FINAL_LEASE_PRESERVE_STATUSES)
+assert frozenset(RunStatus) == (
+    _FINAL_LEASE_ERROR_STATUSES | _FINAL_LEASE_PRESERVE_STATUSES
+)
+
+
 def _bounded_detail(
     result: PipelineResult,
     *,
@@ -83,6 +108,16 @@ def _set_run_error(
         ),
     ).fetchone()
     return row is not None
+
+
+def _lock_run_status(
+    conn: psycopg.Connection, run_id: uuid.UUID
+) -> RunStatus | None:
+    row = conn.execute(
+        "SELECT status FROM payroll_runs WHERE id = %s FOR UPDATE",
+        (str(run_id),),
+    ).fetchone()
+    return RunStatus(str(row[0])) if row is not None else None
 
 
 def _rewind_run(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
@@ -397,13 +432,19 @@ def reap_expired_final_attempt(
         job_id = uuid.UUID(str(row[0]))
         run_id = uuid.UUID(str(row[1])) if row[1] is not None else None
         attempts, max_attempts = int(row[2]), int(row[3])
-        if run_id is None or not _set_run_error(
+        if run_id is None:
+            return SettlementOutcome.FENCED
+        run_status = _lock_run_status(c, run_id)
+        if run_status is None:
+            return SettlementOutcome.FENCED
+        if run_status in _FINAL_LEASE_ERROR_STATUSES and not _set_run_error(
             c,
             run_id,
             reason="FinalAttemptLeaseExpired",
             detail=f"unknown:final_attempt_lease_expired;attempts={attempts}/{max_attempts}"[:200],
+            expected_status=run_status,
         ):
-            return SettlementOutcome.FENCED
+            raise RuntimeError("locked final-attempt reap lost its run status")
         updated = c.execute(
             "UPDATE jobs SET state = 'dead',"
             " lease_token = NULL, leased_until = NULL, updated_at = now()"
