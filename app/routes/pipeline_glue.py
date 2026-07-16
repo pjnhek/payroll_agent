@@ -237,14 +237,14 @@ def _consume_background_result(
         repo.settle_background_terminal(run_id, result)
         return
 
-    from app.queue.drain import _backoff_seconds
+    from app.queue.drain import backoff_seconds
 
     settled = repo.enqueue_classified_retry(
         run_id,
         result,
         kind=kind,
         email_id=email_id,
-        available_in_seconds=_backoff_seconds(1),
+        available_in_seconds=backoff_seconds(1),
     )
     if settled is repo.SettlementOutcome.RETRIED:
         wake.wake()
@@ -389,13 +389,13 @@ def operator_resume_bg(
             repo.settle_background_terminal(run_id, result)
             return
 
-        from app.queue.drain import _backoff_seconds
+        from app.queue.drain import backoff_seconds
 
         settled = repo.enqueue_operator_resume_retry(
             run_id,
             operator_resolution_id,
             result,
-            available_in_seconds=_backoff_seconds(1),
+            available_in_seconds=backoff_seconds(1),
         )
         if settled is repo.SettlementOutcome.RETRIED:
             wake.wake()

@@ -99,7 +99,7 @@ def _job(
     )
 
 
-# ── Phase 18 classified settlement coordinator ───────────────────────────────
+# ── Classified settlement coordinator ────────────────────────────────────────
 
 
 def _claim_seeded_job(fake_repo: Any, run_id: uuid.UUID, *, max_attempts: int = 5) -> Job:
@@ -708,17 +708,17 @@ def test_drain_once_complete_job_fenced_out_returns_fenced(fake_repo, monkeypatc
 
 
 def test_backoff_seconds_exponential_capped_jittered_and_deterministic() -> None:
-    assert drain._backoff_seconds(1, rand=lambda lo, hi: 1.0) == pytest.approx(
+    assert drain.backoff_seconds(1, rand=lambda lo, hi: 1.0) == pytest.approx(
         drain._BACKOFF_BASE_SECONDS
     )
-    assert drain._backoff_seconds(2, rand=lambda lo, hi: 1.0) == pytest.approx(
+    assert drain.backoff_seconds(2, rand=lambda lo, hi: 1.0) == pytest.approx(
         drain._BACKOFF_BASE_SECONDS * 2
     )
-    assert drain._backoff_seconds(3, rand=lambda lo, hi: 1.0) == pytest.approx(
+    assert drain.backoff_seconds(3, rand=lambda lo, hi: 1.0) == pytest.approx(
         drain._BACKOFF_BASE_SECONDS * 4
     )
     # Grows past the cap, but never exceeds it.
-    assert drain._backoff_seconds(20, rand=lambda lo, hi: 1.0) == pytest.approx(
+    assert drain.backoff_seconds(20, rand=lambda lo, hi: 1.0) == pytest.approx(
         drain._BACKOFF_CAP_SECONDS
     )
     # The injected rand source's bounds are exactly (0.5, 1.5) — the jitter contract.
@@ -728,7 +728,7 @@ def test_backoff_seconds_exponential_capped_jittered_and_deterministic() -> None
         seen_bounds.append((lo, hi))
         return 0.5
 
-    value = drain._backoff_seconds(1, rand=_recording_rand)
+    value = drain.backoff_seconds(1, rand=_recording_rand)
     assert seen_bounds == [(0.5, 1.5)]
     assert value == pytest.approx(drain._BACKOFF_BASE_SECONDS * 0.5)
 

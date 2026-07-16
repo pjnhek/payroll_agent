@@ -369,7 +369,7 @@ def _first_coastal_employee_id() -> uuid.UUID:
 
 
 # ---------------------------------------------------------------------------
-# Phase 18 classified settlement and operator retry atomicity
+# Classified settlement and operator retry atomicity
 # ---------------------------------------------------------------------------
 
 

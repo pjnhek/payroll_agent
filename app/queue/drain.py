@@ -53,7 +53,7 @@ _BACKOFF_BASE_SECONDS = 5.0
 _BACKOFF_CAP_SECONDS = 300.0
 
 
-def _backoff_seconds(
+def backoff_seconds(
     attempts: int,
     *,
     rand: Callable[[float, float], float] = random.uniform,
@@ -198,7 +198,7 @@ def drain_once() -> DrainOutcome:
                 job.id,
                 job.lease_token,
                 error=exc,
-                backoff_seconds=_backoff_seconds(job.attempts),
+                backoff_seconds=backoff_seconds(job.attempts),
             )
             if state is None:
                 logger.warning(
