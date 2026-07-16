@@ -61,6 +61,16 @@ def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _assert_accounting_identity(body: dict[str, int]) -> None:
+    """D-14: maintenance reaps are dead rows, never claimed executions."""
+    assert body["claimed"] == (
+        body["done"]
+        + body["retried"]
+        + (body["dead"] - body["reaped_final_lease"])
+        + body["fenced"]
+    )
+
+
 # ── auth ──────────────────────────────────────────────────────────────────
 
 
@@ -97,11 +107,71 @@ def test_auth_correct_token_returns_200_with_counts_invariant(
 
     assert resp.status_code == 200
     body = resp.json()
-    for key in ("claimed", "done", "retried", "dead", "fenced", "queue_depth"):
+    for key in (
+        "claimed",
+        "done",
+        "retried",
+        "dead",
+        "fenced",
+        "reaped_final_lease",
+        "queue_depth",
+    ):
         assert key in body
-    assert body["claimed"] == (
-        body["done"] + body["retried"] + body["dead"] + body["fenced"]
-    )
+    assert body["reaped_final_lease"] == 0
+    _assert_accounting_identity(body)
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "expected"),
+    [
+        (
+            [DrainOutcome.REAPED_FINAL_LEASE],
+            {
+                "claimed": 0,
+                "done": 0,
+                "retried": 0,
+                "dead": 1,
+                "fenced": 0,
+                "reaped_final_lease": 1,
+            },
+        ),
+        (
+            [
+                DrainOutcome.DONE,
+                DrainOutcome.REAPED_FINAL_LEASE,
+                DrainOutcome.RETRIED,
+                DrainOutcome.DEAD,
+                DrainOutcome.FENCED,
+                DrainOutcome.REAPED_FINAL_LEASE,
+            ],
+            {
+                "claimed": 4,
+                "done": 1,
+                "retried": 1,
+                "dead": 3,
+                "fenced": 1,
+                "reaped_final_lease": 2,
+            },
+        ),
+    ],
+    ids=["reap-only", "mixed-outcomes"],
+)
+def test_reaped_final_leases_are_dead_but_never_claimed(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: list[DrainOutcome],
+    expected: dict[str, int],
+) -> None:
+    sequence = iter([*outcomes, DrainOutcome.EMPTY])
+    monkeypatch.setattr(pump_module, "drain_once", lambda: next(sequence))
+    monkeypatch.setattr(repo, "count_open_jobs", lambda: 0)
+
+    client = _client_with_token(monkeypatch, "secret-token")
+    resp = client.get(PUMP_PATH, headers=_auth_header("secret-token"))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {**expected, "queue_depth": 0}
+    _assert_accounting_identity(body)
 
 
 # ── bounded ───────────────────────────────────────────────────────────────
