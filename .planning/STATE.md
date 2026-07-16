@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: failure-policy-sweep-deletion
 status: executing
-stopped_at: Completed 18-02-PLAN.md
-last_updated: "2026-07-16T00:53:27.071Z"
+stopped_at: Completed 18-12-PLAN.md
+last_updated: "2026-07-16T01:04:05.042Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 27
-  completed_plans: 17
+  completed_plans: 18
   percent: 33
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
-Plan: 3 of 12
+Plan: 4 of 12
 Status: Ready to execute
 Last activity: 2026-07-16 — Phase 18 execution started
 
@@ -99,6 +99,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | Phase 17 P05 | 9min | 2 tasks | 1 files |
 | Phase 18 P01 | 4min | 2 tasks | 2 files |
 | Phase 18 P02 | 15min | 3 tasks | 10 files |
+| Phase 18 P12 | 5min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -177,6 +178,7 @@ Recent decisions affecting current work:
 - [Phase 18]: Legacy None has one temporary meaning through normalize_pipeline_result; explicit results preserve identity and invalid values raise. — One compatibility seam prevents consumers from inventing conflicting None policies before producer cutover.
 - [Phase 18]: Future resume kinds remain dormant bounded kind.value branches until Plan 18-09 atomically widens JobKind, SQL, and dispatch. — Keeps the one-kind drift equality green while making identifier validation ready.
 - [Phase 18]: Operator mappings persist as immutable UUID generations with typed submitted-name child rows independent of reply_epoch. — Allows exact idempotent replay and multiple valid same-epoch submissions without jobs payloads or alias-candidate authority.
+- [Phase 18]: Exact catalog tuples gate typed operator-resolution schema health — Same-named indexes or constraints with wrong table, columns, type, or references are drift.
 
 ### Pending Todos
 
@@ -242,8 +244,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T00:53:17.023Z
-Stopped at: Completed 18-02-PLAN.md
+Last session: 2026-07-16T01:04:05.034Z
+Stopped at: Completed 18-12-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
