@@ -62,7 +62,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 
 def _assert_accounting_identity(body: dict[str, int]) -> None:
-    """D-14: maintenance reaps are dead rows, never claimed executions."""
+    """Maintenance reaps are dead rows, never claimed executions."""
     assert body["claimed"] == (
         body["done"]
         + body["retried"]
