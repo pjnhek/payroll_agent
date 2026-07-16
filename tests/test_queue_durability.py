@@ -356,6 +356,203 @@ def _read_reply_epoch(run_id: uuid.UUID) -> int:
     return int(row[0])
 
 
+def _first_coastal_employee_id() -> uuid.UUID:
+    from app.db import repo
+
+    with repo.get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM employees WHERE business_id = %s ORDER BY id LIMIT 1",
+            (str(_COASTAL_BIZ_ID),),
+        ).fetchone()
+    assert row is not None
+    return uuid.UUID(str(row[0]))
+
+
+# ---------------------------------------------------------------------------
+# Phase 18 classified settlement and operator retry atomicity
+# ---------------------------------------------------------------------------
+
+
+def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -> None:
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+    from app.pipeline.result import (
+        PipelineOutcome,
+        PipelineReason,
+        PipelineResult,
+        PipelineStage,
+    )
+
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.EXTRACTING)
+    job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-settlement-retry:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    assert job_id is not None
+    job = repo.claim_job()
+    assert job is not None and job.id == job_id
+    assert repo.settle_pipeline_job(
+        job, retryable, backoff_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    assert repo.get_job(job_id)["state"] == "pending"
+    assert repo.load_run(run_id)["status"] == RunStatus.RECEIVED.value
+    assert repo.load_run(run_id)["error_reason"] is None
+
+    exhausted_run = _seed_run_for_queue_proof()
+    repo.set_status(exhausted_run, RunStatus.EXTRACTING)
+    exhausted_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-settlement-exhaustion:{uuid.uuid4()}",
+        run_id=exhausted_run,
+        max_attempts=1,
+    )
+    assert exhausted_id is not None
+    exhausted = repo.claim_job()
+    assert exhausted is not None and exhausted.id == exhausted_id
+    assert repo.settle_pipeline_job(
+        exhausted, retryable, backoff_seconds=5.0
+    ) is SettlementOutcome.DEAD
+    assert repo.get_job(exhausted_id)["state"] == "dead"
+    exhausted_row = repo.load_run(exhausted_run)
+    assert exhausted_row["status"] == RunStatus.ERROR.value
+    assert exhausted_row["error_reason"] == "RetryExhausted"
+    assert "1/1" in exhausted_row["error_detail"]
+
+    terminal_run = _seed_run_for_queue_proof()
+    repo.set_status(terminal_run, RunStatus.EXTRACTING)
+    terminal_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"queueproof-terminal-result:{uuid.uuid4()}",
+        run_id=terminal_run,
+    )
+    assert terminal_id is not None
+    terminal_job = repo.claim_job()
+    assert terminal_job is not None and terminal_job.id == terminal_id
+    terminal = PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.COMPUTE,
+        reason=PipelineReason.UNCLASSIFIED,
+    )
+    assert repo.settle_pipeline_job(
+        terminal_job, terminal, backoff_seconds=5.0
+    ) is SettlementOutcome.DONE
+    assert repo.get_job(terminal_id)["state"] == "done"
+    assert repo.load_run(terminal_run)["status"] == RunStatus.ERROR.value
+
+
+def test_operator_resume_retry_reloads_complete_resolution_and_dedupes_by_uuid(
+    seeded_db,
+) -> None:
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.status import RunStatus
+    from app.pipeline.result import (
+        PipelineOutcome,
+        PipelineReason,
+        PipelineResult,
+        PipelineStage,
+    )
+
+    run_id = _seed_run_for_queue_proof()
+    employee_id = _first_coastal_employee_id()
+    first_resolution = uuid.uuid4()
+    second_resolution = uuid.uuid4()
+    mapping = {"unchecked remember name": employee_id}
+    repo.create_operator_resume_resolution(run_id, first_resolution, mapping)
+    repo.create_operator_resume_resolution(run_id, second_resolution, mapping)
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_CONNECTION_FAILURE,
+    )
+
+    repo.set_status(run_id, RunStatus.EXTRACTING)
+    assert repo.enqueue_operator_resume_retry(
+        run_id, first_resolution, retryable, available_in_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    assert repo.load_operator_resume_resolution(run_id, first_resolution) == {
+        "unchecked remember name": str(employee_id)
+    }
+
+    repo.set_status(run_id, RunStatus.EXTRACTING)
+    assert repo.enqueue_operator_resume_retry(
+        run_id, first_resolution, retryable, available_in_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+    repo.set_status(run_id, RunStatus.EXTRACTING)
+    assert repo.enqueue_operator_resume_retry(
+        run_id, second_resolution, retryable, available_in_seconds=5.0
+    ) is SettlementOutcome.RETRIED
+
+    with repo.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT operator_resolution_id, email_id, last_error FROM jobs"
+            " WHERE run_id = %s AND kind = 'operator_resume' ORDER BY created_at",
+            (str(run_id),),
+        ).fetchall()
+    assert [uuid.UUID(str(row[0])) for row in rows] == [
+        first_resolution,
+        second_resolution,
+    ]
+    assert all(row[1] is None for row in rows)
+    assert all(row[2] == retryable.diagnostic_code for row in rows)
+    assert "unchecked remember name" not in repr(rows)
+
+
+def test_operator_resume_retry_half_failure_rolls_back_run_and_preserves_resolution(
+    seeded_db, monkeypatch
+) -> None:
+    from app.db import repo
+    from app.db.repo import job_settlement
+    from app.models.status import RunStatus
+    from app.pipeline.result import (
+        PipelineOutcome,
+        PipelineReason,
+        PipelineResult,
+        PipelineStage,
+    )
+
+    run_id = _seed_run_for_queue_proof()
+    employee_id = _first_coastal_employee_id()
+    resolution_id = uuid.uuid4()
+    mapping = {"private submitted name": employee_id}
+    repo.create_operator_resume_resolution(run_id, resolution_id, mapping)
+    repo.set_status(run_id, RunStatus.EXTRACTING)
+
+    def _fail_enqueue(**kwargs):
+        raise RuntimeError("injected enqueue failure")
+
+    monkeypatch.setattr(job_settlement, "enqueue_job", _fail_enqueue)
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+    with pytest.raises(RuntimeError, match="injected enqueue failure"):
+        repo.enqueue_operator_resume_retry(
+            run_id, resolution_id, retryable, available_in_seconds=5.0
+        )
+
+    assert repo.load_run(run_id)["status"] == RunStatus.EXTRACTING.value
+    assert repo.load_operator_resume_resolution(run_id, resolution_id) == {
+        "private submitted name": str(employee_id)
+    }
+    with repo.get_connection() as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM jobs WHERE operator_resolution_id = %s",
+            (str(resolution_id),),
+        ).fetchone()
+    assert count is not None and int(count[0]) == 0
+
+
 # ---------------------------------------------------------------------------
 # A genuine N-thread claim race: exactly one winner
 # ---------------------------------------------------------------------------

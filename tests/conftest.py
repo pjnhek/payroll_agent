@@ -845,7 +845,7 @@ class InMemoryRepo:
             "attempts": 0,
             "max_attempts": max_attempts if max_attempts is not None else 5,
             "lease_token": None,
-            "last_error": None,
+            "last_error": safe_last_error,
             "available_in_seconds": available_in_seconds,
             "safe_last_error": safe_last_error,
         }
@@ -899,6 +899,218 @@ class InMemoryRepo:
         else:
             job["state"] = "pending"
         return JobState(job["state"])
+
+    def enqueue_classified_retry(
+        self,
+        run_id,
+        result,
+        *,
+        kind,
+        email_id=None,
+        available_in_seconds,
+        conn=None,
+    ):
+        """Mirror the atomic first-attempt retry bridge."""
+        from app.db.repo.job_settlement import SettlementOutcome
+        from app.pipeline.result import PipelineOutcome
+
+        if result.outcome is not PipelineOutcome.RETRYABLE:
+            raise ValueError("enqueue_classified_retry requires a retryable result")
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return SettlementOutcome.FENCED
+        epoch = run.get("reply_epoch", 0)
+        suffix = f":{email_id}" if email_id is not None else ""
+        dedup_key = f"{kind.value}:{run_id}:{epoch}{suffix}"
+        existing_id = self._job_dedup_keys.get(dedup_key)
+        if run["status"] == "received":
+            if existing_id is None:
+                return SettlementOutcome.FENCED
+            existing = self.jobs[str(existing_id)]
+            return (
+                SettlementOutcome.RETRIED
+                if existing["kind"] == kind.value
+                and existing["run_id"] == run_id
+                and existing["email_id"] == email_id
+                else SettlementOutcome.FENCED
+            )
+        if run["status"] != "extracting":
+            return SettlementOutcome.FENCED
+        run["status"] = "received"
+        self.enqueue_job(
+            kind=kind,
+            dedup_key=dedup_key,
+            run_id=run_id,
+            email_id=email_id,
+            available_in_seconds=available_in_seconds,
+            safe_last_error=result.diagnostic_code,
+        )
+        return SettlementOutcome.RETRIED
+
+    def enqueue_operator_resume_retry(
+        self,
+        run_id,
+        operator_resolution_id,
+        result,
+        *,
+        available_in_seconds,
+        conn=None,
+    ):
+        """Mirror the resolution-scoped identifier-only retry bridge."""
+        from app.db.repo.job_settlement import SettlementOutcome
+        from app.models.job import JobKind
+        from app.pipeline.result import PipelineOutcome
+
+        if result.outcome is not PipelineOutcome.RETRYABLE:
+            raise ValueError("enqueue_operator_resume_retry requires a retryable result")
+        try:
+            self.load_operator_resume_resolution(run_id, operator_resolution_id)
+        except ValueError:
+            return SettlementOutcome.FENCED
+        run = self.runs.get(str(run_id))
+        if run is None:
+            return SettlementOutcome.FENCED
+        dedup_key = f"operator_resume:{run_id}:{operator_resolution_id}"
+        existing_id = self._job_dedup_keys.get(dedup_key)
+        if run["status"] == "received":
+            if existing_id is None:
+                return SettlementOutcome.FENCED
+            existing = self.jobs[str(existing_id)]
+            return (
+                SettlementOutcome.RETRIED
+                if existing["kind"] == JobKind.OPERATOR_RESUME.value
+                and existing["run_id"] == run_id
+                and existing["operator_resolution_id"] == operator_resolution_id
+                else SettlementOutcome.FENCED
+            )
+        if run["status"] != "extracting":
+            return SettlementOutcome.FENCED
+        run["status"] = "received"
+        self.enqueue_job(
+            kind=JobKind.OPERATOR_RESUME,
+            dedup_key=dedup_key,
+            run_id=run_id,
+            operator_resolution_id=operator_resolution_id,
+            available_in_seconds=available_in_seconds,
+            safe_last_error=result.diagnostic_code,
+        )
+        return SettlementOutcome.RETRIED
+
+    def settle_pipeline_job(
+        self, job, result, *, backoff_seconds, conn=None
+    ):
+        """Mirror the fenced classified settlement matrix atomically."""
+        from app.db.repo.job_settlement import SettlementOutcome
+        from app.pipeline.result import PipelineOutcome
+
+        row = self.jobs.get(str(job.id))
+        if (
+            row is None
+            or row["state"] != "leased"
+            or row["lease_token"] != job.lease_token
+            or row["run_id"] != job.run_id
+            or job.run_id is None
+        ):
+            return SettlementOutcome.FENCED
+        run = self.runs.get(str(job.run_id))
+        if run is None:
+            return SettlementOutcome.FENCED
+        if result.outcome is PipelineOutcome.OK:
+            row["state"] = "done"
+            row["lease_token"] = None
+            return SettlementOutcome.DONE
+        if run["status"] != "extracting":
+            return SettlementOutcome.FENCED
+        if result.outcome is PipelineOutcome.RETRYABLE and row["attempts"] < row["max_attempts"]:
+            run["status"] = "received"
+            row["state"] = "pending"
+            row["last_error"] = result.diagnostic_code
+            row["lease_token"] = None
+            row["available_in_seconds"] = backoff_seconds
+            return SettlementOutcome.RETRIED
+        row["state"] = (
+            "dead" if result.outcome is PipelineOutcome.RETRYABLE else "done"
+        )
+        row["last_error"] = result.diagnostic_code
+        row["lease_token"] = None
+        run["status"] = "error"
+        if result.outcome is PipelineOutcome.RETRYABLE:
+            run["error_reason"] = "RetryExhausted"
+            run["error_detail"] = (
+                f"{result.diagnostic_code};attempts={row['attempts']}/{row['max_attempts']}"
+            )[:200]
+            return SettlementOutcome.DEAD
+        run["error_reason"] = result.reason.value
+        run["error_detail"] = result.diagnostic_code
+        return SettlementOutcome.DONE
+
+    def settle_background_terminal(self, run_id, result, *, conn=None):
+        """Mirror terminal settlement for a BackgroundTask with no job."""
+        from app.db.repo.job_settlement import SettlementOutcome
+        from app.pipeline.result import PipelineOutcome
+
+        if result.outcome is not PipelineOutcome.TERMINAL:
+            raise ValueError("settle_background_terminal requires a terminal result")
+        run = self.runs.get(str(run_id))
+        if run is None or run["status"] != "extracting":
+            return SettlementOutcome.FENCED
+        run["status"] = "error"
+        run["error_reason"] = result.reason.value
+        run["error_detail"] = result.diagnostic_code
+        return SettlementOutcome.DONE
+
+    def settle_infrastructure_failure(
+        self,
+        job,
+        *,
+        backoff_seconds,
+        stage=None,
+        reason=None,
+        conn=None,
+    ):
+        """Mirror bounded infrastructure settlement without exception text."""
+        from app.pipeline.result import (
+            PipelineOutcome,
+            PipelineReason,
+            PipelineResult,
+            PipelineStage,
+        )
+
+        return self.settle_pipeline_job(
+            job,
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=stage or PipelineStage.UNKNOWN,
+                reason=reason or PipelineReason.UNCLASSIFIED,
+            ),
+            backoff_seconds=backoff_seconds,
+        )
+
+    def reap_expired_final_attempt(self, *, conn=None):
+        """Mirror one exact expired final-attempt lease settlement."""
+        from app.db.repo.job_settlement import SettlementOutcome
+
+        for row in self.jobs.values():
+            if not (
+                row["state"] == "leased"
+                and row["attempts"] == row["max_attempts"]
+                and row.get("lease_expired") is True
+            ):
+                continue
+            run = self.runs.get(str(row["run_id"]))
+            if run is None or run["status"] != "extracting":
+                return SettlementOutcome.FENCED
+            run["status"] = "error"
+            run["error_reason"] = "FinalAttemptLeaseExpired"
+            run["error_detail"] = (
+                "unknown:final_attempt_lease_expired;"
+                f"attempts={row['attempts']}/{row['max_attempts']}"
+            )[:200]
+            row["state"] = "dead"
+            row["last_error"] = "unknown:unclassified"
+            row["lease_token"] = None
+            return SettlementOutcome.REAPED_FINAL_LEASE
+        return None
 
     def release_leases(self, lease_tokens, conn=None):
         """Mirror repo.release_leases: flips every leased row holding one of
@@ -1395,6 +1607,12 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "fail_job",
         "release_leases",
         "get_job",
+        "enqueue_classified_retry",
+        "enqueue_operator_resume_retry",
+        "settle_pipeline_job",
+        "settle_background_terminal",
+        "settle_infrastructure_failure",
+        "reap_expired_final_attempt",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)

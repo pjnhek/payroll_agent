@@ -107,10 +107,18 @@ def _claim_seeded_job(fake_repo: Any, run_id: uuid.UUID, *, max_attempts: int = 
         max_attempts=max_attempts,
     )
     assert job_id is not None
-    claimed = fake_repo.claim_job()
-    assert claimed is not None
-    assert claimed.id == job_id
-    return claimed
+    row = fake_repo.jobs[str(job_id)]
+    row["state"] = "leased"
+    row["attempts"] += 1
+    row["lease_token"] = uuid.uuid4()
+    return Job(
+        id=job_id,
+        kind=JobKind.RUN_PIPELINE,
+        run_id=run_id,
+        attempts=row["attempts"],
+        max_attempts=row["max_attempts"],
+        lease_token=row["lease_token"],
+    )
 
 
 def test_classified_settlement_matrix_is_atomic_in_fake_repo(fake_repo):

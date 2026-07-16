@@ -44,6 +44,15 @@ from app.db.repo.emails import (
     update_email_message_sent,
     update_email_message_state,
 )
+from app.db.repo.job_settlement import (
+    SettlementOutcome,
+    enqueue_classified_retry,
+    enqueue_operator_resume_retry,
+    reap_expired_final_attempt,
+    settle_background_terminal,
+    settle_infrastructure_failure,
+    settle_pipeline_job,
+)
 from app.db.repo.jobs import (
     claim_job,
     complete_job,
@@ -149,6 +158,13 @@ __all__ = [
     "fail_job",
     "get_job",
     "release_leases",
+    "SettlementOutcome",
+    "enqueue_classified_retry",
+    "enqueue_operator_resume_retry",
+    "settle_pipeline_job",
+    "settle_background_terminal",
+    "settle_infrastructure_failure",
+    "reap_expired_final_attempt",
     "load_roster_for_business",
     "_ACCENT_CLASS_MAP",
     "_TERMINAL_STATUSES",
