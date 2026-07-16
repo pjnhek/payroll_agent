@@ -14,11 +14,10 @@ current attempt, two stale rows survive the reset and corrupt the fresh run:
 
 The mechanism: a per-run `reply_epoch` counter, bumped once by
 `clear_reply_context` on every retrigger. `email_messages.epoch` is stamped at
-write/link time from the owning run's CURRENT reply_epoch. The three round-machine
-readers (`get_outbound_for_round`, `load_consumed_replies`,
-`find_stranded_unconsumed_replies`) scope to the run's CURRENT epoch, so a stale
-pre-retrigger row (epoch 0) is invisible to a post-retrigger run (epoch 1) while
-still physically existing in the audit log.
+write/link time from the owning run's CURRENT reply_epoch. The active round-machine
+readers (`get_outbound_for_round` and `load_consumed_replies`) scope to the run's CURRENT
+epoch, so a stale pre-retrigger row (epoch 0) is invisible to a post-retrigger run
+(epoch 1) while still physically existing in the audit log.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
 tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker gated

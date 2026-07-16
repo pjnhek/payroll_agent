@@ -10,9 +10,9 @@ WHAT THIS MODULE PROVES:
 After MAX_CLARIFICATION_ROUNDS (3) clarification sends, the next would-be send silently
 escalates the run to needs_operator instead of sending a 4th email. No LLM call, no
 gateway call, no new outbound row — a silent handoff to a human, not more spam and not a
-silent stall. needs_operator is also excluded from every scope list that would otherwise
-treat it as in-flight or stranded (the recovery sweep, retrigger's stale-claim scope, and
-auto-resume), because it is a settled human-gate state, not a state to recover from.
+silent stall. needs_operator is also excluded from the in-flight display set and
+Retrigger's stale-claim scope because it is a settled human-gate state, not a state to
+recover from automatically.
 
 1. cap boundary — counter=2 lets the 3rd send proceed (gateway called); counter=3 blocks
    the 4th (no gateway call, no llm call, status becomes needs_operator).
@@ -833,7 +833,6 @@ def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
         "pay_period_start": None,
         "pay_period_end": None,
     }
-    monkeypatch.setattr(_repo, "sweep_stranded_runs", lambda *a, **kw: [])
     monkeypatch.setattr(_repo, "load_all_runs", lambda *a, **kw: [needs_operator_run])
 
     response = client.get("/runs")

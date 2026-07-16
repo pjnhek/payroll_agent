@@ -1,4 +1,4 @@
-"""Reply redelivery + stranded auto-resume: no reply is ever permanently dropped.
+"""Webhook reply redelivery remains deterministic without page-load recovery.
 
 WHY THIS LIVES IN ITS OWN MODULE (NOT tests/test_resume_pipeline.py):
 tests/test_resume_pipeline.py carries a MODULE-LEVEL conditional-skip marker
@@ -17,15 +17,8 @@ WHAT THIS MODULE PROVES (assert REAL re-schedule facts, never a log string):
      set — NO re-schedule; the duplicate JSONResponse is still returned.
   3. redelivery to a non-awaiting_reply run no-ops: the reply row is unconsumed
      but the run already advanced (e.g. reconciled) — NO re-schedule.
-  4. runs-list stranded auto-resume: GET /runs re-schedules the resume for a
-     STALE unconsumed reply against an awaiting_reply run; a FRESH unconsumed
-     reply (not past the stale threshold) is NOT scheduled, so a reply still in
-     flight is never raced.
-  5. needs_operator excluded: a needs_operator run with a stale unconsumed reply
-     is NEVER re-scheduled by the runs-list load — the query scope structurally
-     excludes it, because needs_operator exits only via /resolve or reject.
-  6. a sender-mismatched reply is never resumed by EITHER seam (redelivery or the
-     stranded sweep). A reply linked by the RFC header chain but sent from an
+  4. a sender-mismatched reply is never resumed by webhook redelivery. A reply
+     linked by the RFC header chain but sent from an
      address that does not belong to the run's business must stay unconsumed
      forever: resuming it would let an outsider drive another business's payroll.
 """
@@ -34,7 +27,7 @@ from __future__ import annotations
 import ast
 import inspect
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -112,14 +105,12 @@ def _seed_awaiting_reply_run_with_reply(
     message_id: str,
     consumed: bool = False,
     run_status: str = "awaiting_reply",
-    created_at: datetime | None = None,
     reply_from_addr: str | None = None,
 ) -> tuple[uuid.UUID, dict[str, Any]]:
     """Seed a run + a persisted, LINKED inbound reply row against it.
 
-    Mirrors the real webhook's insert_inbound_email + link_email_to_run
-    sequence — the exact shape get_inbound_by_message_id /
-    find_stranded_unconsumed_replies read at runtime. Returns (run_id, row).
+    Mirrors the real webhook's insert_inbound_email + link_email_to_run sequence and
+    the exact shape get_inbound_by_message_id reads at runtime. Returns (run_id, row).
 
     `reply_from_addr` overrides the LINKED REPLY row's from_addr only — the run's
     owning business is still seeded via COASTAL_EMAIL/COASTAL_BIZ_ID, which is
@@ -150,8 +141,6 @@ def _seed_awaiting_reply_run_with_reply(
     )
     fake_repo.link_email_to_run(reply_eid, run_id)
     row = fake_repo.emails[message_id]
-    if created_at is not None:
-        row["created_at"] = created_at
     if consumed:
         fake_repo.mark_reply_consumed(message_id, round=0)
     return run_id, row
@@ -282,97 +271,7 @@ def test_redelivery_to_non_awaiting_reply_run_no_ops(client, fake_repo, resume_s
 
 
 # ---------------------------------------------------------------------------
-# 4. runs-list stranded auto-resume
-# ---------------------------------------------------------------------------
-
-
-def test_runs_list_reschedules_stale_unconsumed_reply(client, fake_repo, resume_spy):
-    """GET /runs re-schedules the resume for a stale unconsumed reply against an
-    awaiting_reply run — the sweep that stops a dropped reply from stranding the
-    run forever."""
-    from app.routes.runs import STALE_THRESHOLD_SECONDS
-
-    message_id = f"<stranded-{uuid.uuid4()}@metrodeli.example>"
-    old_created_at = datetime.now(UTC) - timedelta(
-        seconds=STALE_THRESHOLD_SECONDS + 60
-    )
-    run_id, row = _seed_awaiting_reply_run_with_reply(
-        fake_repo,
-        message_id=message_id,
-        consumed=False,
-        created_at=old_created_at,
-    )
-
-    r = client.get("/runs")
-    assert r.status_code == 200
-
-    assert len(resume_spy) == 1, (
-        "a stale unconsumed reply against an awaiting_reply run must be "
-        f"re-scheduled on the runs-list load; got {len(resume_spy)} calls"
-    )
-    scheduled_run_id, scheduled_inbound = resume_spy[0]
-    assert str(scheduled_run_id) == str(run_id)
-    assert scheduled_inbound.body_text == row["body_text"]
-
-
-def test_runs_list_does_not_reschedule_fresh_unconsumed_reply(
-    client, fake_repo, resume_spy
-):
-    """A FRESH unconsumed reply (not past the stale threshold) must NOT be
-    re-scheduled — only genuinely stranded replies qualify. A reply still in
-    flight would otherwise be raced by the sweep."""
-    message_id = f"<fresh-{uuid.uuid4()}@metrodeli.example>"
-    _run_id, _row = _seed_awaiting_reply_run_with_reply(
-        fake_repo,
-        message_id=message_id,
-        consumed=False,
-        created_at=datetime.now(UTC),
-    )
-
-    r = client.get("/runs")
-    assert r.status_code == 200
-
-    assert resume_spy == [], (
-        "a FRESH (not-yet-stale) unconsumed reply must NOT be re-scheduled "
-        f"by the runs-list load; got {len(resume_spy)} unexpected re-schedule(s)"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 5. needs_operator excluded
-# ---------------------------------------------------------------------------
-
-
-def test_runs_list_never_reschedules_needs_operator_run(client, fake_repo, resume_spy):
-    """A needs_operator run with a stale unconsumed reply must NEVER be
-    re-scheduled by the runs-list load — the query scope structurally excludes it.
-    needs_operator is a human-escape terminal: it exits only via /resolve or
-    reject, so an auto-resume would drive the run past the operator."""
-    from app.routes.runs import STALE_THRESHOLD_SECONDS
-
-    message_id = f"<needs-operator-{uuid.uuid4()}@metrodeli.example>"
-    old_created_at = datetime.now(UTC) - timedelta(
-        seconds=STALE_THRESHOLD_SECONDS + 60
-    )
-    _run_id, _row = _seed_awaiting_reply_run_with_reply(
-        fake_repo,
-        message_id=message_id,
-        consumed=False,
-        run_status="needs_operator",
-        created_at=old_created_at,
-    )
-
-    r = client.get("/runs")
-    assert r.status_code == 200
-
-    assert resume_spy == [], (
-        "a needs_operator run must NEVER be auto-resumed by the runs-list "
-        f"load; got {len(resume_spy)} unexpected re-schedule(s)"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 6. A sender-mismatched linked reply is NEVER resumed by either seam
+# 4. A sender-mismatched linked reply is NEVER resumed by redelivery
 # ---------------------------------------------------------------------------
 
 SPOOFED_FROM_ADDR = "attacker@evil.example"
@@ -414,37 +313,5 @@ def test_redelivery_never_resumes_sender_mismatched_reply(client, fake_repo, res
     assert resume_spy == [], (
         "a reply that failed sender revalidation must NEVER be resumed via "
         f"redelivery; got {len(resume_spy)} unexpected re-schedule(s)"
-    )
-    assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
-
-
-def test_stranded_sweep_never_resumes_sender_mismatched_reply(client, fake_repo, resume_spy):
-    """The SAME mismatched-sender, unconsumed, awaiting_reply, STALE reply must
-    never be auto-resumed by the stranded-reply sweep on a GET /runs dashboard
-    load either.
-
-    The sweep is the second seam into the resume path, so it needs the same sender
-    check as the redelivery seam: filtering on consumed_round/run_id/status alone
-    would resume a spoofed reply as soon as it went stale."""
-    from app.routes.runs import STALE_THRESHOLD_SECONDS
-
-    message_id = f"<stranded-spoofed-{uuid.uuid4()}@metrodeli.example>"
-    old_created_at = datetime.now(UTC) - timedelta(
-        seconds=STALE_THRESHOLD_SECONDS + 60
-    )
-    run_id, _row = _seed_awaiting_reply_run_with_reply(
-        fake_repo,
-        message_id=message_id,
-        consumed=False,
-        created_at=old_created_at,
-        reply_from_addr=SPOOFED_FROM_ADDR,
-    )
-
-    r = client.get("/runs")
-    assert r.status_code == 200
-
-    assert resume_spy == [], (
-        "a reply that failed sender revalidation must NEVER be auto-resumed by "
-        f"the stranded-reply sweep; got {len(resume_spy)} unexpected re-schedule(s)"
     )
     assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
