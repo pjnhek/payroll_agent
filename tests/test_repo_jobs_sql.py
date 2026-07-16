@@ -536,12 +536,13 @@ def test_operator_resume_schema_has_live_migration_and_indexes() -> None:
     )
 
 
-def test_operator_resume_schema_does_not_widen_job_kind_early() -> None:
+def test_operator_resume_schema_keeps_operator_kind_dormant_until_handler_lands() -> None:
     schema = _schema_sql()
     jobs = schema.split("CREATE TABLE IF NOT EXISTS jobs", 1)[1].split(");", 1)[0]
     kind_check = re.search(r"CHECK \(kind IN \(([^)]*)\)\)", jobs)
     assert kind_check is not None
-    assert kind_check.group(1) == "'run_pipeline'"
+    assert kind_check.group(1) == "'run_pipeline','resume_reply'"
+    assert "'operator_resume'" not in kind_check.group(1)
 
 
 def test_get_inbound_email_by_id_uses_exact_uuid_and_inbound_scope(fake_conn) -> None:

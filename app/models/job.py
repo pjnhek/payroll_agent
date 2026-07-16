@@ -25,9 +25,9 @@ import uuid
 class JobKind(enum.StrEnum):
     """The kind of work a `jobs` row represents — a FUNCTION NAME, never a status.
 
-    Exactly ONE member today: `RUN_PIPELINE`. The full eventual design names
-    four kinds (`ingest`, `run_pipeline`, `resume_reply`, `operator_resume`),
-    but only one of them ships with a real handler right now.
+    `RUN_PIPELINE` and `RESUME_REPLY` ship with real handlers. The full eventual
+    design also names `ingest` and `operator_resume`; neither is declared until
+    its handler and SQL contract land atomically.
     `app/queue/dispatch.py`'s CI guard asserts `set(JobKind) == set(HANDLERS)`
     — set EQUALITY. Pre-declaring the other three kinds now would make that
     guard permanently unsatisfiable (three kinds with no registered handler),
@@ -38,6 +38,7 @@ class JobKind(enum.StrEnum):
     """
 
     RUN_PIPELINE = "run_pipeline"
+    RESUME_REPLY = "resume_reply"
 
 
 class JobState(enum.StrEnum):

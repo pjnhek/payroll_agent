@@ -465,7 +465,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     -- DEVIATION 1: an earlier full design lists four eventual kinds
     -- ('ingest','run_pipeline','resume_reply','operator_resume'). Only
-    -- 'run_pipeline' has a real handler today, and the CI drift guard for this
+    -- 'run_pipeline' and 'resume_reply' have real handlers today, and the CI drift guard for this
     -- table asserts set(JobKind) == set(dispatch.HANDLERS) — set EQUALITY.
     -- Declaring three kinds with no handler makes that guard permanently
     -- unsatisfiable. Widening this CHECK later (once `jobs` holds live rows)
@@ -476,7 +476,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- inline CHECK is correct and deliberately adds NO third conkey-anchored
     -- DO-block (test_do_block_constraint_drops_are_column_anchored's count of
     -- 2 stays correct).
-    kind          TEXT        NOT NULL CHECK (kind IN ('run_pipeline')),
+    kind          TEXT        NOT NULL CHECK (kind IN ('run_pipeline','resume_reply')),
     dedup_key     TEXT        NOT NULL,
     -- DEVIATION 3: an earlier full design cascades this FK on delete. This
     -- table deliberately does NOT cascade, matching the email_messages
@@ -490,6 +490,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- declaring it now is free — CREATE TABLE IF NOT EXISTS is a no-op against
     -- a live table, so adding it later would cost an explicit ALTER block.
     email_id      UUID        REFERENCES email_messages(id),
+    -- Added before its FK target is created so kind-specific context CHECKs
+    -- can reject accidental payload mixing at the initial CREATE boundary.
+    -- The history-preserving FK is installed after the target table exists.
+    operator_resolution_id UUID,
     -- DEVIATION 2: an earlier full design also declares an `event_id` column
     -- with a REFERENCES clause pointing at a durable-ingest events table.
     -- OMITTED ENTIRELY — that table does NOT EXIST in this schema yet (grep
@@ -548,6 +552,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- conkey-anchored DO-block — same reasoning as DEVIATION 1.
     CONSTRAINT ck_jobs_run_pipeline_requires_run CHECK (
         kind <> 'run_pipeline' OR run_id IS NOT NULL
+    ),
+    CONSTRAINT ck_jobs_resume_reply_context CHECK (
+        kind <> 'resume_reply' OR (
+            run_id IS NOT NULL AND email_id IS NOT NULL
+            AND operator_resolution_id IS NULL
+        )
     )
 );
 
@@ -585,6 +595,43 @@ CREATE TABLE IF NOT EXISTS operator_resume_overrides (
 -- jobs already exists, so install the nullable identifier and its
 -- history-preserving FK explicitly and idempotently.
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS operator_resolution_id UUID;
+
+-- Live-database migration: widen the canonical kind vocabulary and install
+-- the exact resume-reply identifier contract. The kind constraint is found
+-- by its single constrained column rather than by a historical generated
+-- name, so both unnamed CREATE-time checks and prior named migrations are
+-- replaced safely.
+DO $$
+DECLARE
+    _con RECORD;
+BEGIN
+    FOR _con IN
+        SELECT c.conname
+        FROM pg_constraint c
+        WHERE c.contype = 'c'
+          AND c.conrelid = 'jobs'::regclass
+          AND (
+              SELECT array_agg(a.attname ORDER BY u.ord)
+              FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+              JOIN pg_attribute a
+                ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+          ) = ARRAY['kind']
+    LOOP
+        EXECUTE 'ALTER TABLE jobs DROP CONSTRAINT ' || quote_ident(_con.conname);
+    END LOOP;
+
+    ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
+        CHECK (kind IN ('run_pipeline','resume_reply'));
+
+    ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_resume_reply_context;
+    ALTER TABLE jobs ADD CONSTRAINT ck_jobs_resume_reply_context CHECK (
+        kind <> 'resume_reply' OR (
+            run_id IS NOT NULL AND email_id IS NOT NULL
+            AND operator_resolution_id IS NULL
+        )
+    );
+END;
+$$;
 
 DO $$
 BEGIN

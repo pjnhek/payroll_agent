@@ -235,7 +235,9 @@ def test_resume_reply_handler_reclaims_without_advancing_epoch(
     assert run["reply_epoch"] == 7
 
 
-def test_resume_reply_handler_rejects_missing_or_non_inbound_context(fake_repo) -> None:
+def test_resume_reply_handler_rejects_missing_or_non_inbound_context(
+    fake_repo, caplog
+) -> None:
     from app.queue.handlers import resume_reply
 
     run_id = _seed_run(fake_repo, body="original inbound")
@@ -249,11 +251,40 @@ def test_resume_reply_handler_rejects_missing_or_non_inbound_context(fake_repo) 
             _resume_reply_job(run_id=run_id, email_id=None)
         )
 
+    hostile_email_id, _ = fake_repo.insert_inbound_email(
+        message_id=f"<hostile-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="SECRET SUBJECT",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="SECRET TOKEN Maria Chen",
+    )
+    assert hostile_email_id is not None
+    fake_repo.email_by_id[str(hostile_email_id)]["direction"] = "outbound"
+
     terminal = resume_reply.handle_resume_reply(
-        _resume_reply_job(run_id=run_id, email_id=uuid.uuid4())
+        _resume_reply_job(run_id=run_id, email_id=hostile_email_id)
     )
     assert terminal.outcome is PipelineOutcome.TERMINAL
     assert terminal.diagnostic_code == "load:invalid_operator_override_context"
+    assert "SECRET" not in caplog.text
+    assert "Maria Chen" not in caplog.text
+
+
+def test_resume_reply_dispatch_forwards_handler_result(monkeypatch) -> None:
+    from app.queue import dispatch
+    from app.queue.handlers import resume_reply
+
+    explicit = PipelineResult(outcome=PipelineOutcome.OK)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", lambda _job: explicit)
+
+    assert (
+        dispatch.handle(
+            _resume_reply_job(run_id=uuid.uuid4(), email_id=uuid.uuid4())
+        )
+        is explicit
+    )
 
 
 def _extraction_json(

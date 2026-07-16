@@ -18,17 +18,21 @@ claimed, and marked done without ever having run.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import ModuleType
+from typing import cast
 
 from app.models.job import Job, JobKind
-from app.queue.handlers import pipeline
+from app.pipeline.result import PipelineResult
+from app.queue.handlers import pipeline, resume_reply
 
 HANDLERS: dict[JobKind, tuple[ModuleType, str]] = {
     JobKind.RUN_PIPELINE: (pipeline, "handle_run_pipeline"),
+    JobKind.RESUME_REPLY: (resume_reply, "handle_resume_reply"),
 }
 
 
-def handle(job: Job) -> None:
+def handle(job: Job) -> PipelineResult | None:
     """Dispatch `job` to its registered handler. RAISES on an unknown kind —
     a job marked done without ever having run is the worst possible outcome,
     because it looks exactly like success. There is no silent no-op branch.
@@ -41,4 +45,5 @@ def handle(job: Job) -> None:
             "of a kind with no handler must never be silently marked done."
         )
     module, name = entry
-    getattr(module, name)(job)
+    handler = cast(Callable[[Job], PipelineResult | None], getattr(module, name))
+    return handler(job)
