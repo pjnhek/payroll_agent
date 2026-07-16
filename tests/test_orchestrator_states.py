@@ -41,7 +41,9 @@ class _RequiredExtractionPayload(BaseModel):
     employee_name: str
 
 
-def _provider_status_error(status_code: int, *, message: str = "provider failure") -> APIStatusError:
+def _provider_status_error(
+    status_code: int, *, message: str = "provider failure"
+) -> APIStatusError:
     request = httpx.Request("POST", "https://provider.invalid/v1/chat/completions")
     response = httpx.Response(status_code, request=request)
     if status_code == 429:
