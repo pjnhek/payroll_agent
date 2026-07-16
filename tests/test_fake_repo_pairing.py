@@ -130,6 +130,32 @@ def test_durable_recovery_facade_and_fake_surfaces_remain_paired(fake_repo) -> N
         )
 
 
+def test_retired_recovery_fakes_and_patch_names_are_absent(fake_repo) -> None:
+    """Strict fakes reject retired calls instead of recreating a fallback policy."""
+    from app.db import repo as repo_mod
+    from tests.conftest import InMemoryRepo
+
+    conftest_path = pathlib.Path(inspect.getsourcefile(InMemoryRepo) or "")
+    assert conftest_path.is_file(), "InMemoryRepo source inventory must exist"
+    conftest_source = conftest_path.read_text(encoding="utf-8")
+    fake_methods = {
+        name
+        for name, _member in inspect.getmembers(
+            InMemoryRepo, predicate=inspect.isfunction
+        )
+    }
+    patch_names = set().union(
+        *(names for _line, names in _monkeypatch_name_tuples(conftest_path))
+    )
+
+    assert not (_RETIRED_RECOVERY_SYMBOLS & fake_methods)
+    assert not (_RETIRED_RECOVERY_SYMBOLS & patch_names)
+    assert all(name not in conftest_source for name in _RETIRED_RECOVERY_SYMBOLS)
+    for name in _RETIRED_RECOVERY_SYMBOLS:
+        assert not hasattr(fake_repo, name)
+        assert not hasattr(repo_mod, name)
+
+
 def test_every_inmemory_method_that_shadows_a_real_repo_name_is_actually_patched(
     fake_repo,
 ) -> None:
