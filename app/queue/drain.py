@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Callable
 
 from app.db import repo
-from app.models.job import JobState
+from app.pipeline.result import normalize_pipeline_result
 from app.queue import dispatch
 
 logger = logging.getLogger("payroll_agent.queue")
@@ -139,6 +139,17 @@ class DrainOutcome(enum.StrEnum):
         return self is not DrainOutcome.EMPTY
 
 
+def _map_settlement_outcome(outcome: enum.StrEnum) -> DrainOutcome:
+    """Translate the repository's bounded settlement result for drain callers."""
+    return {
+        "done": DrainOutcome.DONE,
+        "retried": DrainOutcome.RETRIED,
+        "dead": DrainOutcome.DEAD,
+        "fenced": DrainOutcome.FENCED,
+        "reaped_final_lease": DrainOutcome.DEAD,
+    }[outcome.value]
+
+
 def drain_once() -> DrainOutcome:
     """Claim one job, dispatch it, and complete or fail it. Returns the
     specific `DrainOutcome` for what happened this call — `DrainOutcome.EMPTY`
@@ -177,57 +188,43 @@ def drain_once() -> DrainOutcome:
     # full lease (900s) even though we shut down cleanly.
     lease_settled = False
     try:
-        dispatch.handle(job)
-        if repo.complete_job(job.id, job.lease_token):
-            outcome = DrainOutcome.DONE
-        else:
-            logger.warning(
-                "queue: complete_job fenced out job=%s — lease was reclaimed "
-                "while this worker was still running it; dropping cleanly",
-                job.id,
-            )
-            outcome = DrainOutcome.FENCED
-        # Fenced out counts as settled: the lease demonstrably belongs to someone else
-        # now, so there is nothing left for THIS worker to hand back.
-        lease_settled = True
-    except Exception as exc:  # noqa: BLE001 — every dispatch failure must route
-        # through the fenced fail_job write below, never escape and crash the
-        # worker loop; a poison job must dead-letter, not take the process down.
+        result = normalize_pipeline_result(dispatch.handle(job))
+    except Exception as dispatch_exc:  # noqa: BLE001 — dispatch failures are bounded
         try:
-            state = repo.fail_job(
-                job.id,
-                job.lease_token,
-                error=exc,
+            settled = repo.settle_infrastructure_failure(
+                job,
                 backoff_seconds=backoff_seconds(job.attempts),
             )
-            if state is None:
-                logger.warning(
-                    "queue: fail_job fenced out job=%s — lease was reclaimed "
-                    "while this worker was still running it; dropping cleanly",
-                    job.id,
-                )
-                outcome = DrainOutcome.FENCED
-            elif state is JobState.DEAD:
-                outcome = DrainOutcome.DEAD
-            else:
-                outcome = DrainOutcome.RETRIED
+            outcome = _map_settlement_outcome(settled)
             lease_settled = True
-        except Exception as exc:  # noqa: BLE001 — the failure write ITSELF failed
+        except Exception as settlement_exc:  # noqa: BLE001 — settlement itself failed
             # Log the exception TYPE only, never the exception object/str: on an
-            # infra outage fail_job's error can carry a DB connection string, and
+            # infra outage the exception can carry a DB connection string, and
             # the pump surfaces this same branch as a 503 whose disclosure discipline
             # is type-name-only. The full exception still propagates via the re-raise.
             logger.error(
-                "queue: fail_job itself failed (%s) for job=%s — the row is still "
+                "queue: infrastructure settlement failed (%s) for job=%s after "
+                "dispatch failure %s — the row is still "
                 "`leased` and this worker still owns it. KEEPING the lease token so a "
                 "graceful shutdown can still hand it back; discarding it here is what "
                 "would strand the job for the full lease.",
-                type(exc).__name__,
+                type(settlement_exc).__name__,
                 job.id,
+                type(dispatch_exc).__name__,
             )
-            # RE-RAISE: an infra failure, never a settled fence — worker.py:203
-            # catches and survives this rather than reporting a false success.
             raise
+    else:
+        # Keep the coordinator call outside the dispatch exception handler. If this
+        # write fails, the job is still leased and the held token must remain visible
+        # to graceful shutdown; treating it as another dispatch failure would attempt
+        # a second write and could hide the unrecorded settlement.
+        settled = repo.settle_pipeline_job(
+            job,
+            result,
+            backoff_seconds=backoff_seconds(job.attempts),
+        )
+        outcome = _map_settlement_outcome(settled)
+        lease_settled = True
     finally:
         if lease_settled:
             with _held_tokens_lock:

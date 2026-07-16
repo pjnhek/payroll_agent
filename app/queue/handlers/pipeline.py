@@ -101,12 +101,13 @@ import logging
 from app.db import repo
 from app.models.job import Job
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineOutcome, PipelineResult
 from app.routes import pipeline_glue
 
 logger = logging.getLogger("payroll_agent.queue")
 
 
-def handle_run_pipeline(job: Job) -> None:
+def handle_run_pipeline(job: Job) -> PipelineResult | None:
     """Drive one `run_pipeline` job. See this module's docstring for the full
     INVARIANT J-1 contract this function implements; the logic below is
     exactly three steps, in this order, and nothing here writes
@@ -149,11 +150,11 @@ def handle_run_pipeline(job: Job) -> None:
             job.id,
             job.attempts,
         )
-        return
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     # run_pipeline_now, never run_pipeline_bg: a catastrophic start failure must REACH
     # drain_once, which routes it into a fenced fail_job write with backoff and retries
     # the job. The _bg wrapper swallows and returns normally, so drain_once would mark
     # this job `done`, the durable row would vanish as a success, and the run would strand
     # mid-flight with nothing left to retry it — a silently lost payroll run.
-    pipeline_glue.run_pipeline_now(run_id)
+    return pipeline_glue.run_pipeline_now(run_id)

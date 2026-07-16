@@ -722,15 +722,16 @@ def test_drain_once_claims_dispatches_and_completes_with_the_same_token(fake_rep
     handled: list[Job] = []
     monkeypatch.setattr(dispatch, "handle", handled.append)
 
-    seen_complete_tokens: list[uuid.UUID] = []
-    orig_complete = repo.complete_job
+    seen_settlement_tokens: list[uuid.UUID] = []
+    orig_settle = repo.settle_pipeline_job
 
-    def _spy_complete(job_id_arg: uuid.UUID, lease_token: uuid.UUID, conn: Any = None) -> bool:
-        seen_complete_tokens.append(lease_token)
-        result: bool = orig_complete(job_id_arg, lease_token, conn=conn)
-        return result
+    def _spy_settle(job, result, *, backoff_seconds, conn=None):
+        seen_settlement_tokens.append(job.lease_token)
+        return orig_settle(
+            job, result, backoff_seconds=backoff_seconds, conn=conn
+        )
 
-    monkeypatch.setattr(repo, "complete_job", _spy_complete)
+    monkeypatch.setattr(repo, "settle_pipeline_job", _spy_settle)
 
     assert drain.drain_once() == DrainOutcome.DONE
 
@@ -738,7 +739,7 @@ def test_drain_once_claims_dispatches_and_completes_with_the_same_token(fake_rep
     claimed_job = handled[0]
     assert claimed_job.id == job_id
     # The exact lease_token object the claim returned — not merely "was called".
-    assert seen_complete_tokens == [claimed_job.lease_token]
+    assert seen_settlement_tokens == [claimed_job.lease_token]
     assert fake_repo.jobs[str(job_id)]["state"] == "done"
 
 
@@ -763,8 +764,8 @@ def test_held_tokens_populated_during_handler_and_cleared_after(fake_repo, monke
     assert drain.held_tokens() == []
 
 
-def test_drain_once_handler_raises_calls_fail_job_not_complete_job(fake_repo, monkeypatch):
-    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+def test_drain_once_handler_raises_uses_infrastructure_settlement(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
     dedup_key = f"run_pipeline:{run_id}:0"
     job_id = fake_repo.enqueue_job(
         kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id
@@ -776,38 +777,21 @@ def test_drain_once_handler_raises_calls_fail_job_not_complete_job(fake_repo, mo
 
     monkeypatch.setattr(dispatch, "handle", _raising_handle)
 
-    fail_calls: list[dict[str, Any]] = []
-    complete_calls: list[Any] = []
-    orig_fail = repo.fail_job
-    orig_complete = repo.complete_job
+    settlement_calls: list[dict[str, Any]] = []
+    orig_settle = repo.settle_infrastructure_failure
 
-    def _spy_fail(
-        job_id_arg: uuid.UUID,
-        lease_token: uuid.UUID,
-        *,
-        error: BaseException | str,
-        backoff_seconds: float,
-        conn: Any = None,
-    ) -> Any:
-        fail_calls.append(
-            {"job_id": job_id_arg, "lease_token": lease_token, "backoff_seconds": backoff_seconds}
+    def _spy_settle(job, *, backoff_seconds, **kwargs):
+        settlement_calls.append(
+            {"job_id": job.id, "lease_token": job.lease_token, "backoff_seconds": backoff_seconds}
         )
-        return orig_fail(
-            job_id_arg, lease_token, error=error, backoff_seconds=backoff_seconds, conn=conn
-        )
+        return orig_settle(job, backoff_seconds=backoff_seconds, **kwargs)
 
-    def _spy_complete(*args: Any, **kwargs: Any) -> Any:
-        complete_calls.append(args)
-        return orig_complete(*args, **kwargs)
-
-    monkeypatch.setattr(repo, "fail_job", _spy_fail)
-    monkeypatch.setattr(repo, "complete_job", _spy_complete)
+    monkeypatch.setattr(repo, "settle_infrastructure_failure", _spy_settle)
 
     assert drain.drain_once() == DrainOutcome.RETRIED
 
-    assert complete_calls == []
-    assert len(fail_calls) == 1
-    assert fail_calls[0]["backoff_seconds"] > 0
+    assert len(settlement_calls) == 1
+    assert settlement_calls[0]["backoff_seconds"] > 0
     assert fake_repo.jobs[str(job_id)]["state"] == "pending"  # attempts=1 < max_attempts=5
 
 
@@ -816,7 +800,7 @@ def test_drain_once_dispatch_raises_at_max_attempts_returns_dead(fake_repo, monk
     `pending` — `drain_once()` must capture that specific `JobState.DEAD`
     return as `DrainOutcome.DEAD`, distinct from the backoff `RETRIED` case
     above."""
-    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
     dedup_key = f"run_pipeline:{run_id}:0"
     job_id = fake_repo.enqueue_job(
         kind=JobKind.RUN_PIPELINE, dedup_key=dedup_key, run_id=run_id, max_attempts=1
@@ -853,8 +837,12 @@ def test_drain_once_complete_job_fenced_out_returns_fenced(fake_repo, monkeypatc
     assert job_id is not None
 
     monkeypatch.setattr(dispatch, "handle", lambda job: None)
+    from app.db.repo.job_settlement import SettlementOutcome
+
     monkeypatch.setattr(
-        repo, "complete_job", lambda job_id, lease_token, conn=None: False
+        repo,
+        "settle_pipeline_job",
+        lambda job, result, *, backoff_seconds, conn=None: SettlementOutcome.FENCED,
     )
 
     assert drain.drain_once() == DrainOutcome.FENCED
@@ -1100,12 +1088,19 @@ def test_queue_tier_status_writers_are_cas_only() -> None:
         "claim_status",
         "record_run_error",
         "rewind_for_reclaim",
+        "settle_pipeline_job",
+        "settle_infrastructure_failure",
     }
     observed_status_writers = func_names & status_writer_candidates
-    permitted = {"claim_status", "rewind_for_reclaim"}
+    permitted = {
+        "claim_status",
+        "rewind_for_reclaim",
+        "settle_pipeline_job",
+        "settle_infrastructure_failure",
+    }
     assert observed_status_writers <= permitted, (
-        "payroll_runs.status may be written from app/queue/ ONLY via "
-        f"claim_status/rewind_for_reclaim; found: {sorted(observed_status_writers)}"
+        "payroll_runs.status may be written from app/queue/ only through the "
+        f"sanctioned CAS/coordinator seams; found: {sorted(observed_status_writers)}"
     )
 
 
@@ -1124,6 +1119,8 @@ def test_the_guard_actually_resolves_the_queue_tiers_real_calls() -> None:
     )
     assert "claim_status" in func_names
     assert "rewind_for_reclaim" in func_names
+    assert "settle_pipeline_job" in func_names
+    assert "settle_infrastructure_failure" in func_names
 
 
 def test_held_tokens_never_snapshots_a_claim_into_oblivion(monkeypatch):
@@ -1246,10 +1243,10 @@ def test_run_pipeline_now_actually_runs_the_orchestrator_and_propagates(monkeypa
     assert calls == [run_id], "run_pipeline_bg must still invoke the orchestrator too"
 
 
-def test_a_failed_fail_job_keeps_the_lease_recorded(monkeypatch):
-    """When `fail_job` ITSELF raises, the lease token must stay recorded.
+def test_a_failed_infrastructure_settlement_keeps_the_lease_recorded(monkeypatch):
+    """When infrastructure settlement itself raises, the token stays recorded.
 
-    The realistic failure that reaches the handler is a DATABASE OUTAGE — and `fail_job`
+    The realistic failure that reaches the handler is a DATABASE OUTAGE — and settlement
     is another database write, so it fails for the same reason. The row is left `leased`
     in Postgres. An unconditional `finally: _held_tokens.discard(...)` then forgets the
     token, so a graceful shutdown can no longer discover the lease to release it, and the
@@ -1277,7 +1274,7 @@ def test_a_failed_fail_job_keeps_the_lease_recorded(monkeypatch):
 
     monkeypatch.setattr(repo, "claim_job", lambda: leased_job)
     monkeypatch.setattr(dispatch, "handle", _outage)   # the handler fails: DB is down
-    monkeypatch.setattr(repo, "fail_job", _outage)     # ...and so does the failure write
+    monkeypatch.setattr(repo, "settle_infrastructure_failure", _outage)
 
     try:
         # drain_once lets the outage ESCAPE by design: the double-failure is a
@@ -1289,7 +1286,7 @@ def test_a_failed_fail_job_keeps_the_lease_recorded(monkeypatch):
             drain.drain_once()
 
         assert drain.held_tokens() == [token], (
-            "fail_job raised, so the row is still `leased` in the database — but the "
+            "settlement raised, so the row is still `leased` in the database — but the "
             "lease token was discarded anyway. A graceful shutdown can no longer hand "
             "it back, and the job is stranded for the full 900s lease."
         )
