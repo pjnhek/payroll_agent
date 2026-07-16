@@ -23,7 +23,7 @@ from types import ModuleType
 from typing import cast
 
 from app.models.job import Job, JobKind
-from app.pipeline.result import PipelineResult
+from app.pipeline.result import PipelineResult, normalize_pipeline_result
 from app.queue.handlers import operator_resume, pipeline, resume_reply
 
 HANDLERS: dict[JobKind, tuple[ModuleType, str]] = {
@@ -33,7 +33,7 @@ HANDLERS: dict[JobKind, tuple[ModuleType, str]] = {
 }
 
 
-def handle(job: Job) -> PipelineResult | None:
+def handle(job: Job) -> PipelineResult:
     """Dispatch `job` to its registered handler. RAISES on an unknown kind —
     a job marked done without ever having run is the worst possible outcome,
     because it looks exactly like success. There is no silent no-op branch.
@@ -46,5 +46,5 @@ def handle(job: Job) -> PipelineResult | None:
             "of a kind with no handler must never be silently marked done."
         )
     module, name = entry
-    handler = cast(Callable[[Job], PipelineResult | None], getattr(module, name))
-    return handler(job)
+    handler = cast(Callable[[Job], PipelineResult], getattr(module, name))
+    return normalize_pipeline_result(handler(job))

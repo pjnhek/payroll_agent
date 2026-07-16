@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
-from typing import cast
 
 from pydantic import ValidationError
 
@@ -13,7 +11,12 @@ from app.models.contracts import Decision
 from app.models.job import Job
 from app.models.status import RunStatus
 from app.pipeline import orchestrator
-from app.pipeline.result import PipelineReason, PipelineResult, PipelineStage
+from app.pipeline.result import (
+    PipelineReason,
+    PipelineResult,
+    PipelineStage,
+    normalize_pipeline_result,
+)
 
 logger = logging.getLogger("payroll_agent.queue")
 
@@ -64,7 +67,7 @@ def _validated_mapping(
         return None
 
 
-def handle_operator_resume(job: Job) -> PipelineResult | None:
+def handle_operator_resume(job: Job) -> PipelineResult:
     """Reload, validate, and replay one immutable operator-resolution generation."""
     run_id = job.run_id
     if run_id is None:
@@ -91,13 +94,11 @@ def handle_operator_resume(job: Job) -> PipelineResult | None:
             rewound,
         )
 
-    resume = cast(
-        Callable[..., PipelineResult | None],
-        orchestrator.resume_pipeline,
-    )
-    return resume(
-        run_id,
-        None,
-        from_status=RunStatus.RECEIVED,
-        overrides=overrides,
+    return normalize_pipeline_result(
+        orchestrator.resume_pipeline(
+            run_id,
+            None,
+            from_status=RunStatus.RECEIVED,
+            overrides=overrides,
+        )
     )

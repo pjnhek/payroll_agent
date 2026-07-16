@@ -361,6 +361,7 @@ def test_operator_resume_same_resolution_redelivery_is_cas_idempotent(
     def _resume(rid, _inbound, *, from_status, overrides, **_kwargs):
         if fake_repo.claim_status(rid, from_status, RunStatus.EXTRACTING):
             winners.append(overrides)
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(orchestrator, "resume_pipeline", _resume)
     job = _operator_resume_job(

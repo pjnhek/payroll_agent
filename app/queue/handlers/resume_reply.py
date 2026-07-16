@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from typing import cast
 
 from pydantic import ValidationError
 
@@ -11,7 +9,12 @@ from app.db import repo
 from app.models.job import Job
 from app.models.status import RunStatus
 from app.pipeline import orchestrator
-from app.pipeline.result import PipelineReason, PipelineResult, PipelineStage
+from app.pipeline.result import (
+    PipelineReason,
+    PipelineResult,
+    PipelineStage,
+    normalize_pipeline_result,
+)
 from app.routes.pipeline_glue import row_to_inbound
 
 logger = logging.getLogger("payroll_agent.queue")
@@ -33,7 +36,7 @@ def _invalid_context(job: Job) -> PipelineResult:
     )
 
 
-def handle_resume_reply(job: Job) -> PipelineResult | None:
+def handle_resume_reply(job: Job) -> PipelineResult:
     """Reload ``job.email_id`` and resume from the authoritative RECEIVED seam."""
     run_id = job.run_id
     if run_id is None:
@@ -60,12 +63,10 @@ def handle_resume_reply(job: Job) -> PipelineResult | None:
             rewound,
         )
 
-    resume = cast(
-        Callable[..., PipelineResult | None],
-        orchestrator.resume_pipeline,
-    )
-    return resume(
-        run_id,
-        inbound,
-        from_status=RunStatus.RECEIVED,
+    return normalize_pipeline_result(
+        orchestrator.resume_pipeline(
+            run_id,
+            inbound,
+            from_status=RunStatus.RECEIVED,
+        )
     )

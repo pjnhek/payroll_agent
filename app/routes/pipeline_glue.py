@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -209,22 +208,23 @@ def resume_pipeline_now(
     *,
     from_status: RunStatus = RunStatus.AWAITING_REPLY,
     overrides: dict[str, str] | None = None,
-) -> PipelineResult | None:
-    """Invoke the temporary producer contract and propagate its exact result."""
+) -> PipelineResult:
+    """Invoke the explicit producer contract and reject unsound runtime values."""
     from app.pipeline.orchestrator import resume_pipeline
 
-    resume = cast(Callable[..., PipelineResult | None], resume_pipeline)
-    return resume(
-        run_id,
-        inbound,
-        from_status=from_status,
-        overrides=overrides,
+    return normalize_pipeline_result(
+        resume_pipeline(
+            run_id,
+            inbound,
+            from_status=from_status,
+            overrides=overrides,
+        )
     )
 
 
 def _consume_background_result(
     run_id: uuid.UUID,
-    value: PipelineResult | None,
+    value: PipelineResult,
     *,
     kind: JobKind,
     email_id: uuid.UUID | None = None,
@@ -269,7 +269,7 @@ def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
         logger.error("resume failed to start for run_id=%s", run_id)
 
 
-def run_pipeline_now(run_id: uuid.UUID) -> PipelineResult | None:
+def run_pipeline_now(run_id: uuid.UUID) -> PipelineResult:
     """Run the orchestrator and let whatever escapes it PROPAGATE to the caller.
 
     WHAT ACTUALLY ESCAPES — be precise here, because the useful contract is much narrower
@@ -302,8 +302,7 @@ def run_pipeline_now(run_id: uuid.UUID) -> PipelineResult | None:
     """
     from app.pipeline.orchestrator import run_pipeline
 
-    run = cast(Callable[[uuid.UUID], PipelineResult | None], run_pipeline)
-    return run(run_id)
+    return normalize_pipeline_result(run_pipeline(run_id))
 
 
 def run_pipeline_bg(run_id: uuid.UUID) -> None:
