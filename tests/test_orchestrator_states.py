@@ -29,7 +29,8 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimi
 from pydantic import BaseModel, ValidationError
 
 from app.models.contracts import InboundEmail
-from app.pipeline.orchestrator import run_pipeline
+from app.models.status import RunStatus
+from app.pipeline.orchestrator import resume_pipeline, run_pipeline
 from app.pipeline.result import (
     PipelineOutcome,
     PipelineReason,
@@ -215,7 +216,7 @@ def test_legacy_result_rejects_every_other_runtime_value(value):
         normalize_pipeline_result(value)
 
 
-def test_legacy_result_source_guard_keeps_orchestrator_producers_unchanged():
+def test_pipeline_result_source_guard_requires_explicit_producers_without_error_persistence():
     from app.pipeline import orchestrator
 
     tree = ast.parse(pathlib.Path(orchestrator.__file__).read_text())
@@ -228,10 +229,13 @@ def test_legacy_result_source_guard_keeps_orchestrator_producers_unchanged():
     run_pipeline_node = functions["run_pipeline"]
     resume_pipeline_node = functions["resume_pipeline"]
     private_run_node = functions["_run"]
-    assert isinstance(run_pipeline_node.returns, ast.Constant)
-    assert run_pipeline_node.returns.value is None
-    assert isinstance(resume_pipeline_node.returns, ast.Constant)
-    assert resume_pipeline_node.returns.value is None
+    for node in (run_pipeline_node, private_run_node, resume_pipeline_node):
+        assert isinstance(node.returns, ast.Name)
+        assert node.returns.id == "PipelineResult"
+        assert not any(
+            isinstance(child, ast.Return) and child.value is None
+            for child in ast.walk(node)
+        )
 
     def _calls_record_run_error(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         return any(
@@ -241,8 +245,8 @@ def test_legacy_result_source_guard_keeps_orchestrator_producers_unchanged():
             for child in ast.walk(node)
         )
 
-    assert _calls_record_run_error(private_run_node)
-    assert _calls_record_run_error(resume_pipeline_node)
+    assert not _calls_record_run_error(private_run_node)
+    assert not _calls_record_run_error(resume_pipeline_node)
 
 
 def _seed_run(
@@ -305,9 +309,10 @@ def test_clean_run_reaches_awaiting_approval(fake_repo, mock_llm):
     _clean_script(mock_llm)
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
 
-    run_pipeline(run_id)
+    result = run_pipeline(run_id)
 
     run = fake_repo.load_run(run_id)
+    assert result.outcome is PipelineOutcome.OK
     assert run["status"] == "awaiting_approval"
     assert run["extracted_data"] is not None
     assert run["decision"] is not None
@@ -325,23 +330,42 @@ def test_clean_run_reaches_awaiting_approval(fake_repo, mock_llm):
 # ---------------------------------------------------------------------------
 
 
-def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
-    # Force the extract stage to raise by scripting a permanently-invalid payload
-    # (a non-numeric value fails BOTH the original call and the retry → raise).
-    bad = json.dumps(
-        {
-            "employees": [{"submitted_name": "Maria Chen", "hours_regular": "forty"}],
-            "pay_period_start": "2026-06-15",
-        }
-    )
-    mock_llm.script = [bad, bad]
-    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+def test_extraction_result_classification_is_retryable_without_persisting_error(
+    fake_repo, monkeypatch
+):
+    import app.pipeline.orchestrator as orchestrator_module
 
-    run_pipeline(run_id)
+    sensitive = "employee SECRET-NAME in provider payload"
+    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+    persisted_errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        orchestrator_module,
+        "extract",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            APIConnectionError(
+                message=sensitive,
+                request=httpx.Request("POST", "https://provider.invalid"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.repo,
+        "record_run_error",
+        lambda *args, **_kwargs: persisted_errors.append(args),
+    )
+
+    result = run_pipeline(run_id)
 
     run = fake_repo.load_run(run_id)
-    assert run["status"] == "error", "a stage raise must route to ERROR"
-    assert run["error_reason"], "the failure reason must be persisted"
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_CONNECTION_FAILURE,
+    )
+    assert run["status"] == RunStatus.EXTRACTING.value
+    assert run["error_reason"] is None
+    assert persisted_errors == []
+    assert "SECRET-NAME" not in repr(result)
 
 
 # ---------------------------------------------------------------------------
@@ -355,58 +379,133 @@ def test_stage_raise_sets_error(fake_repo, mock_llm, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_first_run_failure_after_roster_load_passes_nonnull_roster_to_record_run_error(
+def test_compute_result_classification_is_terminal_without_persisting_error(
     fake_repo, mock_llm, monkeypatch
 ):
-    """Force a first-run failure AFTER _run's roster-load line has already
-    succeeded (the extract stage raises, which happens strictly after the
-    roster load in _run's top-to-bottom body). Assert record_run_error is
-    actually called with stage="pipeline" and a non-None, populated Roster —
-    not that the source text merely says `roster=roster`.
-    """
     import app.pipeline.orchestrator as orchestrator_module
-    from app.models.roster import Roster
 
-    captured: dict[str, Any] = {}
-    real_record_run_error = fake_repo.record_run_error
-
-    def _spy_record_run_error(run_id, reason, conn=None, **kwargs):
-        # Wrap, don't replace: record the kwargs, then delegate to the real
-        # fake so the run still reaches ERROR status normally.
-        captured["stage"] = kwargs.get("stage")
-        captured["roster"] = kwargs.get("roster")
-        captured["detail_exc"] = kwargs.get("detail_exc")
-        return real_record_run_error(run_id, reason, conn=conn, **kwargs)
-
-    monkeypatch.setattr(orchestrator_module.repo, "record_run_error", _spy_record_run_error)  # type: ignore[attr-defined]  # patch the orchestrator module's own private `repo` import binding -- the exact seam run_pipeline calls
-
-    # Force the extract stage itself to raise: a permanently-invalid payload
-    # fails BOTH the original call and the retry (same pattern as
-    # test_stage_raise_sets_error). Extraction happens strictly AFTER the
-    # roster-load line inside _run, so this exercises the HIGH #1 code path
-    # (roster already bound to a real Roster when the except block runs).
-    bad = json.dumps(
-        {
-            "employees": [{"submitted_name": "Maria Chen", "hours_regular": "forty"}],
-            "pay_period_start": "2026-06-15",
-        }
+    _clean_script(mock_llm)
+    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+    persisted_errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_compute_line_items",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("employee SECRET-NAME in compute failure")
+        ),
     )
-    mock_llm.script = [bad, bad]
+    monkeypatch.setattr(
+        orchestrator_module.repo,
+        "record_run_error",
+        lambda *args, **_kwargs: persisted_errors.append(args),
+    )
+
+    result = run_pipeline(run_id)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.COMPUTE,
+        reason=PipelineReason.UNCLASSIFIED,
+    )
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == RunStatus.EXTRACTING.value
+    assert run["error_reason"] is None
+    assert persisted_errors == []
+    assert "SECRET-NAME" not in repr(result)
+
+
+def test_persist_result_classification_is_terminal_without_persisting_error(
+    fake_repo, mock_llm, monkeypatch
+):
+    import app.pipeline.orchestrator as orchestrator_module
+
+    _clean_script(mock_llm)
+    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+    persisted_errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        orchestrator_module.repo,
+        "persist_extracted",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("employee SECRET-NAME in persistence failure")
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.repo,
+        "record_run_error",
+        lambda *args, **_kwargs: persisted_errors.append(args),
+    )
+
+    result = run_pipeline(run_id)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.PERSIST,
+        reason=PipelineReason.UNCLASSIFIED,
+    )
+    assert fake_repo.load_run(run_id)["error_reason"] is None
+    assert persisted_errors == []
+
+
+def test_clarification_result_classification_is_terminal_and_attempts_send_once(
+    fake_repo, mock_llm, monkeypatch
+):
+    import app.pipeline.orchestrator as orchestrator_module
+
+    mock_llm.script = [
+        json.dumps(
+            {
+                "employees": [
+                    {"submitted_name": "Unknown Person", "hours_regular": "40"}
+                ],
+                "pay_period_start": "2026-06-15",
+                "pay_period_end": None,
+            }
+        )
+    ]
+    run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
+    send_attempts = 0
+
+    def _fail_ambiguous_send(*_args, **_kwargs):
+        nonlocal send_attempts
+        send_attempts += 1
+        raise APIConnectionError(
+            message="provider may have accepted SECRET-NAME",
+            request=httpx.Request("POST", "https://provider.invalid"),
+        )
+
+    monkeypatch.setattr(orchestrator_module.clarification, "clarify", _fail_ambiguous_send)
+
+    result = run_pipeline(run_id)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.CLARIFICATION,
+        reason=PipelineReason.AMBIGUOUS_SEND_FAILURE,
+    )
+    assert send_attempts == 1
+    assert fake_repo.load_run(run_id)["error_reason"] is None
+
+
+def test_resume_claim_loser_returns_coarse_ok_result(fake_repo):
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
 
-    run_pipeline(run_id)
+    result = resume_pipeline(run_id, _inbound_for_result_test())
 
-    assert captured["stage"] == "pipeline"
-    assert captured["roster"] is not None, (
-        "record_run_error must receive the roster _run already loaded before "
-        "the failure — a None roster here means the HIGH #1 scope gap is back "
-        "and the error path has degraded to email-regex-only scrubbing"
+    assert result == PipelineResult(outcome=PipelineOutcome.OK)
+
+
+def _inbound_for_result_test() -> InboundEmail:
+    return InboundEmail(
+        id=uuid.uuid4(),
+        message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Re: hours",
+        from_addr="payroll@coastalcleaning.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+        created_at=datetime.now(UTC),
     )
-    assert isinstance(captured["roster"], Roster)
-    assert len(captured["roster"].employees) > 0
-
-    run = fake_repo.load_run(run_id)
-    assert run["status"] == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -432,9 +531,10 @@ def test_unresolved_name_gates_to_clarify(fake_repo, mock_llm):
     ]
     run_id = _seed_run(fake_repo, business_id=_coastal_business_id(fake_repo))
 
-    run_pipeline(run_id)
+    result = run_pipeline(run_id)
 
     run = fake_repo.load_run(run_id)
+    assert result.outcome is PipelineOutcome.OK
     assert run["decision"]["final_action"] == "request_clarification"
     # The unresolved name is recorded in the deterministic decision.
     assert "Totally Unseen Person" in run["decision"]["unresolved_names"]

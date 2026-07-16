@@ -32,7 +32,9 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
+from openai import APIConnectionError
 
 from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
 from app.models.job import Job, JobKind
@@ -461,12 +463,46 @@ def test_resume_calls_run_stages_exactly_once(fake_repo, mock_llm, monkeypatch):
     ]
 
     reply = _inbound("Maria Chen 40 regular 2 overtime. (Same as before.)")
-    resume_pipeline(run_id, reply)
+    result = resume_pipeline(run_id, reply)
 
     assert call_count[0] == 1, (
         f"_run_stages must be called exactly once per resume_pipeline invocation; "
         f"called {call_count[0]} times"
     )
+    assert result == PipelineResult(outcome=PipelineOutcome.OK)
+
+
+def test_resume_result_classification_is_retryable_without_persisting_error(
+    fake_repo, monkeypatch
+):
+    import app.pipeline.orchestrator as orch_mod
+
+    run_id = _seed_run(fake_repo, body="Maria Chen 40 regular")
+    _set_run_awaiting_reply(fake_repo, run_id)
+    persisted_errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        orch_mod,
+        "extract",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            APIConnectionError(
+                message="employee SECRET-NAME in provider payload",
+                request=httpx.Request("POST", "https://provider.invalid"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        orch_mod.repo,
+        "record_run_error",
+        lambda *args, **_kwargs: persisted_errors.append(args),
+    )
+
+    result = resume_pipeline(run_id, _inbound("Maria Chen 40 regular"))
+
+    assert result.outcome is PipelineOutcome.RETRYABLE
+    assert result.diagnostic_code == "extract:provider_connection_failure"
+    assert fake_repo.load_run(run_id)["error_reason"] is None
+    assert persisted_errors == []
+    assert "SECRET-NAME" not in repr(result)
 
 
 def test_asked_written_before_clarification_send(fake_repo, mock_llm, monkeypatch):
