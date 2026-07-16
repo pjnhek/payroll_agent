@@ -560,6 +560,47 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claimable
     ON jobs (priority, available_at)
     WHERE state IN ('pending','leased');
 
+-- ── 8. operator resume context ───────────────────────────────────────────────
+-- Each operator submission gets a caller-generated immutable UUID generation.
+-- The complete validated submitted-name mapping lives in typed child rows, not
+-- jobs JSON, alias_candidates, or reply_epoch-scoped mutable state.
+CREATE TABLE IF NOT EXISTS operator_resume_resolutions (
+    id          UUID        PRIMARY KEY,
+    run_id      UUID        NOT NULL REFERENCES payroll_runs(id),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_operator_resume_resolutions_run_id
+    ON operator_resume_resolutions (run_id);
+
+CREATE TABLE IF NOT EXISTS operator_resume_overrides (
+    operator_resolution_id UUID        NOT NULL REFERENCES operator_resume_resolutions(id),
+    submitted_name         TEXT        NOT NULL CHECK (btrim(submitted_name) <> ''),
+    employee_id            UUID        NOT NULL REFERENCES employees(id),
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (operator_resolution_id, submitted_name)
+);
+
+-- Live-database migration: CREATE TABLE IF NOT EXISTS jobs is a no-op when
+-- jobs already exists, so install the nullable identifier and its
+-- history-preserving FK explicitly and idempotently.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS operator_resolution_id UUID;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fk_jobs_operator_resolution'
+          AND conrelid = 'jobs'::regclass
+    ) THEN
+        ALTER TABLE jobs
+            ADD CONSTRAINT fk_jobs_operator_resolution
+            FOREIGN KEY (operator_resolution_id)
+            REFERENCES operator_resume_resolutions(id);
+    END IF;
+END;
+$$;
+
 -- ── demo_sender_bindings ─────────────────────────────────────────────────────
 -- Operator email → business mapping, used to route real inbound mail from the
 -- operator's own mailbox. Exists so that routing NEVER requires modifying
