@@ -563,12 +563,13 @@ One deployment-state fact is unknown: whether live `operator_resume_resolutions`
 |---|---|---|---|
 | — | None. All design claims are repository-verified or primary-source cited; unknown live data is explicitly a pre-deploy check, not an assumed fact. | — | — |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does the live database contain unresolved legacy operator generations?**
+1. **Does the live database contain unresolved legacy operator generations? — RESOLVED procedurally.**
    - What we know: the schema supports generations and Phase 18 shipped their write path. [VERIFIED: schema/source]
-   - What is unclear: live row counts are unavailable because `DATABASE_URL` is unset. [VERIFIED: environment probe]
-   - Recommendation: add a read-only pre-deploy count grouped by run; never infer multi-generation authority from `created_at`. [CITED: PostgreSQL timestamp semantics]
+   - Execution-time evidence still required: actual live counts remain unknown because `DATABASE_URL` was unset during research; planning does not fabricate them. [VERIFIED: environment probe]
+   - Locked procedure: run a read-only preflight that emits only `unresolved_run_count`, `single_generation_run_count`, and `ambiguous_run_count`. If any unresolved run has multiple generations, exit nonzero before every schema/data mutation and require fresh operator submission after the ambiguity is resolved; never infer authority from `created_at`, UUIDs, sequences, or worker history. [CITED: PostgreSQL timestamp semantics]
+   - Single-generation rule: after an unambiguous preflight and approved additive schema apply, transactionally recheck ambiguity, mark the sole legacy generation of each affected unresolved run authoritative, explicitly preserve every override as `remember=false`, and run a postflight requiring exactly one winner per affected unresolved run with zero ambiguity, winnerless state, or supersession conflict. [VERIFIED: D-11–D-13 procedural resolution]
 
 ## Sources
 

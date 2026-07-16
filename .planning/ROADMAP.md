@@ -204,7 +204,43 @@ pump and the failure policy exist would ship a durability regression, not an imp
   3. Killing the process immediately after the webhook returns 200 — before any pipeline work starts — does not lose the email; the accepted event is durably recorded and the run completes once a worker or the pump picks it up.
   4. A clarification reply from an unauthorized sender is still rejected exactly as it is today — moving the ingest transaction into a worker did not weaken the sender-revalidation guard.
 
-**Plans**: TBD
+**Plans**: 12 plans
+
+**Wave 1** (additive receipt and operator-authority foundation):
+
+- [ ] 19-01-PLAN.md — Add receipt/authority schema plus fail-closed live inventory and introspection
+
+**Wave 2** (independent authority and delayed-ingest services; blocked on 19-01):
+
+- [ ] 19-02-PLAN.md — Serialize first-commit-wins operator authority and winner-only alias learning
+- [ ] 19-03-PLAN.md — Move DATA-02 and authenticated inbound classification into a delayed-ingest service
+
+**Wave 3** (bounded INGEST vocabulary/model/SQL/dispatch activation; blocked on 19-01 and 19-03):
+
+- [ ] 19-04-PLAN.md — Activate the exact identifier-only INGEST vocabulary, model, SQL, claim, dispatch, and delayed handler contract
+
+**Wave 4** (null-run settlement plus independent run-associated producer cutovers):
+
+- [ ] 19-05-PLAN.md — Settle/reap every null-run INGEST outcome without payroll mutation and complete fake parity
+- [ ] 19-07-PLAN.md — Cut both demo triggers to durable jobs with bounded accepted notices
+- [ ] 19-08-PLAN.md — Cut reply/operator producers to durable jobs and winner-only handlers
+
+**Wave 5** (off-loop webhook and secondary queue UI):
+
+- [ ] 19-06-PLAN.md — Cut the webhook to an atomic receipt/job commit through an awaited threadpool helper after vocabulary and settlement are both complete
+- [ ] 19-09-PLAN.md — Add safe queue badges, bounded notices, and 2-second status polling
+
+**Wave 6** (stale-consumer migration; blocked on every producer cutover):
+
+- [ ] 19-11-PLAN.md — Migrate all nine stale wrapper-test consumers to explicit durable seams
+
+**Wave 7** (compatibility deletion gate; blocked on the runs UI projection and all consumer migrations):
+
+- [ ] 19-12-PLAN.md — Delete the migrated compatibility surface and install the complete producer/retired-symbol guard
+
+**Wave 8** (phase evidence and deploy checkpoint; blocked on all cutover and deletion plans):
+
+- [ ] 19-10-PLAN.md — Prove retention/restart durability and fence the Phase 18 writer through exact Phase 19 activation before reopening submissions
 
 ### Phase 20: Exactly-Once Send
 
@@ -276,6 +312,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
-| 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
+| 19. Webhook Cutover & Durable Ingest | v4 | 0/12 | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |

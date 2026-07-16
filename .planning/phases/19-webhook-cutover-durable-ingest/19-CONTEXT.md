@@ -35,8 +35,7 @@ capabilities, and the legacy UI/paystub/eval polish todos.
 
 ### Webhook acceptance and response contract
 
-- **D-01: Distinguish a new event from a transport redelivery without exposing queue
-  internals.** A newly persisted event returns `200` with `status=accepted` and its
+- **D-01: Distinguish a new event from a transport redelivery without exposing queue internals.** A newly persisted event returns `200` with `status=accepted` and its
   durable event identifier. Re-delivery of the same Svix event returns `200` with
   `status=duplicate` and that same event identifier.
 - **D-02: Return neither a run ID nor a queue job ID.** A run does not exist at the
