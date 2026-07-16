@@ -558,6 +558,96 @@ def test_drain_once_empty_queue_returns_false_and_dispatches_nothing(fake_repo, 
     assert calls == []
 
 
+def test_final_attempt_reap_runs_only_after_empty_claim_and_stays_truthy(
+    fake_repo, monkeypatch
+):
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    calls: list[str] = []
+    monkeypatch.setattr(repo, "claim_job", lambda: calls.append("claim") or None)
+    monkeypatch.setattr(
+        repo,
+        "reap_expired_final_attempt",
+        lambda: calls.append("reap") or SettlementOutcome.REAPED_FINAL_LEASE,
+    )
+
+    outcome = drain.drain_once()
+    assert outcome == DrainOutcome.REAPED_FINAL_LEASE
+    assert bool(outcome)
+    assert not bool(DrainOutcome.EMPTY)
+    assert calls == ["claim", "reap"]
+
+
+def test_normal_claim_precedes_reap_and_each_call_settles_at_most_one(
+    fake_repo, monkeypatch
+):
+    normal_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    normal_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"normal-before-reap:{uuid.uuid4()}",
+        run_id=normal_run,
+    )
+    assert normal_id is not None
+
+    reaped_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    reaped_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"expired-final:{uuid.uuid4()}",
+        run_id=reaped_run,
+        max_attempts=1,
+    )
+    assert reaped_id is not None
+    reaped_row = fake_repo.jobs[str(reaped_id)]
+    reaped_row["state"] = "leased"
+    reaped_row["attempts"] = reaped_row["max_attempts"]
+    reaped_row["lease_token"] = uuid.uuid4()
+    reaped_row["lease_expired"] = True
+    reaped_row["last_error"] = "extract:provider_timeout"
+
+    monkeypatch.setattr(
+        dispatch, "handle", lambda job: PipelineResult(outcome=PipelineOutcome.OK)
+    )
+
+    assert drain.drain_once() == DrainOutcome.DONE
+    assert fake_repo.get_job(normal_id)["state"] == "done"
+    assert fake_repo.get_job(reaped_id)["state"] == "leased"
+
+    assert drain.drain_once() == DrainOutcome.REAPED_FINAL_LEASE
+    assert fake_repo.get_job(reaped_id)["state"] == "dead"
+    run = fake_repo.runs[str(reaped_run)]
+    assert run["status"] == RunStatus.ERROR.value
+    assert run["error_reason"] == "FinalAttemptLeaseExpired"
+    assert "provider_timeout" not in run["error_detail"]
+
+    assert drain.drain_once() == DrainOutcome.EMPTY
+
+
+@pytest.mark.parametrize(
+    ("attempts", "max_attempts", "lease_expired"),
+    [(1, 2, True), (2, 2, False)],
+)
+def test_final_attempt_reap_ignores_near_miss_rows(
+    fake_repo, attempts, max_attempts, lease_expired
+):
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"reap-near-miss:{uuid.uuid4()}",
+        run_id=run_id,
+        max_attempts=max_attempts,
+    )
+    assert job_id is not None
+    row = fake_repo.jobs[str(job_id)]
+    row["state"] = "leased"
+    row["attempts"] = attempts
+    row["lease_token"] = uuid.uuid4()
+    row["lease_expired"] = lease_expired
+
+    assert drain.drain_once() == DrainOutcome.EMPTY
+    assert fake_repo.get_job(job_id)["state"] == "leased"
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
 @pytest.mark.parametrize(
     ("result", "max_attempts", "expected_outcome", "expected_job", "expected_run"),
     [
