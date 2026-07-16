@@ -242,6 +242,7 @@ def test_resume_reply_handler_rejects_unowned_persisted_context_before_conversio
     row_run_id: str | None,
     other_business: bool,
 ) -> None:
+    from app.pipeline import orchestrator
     from app.queue.handlers import resume_reply
 
     job_run_id = _seed_run(fake_repo, body="original inbound")
@@ -271,7 +272,7 @@ def test_resume_reply_handler_rejects_unowned_persisted_context_before_conversio
         raise AssertionError("resume_pipeline must not run for unowned context")
 
     monkeypatch.setattr(resume_reply, "row_to_inbound", _fail_row_to_inbound)
-    monkeypatch.setattr(resume_reply.orchestrator, "resume_pipeline", _fail_resume)
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _fail_resume)
     job = _resume_reply_job(run_id=job_run_id, email_id=email_id)
 
     terminal = resume_reply.handle_resume_reply(job)

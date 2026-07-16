@@ -561,16 +561,22 @@ def test_final_attempt_reap_preserved_oldest_allows_second_candidate(
 
     assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
     first_run = repo.load_run(candidates[0][0])
+    first_job = repo.get_job(candidates[0][1])
+    second_job = repo.get_job(candidates[1][1])
     assert first_run is not None
+    assert first_job is not None
+    assert second_job is not None
     assert first_run["status"] == RunStatus.AWAITING_APPROVAL.value
-    assert repo.get_job(candidates[0][1])["state"] == "dead"
-    assert repo.get_job(candidates[1][1])["state"] == "leased"
+    assert first_job["state"] == "dead"
+    assert second_job["state"] == "leased"
 
     assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
     second_run = repo.load_run(candidates[1][0])
+    second_job = repo.get_job(candidates[1][1])
     assert second_run is not None
+    assert second_job is not None
     assert second_run["status"] == RunStatus.ERROR.value
-    assert repo.get_job(candidates[1][1])["state"] == "dead"
+    assert second_job["state"] == "dead"
     assert repo.reap_expired_final_attempt() is None
 
 
