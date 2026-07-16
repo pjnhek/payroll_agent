@@ -15,7 +15,9 @@ clarify run), NOT the dead layer-2 reconcile / advisory-decide responses.
 from __future__ import annotations
 
 # This module uses deliberately small dynamic test doubles and monkeypatch seams.
+import ast
 import json
+import pathlib
 import uuid
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
@@ -34,6 +36,7 @@ from app.pipeline.result import (
     PipelineResult,
     PipelineStage,
     classify_pipeline_exception,
+    normalize_pipeline_result,
 )
 
 
@@ -167,6 +170,79 @@ def test_pipeline_result_never_retains_sensitive_exception_content():
         isinstance(value, (PipelineOutcome, PipelineStage, PipelineReason))
         for value in (result.outcome, result.stage, result.reason)
     )
+
+
+# ---------------------------------------------------------------------------
+# Temporary legacy-result compatibility adapter
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_result_none_maps_to_one_coarse_ok_result():
+    first = normalize_pipeline_result(None)
+    second = normalize_pipeline_result(None)
+
+    assert first is second
+    assert first == PipelineResult(
+        outcome=PipelineOutcome.OK,
+        stage=PipelineStage.UNKNOWN,
+        reason=PipelineReason.UNCLASSIFIED,
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        PipelineResult(outcome=PipelineOutcome.OK),
+        PipelineResult(
+            outcome=PipelineOutcome.RETRYABLE,
+            stage=PipelineStage.EXTRACT,
+            reason=PipelineReason.PROVIDER_TIMEOUT,
+        ),
+        PipelineResult(
+            outcome=PipelineOutcome.TERMINAL,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.AMBIGUOUS_SEND_FAILURE,
+        ),
+    ],
+)
+def test_legacy_result_preserves_every_explicit_result(result):
+    assert normalize_pipeline_result(result) is result
+
+
+@pytest.mark.parametrize("value", [False, 0, "ok", object()])
+def test_legacy_result_rejects_every_other_runtime_value(value):
+    with pytest.raises(TypeError, match="PipelineResult or None"):
+        normalize_pipeline_result(value)
+
+
+def test_legacy_result_source_guard_keeps_orchestrator_producers_unchanged():
+    from app.pipeline import orchestrator
+
+    tree = ast.parse(pathlib.Path(orchestrator.__file__).read_text())
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    run_pipeline_node = functions["run_pipeline"]
+    resume_pipeline_node = functions["resume_pipeline"]
+    private_run_node = functions["_run"]
+    assert isinstance(run_pipeline_node.returns, ast.Constant)
+    assert run_pipeline_node.returns.value is None
+    assert isinstance(resume_pipeline_node.returns, ast.Constant)
+    assert resume_pipeline_node.returns.value is None
+
+    def _calls_record_run_error(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        return any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == "record_run_error"
+            for child in ast.walk(node)
+        )
+
+    assert _calls_record_run_error(private_run_node)
+    assert _calls_record_run_error(resume_pipeline_node)
 
 
 def _seed_run(
