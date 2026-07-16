@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import inspect
 import pathlib
 import threading
 import time
@@ -50,8 +51,8 @@ from typing import Any
 import pytest
 
 from app.db import repo
-from app.models.job import Job, JobKind
 from app.models.contracts import InboundEmail
+from app.models.job import Job, JobKind
 from app.models.status import RunStatus
 from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 from app.queue import dispatch, drain
@@ -321,6 +322,24 @@ def test_reply_background_retry_preserves_exact_email_and_body(fake_repo, monkey
     assert job["operator_resolution_id"] is None
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECEIVED.value
     assert wake_calls == [True]
+
+
+def test_background_bridges_do_not_retry_in_memory_or_schedule_recursively():
+    for function in (pipeline_glue.run_pipeline_bg, pipeline_glue.resume_pipeline_bg):
+        tree = ast.parse(inspect.getsource(function))
+        assert not any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(tree))
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        called_attrs = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert not ({"sleep", "add_task"} & (called_names | called_attrs))
+        assert function.__name__ not in called_names
 
 
 # ── handle_run_pipeline: the five behaviors ─────────────────────────────

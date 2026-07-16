@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from fastapi import BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from app.db import repo
 from app.models.contracts import InboundEmail
+from app.models.job import JobKind
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineOutcome, PipelineResult, normalize_pipeline_result
+from app.queue import wake
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -192,6 +196,53 @@ def route_reply(
     return None
 
 
+def resume_pipeline_now(
+    run_id: uuid.UUID,
+    inbound: InboundEmail | None,
+    *,
+    from_status: RunStatus = RunStatus.AWAITING_REPLY,
+    overrides: dict[str, str] | None = None,
+) -> PipelineResult | None:
+    """Invoke the temporary producer contract and propagate its exact result."""
+    from app.pipeline.orchestrator import resume_pipeline
+
+    resume = cast(Callable[..., PipelineResult | None], resume_pipeline)
+    return resume(
+        run_id,
+        inbound,
+        from_status=from_status,
+        overrides=overrides,
+    )
+
+
+def _consume_background_result(
+    run_id: uuid.UUID,
+    value: PipelineResult | None,
+    *,
+    kind: JobKind,
+    email_id: uuid.UUID | None = None,
+) -> None:
+    """Hand one first-attempt result to the durable failure policy."""
+    result = normalize_pipeline_result(value)
+    if result.outcome is PipelineOutcome.OK:
+        return
+    if result.outcome is PipelineOutcome.TERMINAL:
+        repo.settle_background_terminal(run_id, result)
+        return
+
+    from app.queue.drain import _backoff_seconds
+
+    settled = repo.enqueue_classified_retry(
+        run_id,
+        result,
+        kind=kind,
+        email_id=email_id,
+        available_in_seconds=_backoff_seconds(1),
+    )
+    if settled is repo.SettlementOutcome.RETRIED:
+        wake.wake()
+
+
 def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
     """Background wrapper for resume_pipeline (mirrors run_pipeline_bg's safety net).
 
@@ -200,14 +251,18 @@ def resume_pipeline_bg(run_id: uuid.UUID, inbound: InboundEmail) -> None:
     orchestrator failing to import) cannot escape the BackgroundTask. The webhook has
     already returned 200, so a background crash must be logged, never raised."""
     try:
-        from app.pipeline.orchestrator import resume_pipeline
-
-        resume_pipeline(run_id, inbound)
+        result = resume_pipeline_now(run_id, inbound)
+        _consume_background_result(
+            run_id,
+            result,
+            kind=JobKind.RESUME_REPLY,
+            email_id=inbound.id,
+        )
     except Exception:  # noqa: BLE001 — background safety net; webhook already 200'd
-        logger.exception("resume failed to start for run_id=%s", run_id)
+        logger.error("resume failed to start for run_id=%s", run_id)
 
 
-def run_pipeline_now(run_id: uuid.UUID) -> None:
+def run_pipeline_now(run_id: uuid.UUID) -> PipelineResult | None:
     """Run the orchestrator and let whatever escapes it PROPAGATE to the caller.
 
     WHAT ACTUALLY ESCAPES — be precise here, because the useful contract is much narrower
@@ -240,7 +295,8 @@ def run_pipeline_now(run_id: uuid.UUID) -> None:
     """
     from app.pipeline.orchestrator import run_pipeline
 
-    run_pipeline(run_id)
+    run = cast(Callable[[uuid.UUID], PipelineResult | None], run_pipeline)
+    return run(run_id)
 
 
 def run_pipeline_bg(run_id: uuid.UUID) -> None:
@@ -254,9 +310,10 @@ def run_pipeline_bg(run_id: uuid.UUID) -> None:
     docstring for why routing a queued job through this swallow loses the run.
     """
     try:
-        run_pipeline_now(run_id)
+        result = run_pipeline_now(run_id)
+        _consume_background_result(run_id, result, kind=JobKind.RUN_PIPELINE)
     except Exception:  # noqa: BLE001 — background safety net; webhook already 200'd
-        logger.exception("pipeline failed to start for run_id=%s", run_id)
+        logger.error("pipeline failed to start for run_id=%s", run_id)
 
 
 def operator_resume_bg(run_id: uuid.UUID, overrides: dict[str, str]) -> None:
