@@ -220,3 +220,29 @@ class TestDispatchTableMatchesJobKind:
         from app.queue import dispatch
 
         assert {m.value for m in JobKind} == set(dispatch.HANDLERS.keys())
+
+    def test_resume_reply_kind_sql_and_handler_land_atomically(self) -> None:
+        """The first Plan 18-09 boundary exposes exactly two runnable kinds."""
+        from app.queue import dispatch
+
+        expected = {"run_pipeline", "resume_reply"}
+        sql_values = _inline_check_values(_clean_sql(), "jobs", "kind")
+
+        assert {member.value for member in JobKind} == expected
+        assert sql_values == expected
+        assert {member.value for member in dispatch.HANDLERS} == expected
+
+        module, name = dispatch.HANDLERS[JobKind.RESUME_REPLY]
+        assert module.__name__ == "app.queue.handlers.resume_reply"
+        assert name == "handle_resume_reply"
+
+
+def test_resume_reply_sql_requires_exact_identifier_context() -> None:
+    """A reply retry carries only its run and persisted inbound-email ids."""
+    body = _create_body(_clean_sql(), "jobs").lower()
+
+    assert "ck_jobs_resume_reply_context" in body
+    assert "kind <> 'resume_reply'" in body
+    assert "run_id is not null" in body
+    assert "email_id is not null" in body
+    assert "operator_resolution_id is null" in body

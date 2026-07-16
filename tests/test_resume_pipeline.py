@@ -35,9 +35,11 @@ from typing import Any
 import pytest
 
 from app.models.contracts import Extracted, ExtractedEmployee, InboundEmail
+from app.models.job import Job, JobKind
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
 from app.pipeline.orchestrator import resume_pipeline
+from app.pipeline.result import PipelineOutcome, PipelineResult
 from tests.conftest import InMemoryRepo
 
 # ---------------------------------------------------------------------------
@@ -136,6 +138,122 @@ def _inbound(body: str, from_addr: str = COASTAL_EMAIL) -> InboundEmail:
         body_text=body,
         created_at=datetime.now(UTC),
     )
+
+
+def _resume_reply_job(
+    *,
+    run_id: uuid.UUID | None,
+    email_id: uuid.UUID | None,
+    attempts: int = 1,
+) -> Job:
+    return Job(
+        id=uuid.uuid4(),
+        kind=JobKind.RESUME_REPLY,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=attempts,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+
+
+def test_resume_reply_handler_reloads_exact_persisted_body_from_received(
+    fake_repo, monkeypatch
+) -> None:
+    from app.pipeline import orchestrator
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run(fake_repo, body="original inbound")
+    email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to="<clarification@test.example>",
+        references_header="<clarification@test.example>",
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="persisted cleaned reply",
+    )
+    assert inserted and email_id is not None
+
+    calls: list[tuple[uuid.UUID, InboundEmail, RunStatus]] = []
+    explicit = PipelineResult(outcome=PipelineOutcome.OK)
+
+    def _resume(rid, inbound, *, from_status, **kwargs):
+        calls.append((rid, inbound, from_status))
+        return explicit
+
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _resume)
+
+    result = resume_reply.handle_resume_reply(
+        _resume_reply_job(run_id=run_id, email_id=email_id)
+    )
+
+    assert result is explicit
+    assert len(calls) == 1
+    called_run_id, called_inbound, called_status = calls[0]
+    assert called_run_id == run_id
+    assert called_inbound.id == email_id
+    assert called_inbound.body_text == "persisted cleaned reply"
+    assert called_status is RunStatus.RECEIVED
+
+
+def test_resume_reply_handler_reclaims_without_advancing_epoch(
+    fake_repo, monkeypatch
+) -> None:
+    from app.pipeline import orchestrator
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run(fake_repo, body="original inbound")
+    email_id, _ = fake_repo.insert_inbound_email(
+        message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to="<clarification@test.example>",
+        references_header=None,
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="same persisted reply",
+    )
+    assert email_id is not None
+    run = fake_repo.runs[str(run_id)]
+    run["status"] = RunStatus.EXTRACTING.value
+    run["reply_epoch"] = 7
+
+    calls: list[InboundEmail] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "resume_pipeline",
+        lambda _rid, inbound, **_kwargs: calls.append(inbound),
+    )
+
+    assert (
+        resume_reply.handle_resume_reply(
+            _resume_reply_job(run_id=run_id, email_id=email_id, attempts=2)
+        )
+        is None
+    )
+    assert [inbound.id for inbound in calls] == [email_id]
+    assert run["reply_epoch"] == 7
+
+
+def test_resume_reply_handler_rejects_missing_or_non_inbound_context(fake_repo) -> None:
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run(fake_repo, body="original inbound")
+
+    with pytest.raises(ValueError, match="run_id"):
+        resume_reply.handle_resume_reply(
+            _resume_reply_job(run_id=None, email_id=uuid.uuid4())
+        )
+    with pytest.raises(ValueError, match="email_id"):
+        resume_reply.handle_resume_reply(
+            _resume_reply_job(run_id=run_id, email_id=None)
+        )
+
+    terminal = resume_reply.handle_resume_reply(
+        _resume_reply_job(run_id=run_id, email_id=uuid.uuid4())
+    )
+    assert terminal.outcome is PipelineOutcome.TERMINAL
+    assert terminal.diagnostic_code == "load:invalid_operator_override_context"
 
 
 def _extraction_json(
