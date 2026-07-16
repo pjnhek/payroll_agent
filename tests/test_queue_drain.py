@@ -558,6 +558,159 @@ def test_drain_once_empty_queue_returns_false_and_dispatches_nothing(fake_repo, 
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("result", "max_attempts", "expected_outcome", "expected_job", "expected_run"),
+    [
+        (None, 5, DrainOutcome.DONE, "done", RunStatus.EXTRACTING),
+        (
+            PipelineResult(outcome=PipelineOutcome.OK),
+            5,
+            DrainOutcome.DONE,
+            "done",
+            RunStatus.EXTRACTING,
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.EXTRACT,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            5,
+            DrainOutcome.RETRIED,
+            "pending",
+            RunStatus.RECEIVED,
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.EXTRACT,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            1,
+            DrainOutcome.DEAD,
+            "dead",
+            RunStatus.ERROR,
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.TERMINAL,
+                stage=PipelineStage.COMPUTE,
+                reason=PipelineReason.UNCLASSIFIED,
+            ),
+            5,
+            DrainOutcome.DONE,
+            "done",
+            RunStatus.ERROR,
+        ),
+    ],
+)
+def test_drain_once_maps_pipeline_results_through_atomic_settlement(
+    fake_repo,
+    monkeypatch,
+    result,
+    max_attempts,
+    expected_outcome,
+    expected_job,
+    expected_run,
+):
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"result-aware:{run_id}:{uuid.uuid4()}",
+        run_id=run_id,
+        max_attempts=max_attempts,
+    )
+    assert job_id is not None
+    monkeypatch.setattr(dispatch, "handle", lambda job: result)
+
+    assert drain.drain_once() == expected_outcome
+    assert fake_repo.get_job(job_id)["state"] == expected_job
+    assert fake_repo.runs[str(run_id)]["status"] == expected_run.value
+
+
+def test_pipeline_handler_forwards_result_and_cas_loser_returns_ok(fake_repo, monkeypatch):
+    run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
+    job = _job(run_id=run_id)
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.EXTRACT,
+        reason=PipelineReason.PROVIDER_TIMEOUT,
+    )
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: retryable)
+
+    assert pipeline.handle_run_pipeline(job) is retryable
+
+    calls: list[uuid.UUID] = []
+    monkeypatch.setattr(repo, "claim_status", lambda *args, **kwargs: False)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", calls.append)
+    result = pipeline.handle_run_pipeline(job)
+    assert result == PipelineResult(outcome=PipelineOutcome.OK)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("max_attempts", "expected_outcome", "expected_job", "expected_run"),
+    [
+        (5, DrainOutcome.RETRIED, "pending", RunStatus.RECEIVED),
+        (1, DrainOutcome.DEAD, "dead", RunStatus.ERROR),
+    ],
+)
+def test_drain_once_infrastructure_exception_uses_atomic_settlement(
+    fake_repo,
+    monkeypatch,
+    max_attempts,
+    expected_outcome,
+    expected_job,
+    expected_run,
+):
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"infrastructure:{run_id}:{uuid.uuid4()}",
+        run_id=run_id,
+        max_attempts=max_attempts,
+    )
+    assert job_id is not None
+
+    def _raise(_job):
+        raise RuntimeError("private provider detail must not persist")
+
+    monkeypatch.setattr(dispatch, "handle", _raise)
+    assert drain.drain_once() == expected_outcome
+    row = fake_repo.get_job(job_id)
+    assert row["state"] == expected_job
+    assert row["last_error"] == "unknown:unclassified"
+    assert "private provider detail" not in repr(row)
+    assert fake_repo.runs[str(run_id)]["status"] == expected_run.value
+
+
+def test_infrastructure_settlement_write_failure_re_raises_and_keeps_token(
+    fake_repo, monkeypatch
+):
+    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
+    fake_repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"infrastructure-write:{run_id}:{uuid.uuid4()}",
+        run_id=run_id,
+    )
+    claimed: list[Job] = []
+
+    def _raise_dispatch(job):
+        claimed.append(job)
+        raise RuntimeError("dispatch failed")
+
+    def _raise_settlement(*args, **kwargs):
+        raise RuntimeError("settlement write failed")
+
+    monkeypatch.setattr(dispatch, "handle", _raise_dispatch)
+    monkeypatch.setattr(repo, "settle_infrastructure_failure", _raise_settlement)
+
+    with pytest.raises(RuntimeError, match="settlement write failed"):
+        drain.drain_once()
+    assert drain.held_tokens() == [claimed[0].lease_token]
+    drain._held_tokens.clear()
+
+
 def test_drain_once_claims_dispatches_and_completes_with_the_same_token(fake_repo, monkeypatch):
     run_id = _seed_run(fake_repo, status=RunStatus.RECEIVED)
     dedup_key = f"run_pipeline:{run_id}:0"
