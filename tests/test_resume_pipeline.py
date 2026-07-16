@@ -9,14 +9,8 @@ silently overpays or underpays.
 Hermetic discipline:
 Every test uses the fake_repo (in-memory) + mock_llm fixtures from conftest.py,
 patching ALL repo calls onto an InMemoryRepo so no live DB writes occur during
-the test run. The module-level pytestmark guards the module: when DATABASE_URL
-is NOT set in the shell environment (module-load time, before any fixture runs),
-the entire module is skipped — a skip is not evidence. When DATABASE_URL IS set
-(signalling a configured developer environment), every test runs end-to-end via
-the full pipeline (resume_pipeline calls, mock LLM scripted responses, in-memory
-state machine) and must PASS. The mock_llm fixture sets a stub DATABASE_URL via
-monkeypatch WITHIN each test, but the pytestmark is evaluated at module load time
-so it correctly gates on the shell-level presence.
+the test run. The module therefore runs unconditionally whether DATABASE_URL is
+absent or contains a harmless stub value.
 
 Hermetic cleanup: fake_repo is function-scoped (default conftest fixture) and
 resets its in-memory state on each test — no cross-test contamination. No live DB
@@ -26,7 +20,6 @@ clears its script/calls lists before each test.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -45,22 +38,12 @@ from app.pipeline.result import PipelineOutcome, PipelineResult
 from tests.conftest import InMemoryRepo
 
 # ---------------------------------------------------------------------------
-# Module-level skip guard — a skip is not evidence
-# ---------------------------------------------------------------------------
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("DATABASE_URL"),
-    reason=(
-        "requires DATABASE_URL set in the shell env; a skipped test is not "
-        "evidence. Set DATABASE_URL to run these integration tests."
-    ),
-)
-
-# ---------------------------------------------------------------------------
 # Stable employee / business identifiers from seed.py
 # ---------------------------------------------------------------------------
 # Business 1 — Coastal Cleaning Co. (payroll@coastalcleaning.example)
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
+SECOND_BIZ_ID = uuid.UUID("b0000002-0000-0000-0000-000000000002")
 
 # Employee 1 — Maria Chen (Business 1, hourly, $18.50/hr, aliases: ["Maria", "M. Chen"])
 CHEN_ID = uuid.UUID("e0000001-0000-0000-0000-000000000001")
@@ -176,6 +159,7 @@ def test_resume_reply_handler_reloads_exact_persisted_body_from_received(
         body_text="persisted cleaned reply",
     )
     assert inserted and email_id is not None
+    fake_repo.link_email_to_run(email_id, run_id)
 
     calls: list[tuple[uuid.UUID, InboundEmail, RunStatus]] = []
     explicit = PipelineResult(outcome=PipelineOutcome.OK)
@@ -216,6 +200,7 @@ def test_resume_reply_handler_reclaims_without_advancing_epoch(
         body_text="same persisted reply",
     )
     assert email_id is not None
+    fake_repo.link_email_to_run(email_id, run_id)
     run = fake_repo.runs[str(run_id)]
     run["status"] = RunStatus.EXTRACTING.value
     run["reply_epoch"] = 7
@@ -232,14 +217,83 @@ def test_resume_reply_handler_reclaims_without_advancing_epoch(
         _resume,
     )
 
-    assert (
-        resume_reply.handle_resume_reply(
-            _resume_reply_job(run_id=run_id, email_id=email_id, attempts=2)
-        )
-        is None
+    result = resume_reply.handle_resume_reply(
+        _resume_reply_job(run_id=run_id, email_id=email_id, attempts=2)
     )
+    assert result.outcome is PipelineOutcome.OK
     assert [inbound.id for inbound in calls] == [email_id]
     assert run["reply_epoch"] == 7
+
+
+@pytest.mark.parametrize(
+    ("row_run_id", "other_business"),
+    [
+        (None, False),
+        ("not-a-uuid", False),
+        ("wrong-run", False),
+        ("wrong-run", True),
+    ],
+    ids=("null-run", "malformed-run", "same-business-wrong-run", "cross-business"),
+)
+def test_resume_reply_handler_rejects_unowned_persisted_context_before_conversion(
+    fake_repo,
+    monkeypatch,
+    caplog,
+    row_run_id: str | None,
+    other_business: bool,
+) -> None:
+    from app.queue.handlers import resume_reply
+
+    job_run_id = _seed_run(fake_repo, body="original inbound")
+    linked_run_id = fake_repo.create_run(
+        business_id=SECOND_BIZ_ID if other_business else COASTAL_BIZ_ID,
+        source_email_id=None,
+    )
+    email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<hostile-{uuid.uuid4()}@test.example>",
+        in_reply_to="<clarification@test.example>",
+        references_header="<clarification@test.example>",
+        subject="SECRET SUBJECT Acme Payroll",
+        from_addr="secret-sender@example.test",
+        to_addr="secret-recipient@example.test",
+        body_text="SECRET BODY Maria Chen employee payroll",
+    )
+    assert inserted and email_id is not None
+    if row_run_id == "wrong-run":
+        fake_repo.link_email_to_run(email_id, linked_run_id)
+    else:
+        fake_repo.email_by_id[str(email_id)]["run_id"] = row_run_id
+
+    def _fail_row_to_inbound(_row):
+        raise AssertionError("row_to_inbound must not run for unowned context")
+
+    def _fail_resume(*_args, **_kwargs):
+        raise AssertionError("resume_pipeline must not run for unowned context")
+
+    monkeypatch.setattr(resume_reply, "row_to_inbound", _fail_row_to_inbound)
+    monkeypatch.setattr(resume_reply.orchestrator, "resume_pipeline", _fail_resume)
+    job = _resume_reply_job(run_id=job_run_id, email_id=email_id)
+
+    terminal = resume_reply.handle_resume_reply(job)
+
+    assert terminal.outcome is PipelineOutcome.TERMINAL
+    assert terminal.diagnostic_code == "load:invalid_operator_override_context"
+    assert caplog.text.count("invalid_operator_override_context") == 1
+    forbidden = (
+        str(job.id),
+        str(job_run_id),
+        str(linked_run_id),
+        str(email_id),
+        str(COASTAL_BIZ_ID),
+        str(SECOND_BIZ_ID),
+        "SECRET",
+        "Acme Payroll",
+        "Maria Chen",
+        "employee payroll",
+        "secret-sender",
+        "secret-recipient",
+    )
+    assert all(token not in caplog.text for token in forbidden)
 
 
 def test_resume_reply_handler_rejects_missing_or_non_inbound_context(
