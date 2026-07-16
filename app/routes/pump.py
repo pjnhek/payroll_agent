@@ -33,17 +33,12 @@ router = APIRouter()
 # The dual cap, checked BETWEEN drain_once() calls (never mid-call), so a
 # request can begin ONE final job just under the wall-clock deadline.
 #
-# CORRECTNESS rests on lease-reclaim (lease_seconds=900, app/config.py), NOT
+# CORRECTNESS rests on lease recovery (lease_seconds=900, app/config.py), NOT
 # on these caps or the cron's own curl budget: a job a pump request does not
-# finish is held by its lease and, WHILE IT HAS ATTEMPTS REMAINING, the next
-# cadence reclaims and idempotently re-runs it (SKIP LOCKED). That is NOT a
-# universal reclaim guarantee — a job whose worker/pump dies on its FINAL
-# allowed attempt ends `state='leased', attempts=max_attempts,
-# leased_until<now()`, which the claim query's `attempts < max_attempts`
-# guard (app/db/repo/jobs.py) can never re-select, and no code dead-letters
-# it today; it stays `leased` (inflating queue_depth) until a later
-# dead-letter transition reaps it — a documented, accepted residual, not
-# something this route works around.
+# finish is held by its lease. While it has attempts remaining, the next
+# cadence reclaims and idempotently re-runs it (SKIP LOCKED); after its final
+# attempt, the shared drain's bounded reaper atomically settles the expired
+# lease as dead before reporting the queue empty.
 #
 # _MAX_WALL_CLOCK_SECONDS=120 is the between-jobs cap. The cron's own
 # `curl --max-time` budget is sized independently and larger (Render
@@ -56,8 +51,8 @@ router = APIRouter()
 # between two DB writes, not a total single-job runtime). A rare overrun
 # goes RED but is safe: the sync route's in-flight work is not cancelled by
 # a client-side timeout, so the drain most likely finishes server-side
-# (RED-but-succeeded), and any job left mid-flight is covered by the
-# lease-reclaim guarantee above (attempts-remaining case).
+# (RED-but-succeeded); attempts-remaining leases are reclaimable and expired
+# final-attempt leases are settled by drain_once()'s bounded reaper.
 _MAX_JOBS_PER_PUMP = 20
 _MAX_WALL_CLOCK_SECONDS = 120
 
@@ -89,16 +84,24 @@ def pump(request: Request) -> JSONResponse:
         # "route gone."
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    counts = dict.fromkeys(("done", "retried", "dead", "fenced"), 0)
+    counts = dict.fromkeys(
+        ("done", "retried", "dead", "fenced", "reaped_final_lease"), 0
+    )
     claimed = 0
+    drained = 0
     deadline = time.monotonic() + _MAX_WALL_CLOCK_SECONDS
     try:
-        while claimed < _MAX_JOBS_PER_PUMP and time.monotonic() < deadline:
+        while drained < _MAX_JOBS_PER_PUMP and time.monotonic() < deadline:
             outcome = drain_once()
             if outcome is DrainOutcome.EMPTY:
                 break
-            claimed += 1
-            counts[outcome.value] += 1
+            drained += 1
+            if outcome is DrainOutcome.REAPED_FINAL_LEASE:
+                counts["dead"] += 1
+                counts["reaped_final_lease"] += 1
+            else:
+                claimed += 1
+                counts[outcome.value] += 1
         queue_depth = repo.count_open_jobs()
     except Exception as exc:  # noqa: BLE001 — honest catch-all, see comment below.
         # This includes a genuine infra outage on claim/count AND a
@@ -110,6 +113,8 @@ def pump(request: Request) -> JSONResponse:
         logger.error("pump: infra failure mid-drain: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="pump unavailable") from exc
 
-    # claimed == done + retried + dead + fenced holds by construction: each
-    # claimed job increments exactly one bucket above.
+    # A reaped final lease is dead transport work, but no worker claimed it in
+    # this request. Every other non-empty outcome represents one claimed job.
+    # Therefore:
+    # claimed == done + retried + (dead - reaped_final_lease) + fenced.
     return JSONResponse({"claimed": claimed, **counts, "queue_depth": queue_depth})

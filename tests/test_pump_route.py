@@ -192,6 +192,32 @@ def test_bounded_max_jobs_cap_stops_the_loop(monkeypatch: pytest.MonkeyPatch) ->
     assert body["done"] == pump_module._MAX_JOBS_PER_PUMP
 
 
+def test_bounded_max_jobs_cap_includes_reaped_maintenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reaps do not inflate claimed, but still consume the bounded drain budget."""
+    calls = 0
+
+    def _reap() -> DrainOutcome:
+        nonlocal calls
+        calls += 1
+        return DrainOutcome.REAPED_FINAL_LEASE
+
+    monkeypatch.setattr(pump_module, "drain_once", _reap)
+    monkeypatch.setattr(repo, "count_open_jobs", lambda: 999)
+
+    client = _client_with_token(monkeypatch, "secret-token")
+    resp = client.get(PUMP_PATH, headers=_auth_header("secret-token"))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert calls == pump_module._MAX_JOBS_PER_PUMP
+    assert body["claimed"] == 0
+    assert body["dead"] == pump_module._MAX_JOBS_PER_PUMP
+    assert body["reaped_final_lease"] == pump_module._MAX_JOBS_PER_PUMP
+    _assert_accounting_identity(body)
+
+
 def test_bounded_wall_clock_cap_stops_the_loop_before_max_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
