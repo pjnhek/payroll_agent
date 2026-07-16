@@ -4,17 +4,17 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 18
 current_phase_name: failure-policy-sweep-deletion
-status: executing
-stopped_at: Completed 18-07-PLAN.md
-last_updated: "2026-07-16T04:20:05.134Z"
+status: verifying
+stopped_at: Completed 18-08-PLAN.md
+last_updated: "2026-07-16T04:35:49.165Z"
 last_activity: 2026-07-16
 last_activity_desc: Phase 18 execution started
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 27
-  completed_plans: 26
-  percent: 33
+  completed_plans: 27
+  percent: 50
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 
 Phase: 18 (failure-policy-sweep-deletion) — EXECUTING
 Plan: 12 of 12
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-16 — Phase 18 execution started
 
 ## Performance Metrics
@@ -108,6 +108,7 @@ Last activity: 2026-07-16 — Phase 18 execution started
 | Phase 18 P10 | 9min | 1 tasks | 3 files |
 | Phase 18 P11 | 21min | 2 tasks | 15 files |
 | Phase 18 P07 | 12min | 2 tasks | 6 files |
+| Phase 18 P08 | 10min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -202,6 +203,8 @@ Recent decisions affecting current work:
 - [Phase 18]: Background wrappers remain None-returning terminal procedures, while every value-producing seam is PipelineResult-only. — Procedures exhaustively consume and settle policy values rather than forwarding them.
 - [Phase 18]: GET /runs is strictly read-only and owns no automatic recovery behavior. — Durable queue workers own automatic recovery; explicit mutation routes own operator recovery.
 - [Phase 18]: Webhook redelivery and durable resume handlers remain the supported automatic resume entry points. — Caller subtraction removes page-load recovery without weakening sender, consumption, mapping, or epoch safeguards.
+- [Phase 18]: The durable queue is the only automatic recovery policy; no legacy age-based repository or fake fallback remains. — Complete caller-first deletion prevents competing recovery writers.
+- [Phase 18]: Durable persisted-context, operator-resolution, settlement, retry, and final-lease seams remain explicitly public and fake-paired. — Negative deletion gates are paired with positive replacement assertions.
 
 ### Pending Todos
 
@@ -267,8 +270,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T04:19:37.882Z
-Stopped at: Completed 18-07-PLAN.md
+Last session: 2026-07-16T04:35:34.137Z
+Stopped at: Completed 18-08-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

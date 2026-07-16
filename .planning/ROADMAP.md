@@ -39,7 +39,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 
 - [x] **Phase 16: Queue Substrate & Unblocked Webhook** - The webhook stops blocking the event loop and a durable Postgres job queue exists, proven on one already-manual, low-risk producer (operator retrigger) before the money path touches it. (completed 2026-07-14)
 - [x] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present. (completed 2026-07-15)
-- [ ] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism.
+- [x] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism. (completed 2026-07-16)
 - [ ] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue.
 - [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch.
 - [ ] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact.
@@ -138,7 +138,7 @@ mechanism.
   4. `sweep_stranded_runs`, `find_stranded_unconsumed_replies`, and the runs-list sweep block are removed from the codebase — there is exactly one recovery mechanism left, not two racing ones.
   5. Viewing the list of runs no longer has any side effect on any run's status — it is a read, not an accidental cron trigger.
 
-**Plans**: 11/12 plans executed
+**Plans**: 12/12 plans complete
 
 **Wave 1** (result contract foundation):
 
@@ -180,7 +180,7 @@ mechanism.
 
 **Wave 10** (retired API deletion; blocked on 18-07 and durable replacements):
 
-- [ ] 18-08-PLAN.md — Delete sweep repositories, facade exports, fakes, and obsolete status support
+- [x] 18-08-PLAN.md — Delete sweep repositories, facade exports, fakes, and obsolete status support
 
 ### Phase 19: Webhook Cutover & Durable Ingest
 
@@ -267,7 +267,7 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 15. Comment Hygiene & Deferred-Polish Triage | v3 | 11/11 | Complete    | 2026-07-13 |
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
-| 18. Failure Policy & Sweep Deletion | v4 | 11/12 | In Progress|  |
+| 18. Failure Policy & Sweep Deletion | v4 | 12/12 | Complete   | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 0/TBD | Not started | - |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
