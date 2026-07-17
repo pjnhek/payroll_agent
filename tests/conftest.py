@@ -1521,7 +1521,6 @@ class InMemoryRepo:
             "message_id": snapshot["message_id"],
             "to_addr": snapshot["to_addr"],
             "subject": snapshot["subject"],
-            "body_text": snapshot["body_text"],
             "reserved_at": snapshot["reserved_at"],
             "attempt_count": 0,
             "attachments": [
@@ -1921,22 +1920,25 @@ class InMemoryRepo:
         Mirrors repo.update_email_message_sent (the success half of the crash-safe
         write-then-send ordering).
         """
-        self.update_email_message_state(message_id, "sent", conn=conn)
+        for rows in self.outbound.values():
+            for row in rows:
+                if row.get("message_id") != message_id:
+                    continue
+                if row.get("send_state") != "reserved":
+                    raise ValueError(
+                        "email message is not an outbound row in the reserved state"
+                    )
+                row["send_state"] = "sent"
+                return
+        raise ValueError("email message is not an outbound row in the reserved state")
 
     def update_email_message_state(
         self, message_id: str, state: str, conn: Any = None
     ) -> None:
-        """Set send_state on the outbound row with this synthetic message_id.
-
-        Mirrors repo.update_email_message_state: the row is written BEFORE the
-        send is attempted, then flipped, so a crash mid-send leaves a visible
-        pending row rather than an invisible lost email.
-        """
-        for rows in self.outbound.values():
-            for row in rows:
-                if row.get("message_id") == message_id:
-                    row["send_state"] = state
-                    return
+        del message_id, state, conn
+        raise RuntimeError(
+            "update_email_message_state is retired; use fenced delivery settlement"
+        )
 
     # --- header-chain reply routing ---
     def _header_matches(
@@ -1963,8 +1965,11 @@ class InMemoryRepo:
             run = self.runs.get(run_id)
             if not run or run["status"] != "awaiting_reply":
                 continue
+            current_epoch = run.get("reply_epoch", 0)
             for row in rows:
-                if self._header_matches(in_reply_to, references_header, row):
+                if row.get("epoch", 0) == current_epoch and self._header_matches(
+                    in_reply_to, references_header, row
+                ):
                     return uuid.UUID(run_id)
         return None
 

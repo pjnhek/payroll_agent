@@ -337,12 +337,18 @@ def load_delivery_review_snapshot(
     email_id: uuid.UUID,
     conn: psycopg.Connection | None = None,
 ) -> dict[str, Any] | None:
-    """Return bounded review facts without provider request/response payloads."""
+    """Return bounded review facts without frozen body or provider payloads.
+
+    The delivery-review projection is intentionally smaller than
+    ``load_outbound_snapshot``.  Review callers receive only the facts needed to
+    explain the delivery state and references to the frozen attachments; the
+    authorized frozen-artifact route owns the separate body reader.
+    """
     with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(
             """
             SELECT em.id AS email_id, snapshot.id AS snapshot_id, snapshot.message_id,
-                   snapshot.to_addr, snapshot.subject, snapshot.body_text,
+                   snapshot.to_addr, snapshot.subject,
                    snapshot.reserved_at,
                    (SELECT count(*) FROM outbound_delivery_attempts AS attempt
                      WHERE attempt.snapshot_id = snapshot.id) AS attempt_count
@@ -652,10 +658,20 @@ def update_email_message_sent(message_id: str, conn: psycopg.Connection | None =
     email provider's own id — the provider id is not stored, so keying on it would
     match nothing and leave the row stuck in 'reserved'.
 
-    Delegates to update_email_message_state so all send_state writes go through one
-    parameterized statement.
+    Only the constrained outbound reserved-to-sent transition is supported here.
+    The durable delivery settlement path owns all other state transitions.
     """
-    update_email_message_state(message_id, "sent", conn=conn)
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            "UPDATE email_messages SET send_state = 'sent' "
+            "WHERE message_id = %s AND direction = 'outbound' "
+            "AND send_state = 'reserved' RETURNING id",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                "email message is not an outbound row in the reserved state"
+            )
 
 
 def update_email_message_state(
@@ -663,18 +679,17 @@ def update_email_message_state(
     state: str,
     conn: psycopg.Connection | None = None,
 ) -> None:
-    """Parameterized flip of send_state for the outbound row keyed on SYNTHETIC message_id.
+    """Retired compatibility seam; arbitrary email state writes are forbidden.
 
-    The single send_state writer, used for both the 'sent' success flip and the
-    'failed' flip. email_messages has no updated_at column, so the SET clause
-    touches send_state only. The WHERE key is the SYNTHETIC message_id minted by
-    send_outbound, never the provider's id.
+    This symbol remains importable for older integrations, but it fails before
+    opening a connection or issuing SQL.  ``update_email_message_sent`` is the only
+    compatibility transition retained, and it is constrained to outbound reserved
+    rows.  Durable settlement writes are deliberately owned by the fenced job path.
     """
-    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
-        c.execute(
-            "UPDATE email_messages SET send_state = %s WHERE message_id = %s",
-            (state, message_id),
-        )
+    del message_id, state, conn
+    raise RuntimeError(
+        "update_email_message_state is retired; use fenced delivery settlement"
+    )
 
 
 def get_outbound_references_chain(
@@ -786,16 +801,19 @@ def find_awaiting_reply_for_header(
     references_header: str | None,
     conn: psycopg.Connection | None = None,
 ) -> uuid.UUID | None:
-    """Match a reply to its run via the RFC header chain, restricted to awaiting_reply.
+    """Match a current-epoch reply to its run, restricted to awaiting_reply.
 
     Scans the stored outbound Message-ID against the reply's In-Reply-To AND the
-    full References chain. The `references` match is a NAMED placeholder, never
+    full References chain. The outbound row must carry the run's current
+    ``reply_epoch``; older rows remain available only to the separate any-status
+    observability lookup. The `references` match is a NAMED placeholder, never
     string-interpolated, and is anchored on whole tokens.
     """
     sql = (
         "SELECT pr.id FROM payroll_runs pr"
         " JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'"
         " WHERE pr.status = 'awaiting_reply'"
+        "   AND em.epoch = pr.reply_epoch"
         "   AND " + _HEADER_MATCH_PREDICATE + " LIMIT 1"
     )
     with _conn_ctx(conn) as (c, _owns):
