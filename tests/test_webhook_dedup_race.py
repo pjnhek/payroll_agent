@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import threading
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -191,6 +192,7 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
 @pytest.mark.queueproof
 def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     monkeypatch,
+    seeded_db: None,
 ):
     """One authenticated transport identity stays singular across a DB race."""
     if not os.environ.get("DATABASE_URL"):
@@ -202,6 +204,7 @@ def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     from app.config import get_settings
     from app.db import repo
     from app.email import gateway
+    from app.models.contracts import InboundEmail
     from app.models.job import Job, JobKind
     from app.queue import wake
     from app.queue.handlers import ingest as ingest_handler
@@ -209,18 +212,20 @@ def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     get_settings.cache_clear()
     event_key = f"evt_same_svix_{uuid.uuid4()}"
     message_id = f"<same-svix-{uuid.uuid4()}@acme.test>"
-    payload = {
-        "id": str(uuid.uuid4()),
-        "message_id": message_id,
-        "in_reply_to": None,
-        "references_header": None,
-        "subject": "Payroll hours",
-        "from_addr": "payroll@coastalcleaning.example",
-        "to_addr": "agent@payroll-agent.local",
-        "body_text": "Maria Chen 40 regular hours.",
-        "created_at": "2026-06-15T10:00:00Z",
-    }
+    payload = {"data": {"email_id": f"em_{uuid.uuid4()}"}}
+    parsed_email = InboundEmail(
+        id=uuid.uuid4(),
+        message_id=message_id,
+        in_reply_to=None,
+        references_header=None,
+        subject="Payroll hours",
+        from_addr="payroll@coastalcleaning.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular hours.",
+        created_at=datetime(2026, 6, 15, 10, 0, tzinfo=UTC),
+    )
     monkeypatch.setattr(gateway, "verify", lambda body, headers, secret: None)
+    monkeypatch.setattr(gateway, "parse_inbound", lambda stored: parsed_email)
     wakes: list[str] = []
     monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
     client = TestClient(app_main.app)
