@@ -320,7 +320,6 @@ def test_deliver_enriches_run_dict_with_business_name(monkeypatch):
     → the subject contains the real business name.
     """
     import app.db.repo as repo
-    import app.email.gateway as gw
     from app.pipeline.delivery import deliver as _deliver
 
     run_id = uuid.uuid4()
@@ -343,8 +342,9 @@ def test_deliver_enriches_run_dict_with_business_name(monkeypatch):
         # computed by _deliver.
     }
 
-    # Track the subject passed to send_outbound.
+    # Track the subject frozen in the new outbound snapshot.
     captured_subjects: list[str] = []
+    enqueued_email_ids: list[uuid.UUID] = []
 
     def _fake_load_business_name(bid, conn=None):
         return "Coastal Cleaning Co."
@@ -362,10 +362,14 @@ def test_deliver_enriches_run_dict_with_business_name(monkeypatch):
     def _fake_load_inbound_email(run_id, conn=None):
         return None
 
-    def _fake_send_outbound(*, run_id, to_addr, subject, body, attachments=None,
-                             purpose=None, send_state=None):
+    def _fake_reserve_outbound_snapshot(**kwargs):
+        subject = kwargs["subject"]
         captured_subjects.append(subject)
-        return f"<{uuid.uuid4()}@payroll-agent.local>"
+        return {"email_id": uuid.uuid4()}
+
+    def _fake_enqueue_job(**kwargs):
+        enqueued_email_ids.append(kwargs["email_id"])
+        return uuid.uuid4()
 
     def _fake_set_status(run_id, status, conn=None):
         pass
@@ -376,24 +380,22 @@ def test_deliver_enriches_run_dict_with_business_name(monkeypatch):
     monkeypatch.setattr(repo, "load_roster_for_business", _fake_load_roster_for_business)
     monkeypatch.setattr(repo, "load_inbound_email", _fake_load_inbound_email)
     monkeypatch.setattr(repo, "set_status", _fake_set_status)
-    monkeypatch.setattr(gw, "send_outbound", _fake_send_outbound)
+    monkeypatch.setattr(repo, "get_unconfirmed_outbound", lambda *a, **kw: None)
+    monkeypatch.setattr(repo, "reserve_outbound_snapshot", _fake_reserve_outbound_snapshot)
+    monkeypatch.setattr(repo, "enqueue_job", _fake_enqueue_job)
     # _deliver checks the record_only flag; stub to False (live path)
     monkeypatch.setattr(repo, "get_record_only_flag", lambda *a, **kw: False, raising=False)
 
-    # Also stub write_aliases_if_safe (called inside _deliver before SENT).
-    from app.pipeline import alias_learning
-    monkeypatch.setattr(
-        alias_learning, "write_aliases_if_safe", lambda *a, **kw: None, raising=False
-    )
-    # _deliver's finalize sequence opens its own transaction.
+    # Keep the repository helpers hermetic for this producer-level test.
     from tests.conftest import patch_get_connection
     patch_get_connection(monkeypatch, repo)
 
     _deliver(run_id, run_dict)
 
     assert len(captured_subjects) == 1, (
-        "_deliver must call gateway.send_outbound exactly once for a normal approved run"
+        "_deliver must freeze exactly one confirmation subject for a normal approved run"
     )
+    assert len(enqueued_email_ids) == 1
     subject = captured_subjects[0]
     assert "Coastal Cleaning Co." in subject, (
         f"_deliver must enrich run with real business_name before composing confirmation; "

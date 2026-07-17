@@ -546,15 +546,14 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
 
 
 def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
-    """deliver with record_only=True: skips gateway.send_outbound; writes outbound row."""
-    from app.models.status import RunStatus
+    """deliver with record_only=True freezes and queues, without direct transport."""
     from app.pipeline import delivery
 
     run_id = uuid.uuid4()
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 
-    insert_calls: list[Any] = []
-    set_status_calls: list[Any] = []
+    snapshot_calls: list[Any] = []
+    enqueue_calls: list[Any] = []
     send_outbound_calls: list[Any] = []
 
     # Minimal run dict
@@ -573,6 +572,10 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
 
     monkeypatch.setattr(
         "app.db.repo.get_outbound_message_id",
+        lambda run_id, purpose, **kw: None,
+    )
+    monkeypatch.setattr(
+        "app.db.repo.get_unconfirmed_outbound",
         lambda run_id, purpose, **kw: None,
     )
     monkeypatch.setattr(
@@ -596,12 +599,12 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
         lambda business_id, **kw: "Test Business",
     )
     monkeypatch.setattr(
-        "app.db.repo.insert_email_message",
-        lambda **kw: _record_and_return(insert_calls, kw, uuid.uuid4()),
+        "app.db.repo.reserve_outbound_snapshot",
+        lambda **kw: _record_and_return(snapshot_calls, kw, {"email_id": uuid.uuid4()}),
     )
     monkeypatch.setattr(
-        "app.db.repo.set_status",
-        lambda run_id, status, **kw: _record_call(set_status_calls, status),
+        "app.db.repo.enqueue_job",
+        lambda **kw: _record_and_return(enqueue_calls, kw, uuid.uuid4()),
     )
     monkeypatch.setattr(
         "app.email.gateway.send_outbound",
@@ -615,11 +618,7 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
         "app.pipeline.delivery.generate_paystub_pdf",
         lambda *a, **kw: b"pdf",
     )
-    monkeypatch.setattr(
-        "app.pipeline.alias_learning.write_aliases_if_safe",
-        lambda *a, **kw: None,
-    )
-    # 09-02: deliver's record_only finalize sequence now opens its own transaction.
+    # Keep the producer path hermetic; record-only side effects occur in the worker.
     import app.db.repo as repo_mod
     patch_get_connection(monkeypatch, repo_mod)
 
@@ -628,13 +627,11 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
     assert len(send_outbound_calls) == 0, (
         "gateway.send_outbound must NOT be called for record_only run"
     )
-    assert len(insert_calls) >= 1, "repo.insert_email_message must be called"
+    assert len(snapshot_calls) == 1, "repo.reserve_outbound_snapshot must be called once"
     assert any(
-        kw.get("purpose") == "confirmation" and kw.get("send_state") == "sent"
-        for kw in insert_calls
-    ), "insert_email_message must be called with purpose='confirmation' and send_state='sent'"
-    assert RunStatus.SENT in set_status_calls, "set_status must advance to SENT"
-    assert RunStatus.RECONCILED in set_status_calls, "set_status must advance to RECONCILED"
+        kw.get("purpose") == "confirmation" for kw in snapshot_calls
+    ), "record-only work must still freeze a confirmation snapshot"
+    assert len(enqueue_calls) == 1, "record-only work must enqueue one delivery job"
 
 
 def test_orchestrator_live_run_still_calls_resend(monkeypatch):

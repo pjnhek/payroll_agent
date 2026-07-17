@@ -72,14 +72,14 @@ status: complete
 
 # Phase 20 Plan 04: Durable Confirmation Scheduling Summary
 
-**Approval now freezes and queues confirmation delivery atomically; only the durable worker can send the stored payload.**
+**Approval now freezes and queues confirmation delivery atomically; only the durable worker can send the stored payload and finalize post-send reconciliation.**
 
 ## Performance
 
 - **Duration:** 25 min
 - **Completed:** 2026-07-17T19:27:28Z
 - **Tasks:** 2
-- **Files modified:** 8
+- **Files modified:** 14
 
 ## Accomplishments
 
@@ -87,6 +87,7 @@ status: complete
 - Changed approval to claim the run, reserve/enqueue delivery work in the same transaction, and wake workers only after commit.
 - Made replay use an immutable email identifier rather than current line items, contact data, drafting, or PDF generation.
 - Kept record-only confirmations on the same frozen contract while preventing their queued handler from contacting the provider.
+- Restored confirmation alias learning and final reconciliation inside fenced worker settlement, after successful delivery is recorded.
 
 ## Task Commits
 
@@ -100,7 +101,8 @@ status: complete
 - `app/db/repo/emails.py` — Returns the immutable email ID for an unconfirmed slot.
 - `app/routes/runs.py` — Commits approval and durable delivery scheduling together, then wakes after commit.
 - `app/queue/handlers/send_outbound.py` — Completes record-only frozen work without a provider request.
-- `tests/conftest.py`, `tests/test_delivery.py`, and `tests/test_hitl.py` — Mirror immutable slot IDs and pin one-time composition, replay isolation, post-commit wake, duplicate approval no-op, and record-only behavior.
+- `app/db/repo/job_settlement.py` — Applies safe alias learning and final reconciliation only after a fenced confirmation success.
+- `tests/conftest.py`, `tests/test_delivery.py`, `tests/test_hitl.py`, `tests/test_send_idempotency.py`, `tests/test_alias_full_loop.py`, `tests/test_alias_and_run_column_regressions.py`, `tests/test_demo_landing.py`, and `tests/test_multi_employee_delivery.py` — Pin immutable scheduling, worker-owned send finalization, and producer-only snapshot behavior.
 
 ## Decisions Made
 
@@ -123,6 +125,17 @@ status: complete
 
 **Total deviations:** 1 auto-fixed (Rule 2 critical behavior). **Impact:** Preserves demo safety without adding a parallel delivery path.
 
+**2. [Rule 1 - Bug] Queued confirmation success omitted post-send finalization**
+
+- **Found during:** Post-wave full-suite verification
+- **Issue:** The confirmation producer no longer sent synchronously, but settlement only advanced an approved run to `sent`; it omitted the existing safe alias write and final `reconciled` transition.
+- **Fix:** After a fenced confirmation success marks its snapshot sent and advances the run to `sent`, settlement reloads the locked run and roster, safely attempts alias learning, then transitions the run to `reconciled`. The in-memory repository mirrors this behavior.
+- **Files modified:** `app/db/repo/job_settlement.py`, `tests/conftest.py`, `tests/test_send_idempotency.py`, `tests/test_alias_full_loop.py`
+- **Verification:** The five reported regressions, the focused Plan 20-04 suite, provenance guard, mypy, and Ruff passed.
+- **Committed in:** This scoped correction commit
+
+**Total deviations:** 2 auto-fixed (1 Rule 2 critical behavior, 1 Rule 1 bug). **Impact:** Preserves the durable boundary while restoring the required post-send business effects.
+
 ## Issues Encountered
 
 - Guarded database tests skipped because `DATABASE_URL` and `ALLOW_DB_RESET=1` are not configured locally; they were not treated as passing evidence.
@@ -143,6 +156,9 @@ None - no external service configuration required.
 - `uv run mypy app/pipeline/delivery.py app/pipeline/send_guard.py app/routes/runs.py` — passed.
 - `uv run ruff check app/pipeline/delivery.py app/pipeline/send_guard.py app/routes/runs.py app/queue/handlers/send_outbound.py tests/test_delivery.py tests/test_hitl.py` — passed.
 - `git diff --check` — passed.
+- `uv run pytest tests/test_alias_and_run_column_regressions.py::test_deliver_enriches_run_dict_with_business_name tests/test_alias_full_loop.py::test_full_loop_learns_alias_and_stops_asking tests/test_demo_landing.py::test_orchestrator_record_only_deliver_skips_resend tests/test_multi_employee_delivery.py::test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs tests/test_multi_employee_delivery.py::test_deliver_multi_employee_subject_uses_start_only_period tests/test_delivery.py tests/test_hitl.py tests/test_send_idempotency.py tests/test_comment_provenance_guard.py -q` — 52 passed, 3 skipped.
+- `uv run mypy app/db/repo/job_settlement.py app/pipeline/delivery.py app/pipeline/send_guard.py app/routes/runs.py` — passed.
+- `uv run ruff check app/db/repo/job_settlement.py app/pipeline/delivery.py app/pipeline/send_guard.py app/routes/runs.py tests/conftest.py tests/test_alias_and_run_column_regressions.py tests/test_alias_full_loop.py tests/test_demo_landing.py tests/test_multi_employee_delivery.py tests/test_send_idempotency.py` — passed.
 
 ## Self-Check: PASSED
 

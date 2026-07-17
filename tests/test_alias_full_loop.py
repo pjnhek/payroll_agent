@@ -135,7 +135,7 @@ def _inbound_persisted(
     )
 
 
-def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
+def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm, monkeypatch):
     """The stops-asking proof, end-to-end, with REAL resolution throughout.
 
     Money-path discipline: the SECOND submission's paystub line-item VALUE is asserted,
@@ -203,11 +203,20 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     )
 
     # ---- STEP 3: operator approves at the SINGLE human gate ------------------
-    # _deliver calls the REAL _write_aliases_if_safe (never mocked in this test) — the
-    # collision re-check runs, then update_known_alias persists known_aliases via the
-    # real repo call (mirrored by fake_repo). The alias is only ever written behind the
-    # human gate.
+    # Approval creates frozen delivery work. The worker performs alias learning only
+    # after it has recorded a fenced successful confirmation send.
     from app.pipeline.delivery import deliver as _deliver
+    from app.pipeline.result import PipelineOutcome, PipelineResult, PipelineStage
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
+
+    monkeypatch.setattr(
+        "app.email.gateway.send_reserved_outbound_snapshot",
+        lambda snapshot: PipelineResult(
+            outcome=PipelineOutcome.OK,
+            stage=PipelineStage.DELIVERY,
+        ),
+    )
 
     claimed = fake_repo.claim_status(
         run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED
@@ -215,6 +224,7 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm):
     assert claimed, "the approval CAS claim must succeed for a fresh awaiting_approval run"
     run_for_deliver = fake_repo.load_run(run_id)
     _deliver(run_id, run_for_deliver)
+    assert drain.drain_once() is DrainOutcome.DONE
 
     run_after_approve = fake_repo.load_run(run_id)
     assert run_after_approve["status"] == RunStatus.RECONCILED.value, (

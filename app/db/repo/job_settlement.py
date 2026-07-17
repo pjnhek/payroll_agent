@@ -7,6 +7,7 @@ to update both aggregates in one transaction.
 from __future__ import annotations
 
 import enum
+import logging
 import uuid
 from datetime import datetime
 
@@ -15,6 +16,8 @@ import psycopg
 from app.db.repo._shared import _conn_ctx, _nulltx
 from app.db.repo.jobs import enqueue_job
 from app.db.repo.operator_resume_resolutions import load_operator_resume_resolution
+from app.db.repo.roster import load_roster_for_business
+from app.db.repo.runs import load_run
 from app.models.job import Job, JobKind
 from app.models.status import RunStatus
 from app.pipeline.result import (
@@ -24,6 +27,8 @@ from app.pipeline.result import (
     PipelineStage,
     next_delivery_attempt_at,
 )
+
+logger = logging.getLogger("payroll_agent.orchestrator")
 
 
 class SettlementOutcome(enum.StrEnum):
@@ -164,6 +169,31 @@ def _lock_outbound_reservation(
     )
 
 
+def _complete_confirmation_after_send(
+    conn: psycopg.Connection,
+    run_id: uuid.UUID,
+) -> None:
+    """Apply post-send alias learning and reconciliation inside the delivery fence."""
+    from app.pipeline import alias_learning
+
+    run = load_run(run_id, conn=conn)
+    if run is None:
+        raise RuntimeError("locked confirmation success lost its run")
+    roster = load_roster_for_business(run["business_id"], conn=conn)
+    try:
+        with conn.transaction():
+            alias_learning.write_aliases_if_safe(run_id, run, roster, conn=conn)
+    except Exception as alias_exc:  # noqa: BLE001
+        logger.warning("alias write skipped for run %s: %s", run_id, type(alias_exc).__name__)
+    reconciled = conn.execute(
+        "UPDATE payroll_runs SET status = 'reconciled', updated_at = now() "
+        "WHERE id = %s AND status = 'sent' RETURNING id",
+        (str(run_id),),
+    ).fetchone()
+    if reconciled is None:
+        raise RuntimeError("locked confirmation success lost its sent run state")
+
+
 def settle_outbound_delivery_job(
     job: Job,
     result: PipelineResult,
@@ -235,6 +265,7 @@ def settle_outbound_delivery_job(
                 ).fetchone()
                 if advanced is None:
                     raise RuntimeError("locked confirmation success lost its run state")
+                _complete_confirmation_after_send(c, stored_run_id)
             completed = c.execute(
                 "UPDATE jobs SET state = 'done', lease_token = NULL, leased_until = NULL, "
                 "updated_at = now() WHERE id = %s AND state = 'leased' "

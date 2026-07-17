@@ -558,14 +558,31 @@ def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
 
 def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
     fake_conn: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The delivery coordinator must fence every write before it records an outcome."""
-    from app.db.repo.job_settlement import settle_outbound_delivery_job
+    import app.db.repo.job_settlement as job_settlement
     from app.models.job import Job, JobKind
+    from app.models.roster import Roster
     from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 
     run_id = uuid.uuid4()
     email_id = uuid.uuid4()
+    business_id = uuid.uuid4()
+    monkeypatch.setattr(
+        job_settlement,
+        "load_run",
+        lambda run_id, **kwargs: {"business_id": business_id},
+    )
+    monkeypatch.setattr(
+        job_settlement,
+        "load_roster_for_business",
+        lambda business_id, **kwargs: Roster(business_id=business_id, employees=[]),
+    )
+    monkeypatch.setattr(
+        "app.pipeline.alias_learning.write_aliases_if_safe",
+        lambda *args, **kwargs: None,
+    )
     job = Job(
         id=uuid.uuid4(),
         kind=JobKind.SEND_OUTBOUND,
@@ -584,8 +601,9 @@ def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
 
-    outcome = settle_outbound_delivery_job(
+    outcome = job_settlement.settle_outbound_delivery_job(
         job,
         PipelineResult(
             outcome=PipelineOutcome.OK,
@@ -603,6 +621,7 @@ def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
     assert "attempt_state" in sql and "failure_category" in sql
     assert "status = 'approved'" in sql
     assert "status = 'sent'" in sql
+    assert "status = 'reconciled'" in sql
 
 
 def test_delivery_settlement_reschedules_the_same_job_without_rewinding_approval(

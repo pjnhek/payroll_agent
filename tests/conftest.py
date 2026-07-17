@@ -1181,6 +1181,12 @@ class InMemoryRepo:
             outbound["send_state"] = "sent"
             if purpose == "confirmation":
                 run["status"] = RunStatus.SENT.value
+                from app.pipeline import alias_learning
+
+                roster = self.load_roster_for_business(run["business_id"])
+                with contextlib.suppress(Exception):  # noqa: BLE001
+                    alias_learning.write_aliases_if_safe(job.run_id, run, roster)
+                run["status"] = RunStatus.RECONCILED.value
             row["state"] = "done"
             row["lease_token"] = None
             return SettlementOutcome.DONE

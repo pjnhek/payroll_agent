@@ -21,7 +21,6 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from app.models.contracts import PaystubLineItem
 from app.models.status import RunStatus
@@ -172,33 +171,27 @@ def test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs(
     ]
     fake_repo.replace_line_items(run_id, paystubs)
 
-    # Spy on gateway.send_outbound — _deliver calls gateway.send_outbound which
-    # is imported at module level in orchestrator; patch the orchestrator's binding.
-    send_calls: list[dict[str, Any]] = []
-
-    def _spy_send_outbound(**kwargs):
-        send_calls.append(kwargs)
-
-    monkeypatch.setattr("app.pipeline.delivery.gateway.send_outbound", _spy_send_outbound)
-
     from app.pipeline.delivery import deliver as _deliver
 
     run_dict = fake_repo.load_run(run_id)
     _deliver(run_id, run_dict)
 
     # --- Assertions ---
-    assert len(send_calls) == 1, (
-        f"_deliver must send exactly ONE confirmation email for a 2-employee run; "
-        f"got {len(send_calls)} send_outbound call(s)"
+    snapshots = list(fake_repo.outbound_snapshots.values())
+    assert len(snapshots) == 1, (
+        f"_deliver must freeze exactly ONE confirmation email for a 2-employee run; "
+        f"got {len(snapshots)} snapshots"
     )
 
-    attachments = send_calls[0].get("attachments", [])
+    attachments = snapshots[0]["payload"].get("attachments", [])
     assert len(attachments) == 2, (
         f"_deliver must generate exactly 2 PDF attachments for 2 employees; "
         f"got {len(attachments)}"
     )
 
-    for filename, pdf_bytes in attachments:
+    for attachment in attachments:
+        filename = attachment["filename"]
+        pdf_bytes = attachment["content"]
         assert pdf_bytes[:4] == b"%PDF", (
             f"PDF attachment '{filename}' must start with b'%PDF' "
             f"(got: {pdf_bytes[:8]!r})"
@@ -253,20 +246,14 @@ def test_deliver_multi_employee_subject_uses_start_only_period(
     ]
     fake_repo.replace_line_items(run_id, paystubs)
 
-    captured_subjects: list[str] = []
-
-    def _spy_send_outbound(**kwargs):
-        captured_subjects.append(kwargs.get("subject", ""))
-
-    monkeypatch.setattr("app.pipeline.delivery.gateway.send_outbound", _spy_send_outbound)
-
     from app.pipeline.delivery import deliver as _deliver
 
     run_dict = fake_repo.load_run(run_id)
     _deliver(run_id, run_dict)
 
-    assert len(captured_subjects) == 1
-    subject = captured_subjects[0]
+    snapshots = list(fake_repo.outbound_snapshots.values())
+    assert len(snapshots) == 1
+    subject = snapshots[0]["payload"]["subject"]
     # This run has an original inbound subject ("Payroll"), so the confirmation threads as
     # a reply — `Re: Payroll` — which is what groups it into the client's conversation.
     # The pay-period detail is not lost: it lives in the email body and the paystub PDF.
