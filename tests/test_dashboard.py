@@ -1033,6 +1033,62 @@ def test_delivery_review_template_has_no_automatic_recovery_action():
     assert "enqueue" not in template
 
 
+def test_clarification_delivery_review_card_is_purpose_isolated(fake_repo):
+    """Clarification ambiguity never renders confirmation or alias controls."""
+    from tests.test_phase20_clarification_review import _clarification_review_run
+
+    run_id, _snapshot = _clarification_review_run(fake_repo)
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert "Review clarification delivery" in response.text
+    assert "Retry same question" in response.text
+    assert "Mark handled" in response.text
+    assert "Reject clarification" in response.text
+    assert f"/runs/{run_id}/delivery-review/clarification/retry-now" in response.text
+    assert f"/runs/{run_id}/delivery-review/clarification/mark-handled" in response.text
+    assert f"/runs/{run_id}/delivery-review/clarification/reject" in response.text
+    assert "One payroll name needs clarification" in response.text
+    assert "frozen-question.pdf" in response.text
+    assert "Review confirmation delivery" not in response.text
+    assert "Mark delivered" not in response.text
+    assert "Authorize a new confirmation" not in response.text
+    assert "AUTHORIZE A NEW CONFIRMATION" not in response.text
+    assert "Resolve &amp; Resume" not in response.text
+    assert "remember this alias" not in response.text
+    for unsafe_name in ("provider_response", "provider_request", "last_error", "queue_id"):
+        assert unsafe_name not in response.text
+
+
+def test_clarification_review_projection_is_bounded_and_question_is_frozen(fake_repo):
+    """The card receives bounded facts; the separate email reader owns the body."""
+    from app.routes.runs import _load_delivery_review, _safe_delivery_review_projection
+    from tests.test_phase20_clarification_review import _clarification_review_run
+
+    run_id, _snapshot = _clarification_review_run(fake_repo)
+    review = _load_delivery_review(run_id)
+    assert review is not None
+    projection = _safe_delivery_review_projection(run_id, review)
+
+    assert projection["purpose"] == "clarification"
+    assert projection["review_kind"] == "clarification"
+    assert projection["subject"] == "One payroll name needs clarification"
+    assert "body_text" not in projection
+    assert projection["attachments"][0]["filename"] == "frozen-question.pdf"
+
+    email = client.get(f"/runs/{run_id}/delivery-review/email")
+    assert "Which employee did you mean by D. Reyes?" in email.text
+
+
+def test_clarification_review_has_no_automatic_recovery_post_or_polling_action():
+    """Clarification review remains server-rendered and action-driven."""
+    template = Path("app/templates/run_detail.html").read_text()
+
+    assert "delivery-review/clarification/retry-now" in template
+    assert "fetch('/runs/' + RUN_ID + '/delivery-review" not in template
+    assert "window.location.reload" in template
+
+
 @pytest.mark.parametrize(
     "bad_name",
     [
