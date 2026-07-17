@@ -27,6 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.models.status import RunStatus
+from app.models.job import JobKind
 from app.queue import drain
 from app.queue.drain import DrainOutcome
 
@@ -96,6 +97,67 @@ def test_approve_sets_approved_or_reconciled(client, fake_repo):
     assert final_status in {"reconciled", "error", "approved", "sent"}, (
         f"After approve, run must be in reconciled/error/approved/sent; got {final_status}"
     )
+
+
+def test_approve_commits_one_delivery_job_before_waking(client, fake_repo, monkeypatch):
+    """Approval schedules a frozen send and leaves the payroll business state approved."""
+    import app.routes.runs as runs_mod
+    from app.email import gateway
+
+    run_id = _run_at_awaiting_approval(fake_repo)
+    calls = {"delivery": 0, "wake": 0}
+
+    def _schedule(rid, run, *, conn):
+        calls["delivery"] += 1
+        snapshot = fake_repo.reserve_outbound_snapshot(
+            run_id=rid,
+            purpose="confirmation",
+            round=0,
+            message_id="<frozen@payroll-agent.local>",
+            from_addr="agent@payroll-agent.local",
+            to_addr="payroll@example.test",
+            reply_to=None,
+            in_reply_to=None,
+            references_header=None,
+            subject="Frozen",
+            body_text="Frozen body",
+            attachments=[],
+            conn=conn,
+        )
+        fake_repo.enqueue_job(
+            kind=JobKind.SEND_OUTBOUND,
+            dedup_key=f"send_outbound:{snapshot['email_id']}",
+            run_id=rid,
+            email_id=snapshot["email_id"],
+            conn=conn,
+        )
+        return True
+
+    def _wake():
+        calls["wake"] += 1
+        assert any(
+            job["kind"] == JobKind.SEND_OUTBOUND.value
+            for job in fake_repo.jobs.values()
+        )
+
+    monkeypatch.setattr(runs_mod.delivery, "deliver", _schedule)
+    monkeypatch.setattr(runs_mod.wake, "wake", _wake)
+    monkeypatch.setattr(
+        gateway,
+        "send_outbound",
+        lambda **_kwargs: pytest.fail("approval request reached the provider"),
+    )
+
+    first = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
+    second = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
+
+    assert first.status_code == second.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.APPROVED.value
+    assert calls == {"delivery": 1, "wake": 1}
+    send_jobs = [
+        job for job in fake_repo.jobs.values() if job["kind"] == JobKind.SEND_OUTBOUND.value
+    ]
+    assert len(send_jobs) == 1
 
 
 def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, monkeypatch):
