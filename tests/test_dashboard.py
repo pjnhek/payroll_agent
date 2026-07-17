@@ -786,75 +786,104 @@ def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch):
     assert len(route_reply_calls) == 0, "_route_reply must NOT be called when no clarification mid"
 
 
-def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
-    """POST /runs/{id}/simulate-reply on awaiting_reply run → _route_reply called
-    with in_reply_to == clarification Message-ID and from_addr == source inbound sender.
-
-    This is the core contract: the synthetic reply carries the right RFC threading
-    headers so _route_reply finds the awaiting_reply run AND the sender spoof guard
-    passes (from_addr == business contact email).
-    """
-    from datetime import datetime
-
+def test_simulate_reply_triggers_route_reply_with_correct_headers(
+    monkeypatch, fake_repo
+):
+    """The demo reply commits linked context plus one job and never runs inline."""
     from app.db import repo as _repo
-    from app.models.contracts import InboundEmail
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+    from app.queue import wake
+    from app.routes import pipeline_glue
 
-    run_id = uuid.uuid4()
-    source_email_id = uuid.uuid4()
     clar_mid = "<clar-abc123@payroll-agent.local>"
     client_addr = "payroll@coastalcleaning.example"
-
-    awaiting_run = {
-        "id": run_id,
-        "business_id": uuid.uuid4(),
-        "source_email_id": source_email_id,
-        "status": "awaiting_reply",
-        "extracted_data": None,
-        "decision": None,
-        "reconciliation": None,
-        "error_reason": None,
-        "pay_period_start": None,
-        "pay_period_end": None,
-        "updated_at": None,
-    }
-    source_inbound = InboundEmail(
-        id=source_email_id,
-        message_id="<original-001@client.example>",
+    source_email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<original-{uuid.uuid4()}@client.example>",
         in_reply_to=None,
         references_header=None,
         subject="Payroll hours",
         from_addr=client_addr,
         to_addr="agent@payroll-agent.local",
         body_text="Jame Okafor 40 hours.",
-        created_at=datetime.now(UTC),
     )
+    assert inserted and source_email_id is not None
+    run_id = fake_repo.create_run(
+        business_id=uuid.UUID("b0000001-0000-0000-0000-000000000001"),
+        source_email_id=source_email_id,
+    )
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    fake_repo.outbound[str(run_id)] = [
+        {
+            "message_id": clar_mid,
+            "direction": "outbound",
+            "purpose": "clarification",
+            "send_state": "sent",
+            "round": 0,
+        }
+    ]
 
-    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: awaiting_run)
+    events: list[str] = []
+
+    class _Transaction:
+        def __enter__(self):
+            events.append("transaction_enter")
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("transaction_commit" if exc_type is None else "rollback")
+            return False
+
+    class _Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def transaction(self):
+            return _Transaction()
+
+    connection = _Connection()
+    monkeypatch.setattr(_repo, "get_connection", lambda: connection)
+
+    original_insert = fake_repo.insert_inbound_email
+    original_link = fake_repo.link_email_to_run
+    original_enqueue = fake_repo.enqueue_job
+
+    def insert_inbound_email(**kwargs):
+        assert kwargs["conn"] is connection
+        events.append("persist")
+        return original_insert(**kwargs)
+
+    def link_email_to_run(email_id, linked_run_id, conn=None):
+        assert conn is connection
+        events.append("link")
+        return original_link(email_id, linked_run_id, conn=conn)
+
+    def enqueue_job(**kwargs):
+        assert kwargs["conn"] is connection
+        events.append("enqueue")
+        return original_enqueue(**kwargs)
+
+    monkeypatch.setattr(_repo, "insert_inbound_email", insert_inbound_email)
+    monkeypatch.setattr(_repo, "link_email_to_run", link_email_to_run)
+    monkeypatch.setattr(_repo, "enqueue_job", enqueue_job)
     monkeypatch.setattr(
-        _repo,
-        "get_outbound_message_id",
-        lambda rid, purpose=None, conn=None: clar_mid,
+        pipeline_glue,
+        "route_reply",
+        lambda *args, **kwargs: pytest.fail("simulate-reply used process memory"),
     )
     monkeypatch.setattr(
-        _repo, "load_inbound_email", lambda rid, conn=None: source_inbound
-    )
-    # insert_inbound_email must succeed (return a valid id, inserted=True)
-    monkeypatch.setattr(
-        _repo,
-        "insert_inbound_email",
-        lambda **kw: (uuid.uuid4(), True),
+        "app.pipeline.orchestrator.resume_pipeline",
+        lambda *args, **kwargs: pytest.fail("simulate-reply orchestrated inline"),
     )
 
-    # Spy on _route_reply to capture the synthetic InboundEmail it receives.
-    captured = {}
-    import app.routes.pipeline_glue as _main
+    def wake_after_commit():
+        assert events[-1] == "transaction_commit"
+        events.append("wake")
 
-    def spy_route_reply(email, cleaned, bt):
-        captured["email"] = email
-        captured["cleaned"] = cleaned
-        return None  # simulate: not matched (so simulate-reply 303s cleanly)
-
-    monkeypatch.setattr(_main, "route_reply", spy_route_reply)
+    monkeypatch.setattr(wake, "wake", wake_after_commit)
 
     response = client.post(
         f"/runs/{run_id}/simulate-reply",
@@ -864,29 +893,38 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
     assert response.status_code == 303, (
         f"simulate-reply must 303; got {response.status_code}"
     )
-    assert "email" in captured, "_route_reply must be called for awaiting_reply run"
+    assert response.headers["location"] == f"/runs/{run_id}"
+    assert events == [
+        "transaction_enter",
+        "persist",
+        "link",
+        "enqueue",
+        "transaction_commit",
+        "wake",
+    ]
 
-    synthetic = captured["email"]
-    # Core contract: in_reply_to and references_header == clarification Message-ID
-    assert synthetic.in_reply_to == clar_mid, (
-        f"synthetic reply in_reply_to must == clarification mid; got {synthetic.in_reply_to!r}"
-    )
-    assert synthetic.references_header == clar_mid, (
-        f"synthetic reply references_header must == clarification mid; "
-        f"got {synthetic.references_header!r}"
-    )
-    # from_addr == business contact email (the sender spoof guard will pass)
-    assert synthetic.from_addr == client_addr, (
-        f"synthetic reply from_addr must == source inbound sender; got {synthetic.from_addr!r}"
-    )
-    # reply_body flows through as body_text (cleaned)
-    assert "James Okafor" in captured["cleaned"], (
-        "reply_body text must appear in cleaned body passed to _route_reply"
-    )
-    # subject is prefixed with "Re: "
-    assert synthetic.subject.startswith("Re: "), (
-        f"synthetic reply subject must start with 'Re: '; got {synthetic.subject!r}"
-    )
+    replies = [
+        row
+        for row in fake_repo.emails.values()
+        if row.get("in_reply_to") == clar_mid
+    ]
+    assert len(replies) == 1
+    persisted = replies[0]
+    assert persisted["run_id"] == run_id
+    assert persisted["references_header"] == clar_mid
+    assert persisted["from_addr"] == client_addr
+    assert persisted["subject"].startswith("Re: ")
+    assert "James Okafor" in persisted["body_text"]
+
+    assert len(fake_repo.jobs) == 1
+    job = next(iter(fake_repo.jobs.values()))
+    assert job["kind"] == JobKind.RESUME_REPLY.value
+    assert job["dedup_key"] == f"resume_reply:{run_id}:{persisted['id']}"
+    assert job["run_id"] == run_id
+    assert job["email_id"] == persisted["id"]
+    assert job["operator_resolution_id"] is None
+    assert job["event_id"] is None
+    assert "James Okafor" not in repr(job)
 
 
 @pytest.mark.integration
