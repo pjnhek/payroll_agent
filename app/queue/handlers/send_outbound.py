@@ -70,6 +70,8 @@ def handle_send_outbound(job: Job) -> PipelineResult:
     run = repo.load_run(run_id)
     if run is None or run.get("status") != _authorized_status(snapshot).value:
         return _bounded_noop()
+    if repo.get_record_only_flag(run_id):
+        return PipelineResult(outcome=PipelineOutcome.OK)
 
     reserved_at = snapshot.get("reserved_at")
     if not isinstance(reserved_at, datetime) or reserved_at.tzinfo is None:

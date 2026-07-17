@@ -26,8 +26,8 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.status import RunStatus
 from app.models.job import JobKind
+from app.models.status import RunStatus
 from app.queue import drain
 from app.queue.drain import DrainOutcome
 
@@ -427,7 +427,7 @@ def test_approve_forwards_deliver_roster_to_record_run_error(client, fake_repo, 
     run_id = _run_at_awaiting_approval(fake_repo)
     sentinel_roster = object()  # identity check — must arrive unchanged
 
-    def _deliver_boom(rid, run):
+    def _deliver_boom(rid, run, *, conn):
         exc = RuntimeError("gateway exploded sending Maria Chen's paystub")
         exc.payroll_roster = sentinel_roster  # type: ignore[attr-defined]  # mirrors delivery.py stashing the loaded roster onto an arbitrary exception; RuntimeError has no such attribute declared
         raise exc
@@ -467,7 +467,7 @@ def test_approve_without_roster_on_exception_passes_none(client, fake_repo, monk
 
     run_id = _run_at_awaiting_approval(fake_repo)
 
-    def _deliver_boom(rid, run):
+    def _deliver_boom(rid, run, *, conn):
         raise RuntimeError("failure before the roster load")
 
     monkeypatch.setattr(orch, "deliver", _deliver_boom)

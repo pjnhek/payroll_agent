@@ -245,52 +245,59 @@ def _safe_run_with_queue_projection(
 def approve(
     run_id: uuid.UUID,
 ) -> RedirectResponse:
-    """The single human gate: CAS claim (AWAITING_APPROVAL → APPROVED), then deliver.
+    """The single human gate: claim approval, freeze delivery, and queue the send.
 
     Race-safety: claim_status is an atomic compare-and-set. A second concurrent approval
     (double-click, two operator tabs) LOSES the claim and 303-redirects without running
     delivery again — otherwise the client would receive the payroll confirmation twice.
 
-    Delivery is synchronous and bounded by the compose_confirmation timeout. On a
-    delivery exception the run is recorded as ERROR: APPROVED is deliberately NOT a
-    terminal status, precisely so record_run_error can advance it and the operator can
-    retrigger rather than the run wedging at APPROVED with no confirmation sent.
+    The same transaction owns the approval claim, immutable confirmation reservation,
+    and identifier-only send job. Provider work starts only after that transaction has
+    committed and a worker has claimed the job. While delivery is owed, APPROVED remains
+    the business state and the queue supplies the delivery projection.
 
     Error logging is PII-safe: error_reason is type(exc).__name__ ONLY.
     """
-    claimed = repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED)
-    if claimed:
-        try:
+    should_wake = False
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            claimed = repo.claim_status(
+                run_id,
+                RunStatus.AWAITING_APPROVAL,
+                RunStatus.APPROVED,
+                conn=conn,
+            )
+            if not claimed:
+                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
             # load_run is INSIDE the error boundary on purpose. A transient DB failure
-            # during the load (e.g. a pooler blip) must route to ERROR + error_reason
-            # like any other delivery failure — not leave the run silently stuck at
-            # APPROVED behind a raw 500 (INGEST-05: "nothing silently hangs"). APPROVED
-            # is non-terminal, so record_run_error can advance it to ERROR and the
-            # operator can retrigger.
-            run = repo.load_run(run_id)
+            # during the load must route to ERROR rather than leave the run silently
+            # stuck at APPROVED behind a raw 500.
+            run = repo.load_run(run_id, conn=conn)
             if run is None:
                 raise TypeError("run not found")
-            delivery.deliver(run_id, run)
-        except Exception as exc:  # noqa: BLE001 — delivery error boundary
-            # PII-safe: log the exception TYPE only. str(exc) may echo model output,
-            # submitted employee names, or raw email content. run_id is the correlation
-            # key for debugging.
-            logger.warning("delivery of run %s failed: %s", run_id, type(exc).__name__)
-            # approve() must never LOAD a roster itself — the error path loading one
-            # would turn a DB outage into a second failure inside the handler. But
-            # delivery.deliver stashes the roster it ALREADY loaded (for PDF/compose
-            # interpolation) onto any exception raised past that point, as
-            # exc.payroll_roster. Forward it so the scrubber can redact employee names
-            # from the delivery error_detail — that text is the boundary where names
-            # are most likely to leak. Failures raised BEFORE deliver's roster load
-            # carry no such attribute, hence the getattr default of None.
-            repo.record_run_error(
-                run_id,
-                type(exc).__name__,
-                detail_exc=exc,
-                stage="delivery",
-                roster=getattr(exc, "payroll_roster", None),
-            )
+            should_wake = delivery.deliver(run_id, run, conn=conn)
+    except Exception as exc:  # noqa: BLE001 — delivery error boundary
+        # PII-safe: log the exception TYPE only. str(exc) may echo model output,
+        # submitted employee names, or raw email content. run_id is the correlation
+        # key for debugging.
+        logger.warning("delivery of run %s failed: %s", run_id, type(exc).__name__)
+        # approve() must never LOAD a roster itself — the error path loading one
+        # would turn a DB outage into a second failure inside the handler. But
+        # delivery.deliver stashes the roster it ALREADY loaded (for PDF/compose
+        # interpolation) onto any exception raised past that point, as
+        # exc.payroll_roster. Forward it so the scrubber can redact employee names
+        # from the delivery error_detail — that text is the boundary where names
+        # are most likely to leak. Failures raised BEFORE deliver's roster load
+        # carry no such attribute, hence the getattr default of None.
+        repo.record_run_error(
+            run_id,
+            type(exc).__name__,
+            detail_exc=exc,
+            stage="delivery",
+            roster=getattr(exc, "payroll_roster", None),
+        )
+    if should_wake:
+        wake.wake()
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 

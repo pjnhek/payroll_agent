@@ -565,6 +565,56 @@ def test_confirmation_replay_loads_snapshot_without_rebuilding_payload(fake_repo
     assert send_jobs[0]["email_id"] == snapshot["email_id"]
 
 
+def test_record_only_snapshot_settles_without_calling_the_provider(fake_repo, monkeypatch):
+    """A demo confirmation retains its frozen envelope without sending real mail."""
+    from app.email import gateway
+    from app.models.job import Job, JobKind
+    from app.queue.handlers.send_outbound import handle_send_outbound
+
+    run_id = _run_id()
+    business_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = {
+        "id": run_id,
+        "business_id": business_id,
+        "status": RunStatus.APPROVED.value,
+        "reply_epoch": 0,
+        "record_only": True,
+    }
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<demo@payroll-agent.local>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen",
+        body_text="Frozen body",
+        attachments=[],
+    )
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        lambda _snapshot: pytest.fail("record-only work reached the provider"),
+    )
+
+    result = handle_send_outbound(
+        Job(
+            id=uuid.uuid4(),
+            kind=JobKind.SEND_OUTBOUND,
+            run_id=run_id,
+            email_id=snapshot["email_id"],
+            attempts=1,
+            max_attempts=8,
+            lease_token=uuid.uuid4(),
+        )
+    )
+
+    assert result.outcome.value == "ok"
+
+
 def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
     """A failure AFTER the roster load re-raises carrying the roster on the exception.
 
