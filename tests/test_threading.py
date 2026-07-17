@@ -26,6 +26,7 @@ behind @pytest.mark.integration + the two-factor guard.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import uuid
 from datetime import UTC, datetime
@@ -54,6 +55,8 @@ _CLARIFY_REPLY_FIXTURE = (
 # actual sent clarification Message-ID at runtime — the Message-ID is generated per
 # run, so it cannot be committed into the fixture.
 _CLARIFICATION_PLACEHOLDER = "__CLARIFICATION_MESSAGE_ID__"
+_HAS_DB = bool(os.environ.get("DATABASE_URL"))
+_HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
 
 
 @pytest.fixture
@@ -274,6 +277,79 @@ def test_stale_epoch_header_cannot_resume_current_awaiting_run(fake_repo):
         references_header=None,
     ) == run_id
     assert fake_repo.find_any_run_for_header(
+        in_reply_to=old_header,
+        references_header=None,
+    ) == run_id
+
+
+@pytest.mark.integration
+@pytest.mark.queueproof
+def test_live_header_routing_rejects_stale_epoch():
+    """Real Postgres routes only the clarification row in the current epoch."""
+    if not (_HAS_DB and _HAS_RESET):
+        pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — live-DB required")
+
+    from app.db.bootstrap import bootstrap
+    from app.db.seed import seed
+    from app.models.status import RunStatus
+
+    bootstrap(reset=True)
+    seed()
+    business_id = seed(dry_run=True).businesses[0]["id"]
+    source_id, inserted = repo.insert_inbound_email(
+        message_id=f"<epoch-source-{uuid.uuid4()}@example.test>",
+        in_reply_to=None,
+        references_header=None,
+        subject="hours",
+        from_addr="p@example.test",
+        to_addr="agent@payroll-agent.local",
+        body_text="source body",
+        run_id=None,
+    )
+    assert inserted
+    run_id = repo.create_run(
+        business_id=business_id,
+        source_email_id=source_id,
+        pay_period_start="2026-06-15",
+        pay_period_end="2026-06-21",
+    )
+    old_header = f"<epoch-old-{uuid.uuid4()}@payroll-agent.local>"
+    current_header = f"<epoch-current-{uuid.uuid4()}@payroll-agent.local>"
+    for header in (old_header,):
+        repo.insert_email_message(
+            run_id=run_id,
+            direction="outbound",
+            message_id=header,
+            purpose="clarification",
+            send_state="sent",
+            subject="Please clarify",
+            to_addr="p@example.test",
+            from_addr="agent@payroll-agent.local",
+            body_text="Could you confirm?",
+        )
+    repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    assert repo.clear_reply_context(run_id) == 1
+    repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=current_header,
+        purpose="clarification",
+        send_state="sent",
+        subject="Please clarify again",
+        to_addr="p@example.test",
+        from_addr="agent@payroll-agent.local",
+        body_text="Could you confirm again?",
+    )
+
+    assert repo.find_awaiting_reply_for_header(
+        in_reply_to=old_header,
+        references_header=None,
+    ) is None
+    assert repo.find_awaiting_reply_for_header(
+        in_reply_to=current_header,
+        references_header=None,
+    ) == run_id
+    assert repo.find_any_run_for_header(
         in_reply_to=old_header,
         references_header=None,
     ) == run_id
