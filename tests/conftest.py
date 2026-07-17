@@ -329,7 +329,7 @@ class InMemoryRepo:
         # Outbound email_messages rows (the Message-ID threading anchor):
         # run_id -> list of rows.
         self.outbound: dict[str, list[dict[str, Any]]] = {}
-        # D-12 frozen provider envelopes keyed by their logical email row.  A
+        # Frozen provider envelopes keyed by their logical email row. A
         # retry returns a defensive copy of this stored record and never applies
         # replacement caller content.
         self.outbound_snapshots: dict[str, dict[str, Any]] = {}
@@ -1314,7 +1314,7 @@ class InMemoryRepo:
         attachments: Sequence[tuple[str, bytes]],
         conn: Any = None,
     ) -> dict[str, Any]:
-        """Mirror D-12/D-13 read-or-reserve with byte-identical retry results."""
+        """Mirror read-or-reserve with byte-identical retry results."""
         run = self.runs.get(str(run_id))
         epoch = run.get("reply_epoch", 0) if run is not None else 0
         key = (str(run_id), purpose, round, epoch)

@@ -274,8 +274,8 @@ def test_outbound_conflict_does_not_overwrite_reserved_row(fake_conn):
     send_outbound writes send_state='reserved' before calling the provider, so a retry
     of that same send finds its own reserved row already in the table. A plain INSERT
     would hit the uq_email_run_purpose_round_epoch UNIQUE constraint and raise
-    IntegrityError, stranding a run that is otherwise perfectly deliverable. D-12/D-13
-    read-or-reserve owns immutable payload creation; this generic audit helper may
+    IntegrityError, stranding a run that is otherwise perfectly deliverable. Read-or-
+    reserve owns immutable payload creation; this generic audit helper may
     return the existing row but must never overwrite it with caller content.
 
     The arbiter is the four-column key (run_id, purpose, round, epoch), matching the

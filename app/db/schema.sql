@@ -438,7 +438,7 @@ $$;
 CREATE INDEX IF NOT EXISTS idx_email_messages_run_direction_state
     ON email_messages (run_id, direction, send_state);
 
--- ── 5.1 Immutable outbound provider snapshots (D-12 / D-13) ────────────────
+-- ── 5.1 Immutable outbound provider snapshots ─────────────────────────────
 -- email_messages remains the logical audit/send-slot identity and its send_state
 -- remains deliberately mutable.  These tables instead freeze the complete provider
 -- envelope and exact attachment bytes before a provider request.  A retry reads this

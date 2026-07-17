@@ -516,12 +516,12 @@ def test_a_human_epoch_bump_clears_the_guard(seeded_db: None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Section C — Phase 20 D-12/D-13 immutable snapshot storage
+# Section C — immutable snapshot storage
 # ---------------------------------------------------------------------------
 
 
 def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
-    """D-12/D-13 need durable bytes before a provider request, with database
+    """Provider-ready sends need durable bytes before a provider request, with database
     enforcement rather than a repository convention that a future caller could skip.
 
     This hermetic shape guard deliberately names the parent/child/attempt tables,
@@ -561,7 +561,7 @@ def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
 @pytest.mark.queueproof
 def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> None:
     """The deployed schema, not only repository code, rejects direct UPDATE/DELETE
-    of the D-12 snapshot, its byte attachments, and D-13 attempt facts.
+    of the frozen snapshot, its byte attachments, and append-only attempt facts.
     """
     import psycopg
 
@@ -633,7 +633,7 @@ def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> 
 
 
 def test_fake_reservation_reuses_the_original_provider_snapshot(fake_repo: Any) -> None:
-    """D-12/D-13: a same-slot retry gets the stored envelope and bytes, not its
+    """A same-slot retry gets the stored envelope and bytes, not its
     own caller values.  The fake mirrors the production read-or-reserve contract so
     offline delivery tests cannot accidentally exercise an obsolete upsert behavior.
     """
@@ -699,7 +699,7 @@ def test_fake_reservation_reuses_the_original_provider_snapshot(fake_repo: Any) 
 
 
 def test_reservation_sql_locks_then_never_applies_conflicting_caller_content() -> None:
-    """The real repository must preserve D-12/D-13 independently of fake behavior."""
+    """The real repository must preserve immutable retry behavior independently of fakes."""
     from app.db.repo import emails
 
     reserve_source = inspect.getsource(emails.reserve_outbound_snapshot)

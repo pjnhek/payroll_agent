@@ -50,7 +50,7 @@ def insert_email_message(
     - round makes a NEW clarification round a NEW row rather than an
       upsert-replace of prior-round history.  The outbound conflict path does
       not apply caller content at all: it returns the existing logical row.
-      D-12/D-13's reserve_outbound_snapshot is the only API allowed to create
+      reserve_outbound_snapshot is the only API allowed to create
       the provider-ready payload for a slot; separate state-transition helpers
       own send_state after that reservation.
     - epoch is stamped from the run's CURRENT reply_epoch via a correlated
@@ -197,11 +197,11 @@ def reserve_outbound_snapshot(
     attachments: Sequence[tuple[str, bytes]],
     conn: psycopg.Connection | None = None,
 ) -> dict[str, Any]:
-    """Read or atomically reserve the D-12 provider-ready snapshot for one slot.
+    """Read or atomically reserve the provider-ready snapshot for one slot.
 
-    D-12 freezes every provider-visible field and byte before a provider call. D-13
-    requires a retry to lock and return this stored record unchanged, never applying
-    its caller arguments.  Supplying ``conn`` keeps the reservation inside the
+    The reservation freezes every provider-visible field and byte before a provider
+    call. A retry locks and returns this stored record unchanged, never applying its
+    caller arguments. Supplying ``conn`` keeps the reservation inside the
     caller-owned transaction with its job enqueue; this function opens a transaction
     only when it owns the connection.
     """
@@ -337,7 +337,7 @@ def load_delivery_review_snapshot(
     email_id: uuid.UUID,
     conn: psycopg.Connection | None = None,
 ) -> dict[str, Any] | None:
-    """Return bounded D-13 review facts without provider request/response payloads."""
+    """Return bounded review facts without provider request/response payloads."""
     with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(
             """
