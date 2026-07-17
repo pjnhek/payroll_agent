@@ -547,7 +547,7 @@ def test_operator_resume_uses_complete_durable_mapping_not_alias_candidates(
     fake_repo.runs[str(run_id)] = _needs_operator_run_row(
         run_id, COASTAL_BIZ_ID, ["Jimmy", "Maria C"]
     )
-    fake_repo.runs[str(run_id)]["status"] = RunStatus.RECEIVED.value
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.NEEDS_OPERATOR.value
     fake_repo.runs[str(run_id)]["alias_candidates"] = {
         "Jimmy": {"bound": "not-authority"}
     }
@@ -891,7 +891,7 @@ def test_operator_resume_same_resolution_redelivery_is_cas_idempotent(
     fake_repo.runs[str(run_id)] = _needs_operator_run_row(
         run_id, COASTAL_BIZ_ID, ["Jimmy"]
     )
-    fake_repo.runs[str(run_id)]["status"] = RunStatus.RECEIVED.value
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.NEEDS_OPERATOR.value
     resolution_id = uuid.uuid4()
     overrides = {"Jimmy": "e0000002-0000-0000-0000-000000000002"}
     fake_repo.create_operator_resume_resolution(run_id, resolution_id, overrides)
@@ -1470,7 +1470,7 @@ def test_resolve_rejects_whole_post_on_invalid_employee_id(monkeypatch, fake_rep
 
 
 def test_operator_resume_bg_signature_and_resolve_caller_are_identifier_only() -> None:
-    """The route/wrapper boundary carries identifiers, never payroll mappings."""
+    """The durable route boundary carries identifiers, never payroll mappings."""
     from app.routes import pipeline_glue, runs
 
     assert list(inspect.signature(pipeline_glue.operator_resume_bg).parameters) == [
@@ -1486,14 +1486,27 @@ def test_operator_resume_bg_signature_and_resolve_caller_are_identifier_only() -
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "add_task"
     ]
-    assert len(add_task_calls) == 1
-    call = add_task_calls[0]
-    assert len(call.args) == 3
-    assert isinstance(call.args[0], ast.Attribute)
-    assert call.args[0].attr == "operator_resume_bg"
-    assert isinstance(call.args[1], ast.Name) and call.args[1].id == "run_id"
-    assert isinstance(call.args[2], ast.Name)
-    assert call.args[2].id == "operator_resolution_id"
+    assert add_task_calls == []
+    enqueue_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "enqueue_job"
+    ]
+    assert len(enqueue_calls) == 1
+    keywords = {keyword.arg: keyword.value for keyword in enqueue_calls[0].keywords}
+    assert set(keywords) == {
+        "kind",
+        "dedup_key",
+        "run_id",
+        "operator_resolution_id",
+        "conn",
+    }
+    assert isinstance(keywords["run_id"], ast.Name)
+    assert keywords["run_id"].id == "run_id"
+    assert isinstance(keywords["operator_resolution_id"], ast.Name)
+    assert keywords["operator_resolution_id"].id == "operator_resolution_id"
 
 
 def test_resolve_persists_complete_mapping_before_identifier_only_dispatch(
@@ -1501,7 +1514,6 @@ def test_resolve_persists_complete_mapping_before_identifier_only_dispatch(
 ) -> None:
     """Remember choices affect alias learning, never durable override completeness."""
     from app.models.roster import Employee, Roster
-    from app.routes import pipeline_glue
 
     biz_id = COASTAL_BIZ_ID
     first_id = uuid.uuid4()
@@ -1540,18 +1552,7 @@ def test_resolve_persists_complete_mapping_before_identifier_only_dispatch(
     monkeypatch.setattr(
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
-    dispatched: list[tuple[uuid.UUID, uuid.UUID, dict[str, str]]] = []
-
-    def capture(rid: uuid.UUID, resolution_id: uuid.UUID) -> None:
-        dispatched.append(
-            (
-                rid,
-                resolution_id,
-                fake_repo.load_operator_resume_resolution(rid, resolution_id),
-            )
-        )
-
-    monkeypatch.setattr(pipeline_glue, "operator_resume_bg", capture)
+    fake_repo.business_employees[str(biz_id)] = roster.employees
     response = client.post(
         f"/runs/{run_id}/resolve",
         data={
@@ -1562,14 +1563,16 @@ def test_resolve_persists_complete_mapping_before_identifier_only_dispatch(
     )
 
     assert response.status_code in (200, 303)
-    assert len(dispatched) == 1
-    dispatched_run_id, resolution_id, mapping = dispatched[0]
-    assert dispatched_run_id == run_id
+    assert len(fake_repo.jobs) == 1
+    job = next(iter(fake_repo.jobs.values()))
+    resolution_id = job["operator_resolution_id"]
+    mapping = fake_repo.load_operator_resume_resolution(run_id, resolution_id)
+    assert job["run_id"] == run_id
     assert isinstance(resolution_id, uuid.UUID)
     assert mapping == {"Jimmy": str(first_id), "Maria C": str(second_id)}
-    assert fake_repo.runs[str(run_id)]["alias_candidates"] == {
-        "Jimmy": {"suggested": str(first_id), "bound": str(first_id)}
-    }
+    assert fake_repo.runs[str(run_id)]["alias_candidates"] == {}
+    meta = fake_repo.operator_resume_resolution_meta[(str(resolution_id), str(run_id))]
+    assert meta["remember"] == {"Jimmy": True, "Maria C": False}
 
 
 def test_resolve_commits_generation_and_job_in_same_transaction(
@@ -1728,7 +1731,7 @@ def test_resolve_superseded_generation_keeps_job_and_uses_fixed_notice(
 def test_resolve_persistence_failure_schedules_nothing(monkeypatch, fake_repo) -> None:
     """A failed authoritative mapping write cannot leak a process-local resume."""
     from app.models.roster import Employee, Roster
-    from app.routes import pipeline_glue
+    from app.queue import wake
 
     employee_id = uuid.uuid4()
     roster = Roster(
@@ -1765,15 +1768,11 @@ def test_resolve_persistence_failure_schedules_nothing(monkeypatch, fake_repo) -
     )
     monkeypatch.setattr(
         repo_mod,
-        "create_operator_resume_resolution",
+        "commit_operator_resume_resolution",
         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("injected")),
     )
-    dispatched: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        pipeline_glue,
-        "operator_resume_bg",
-        lambda *args: dispatched.append(args),
-    )
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
 
     response = client.post(
         f"/runs/{run_id}/resolve",
@@ -1781,7 +1780,8 @@ def test_resolve_persistence_failure_schedules_nothing(monkeypatch, fake_repo) -
     )
 
     assert response.status_code == 500
-    assert dispatched == []
+    assert wakes == []
+    assert fake_repo.jobs == {}
     assert fake_repo.operator_resume_resolutions == {}
     assert fake_repo.runs[str(run_id)]["alias_candidates"] == {}
 
@@ -1838,6 +1838,7 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
 
+    fake_repo.business_employees[str(biz_id)] = roster.employees
     resume_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     monkeypatch.setattr(
         "app.pipeline.orchestrator.resume_pipeline",
@@ -1859,31 +1860,18 @@ def test_resolve_applies_override_and_claims_on_valid_post(monkeypatch, fake_rep
         "resume_pipeline (mocked here) is the SOLE claimer, and two CAS claimers "
         f"strand the run; got status={fake_repo.runs[str(run_id)]['status']!r}"
     )
-    # resume_pipeline (via _operator_resume) must still have been scheduled
-    # and invoked with the correct run_id and the validated override mapping.
-    assert len(resume_calls) == 1, (
-        f"expected exactly one resume_pipeline call, got {resume_calls!r}"
-    )
-    call_args, call_kwargs = resume_calls[0]
-    assert call_args[0] == run_id, (
-        f"resume_pipeline must be invoked with this run's id; got {call_args!r}"
-    )
-    assert call_kwargs.get("from_status") == RunStatus.NEEDS_OPERATOR, (
-        f"resume_pipeline must be invoked with from_status=NEEDS_OPERATOR; "
-        f"got {call_kwargs!r}"
-    )
-    assert call_kwargs.get("overrides") == {"Jimmy": str(real_emp_id)}, (
-        f"resume_pipeline must receive the validated override mapping; "
-        f"got {call_kwargs!r}"
-    )
-    # The remember-checkbox (checked) must have pre-set the bound candidate so the
-    # existing approval-gate write path persists it — the alias is still only written
-    # behind the single human gate, never here.
+    assert resume_calls == []
+    assert len(fake_repo.jobs) == 1
+    job = next(iter(fake_repo.jobs.values()))
+    assert job["kind"] == JobKind.OPERATOR_RESUME.value
+    assert job["run_id"] == run_id
+    resolution_id = job["operator_resolution_id"]
+    assert fake_repo.load_operator_resume_resolution(run_id, resolution_id) == {
+        "Jimmy": str(real_emp_id)
+    }
+    # Remember intent is immutable generation data; the route must not project it.
     candidates = fake_repo.runs[str(run_id)].get("alias_candidates") or {}
-    assert candidates.get("Jimmy") == {
-        "suggested": str(real_emp_id),
-        "bound": str(real_emp_id),
-    }, f"remember-checked token must be pre-bound; got {candidates!r}"
+    assert candidates == {}
 
 
 def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
@@ -1927,6 +1915,7 @@ def test_resolve_checkbox_off_does_not_bind(monkeypatch, fake_repo):
     monkeypatch.setattr(
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
+    fake_repo.business_employees[str(biz_id)] = roster.employees
     monkeypatch.setattr(
         "app.pipeline.orchestrator.resume_pipeline", lambda *a, **kw: None, raising=False
     )
@@ -2061,6 +2050,14 @@ def test_resolve_drives_real_resume_pipeline_to_awaiting_approval(fake_repo, moc
         data={"employee_id_0": str(james_id), "remember_0": "on"},
     )
     assert response.status_code in (200, 303)
+
+    # The browser request only commits durable work. Drain the exact queued generation
+    # to prove the worker-owned authority/claim path reaches the money-moving result.
+    from app.queue.handlers.operator_resume import handle_operator_resume
+
+    claimed = fake_repo.claim_job()
+    assert claimed is not None and claimed.kind is JobKind.OPERATOR_RESUME
+    handle_operator_resume(claimed)
 
     final_run = fake_repo.load_run(run_id)
     assert final_run["status"] != "extracting", (

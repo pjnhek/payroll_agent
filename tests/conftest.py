@@ -334,6 +334,9 @@ class InMemoryRepo:
         self.operator_resume_resolutions: dict[
             tuple[str, str], dict[str, str]
         ] = {}
+        self.operator_resume_resolution_meta: dict[
+            tuple[str, str], dict[str, Any]
+        ] = {}
         self.context_calls: list[tuple[Any, ...]] = []
         # Seed businesses for sender matching.
         from app.db.seed import seed
@@ -1445,6 +1448,149 @@ class InMemoryRepo:
         if existing is not None and existing != normalized:
             raise ValueError("conflicting operator resolution mapping")
         self.operator_resume_resolutions[key] = dict(normalized)
+        if key not in self.operator_resume_resolution_meta:
+            winner = next(
+                (
+                    stored_key[0]
+                    for stored_key, meta in self.operator_resume_resolution_meta.items()
+                    if stored_key[1] == run_id_text and meta["authoritative"]
+                ),
+                resolution_id_text,
+            )
+            self.operator_resume_resolution_meta[key] = {
+                "authoritative": winner == resolution_id_text,
+                "winner_id": winner,
+                "remember": {name: False for name in normalized},
+            }
+
+    def commit_operator_resume_resolution(
+        self,
+        run_id,
+        operator_resolution_id,
+        overrides,
+        remember,
+        conn=None,
+    ):
+        """Commit and classify one fake generation under first-commit authority."""
+        from app.db.repo.operator_resume_resolutions import (
+            OperatorResolutionSubmission,
+            _normalize_overrides,
+            _normalize_remember,
+            _uuid_text,
+        )
+        from app.models.contracts import Decision
+        from app.models.status import RunStatus
+
+        run_id_text = _uuid_text(run_id, "run_id")
+        resolution_id_text = _uuid_text(
+            operator_resolution_id, "operator_resolution_id"
+        )
+        normalized = _normalize_overrides(overrides)
+        normalized_remember = _normalize_remember(remember, set(normalized))
+        run = self.runs.get(run_id_text)
+        if run is None or run.get("status") != RunStatus.NEEDS_OPERATOR.value:
+            raise ValueError("operator resolution run is not awaiting an operator")
+        decision = Decision.model_validate(run.get("decision"))
+        if set(normalized) != set(decision.unresolved_names):
+            raise ValueError("operator resume resolution is not a complete mapping")
+        roster_ids = {
+            str(employee.id)
+            for employee in self.business_employees.get(str(run["business_id"]), [])
+        }
+        if any(employee_id not in roster_ids for employee_id in normalized.values()):
+            raise ValueError("operator resume resolution crosses the run business roster")
+
+        key = (resolution_id_text, run_id_text)
+        existing = self.operator_resume_resolutions.get(key)
+        if existing is not None:
+            meta = self.operator_resume_resolution_meta[key]
+            if existing != normalized or meta["remember"] != normalized_remember:
+                raise ValueError("conflicting operator resolution identifier")
+            return OperatorResolutionSubmission(
+                uuid.UUID(resolution_id_text),
+                meta["authoritative"],
+                uuid.UUID(meta["winner_id"]),
+            )
+
+        winner = next(
+            (
+                stored_key[0]
+                for stored_key, meta in self.operator_resume_resolution_meta.items()
+                if stored_key[1] == run_id_text and meta["authoritative"]
+            ),
+            resolution_id_text,
+        )
+        authoritative = winner == resolution_id_text
+        self.operator_resume_resolutions[key] = dict(normalized)
+        self.operator_resume_resolution_meta[key] = {
+            "authoritative": authoritative,
+            "winner_id": winner,
+            "remember": dict(normalized_remember),
+        }
+        self.context_calls.append(
+            (
+                "commit_operator_resume_resolution",
+                run_id_text,
+                resolution_id_text,
+                authoritative,
+            )
+        )
+        return OperatorResolutionSubmission(
+            uuid.UUID(resolution_id_text), authoritative, uuid.UUID(winner)
+        )
+
+    def prepare_authoritative_operator_resume(
+        self, run_id, operator_resolution_id, conn=None
+    ):
+        """Validate one fake generation and project remember intent only for winner."""
+        from app.db.repo.operator_resume_resolutions import (
+            OperatorResolutionSubmission,
+            _uuid_text,
+        )
+        from app.models.contracts import Decision
+
+        run_id_text = _uuid_text(run_id, "run_id")
+        resolution_id_text = _uuid_text(
+            operator_resolution_id, "operator_resolution_id"
+        )
+        key = (resolution_id_text, run_id_text)
+        mapping = self.operator_resume_resolutions.get(key)
+        meta = self.operator_resume_resolution_meta.get(key)
+        run = self.runs.get(run_id_text)
+        if mapping is None or meta is None or run is None:
+            raise ValueError("operator resume resolution is missing")
+        decision = Decision.model_validate(run.get("decision"))
+        if set(mapping) != set(decision.unresolved_names):
+            raise ValueError("operator resume resolution is not a complete mapping")
+        roster_ids = {
+            str(employee.id)
+            for employee in self.business_employees.get(str(run["business_id"]), [])
+        }
+        if any(employee_id not in roster_ids for employee_id in mapping.values()):
+            raise ValueError("operator resume resolution crosses the run business roster")
+        if meta["authoritative"]:
+            candidates = dict(run.get("alias_candidates") or {})
+            for name, remember_choice in meta["remember"].items():
+                if remember_choice:
+                    employee_id = mapping[name]
+                    candidates[name] = {
+                        "suggested": employee_id,
+                        "bound": employee_id,
+                    }
+            run["alias_candidates"] = candidates
+        self.context_calls.append(
+            (
+                "prepare_authoritative_operator_resume",
+                run_id_text,
+                resolution_id_text,
+                meta["authoritative"],
+            )
+        )
+        return OperatorResolutionSubmission(
+            uuid.UUID(resolution_id_text),
+            meta["authoritative"],
+            uuid.UUID(meta["winner_id"]),
+        )
 
     def load_operator_resume_resolution(
         self,
@@ -1610,6 +1756,8 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "get_inbound_email_by_id",
         "create_operator_resume_resolution",
         "load_operator_resume_resolution",
+        "commit_operator_resume_resolution",
+        "prepare_authoritative_operator_resume",
         "clear_reply_context",
         # automatic-reclaim rewind (never bumps reply_epoch) + the durable
         # job queue's claim/lease/fencing surface. A method defined on

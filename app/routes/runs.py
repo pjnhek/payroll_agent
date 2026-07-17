@@ -286,7 +286,7 @@ def reject(run_id: uuid.UUID) -> RedirectResponse:
 
 @router.post("/runs/{run_id}/resolve")
 async def resolve(
-    run_id: uuid.UUID, request: Request, background_tasks: BackgroundTasks
+    run_id: uuid.UUID, request: Request
 ) -> RedirectResponse:
     """Operator resolve+resume for a needs_operator run.
 
@@ -304,21 +304,13 @@ async def resolve(
     page again. Applying a POST partially would silently route some hours to the wrong
     employee — a tampered request must be a clean no-op, not a partial misroute.
 
-    On a valid POST: persist a fresh immutable operator-resolution generation containing
-    the complete validated mapping. In that same transaction, each remember-checked
-    token gets a bound alias candidate for the existing approval-gate learning path.
-    Checkbox OFF means override-only — nothing is learned, but the token remains in the
-    complete durable mapping.
-
-    This route does NOT claim NEEDS_OPERATOR -> EXTRACTING itself. After the transaction
-    commits, it schedules operator-resume with run_id plus operator_resolution_id only,
-    and resume_pipeline's own
-    claim_status(NEEDS_OPERATOR -> EXTRACTING) CAS is the SOLE claim in the path —
-    mirroring the webhook's reply-resume path, which likewise never pre-claims. A
-    route-level pre-claim races resume_pipeline's own claim and always loses, which
-    strands the run in EXTRACTING forever; a concurrent double-submit or stale reload is
-    instead absorbed by resume_pipeline's existing "duplicate resolve dropped" no-op (a
-    failed claim there simply returns early).
+    On a valid POST: commit a fresh immutable generation plus its identifier-only
+    OPERATOR_RESUME job in one transaction. The repository lock, not worker order,
+    selects the first committed generation as authority. Every later committed
+    generation remains auditable and gets its own job, but redirects with only the
+    fixed ``resolution_superseded`` flag. Alias candidates are deliberately not
+    projected here; winner preparation in the durable handler is the only projection
+    boundary.
 
     Always 303 — scheduling only, no LLM/provider call in this request's synchronous path.
     """
@@ -355,7 +347,7 @@ async def resolve(
     # invalid/unknown/cross-business id: a partially-applied mapping would pay some
     # employees against another business's roster.
     overrides: dict[str, str] = {}
-    remember_tokens: set[str] = set()
+    remember: dict[str, bool] = {}
     for i, token in enumerate(unresolved_names):
         posted_id = form.get(f"employee_id_{i}")
         if posted_id is None or str(posted_id) not in roster_ids:
@@ -367,55 +359,37 @@ async def resolve(
             )
             return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
         overrides[token] = str(posted_id)
-        if form.get(f"remember_{i}") is not None:
-            remember_tokens.add(token)
+        remember[token] = form.get(f"remember_{i}") is not None
 
     operator_resolution_id = uuid.uuid4()
-    with repo.get_connection() as conn, conn.transaction():
-        # Re-check the authoritative generation inside the caller-owned transaction.
-        # A stale tab that raced another operator action must create neither a mapping,
-        # alias-learning state, nor process-local work.
-        conn.execute(
-            "SELECT id FROM payroll_runs WHERE id = %s FOR UPDATE",
-            (str(run_id),),
-        )
-        current = repo.load_run(run_id, conn=conn)
-        current_decision = (current or {}).get("decision") or {}
-        if (
-            current is None
-            or current.get("status") != RunStatus.NEEDS_OPERATOR.value
-            or str(current.get("business_id")) != str(run.get("business_id"))
-            or current_decision.get("unresolved_names") != unresolved_names
-        ):
-            return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            submission = repo.commit_operator_resume_resolution(
+                run_id,
+                operator_resolution_id,
+                overrides,
+                remember,
+                conn=conn,
+            )
+            repo.enqueue_job(
+                kind=JobKind.OPERATOR_RESUME,
+                dedup_key=repo.operator_resume_dedup_key(
+                    run_id, operator_resolution_id
+                ),
+                run_id=run_id,
+                operator_resolution_id=operator_resolution_id,
+                conn=conn,
+            )
+    except ValueError:
+        # A stale or conflicting browser submission is a bounded no-op. Do not expose
+        # names, mappings, employee ids, or the competing generation in the response.
+        logger.info("resolve generation rejected by authoritative state")
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-        # The immutable mapping is the COMPLETE money-moving authority. Optional
-        # alias_candidates is partial learning intent and can never substitute for it.
-        # Both writes join this transaction so persistence is all-or-nothing.
-        repo.create_operator_resume_resolution(
-            run_id,
-            operator_resolution_id,
-            overrides,
-            conn=conn,
-        )
-        if remember_tokens:
-            existing_candidates = current.get("alias_candidates") or {}
-            updated_candidates = dict(existing_candidates)
-            for token in remember_tokens:
-                employee_id = overrides[token]
-                updated_candidates[token] = {
-                    "suggested": employee_id,
-                    "bound": employee_id,
-                }
-            repo.set_alias_candidates(run_id, updated_candidates, conn=conn)
-
-    # The authoritative generation is committed before a worker can observe its id.
-    # No route-level pre-claim: resume_pipeline remains the sole owner of the forward
-    # NEEDS_OPERATOR -> EXTRACTING transition for this first attempt.
-    background_tasks.add_task(
-        pipeline_glue.operator_resume_bg, run_id, operator_resolution_id
-    )
-    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+    # Commit is visible before the worker can observe the wake signal.
+    wake.wake()
+    suffix = "?resolution_superseded=1" if not submission.authoritative else ""
+    return RedirectResponse(url=f"/runs/{run_id}{suffix}", status_code=303)
 
 
 def _claim_stale_in_flight(run_id: uuid.UUID, conn: psycopg.Connection) -> bool:

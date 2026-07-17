@@ -66,8 +66,12 @@ from app.db.repo.jobs import (
     release_leases,
 )
 from app.db.repo.operator_resume_resolutions import (
+    OperatorResolutionSubmission,
+    commit_operator_resume_resolution,
     create_operator_resume_resolution,
     load_operator_resume_resolution,
+    operator_resume_dedup_key,
+    prepare_authoritative_operator_resume,
 )
 from app.db.repo.pipeline_state import (
     clear_reply_context,
@@ -137,6 +141,10 @@ __all__ = [
     "update_email_message_state",
     "create_operator_resume_resolution",
     "load_operator_resume_resolution",
+    "OperatorResolutionSubmission",
+    "commit_operator_resume_resolution",
+    "operator_resume_dedup_key",
+    "prepare_authoritative_operator_resume",
     "clear_reply_context",
     "get_clarification_round",
     "load_clarified_fields",

@@ -64,7 +64,10 @@ def test_supported_recovery_entry_points_exclude_runs_list() -> None:
     }
     assert "resume_pipeline_bg" in supported_sources["webhook_redelivery"]
     assert "row_to_inbound" in supported_sources["durable_reply_resume"]
-    assert "_validated_mapping" in supported_sources["durable_operator_resume"]
+    assert (
+        "prepare_authoritative_operator_resume"
+        in supported_sources["durable_operator_resume"]
+    )
     assert "resume_pipeline_bg" not in inspect.getsource(runs_module.runs_list)
 
 
