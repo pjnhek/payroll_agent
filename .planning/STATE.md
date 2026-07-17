@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Completed 19-09-PLAN.md
-last_updated: "2026-07-17T02:51:46.962Z"
+stopped_at: Completed 19-11-PLAN.md
+last_updated: "2026-07-17T03:39:53.717Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 09 completed
+last_activity_desc: Phase 19 Plan 11 completed
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 38
-  percent: 93
+  completed_plans: 39
+  percent: 95
 ---
 
 # Project State
@@ -31,13 +31,13 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
 Plan: 10 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 09 completed
+Last activity: 2026-07-16 — Phase 19 Plan 11 completed; Plan 10 remains the next incomplete dependency-ordered plan
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 101
+- Total plans completed: 102
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -119,6 +119,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 09 completed
 | Phase 19 P08 | 23min | 2 tasks | 9 files |
 | Phase 19 P06 | 8min | 2 tasks | 4 files |
 | Phase 19 P09 | 19min | 2 tasks | 9 files |
+| Phase 19 P11 | 21min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -237,6 +238,9 @@ Recent decisions affecting current work:
 - [Phase 19]: The webhook validates only transport identity and commits event plus ingest job off-loop before wake and response. — Provider fetch and payroll classification belong to durable workers, and synchronous psycopg must not block the event loop.
 - [Phase 19]: Open-job presentation is fixed to Running, Queued, or Retry queued and remains separate from payroll status.
 - [Phase 19]: Queue polling is read-only at 2000 ms for at most 60 attempts; timeout stops silently without recovery.
+- [Phase 19]: Test transport receipt and business execution as two explicit phases so request tests cannot authorize inline provider or payroll work.
+- [Phase 19]: Preserve terminal error-state assertions by settling explicit PipelineResult values in tests instead of recreating retired background wrappers.
+- [Phase 19]: Keep the RFC Message-ID race behind its real-Postgres guard because commit serialization is the proof boundary.
 
 ### Pending Todos
 
@@ -302,8 +306,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T02:51:46.948Z
-Stopped at: Completed 19-09-PLAN.md
+Last session: 2026-07-17T03:39:53.708Z
+Stopped at: Completed 19-11-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
