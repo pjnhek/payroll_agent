@@ -44,6 +44,7 @@ def _settings_cache_clean(monkeypatch: pytest.MonkeyPatch):
     """
     get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", "postgresql://pump-route-test/stub")
+    monkeypatch.setattr(repo, "purge_terminal_inbound_events", lambda: 0)
     yield
     get_settings.cache_clear()
 

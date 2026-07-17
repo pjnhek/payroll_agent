@@ -46,6 +46,7 @@ from app.db.repo.emails import (
 from app.db.repo.inbound_events import (
     insert_or_get_inbound_event,
     load_inbound_event,
+    purge_terminal_inbound_events,
 )
 from app.db.repo.job_settlement import (
     SettlementOutcome,
@@ -178,6 +179,7 @@ __all__ = [
     "reap_expired_final_attempt",
     "insert_or_get_inbound_event",
     "load_inbound_event",
+    "purge_terminal_inbound_events",
     "load_roster_for_business",
     "_ACCENT_CLASS_MAP",
     "_TERMINAL_STATUSES",

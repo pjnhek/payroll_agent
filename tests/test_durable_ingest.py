@@ -135,6 +135,24 @@ def test_purge_retention_is_terminal_only_age_bounded_and_batch_bounded(
     assert fake_conn.last()[1] == {"older_than_days": 30, "batch_size": 2}
 
 
+@pytest.mark.parametrize(
+    ("older_than_days", "batch_size"),
+    [(29, 100), (30, 0), (30, 101), (True, 100), (30, True)],
+)
+def test_purge_retention_rejects_unsafe_age_or_batch_bounds(
+    fake_conn,
+    older_than_days: int,
+    batch_size: int,
+) -> None:
+    with pytest.raises(ValueError):
+        repo.purge_terminal_inbound_events(
+            older_than_days=older_than_days,
+            batch_size=batch_size,
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
 def test_delayed_processing_fetches_only_from_persisted_event(
     fake_repo, monkeypatch: pytest.MonkeyPatch
 ) -> None:

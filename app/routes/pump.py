@@ -102,6 +102,7 @@ def pump(request: Request) -> JSONResponse:
             else:
                 claimed += 1
                 counts[outcome.value] += 1
+        repo.purge_terminal_inbound_events()
         queue_depth = repo.count_open_jobs()
     except Exception as exc:  # noqa: BLE001 — honest catch-all, see comment below.
         # This includes a genuine infra outage on claim/count AND a
