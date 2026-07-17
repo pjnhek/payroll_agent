@@ -16,7 +16,10 @@ import pathlib
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db import repo
 from app.email.clean import clean_body
+from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 _FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "clean_happy_path.json"
 
@@ -102,14 +105,43 @@ def _script_clean_run(mock_llm) -> None:
     mock_llm.script = [extraction]
 
 
-def test_body_cleaned(client, fake_repo, mock_llm):
+def _install_durable_event_store(monkeypatch):
+    """Back the receipt and delayed-ingest seams with one in-memory event store."""
+    events = {}
+
+    def _insert_or_get_event(*, external_event_id, payload, conn=None):
+        for event in events.values():
+            if event["external_event_id"] == external_event_id:
+                return event["id"], False
+        event_id = _uuid_module.uuid4()
+        events[event_id] = {
+            "id": event_id,
+            "external_event_id": external_event_id,
+            "payload": payload,
+        }
+        return event_id, True
+
+    def _load_event(event_id, conn=None):
+        event = events.get(event_id)
+        return None if event is None else {"id": event["id"], "payload": event["payload"]}
+
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get_event)
+    monkeypatch.setattr(repo, "load_inbound_event", _load_event)
+    return events
+
+
+def test_body_cleaned(client, fake_repo, monkeypatch):
     """The fixture carries a quoted reply block and a signature; only the cleaned text
     is persisted to email_messages.body_text."""
-    _script_clean_run(mock_llm)
+    events = _install_durable_event_store(monkeypatch)
     payload = json.loads(_FIXTURE.read_text())
 
     r = client.post("/webhook/inbound", json=payload)
     assert r.status_code == 200
+    event_id = _uuid_module.UUID(r.json()["event_id"])
+    assert events[event_id]["payload"] == payload
+    assert fake_repo.emails == {}, "the request boundary must stop at durable receipt"
+    assert drain.drain_once() is DrainOutcome.DONE
 
     # Exactly one inbound email stored; its body_text is the cleaned body.
     assert len(fake_repo.emails) == 1
@@ -138,7 +170,7 @@ _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
 
 
-def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
+def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch, fake_repo):
     """A duplicate delivery must NOT start a second pipeline run.
 
     Email providers retry webhook deliveries. Without the dedup gate, one client email
@@ -155,7 +187,6 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     from fastapi.testclient import TestClient
 
     from app.config import get_settings
-    from app.db import repo as _repo
     from app.main import app
 
     # Enable unsigned fixture POSTs in dev mode so canonical dict payloads reach the
@@ -164,72 +195,18 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
 
-    # Patch repo.insert_inbound_email: first call inserts, second is duplicate.
-    call_count = {"n": 0}
+    events = _install_durable_event_store(monkeypatch)
 
-    def _mock_insert(**kw):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return (_uuid_module.UUID("aaaaaaaa-0000-0000-0000-000000000001"), True)
-        return (None, False)  # duplicate
+    def _forbidden(*args, **kwargs):
+        pytest.fail("webhook request executed payroll inline")
 
-    monkeypatch.setattr(_repo, "insert_inbound_email", _mock_insert)
+    import app.routes.pipeline_glue as pipeline_glue
+    from app.queue.handlers import pipeline, resume_reply
 
-    # Patch create_run so we don't need business_id logic.
-    monkeypatch.setattr(
-        _repo,
-        "create_run",
-        lambda **kw: _uuid_module.UUID("bbbbbbbb-0000-0000-0000-000000000001"),
-    )
-    monkeypatch.setattr(
-        _repo,
-        "find_business_by_sender",
-        lambda from_addr, conn=None: _uuid_module.UUID("cccccccc-0000-0000-0000-000000000001"),
-    )
-
-    # Spy on run_pipeline_bg by patching it at app.routes.pipeline_glue (the
-    # promoted-public bg task function).
-    import app.routes.pipeline_glue as _main
-    pipeline_runs: list[_uuid_module.UUID] = []
-    monkeypatch.setattr(
-        _main,
-        "run_pipeline_bg",
-        lambda run_id, conn=None: pipeline_runs.append(run_id),
-    )
-    # Also patch find_awaiting_reply_for_header so the reply-routing path doesn't interfere.
-    monkeypatch.setattr(
-        _repo,
-        "find_awaiting_reply_for_header",
-        lambda *, in_reply_to, references_header, conn=None: None,
-    )
-    monkeypatch.setattr(
-        _repo,
-        "find_any_run_for_header",
-        lambda *, in_reply_to, references_header, conn=None: None,
-    )
-    # 09-03 (DATA-02): the dedup-loser branch now calls find_run_by_message_id to
-    # report the existing run's id instead of creating a second one.
-    monkeypatch.setattr(
-        _repo,
-        "find_run_by_message_id",
-        lambda message_id, conn=None: _uuid_module.UUID(
-            "bbbbbbbb-0000-0000-0000-000000000001"
-        ),
-    )
-
-    # 09-03 (DATA-02): inbound() now wraps its ingest sequence in one
-    # `with repo.get_connection() as conn: with conn.transaction(): ...` block.
-    # This test monkeypatches individual _repo functions (not the fake_repo
-    # fixture), so get_connection must be patched to a FakeConnection double too.
-    import contextlib as _contextlib
-
-    from tests.conftest import FakeConnection
-
-    @_contextlib.contextmanager
-    def _fake_get_connection():
-        yield FakeConnection()
-
-    monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _forbidden)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", _forbidden)
 
     test_client = TestClient(app, raise_server_exceptions=False)
 
@@ -240,7 +217,7 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
         "in_reply_to": None,
         "references_header": None,
         "subject": "Payroll hours",
-        "from_addr": "hr@acme.test",
+        "from_addr": "payroll@coastalcleaning.example",
         "to_addr": "agent@payroll-agent.local",
         "body_text": "Maria 40 regular hours.",
         "created_at": "2026-06-15T10:00:00Z",
@@ -253,11 +230,23 @@ def test_duplicate_delivery_pipeline_runs_once_unit(monkeypatch):
     assert r1.status_code == 200, f"First POST must return 200; got {r1.status_code}"
     assert r2.status_code == 200, f"Duplicate POST must return 200; got {r2.status_code}"
 
-    # run_pipeline must be queued at most once (the duplicate short-circuits before queuing).
-    assert len(pipeline_runs) <= 1, (
-        f"run_pipeline must be queued at most ONCE for duplicate deliveries; "
-        f"got {len(pipeline_runs)} calls"
-    )
+    assert r1.json()["event_id"] == r2.json()["event_id"]
+    assert r1.json()["status"] == "accepted"
+    assert r2.json()["status"] == "duplicate"
+    assert len(events) == 1
+    ingest_jobs = [j for j in fake_repo.jobs.values() if j["kind"] == "ingest"]
+    assert len(ingest_jobs) == 1
+    assert ingest_jobs[0]["dedup_key"] == f"ingest:{r1.json()['event_id']}"
+    assert fake_repo.runs == {}, "neither receipt request may execute payroll inline"
+
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert len(fake_repo.runs) == 1
+    run_id = _uuid_module.UUID(next(iter(fake_repo.runs)))
+    pipeline_jobs = [j for j in fake_repo.jobs.values() if j["kind"] == "run_pipeline"]
+    assert len(pipeline_jobs) == 1
+    assert pipeline_jobs[0]["run_id"] == run_id
+    assert pipeline_jobs[0]["email_id"] is None
+    assert pipeline_jobs[0]["dedup_key"] == f"run_pipeline:{run_id}:0"
 
     # Clean up the settings cache after env monkeypatching.
     get_settings.cache_clear()

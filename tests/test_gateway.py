@@ -58,6 +58,31 @@ def _decision(action="process") -> Decision:
     )
 
 
+def _install_gateway_event_store(monkeypatch):
+    """Persist receipt payloads for delayed-ingest route tests without a live DB."""
+    events = {}
+
+    def _insert_or_get(*, external_event_id, payload, conn=None):
+        for event in events.values():
+            if event["external_event_id"] == external_event_id:
+                return event["id"], False
+        event_id = uuid.uuid4()
+        events[event_id] = {
+            "id": event_id,
+            "external_event_id": external_event_id,
+            "payload": payload,
+        }
+        return event_id, True
+
+    def _load(event_id, conn=None):
+        event = events.get(event_id)
+        return None if event is None else {"id": event["id"], "payload": event["payload"]}
+
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get)
+    monkeypatch.setattr(repo, "load_inbound_event", _load)
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Gateway — synthetic Message-ID shape + outbound row anchored on email_messages
 # ---------------------------------------------------------------------------
@@ -1027,94 +1052,53 @@ def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     )
 
 
-def test_inbound_reply_routes_to_correct_run(monkeypatch):
+def test_inbound_reply_routes_to_correct_run(monkeypatch, fake_repo):
     """POST /webhook/inbound with in_reply_to matching an awaiting_reply run must resume it.
 
-    When an inbound email's In-Reply-To matches an outbound clarification Message-ID for
-    an awaiting_reply run, the route must queue resume_pipeline (via
-    BackgroundTasks.add_task), NOT run_pipeline. Starting a fresh run instead of resuming
-    would strand the original run at awaiting_reply forever and drop the answer the
-    client just gave.
+    The request commits only one INGEST job. Delayed classification must then enqueue
+    one identifier-only RESUME_REPLY job, never RUN_PIPELINE or inline orchestration.
     """
     from fastapi.testclient import TestClient
 
-    from app.db import repo as _repo
+    import app.routes.pipeline_glue as pipeline_glue
     from app.main import app
+    from app.models.job import JobKind
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
+    from app.queue.handlers import pipeline, resume_reply
 
-    run_id = uuid.uuid4()
-    # Use a fixed business_id so the sender-spoof guard passes: the route only accepts a
-    # reply whose sender resolves to the SAME business as the run it claims to answer.
-    sender_business_id = uuid.uuid4()
+    sender_business_id = fake_repo.contact_to_business["hr@metrodeli.example"]
+    source_email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<source-{uuid.uuid4()}@client.test>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Payroll hours",
+        from_addr="hr@metrodeli.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="David Reyes 40 regular hours.",
+    )
+    assert inserted and source_email_id is not None
+    run_id = fake_repo.create_run(
+        business_id=sender_business_id, source_email_id=source_email_id
+    )
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
     clarification_mid = "<clar-abc@payroll-agent.local>"
+    events = _install_gateway_event_store(monkeypatch)
 
-    # Monkeypatch: find_awaiting_reply_for_header returns run_A
     monkeypatch.setattr(
-        _repo,
+        repo,
         "find_awaiting_reply_for_header",
         lambda *, in_reply_to, references_header, conn=None: run_id,
     )
-    # Monkeypatch: find_business_by_sender returns the SAME business_id as the run, which
-    # is what the spoof guard requires — a reply from another business must not resume it.
-    monkeypatch.setattr(
-        _repo,
-        "find_business_by_sender",
-        lambda from_addr, conn=None: sender_business_id,
-    )
-    # Monkeypatch: load_run returns an awaiting_reply run for the spoof guard to compare
-    awaiting_run = {
-        "id": run_id,
-        "business_id": sender_business_id,  # must match find_business_by_sender return
-        "source_email_id": uuid.uuid4(),
-        "status": "awaiting_reply",
-        "extracted_data": None,
-        "decision": None,
-        "reconciliation": None,
-        "error_reason": None,
-        "pay_period_start": None,
-        "pay_period_end": None,
-    }
-    monkeypatch.setattr(
-        _repo,
-        "load_run",
-        lambda rid, conn=None: awaiting_run,
-    )
 
-    # We cannot easily spy on BackgroundTasks.add_task in TestClient mode,
-    # so we monkeypatch the internal pipeline functions and assert which was called.
-    import app.routes.pipeline_glue as _main
-    resume_called: list[uuid.UUID] = []
-    monkeypatch.setattr(
-        _main,
-        "resume_pipeline_bg",
-        lambda run_id, reply_email_id, conn=None: resume_called.append(run_id),
-    )
-    run_pipeline_called: list[uuid.UUID] = []
-    monkeypatch.setattr(
-        _main,
-        "run_pipeline_bg",
-        lambda run_id, conn=None: run_pipeline_called.append(run_id),
-    )
-    # Also patch insert_inbound_email to succeed
-    monkeypatch.setattr(
-        _repo,
-        "insert_inbound_email",
-        lambda **kw: (uuid.uuid4(), True),
-    )
+    def _forbidden(*args, **kwargs):
+        pytest.fail("webhook request executed or converted payroll work inline")
 
-    # inbound() wraps dedup + reply-classification + routing in one
-    # `with repo.get_connection() as conn: with conn.transaction(): ...` block. This test
-    # monkeypatches individual _repo functions (not the fake_repo fixture), so
-    # get_connection must be patched to a FakeConnection double too — otherwise the route
-    # attempts a real pool connection against the bogus DATABASE_URL set below.
-    import contextlib as _contextlib
-
-    from tests.conftest import FakeConnection
-
-    @_contextlib.contextmanager
-    def _fake_get_connection():
-        yield FakeConnection()
-
-    monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline_glue, "row_to_inbound", _forbidden)
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _forbidden)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", _forbidden)
 
     # The route requires ALLOW_UNSIGNED_FIXTURES=true for canonical dict POSTs that carry
     # no svix-* signature headers; without it this POST would (correctly) be rejected 400.
@@ -1131,22 +1115,35 @@ def test_inbound_reply_routes_to_correct_run(monkeypatch):
         "in_reply_to": clarification_mid,
         "references_header": clarification_mid,
         "subject": "Re: Payroll clarification",
-        "from_addr": "hr@acme.test",
+        "from_addr": "hr@metrodeli.example",
         "to_addr": "agent@payroll-agent.local",
         "body_text": "Sorry, I meant James Okafor.",
         "created_at": "2026-06-15T10:00:00Z",
     }
     response = client.post("/webhook/inbound", json=raw_reply)
     assert response.status_code == 200
+    event_id = uuid.UUID(response.json()["event_id"])
+    assert events[event_id]["payload"] == raw_reply
+    ingest_jobs = [j for j in fake_repo.jobs.values() if j["kind"] == JobKind.INGEST.value]
+    assert len(ingest_jobs) == 1
+    assert not [j for j in fake_repo.jobs.values() if j["kind"] != JobKind.INGEST.value]
 
-    # The reply must route to resume_pipeline, NOT run_pipeline.
-    assert len(resume_called) > 0, (
-        "POST /webhook/inbound with in_reply_to matching an awaiting_reply run must call "
-        "resume_pipeline, not run_pipeline — otherwise the original run never resumes"
-    )
-    assert len(run_pipeline_called) == 0, (
-        "run_pipeline must NOT be called for a reply to an awaiting_reply run"
-    )
+    assert drain.drain_once() is DrainOutcome.DONE
+    reply_rows = [
+        row for row in fake_repo.emails.values() if row["message_id"] == raw_reply["message_id"]
+    ]
+    assert len(reply_rows) == 1
+    reply_id = reply_rows[0]["id"]
+    resume_jobs = [
+        j for j in fake_repo.jobs.values() if j["kind"] == JobKind.RESUME_REPLY.value
+    ]
+    assert len(resume_jobs) == 1
+    assert resume_jobs[0]["run_id"] == run_id
+    assert resume_jobs[0]["email_id"] == reply_id
+    assert resume_jobs[0]["operator_resolution_id"] is None
+    assert resume_jobs[0]["dedup_key"] == f"resume_reply:{run_id}:{reply_id}"
+    assert not [j for j in fake_repo.jobs.values() if j["kind"] == JobKind.RUN_PIPELINE.value]
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.AWAITING_REPLY.value
     get_settings.cache_clear()
 
 
@@ -1519,7 +1516,9 @@ def test_allow_unsigned_fixtures_canonical_shape_prod_default_returns_400(monkey
     get_settings.cache_clear()
 
 
-def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatch):
+def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(
+    monkeypatch, fake_repo
+):
     """A canonical InboundEmail dict POST returns 200 when ALLOW_UNSIGNED_FIXTURES=True.
 
     The fixture-first dev path stays open only behind an explicitly-set flag, which is
@@ -1527,56 +1526,26 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
     """
     from fastapi.testclient import TestClient
 
+    import app.routes.pipeline_glue as pipeline_glue
     from app.config import get_settings
-    from app.db import repo as _repo
     from app.main import app
+    from app.models.job import JobKind
+    from app.queue.handlers import pipeline, resume_reply
 
     get_settings.cache_clear()
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
     # Dev mode: ALLOW_UNSIGNED_FIXTURES=True so unsigned canonical POSTs succeed.
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
 
-    run_id = uuid.uuid4()
-    email_id = uuid.uuid4()
+    events = _install_gateway_event_store(monkeypatch)
 
-    # Patch repo helpers so the route completes without a live DB.
-    monkeypatch.setattr(_repo, "insert_inbound_email", lambda **kw: (email_id, True))
-    monkeypatch.setattr(
-        _repo,
-        "find_business_by_sender",
-        lambda from_addr, conn=None: uuid.uuid4(),
-    )
-    monkeypatch.setattr(
-        _repo,
-        "create_run",
-        lambda **kw: run_id,
-    )
-    monkeypatch.setattr(
-        _repo,
-        "find_awaiting_reply_for_header",
-        lambda *, in_reply_to, references_header, conn=None: None,
-    )
-    monkeypatch.setattr(
-        _repo,
-        "find_any_run_for_header",
-        lambda *, in_reply_to, references_header, conn=None: None,
-    )
-    import app.routes.pipeline_glue as _main
-    monkeypatch.setattr(_main, "run_pipeline_bg", lambda run_id, conn=None: None)
+    def _forbidden(*args, **kwargs):
+        pytest.fail("receipt-only request executed payroll inline")
 
-    # inbound() wraps its ingest sequence in one
-    # `with repo.get_connection() as conn: with conn.transaction(): ...` block. This test
-    # monkeypatches individual _repo functions (not the fake_repo fixture), so
-    # get_connection must be patched to a FakeConnection double too.
-    import contextlib as _contextlib
-
-    from tests.conftest import FakeConnection
-
-    @_contextlib.contextmanager
-    def _fake_get_connection():
-        yield FakeConnection()
-
-    monkeypatch.setattr(_repo, "get_connection", _fake_get_connection, raising=False)
+    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _forbidden)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", _forbidden)
 
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -1598,4 +1567,13 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(monkeypatc
         f"(ALLOW_UNSIGNED_FIXTURES=True); got {response.status_code}. "
         f"The fixture-first dev path must stay open when the flag is explicitly set."
     )
+    event_id = uuid.UUID(response.json()["event_id"])
+    assert events[event_id]["payload"] == canonical_payload
+    ingest_jobs = [j for j in fake_repo.jobs.values() if j["kind"] == JobKind.INGEST.value]
+    assert len(ingest_jobs) == 1
+    assert ingest_jobs[0]["event_id"] == event_id
+    assert ingest_jobs[0]["run_id"] is None
+    assert ingest_jobs[0]["email_id"] is None
+    assert fake_repo.emails == {}
+    assert fake_repo.runs == {}
     get_settings.cache_clear()

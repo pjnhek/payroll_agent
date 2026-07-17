@@ -92,26 +92,24 @@ N_INGEST = 5
 
 def _stub_pipeline_and_send(
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+) -> list[uuid.UUID]:
     """Install the wholesale no-op stubbing this proof depends on (load-bearing).
 
-    `.env` carries LIVE DeepSeek/Kimi/Resend keys. TestClient runs FastAPI
-    BackgroundTasks SYNCHRONOUSLY, and the approve route calls `_deliver`
-    synchronously inline (app/routes/runs.py's approve()) — any unstubbed path
-    here would fire a real LLM call or a real Resend send on every concurrent
-    request, flaking the proof and burning API credits. Returns
-    (pipeline_calls, deliver_calls).
+    `.env` carries LIVE DeepSeek/Kimi/Resend keys. The direct repo races never
+    execute queued work, while the approve route calls `_deliver` synchronously.
+    Fail-if-called value and handler seams keep an accidental inline pipeline
+    regression from reaching a live provider. Returns the captured delivery calls.
     """
     import app.routes.pipeline_glue as pipeline_glue_mod
+    from app.queue.handlers import pipeline, resume_reply
 
-    # Surfaces A + C: create_run does not itself schedule the pipeline (the
-    # direct repo-seam call bypasses the webhook route entirely), but the
-    # stub is kept so nothing downstream can ever fire a live call, and so
-    # the module's isolation invariant is uniform across all three surfaces.
-    pipeline_calls: list[uuid.UUID] = []
-    monkeypatch.setattr(
-        pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
-    )
+    def _forbidden(*args, **kwargs):
+        pytest.fail("concurrency proof unexpectedly executed queued payroll work")
+
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline_glue_mod, "resume_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _forbidden)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", _forbidden)
 
     # Surface B: `app/routes/runs.py`'s approve() route reaches `delivery.deliver`
     # through a top-level `from app.pipeline import delivery` module-object import, so
@@ -135,7 +133,7 @@ def _stub_pipeline_and_send(
         raising=True,
     )
 
-    return pipeline_calls, deliver_calls
+    return deliver_calls
 
 
 def _seed_live_run(*, body: str, from_addr: str = COASTAL_EMAIL) -> uuid.UUID:
@@ -175,7 +173,7 @@ def test_dedup_exactly_one_run_per_message_id(seeded_db, monkeypatch):
     """
     from app.db import repo
 
-    _pipeline_calls, _deliver_calls = _stub_pipeline_and_send(monkeypatch)
+    _deliver_calls = _stub_pipeline_and_send(monkeypatch)
 
     same_message_id = f"<race-{uuid.uuid4()}@acme.test>"
 
@@ -286,7 +284,7 @@ def test_concurrent_approvals_exactly_one_wins(seeded_db, monkeypatch):
 
     import app.main as app_main
 
-    _pipeline_calls, deliver_calls = _stub_pipeline_and_send(monkeypatch)
+    deliver_calls = _stub_pipeline_and_send(monkeypatch)
 
     client = TestClient(app_main.app)
 
@@ -336,7 +334,7 @@ def test_concurrent_distinct_runs_no_lost_update(seeded_db, monkeypatch):
     """
     from app.db import repo
 
-    _pipeline_calls, _deliver_calls = _stub_pipeline_and_send(monkeypatch)
+    _deliver_calls = _stub_pipeline_and_send(monkeypatch)
 
     message_ids = [f"<distinct-{uuid.uuid4()}@acme.test>" for _ in range(N_INGEST)]
 

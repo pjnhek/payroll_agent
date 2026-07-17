@@ -17,6 +17,8 @@ import app.main as app_main
 import app.routes.pipeline_glue as pipeline_glue
 import app.routes.runs as runs_module
 from app.db import repo
+from app.queue import drain, wake
+from app.queue.handlers import pipeline, resume_reply
 
 
 def _qualified_call(node: ast.Call) -> str | None:
@@ -83,10 +85,15 @@ def test_runs_list_returns_200_without_touching_any_mutation_or_schedule_seam(
     forbidden_glue_seams: tuple[str, ...] = (
         "reply_sender_ok",
         "row_to_inbound",
-        "resume_pipeline_bg",
+        "run_pipeline_now",
+        "resume_pipeline_now",
     )
     for name in forbidden_glue_seams:
         monkeypatch.setattr(pipeline_glue, name, _forbidden)
+    monkeypatch.setattr(wake, "wake", _forbidden)
+    monkeypatch.setattr(drain, "drain_once", _forbidden)
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _forbidden)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", _forbidden)
 
     monkeypatch.setattr(repo, "load_all_runs", lambda: [])
     response = TestClient(app_main.app).get("/runs")

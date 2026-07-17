@@ -40,9 +40,8 @@ def client(fake_repo):
 
 def _assert_run_pipeline_job_enqueued(fake_repo, run_id: uuid.UUID) -> dict[str, Any]:
     """QUEUE-02: assert retrigger enqueued a durable `jobs` row for this run BEFORE
-    any drain happens — this is new coverage for the durable-enqueue half of
-    ROADMAP criterion #2, not a workaround for the BackgroundTasks-synchronicity
-    assumption these tests used to rely on.
+    any drain happens — this is direct coverage for the durable-enqueue half of
+    ROADMAP criterion #2 and the request boundary's no-inline-execution contract.
 
     Returns the matching job row so a caller can additionally assert on its
     dedup_key (the epoch discriminator).
@@ -228,7 +227,7 @@ def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
     )
 
 
-def test_second_retrigger_enqueues_a_second_job(client, fake_repo, monkeypatch):
+def test_second_retrigger_enqueues_a_second_job(client, fake_repo):
     """QUEUE-02: the dedup_key's epoch is what lets a SECOND, later retrigger enqueue
     a SECOND job rather than being silently swallowed by ON CONFLICT DO NOTHING
     against the first retrigger's now-done job row.
@@ -237,10 +236,6 @@ def test_second_retrigger_enqueues_a_second_job(client, fake_repo, monkeypatch):
     from retrigger's dedup_key and this test must go red (see the SUMMARY for the
     captured red run).
     """
-    import app.routes.pipeline_glue as app_main
-
-    monkeypatch.setattr(app_main, "run_pipeline_bg", lambda rid: None)
-
     business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.ERROR)
