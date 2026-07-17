@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Completed 20-04-PLAN.md
-last_updated: "2026-07-17T19:28:31.197Z"
+stopped_at: Completed 20-08-PLAN.md
+last_updated: "2026-07-17T21:32:17.405Z"
 last_activity: 2026-07-17
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 53
-  completed_plans: 48
-  percent: 91
+  completed_plans: 53
+  percent: 83
 ---
 
 # Project State
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 — Exactly-Once Send
-Plan: 7/12 plans complete (20-01, 20-02, 20-03, 20-04, 20-05, 20-09, 20-11)
-Status: Executing
+Plan: 8 of 12
+Status: Ready to execute
 Last activity: 2026-07-17
 
 ## Performance Metrics
@@ -129,6 +129,7 @@ Last activity: 2026-07-17
 | Phase 20 P11 | 11min | 2 tasks | 2 files |
 | Phase 20 P05 | 6min | 2 tasks | 6 files |
 | Phase 20 P04 | 25min | 2 tasks | 8 files |
+| Phase 20 P08 | 4 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -265,6 +266,8 @@ Recent decisions affecting current work:
 - [Phase 19]: The deployment fence installs its singleton prerequisite under the legacy writer lock before accepted historical inventory. — A live database on the prior schema must be fenced before the full additive bootstrap.
 - [Phase 19]: Wrong-run and unauthorized durable replies are bounded no-ops; valid first delivery owns the AWAITING_REPLY to RECEIVED CAS. — At-least-once delivery must not leak context or redrive an already-owned transition.
 - [Phase 19]: Live operator-resolution writes reopened only for exact proven revision dad22b3 after repeated clean postflight. — The old writer remained disabled until authority, schema, health, deployment identity, and fence evidence all agreed.
+- [Phase 20]: Use dashboard navy, indigo, neutral, and semantic-danger tokens for the offline SVG while preserving scoring and --check semantics. — The chart is recruiter-facing presentation only; explicit tokens make the visual contract testable without coupling it to delivery state.
+- [Phase 20]: Render the committed SVG from aggregate scoring output only and forbid delivery, queue, gateway, snapshot, and persistence-writer imports. — D-04 and D-13 require eval artifact changes to remain incapable of replaying provider snapshots or mutating outbound audit records.
 
 ### Pending Todos
 
@@ -331,8 +334,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T19:28:31.188Z
-Stopped at: Completed 20-04-PLAN.md
+Last session: 2026-07-17T21:32:17.378Z
+Stopped at: Completed 20-08-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

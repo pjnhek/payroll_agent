@@ -41,7 +41,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 - [x] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present. (completed 2026-07-15)
 - [x] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism. (completed 2026-07-16)
 - [x] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue. (completed 2026-07-17)
-- [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch.
+- [x] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch. (completed 2026-07-17)
 - [ ] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact.
 
 ## Phase Details
@@ -256,20 +256,20 @@ parallel with it.
   3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
-**Plans**: 7/12 plans executed
+**Plans**: 12/12 plans complete
 
 - [x] 20-01-PLAN.md
 - [x] 20-02-PLAN.md
 - [x] 20-03-PLAN.md
 - [x] 20-04-PLAN.md
 - [x] 20-05-PLAN.md
-- [ ] 20-06-PLAN.md
-- [ ] 20-07-PLAN.md
-- [ ] 20-08-PLAN.md
+- [x] 20-06-PLAN.md
+- [x] 20-07-PLAN.md
+- [x] 20-08-PLAN.md
 - [x] 20-09-PLAN.md
-- [ ] 20-10-PLAN.md
+- [x] 20-10-PLAN.md
 - [x] 20-11-PLAN.md
-- [ ] 20-12-PLAN.md
+- [x] 20-12-PLAN.md
 
 ### Phase 21: Durability Proofs & Ops View
 
@@ -326,5 +326,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
-| 20. Exactly-Once Send | v4 | 7/12 | In Progress|  |
+| 20. Exactly-Once Send | v4 | 12/12 | Complete   | 2026-07-17 |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
