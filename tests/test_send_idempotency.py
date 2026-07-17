@@ -23,10 +23,12 @@ and cannot itself prove.
 NO LIVE PROVIDER CALL ANYWHERE IN THIS FILE. This repo's `.env` carries live Resend and
 LLM keys; every send in every test here is spied or stubbed.
 """
+
 from __future__ import annotations
 
 import json
 import os
+import pathlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -192,17 +194,14 @@ def test_get_unconfirmed_outbound_sql_shape(fake_conn):
     from app.db.repo import emails
 
     fake_conn.script_fetchone(None)
-    emails.get_unconfirmed_outbound(
-        uuid.uuid4(), purpose="clarification", round=0, conn=fake_conn
-    )
+    emails.get_unconfirmed_outbound(uuid.uuid4(), purpose="clarification", round=0, conn=fake_conn)
     sql_text = str(fake_conn.last()[0])
 
     assert "direction = 'outbound'" in sql_text
     assert "purpose = %s" in sql_text
     assert "round = %s" in sql_text
     assert "reply_epoch FROM payroll_runs" in sql_text, (
-        "the epoch correlated subquery must be present -- dropping it is falsifying "
-        "mutation (d)"
+        "the epoch correlated subquery must be present -- dropping it is falsifying mutation (d)"
     )
     assert "send_state IN ('reserved', 'failed')" in sql_text, (
         "the WHERE clause must match BOTH unconfirmed states -- reverting this to "
@@ -513,3 +512,120 @@ def test_a_human_epoch_bump_clears_the_guard(seeded_db: None) -> None:
 
     # Must not raise now that the epoch has moved on.
     send_guard.assert_no_unconfirmed_send(run_id, purpose="clarification", round=0)
+
+
+# ---------------------------------------------------------------------------
+# Section C — Phase 20 D-12/D-13 immutable snapshot storage
+# ---------------------------------------------------------------------------
+
+
+def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
+    """D-12/D-13 need durable bytes before a provider request, with database
+    enforcement rather than a repository convention that a future caller could skip.
+
+    This hermetic shape guard deliberately names the parent/child/attempt tables,
+    attachment ordinal uniqueness, bounded PII-safe attempt vocabulary, and every
+    deployed-schema trigger. Removing any one reopens either payload drift or direct
+    SQL mutation of immutable evidence.
+    """
+    schema = pathlib.Path("app/db/schema.sql").read_text()
+
+    for table in (
+        "outbound_email_snapshots",
+        "outbound_email_attachments",
+        "outbound_delivery_attempts",
+    ):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in schema
+
+    assert "email_id UUID NOT NULL UNIQUE REFERENCES email_messages(id)" in schema
+    assert "UNIQUE (snapshot_id, ordinal)" in schema
+    assert "content BYTEA NOT NULL" in schema
+    assert "attempt_state IN ('attempting', 'retry_scheduled', 'sent', 'needs_operator')" in schema
+    assert (
+        "failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', "
+        "'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown')" in schema
+    )
+
+    for trigger in (
+        "trg_outbound_email_snapshots_append_only",
+        "trg_outbound_email_attachments_append_only",
+        "trg_outbound_delivery_attempts_append_only",
+    ):
+        assert f"DROP TRIGGER IF EXISTS {trigger}" in schema
+        assert f"CREATE TRIGGER {trigger}" in schema
+
+
+@_SKIP_LIVE_DB
+@pytest.mark.integration
+@pytest.mark.queueproof
+def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> None:
+    """The deployed schema, not only repository code, rejects direct UPDATE/DELETE
+    of the D-12 snapshot, its byte attachments, and D-13 attempt facts.
+    """
+    import psycopg
+
+    from app.db import repo
+
+    run_id, anchor = _fresh_run()
+    message_id = f"<snapshot-{uuid.uuid4()}@payroll-agent.local>"
+    with repo.get_connection() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO email_messages (
+                run_id, direction, message_id, in_reply_to, references_header,
+                subject, from_addr, to_addr, body_text, purpose, send_state, round, epoch
+            ) VALUES (%s, 'outbound', %s, %s, %s, 'Payroll confirmation',
+                      'agent@payroll-agent.local', 'payroll@example.test', 'Frozen body',
+                      'confirmation', 'reserved', 0, 0)
+            RETURNING id
+            """,
+            (run_id, message_id, anchor, anchor),
+        )
+        email_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO outbound_email_snapshots (
+                email_id, message_id, from_addr, to_addr, reply_to, in_reply_to,
+                references_header, subject, body_text
+            ) VALUES (%s, %s, 'agent@payroll-agent.local', 'payroll@example.test',
+                      'reply@payroll-agent.local', %s, %s, 'Payroll confirmation',
+                      'Frozen body') RETURNING id
+            """,
+            (email_id, message_id, anchor, anchor),
+        )
+        snapshot_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO outbound_email_attachments (snapshot_id, ordinal, filename, content)
+            VALUES (%s, 0, 'paystub.pdf', %s)
+            """,
+            (snapshot_id, b"exact-pdf-bytes"),
+        )
+        cur.execute(
+            """
+            INSERT INTO outbound_delivery_attempts (snapshot_id, attempt_state, failure_category)
+            VALUES (%s, 'attempting', 'none') RETURNING id
+            """,
+            (snapshot_id,),
+        )
+        attempt_id = cur.fetchone()[0]
+
+    mutation_cases = (
+        ("UPDATE outbound_email_snapshots SET subject = 'changed' WHERE id = %s", snapshot_id),
+        ("DELETE FROM outbound_email_snapshots WHERE id = %s", snapshot_id),
+        (
+            "UPDATE outbound_email_attachments SET filename = 'changed.pdf' WHERE snapshot_id = %s",
+            snapshot_id,
+        ),
+        ("DELETE FROM outbound_email_attachments WHERE snapshot_id = %s", snapshot_id),
+        ("UPDATE outbound_delivery_attempts SET attempt_state = 'sent' WHERE id = %s", attempt_id),
+        ("DELETE FROM outbound_delivery_attempts WHERE id = %s", attempt_id),
+    )
+    for statement, identifier in mutation_cases:
+        with (
+            repo.get_connection() as conn,
+            pytest.raises(psycopg.errors.RaiseException),
+            conn.transaction(),
+            conn.cursor() as cur,
+        ):
+            cur.execute(statement, (identifier,))

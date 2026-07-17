@@ -438,6 +438,83 @@ $$;
 CREATE INDEX IF NOT EXISTS idx_email_messages_run_direction_state
     ON email_messages (run_id, direction, send_state);
 
+-- ── 5.1 Immutable outbound provider snapshots (D-12 / D-13) ────────────────
+-- email_messages remains the logical audit/send-slot identity and its send_state
+-- remains deliberately mutable.  These tables instead freeze the complete provider
+-- envelope and exact attachment bytes before a provider request.  A retry reads this
+-- evidence; it must never rebuild, replace, or mutate it.
+--
+-- CREATE TABLE IF NOT EXISTS is also the deployed-schema repair path here: these are
+-- new additive tables with no historical rows to reshape.  The trigger installation
+-- below is intentionally repeated on every bootstrap so a deployed database cannot
+-- retain a stale/missing append-only guard.
+CREATE TABLE IF NOT EXISTS outbound_email_snapshots (
+    id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    email_id UUID NOT NULL UNIQUE REFERENCES email_messages(id),
+    -- Stored again with the envelope so a provider call can be built from one frozen
+    -- record.  The repository writes the same value as email_messages.message_id.
+    message_id        TEXT        NOT NULL,
+    from_addr         TEXT        NOT NULL CHECK (btrim(from_addr) <> ''),
+    to_addr           TEXT        NOT NULL CHECK (btrim(to_addr) <> ''),
+    reply_to          TEXT,
+    in_reply_to       TEXT,
+    references_header TEXT,
+    subject           TEXT        NOT NULL,
+    body_text         TEXT        NOT NULL,
+    reserved_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS outbound_email_attachments (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    snapshot_id  UUID        NOT NULL REFERENCES outbound_email_snapshots(id),
+    ordinal      INT         NOT NULL CHECK (ordinal >= 0),
+    filename     TEXT        NOT NULL CHECK (btrim(filename) <> ''),
+    content BYTEA NOT NULL,
+    CONSTRAINT uq_outbound_email_attachment_ordinal UNIQUE (snapshot_id, ordinal)
+);
+
+-- Attempt history holds only fixed, PII-safe delivery facts.  Provider request or
+-- response bodies, exception messages, and attachment bytes never belong here.
+CREATE TABLE IF NOT EXISTS outbound_delivery_attempts (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    snapshot_id      UUID        NOT NULL REFERENCES outbound_email_snapshots(id),
+    attempt_state    TEXT        NOT NULL CHECK (attempt_state IN ('attempting', 'retry_scheduled', 'sent', 'needs_operator')),
+    failure_category TEXT        NOT NULL CHECK (failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', 'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown')),
+    occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Database enforcement is required because repository discipline alone cannot stop a
+-- future SQL caller from altering the bytes or delivery evidence after reservation.
+CREATE OR REPLACE FUNCTION reject_outbound_delivery_evidence_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_outbound_email_snapshots_append_only
+    ON outbound_email_snapshots;
+CREATE TRIGGER trg_outbound_email_snapshots_append_only
+BEFORE UPDATE OR DELETE ON outbound_email_snapshots
+FOR EACH ROW
+EXECUTE FUNCTION reject_outbound_delivery_evidence_mutation();
+
+DROP TRIGGER IF EXISTS trg_outbound_email_attachments_append_only
+    ON outbound_email_attachments;
+CREATE TRIGGER trg_outbound_email_attachments_append_only
+BEFORE UPDATE OR DELETE ON outbound_email_attachments
+FOR EACH ROW
+EXECUTE FUNCTION reject_outbound_delivery_evidence_mutation();
+
+DROP TRIGGER IF EXISTS trg_outbound_delivery_attempts_append_only
+    ON outbound_delivery_attempts;
+CREATE TRIGGER trg_outbound_delivery_attempts_append_only
+BEFORE UPDATE OR DELETE ON outbound_delivery_attempts
+FOR EACH ROW
+EXECUTE FUNCTION reject_outbound_delivery_evidence_mutation();
+
 -- ── 6. eval_results ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS eval_results (
     id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
