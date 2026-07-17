@@ -898,7 +898,7 @@ def test_resume_reply_association_returns_bounded_noop_for_real_wrong_run(
     result = resume_reply.handle_resume_reply(job)
 
     assert result.outcome is PipelineOutcome.OK
-    assert result.diagnostic_code is None
+    assert result.diagnostic_code == "unknown:unclassified"
     job_run = repo.load_run(job_run_id)
     reply_run = repo.load_run(reply_run_id)
     assert job_run is not None and job_run["status"] == RunStatus.RECEIVED.value

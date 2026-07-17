@@ -177,9 +177,9 @@ def _fence_writes(conn: Any) -> bool:
         conn.execute(
             "LOCK TABLE operator_resume_resolutions IN ACCESS EXCLUSIVE MODE"
         )
-        # Phase 18 does not have the Phase 19 fence table yet. Install only this
-        # cutover prerequisite while the legacy writer table is exclusively locked;
-        # the full additive schema still belongs to the later bootstrap gate.
+        # The currently deployed schema may not have the fence table yet. Install
+        # only this cutover prerequisite while the legacy writer table is exclusively
+        # locked; the full additive schema still belongs to the later bootstrap gate.
         conn.execute(_FENCE_TABLE_SQL)
         conn.execute(_FENCE_FUNCTION_SQL)
         conn.execute(_INSTALL_TRIGGER_SQL)
