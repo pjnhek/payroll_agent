@@ -333,6 +333,10 @@ class InMemoryRepo:
         # retry returns a defensive copy of this stored record and never applies
         # replacement caller content.
         self.outbound_snapshots: dict[str, dict[str, Any]] = {}
+        # Append-only, PII-safe facts for each provider-facing delivery attempt.
+        # Review projections derive their count from this ledger, matching the
+        # production outbound_delivery_attempts table rather than a mutable counter.
+        self.delivery_attempts: list[dict[str, Any]] = []
         # Durable job queue mirror: job_id -> job row, plus a dedup_key index
         # standing in for the real table's UNIQUE(dedup_key) constraint.
         self.jobs: dict[str, dict[str, Any]] = {}
@@ -447,6 +451,7 @@ class InMemoryRepo:
             # Every run starts at round 0, matching the real column's NOT NULL
             # DEFAULT 0.
             "clarification_round": 0,
+            "reply_epoch": 0,
         }
         return rid
 
@@ -966,6 +971,69 @@ class InMemoryRepo:
                 return AdvanceSendJobOutcome.ADVANCED
         return AdvanceSendJobOutcome.MISSING
 
+    def advance_existing_clarification_delivery_review_job_due_now(
+        self, run_id, email_id, *, conn=None
+    ):
+        """Advance only the existing, reviewed clarification send job."""
+        from app.db.repo.jobs import AdvanceSendJobOutcome
+        from app.models.job import JobKind
+        from app.models.status import RunStatus
+
+        if conn is None:
+            raise ValueError(
+                "advance_existing_clarification_delivery_review_job_due_now "
+                "requires a caller-owned transaction"
+            )
+
+        job = next(
+            (
+                row
+                for row in self.jobs.values()
+                if row["kind"] == JobKind.SEND_OUTBOUND.value
+                and row["run_id"] == run_id
+                and row["email_id"] == email_id
+            ),
+            None,
+        )
+        if job is None:
+            return AdvanceSendJobOutcome.MISSING
+        if job["state"] != "pending":
+            return AdvanceSendJobOutcome.NOT_PENDING
+
+        snapshot = self.load_outbound_snapshot(run_id, email_id, conn=conn)
+        if snapshot is None:
+            return AdvanceSendJobOutcome.MISSING
+        reserved_at = snapshot.get("reserved_at")
+        if not isinstance(reserved_at, datetime):
+            return AdvanceSendJobOutcome.MISSING
+        if reserved_at + timedelta(hours=20) <= datetime.now(UTC):
+            return AdvanceSendJobOutcome.EXPIRED
+
+        if snapshot.get("purpose") not in {
+            "clarification",
+            "clarification_field_regression",
+        }:
+            return AdvanceSendJobOutcome.MISSING
+        outbound = next(
+            (
+                message
+                for message in self.outbound.get(str(run_id), [])
+                if message.get("id") == email_id
+            ),
+            None,
+        )
+        if outbound is None or outbound.get("send_state") != "reserved":
+            return AdvanceSendJobOutcome.MISSING
+
+        run = self.runs.get(str(run_id))
+        if run is None or run.get("status") != RunStatus.NEEDS_OPERATOR.value:
+            return AdvanceSendJobOutcome.MISSING
+        if run.get("error_reason") != "ClarificationDeliveryReview":
+            return AdvanceSendJobOutcome.MISSING
+
+        job["available_in_seconds"] = 0.0
+        return AdvanceSendJobOutcome.ADVANCED
+
     def fail_job(self, job_id, lease_token, *, error, backoff_seconds, conn=None):
         """Mirror repo.fail_job: fenced on lease_token, dead-letters at
         max_attempts."""
@@ -1154,15 +1222,54 @@ class InMemoryRepo:
         run["error_detail"] = result.diagnostic_code
         return SettlementOutcome.DONE
 
+    def _append_delivery_attempt(
+        self,
+        *,
+        snapshot_id: uuid.UUID,
+        attempt_state: str,
+        failure_category: str,
+    ) -> None:
+        """Append one bounded, provider-payload-free delivery fact."""
+        self.delivery_attempts.append(
+            {
+                "snapshot_id": snapshot_id,
+                "attempt_state": attempt_state,
+                "failure_category": failure_category,
+            }
+        )
+
+    @staticmethod
+    def _delivery_failure_category(reason: Any) -> str:
+        from app.pipeline.result import PipelineReason
+
+        if reason in {
+            PipelineReason.DELIVERY_TIMEOUT,
+            PipelineReason.DELIVERY_CONNECTION_FAILURE,
+        }:
+            return "transport"
+        if reason is PipelineReason.DELIVERY_SERVER_FAILURE:
+            return "provider_5xx"
+        if reason is PipelineReason.DELIVERY_RATE_LIMIT:
+            return "rate_limited"
+        if reason is PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH:
+            return "payload_mismatch"
+        if reason in {
+            PipelineReason.DELIVERY_AUTHENTICATION_FAILURE,
+            PipelineReason.DELIVERY_AUTHORIZATION_FAILURE,
+        }:
+            return "authorization"
+        if reason is PipelineReason.DELIVERY_VALIDATION_FAILURE:
+            return "validation"
+        if reason is PipelineReason.DELIVERY_CONFIGURATION_FAILURE:
+            return "configuration"
+        return "unknown"
+
     def settle_outbound_delivery_job(self, job, result, *, conn=None):
         """Mirror fenced settlement for one immutable outbound reservation."""
         from app.db.repo.job_settlement import SettlementOutcome
         from app.models.job import JobKind
         from app.models.status import RunStatus
-        from app.pipeline.result import (
-            PipelineOutcome,
-            next_delivery_attempt_at,
-        )
+        from app.pipeline.result import PipelineOutcome, PipelineReason, next_delivery_attempt_at
 
         row = self.jobs.get(str(job.id))
         if (
@@ -1206,6 +1313,11 @@ class InMemoryRepo:
             return SettlementOutcome.FENCED
 
         if result.outcome is PipelineOutcome.OK:
+            self._append_delivery_attempt(
+                snapshot_id=snapshot["snapshot_id"],
+                attempt_state="sent",
+                failure_category="none",
+            )
             outbound["send_state"] = "sent"
             if purpose == "confirmation":
                 run["status"] = RunStatus.SENT.value
@@ -1217,35 +1329,57 @@ class InMemoryRepo:
                 run["status"] = RunStatus.RECONCILED.value
             row["state"] = "done"
             row["lease_token"] = None
+            row["leased_until"] = None
             return SettlementOutcome.DONE
 
-        if result.outcome is PipelineOutcome.RETRYABLE:
-            reserved_at = snapshot.get("reserved_at")
-            if (
-                isinstance(reserved_at, datetime)
-                and reserved_at + timedelta(hours=20) > datetime.now(UTC)
-            ):
-                next_attempt = next_delivery_attempt_at(
-                    reserved_at, completed_attempts=row["attempts"]
+        replayable_reasons = {
+            PipelineReason.DELIVERY_TIMEOUT,
+            PipelineReason.DELIVERY_CONNECTION_FAILURE,
+            PipelineReason.DELIVERY_RATE_LIMIT,
+            PipelineReason.DELIVERY_SERVER_FAILURE,
+        }
+        reserved_at = snapshot.get("reserved_at")
+        if (
+            result.outcome is PipelineOutcome.RETRYABLE
+            and result.reason in replayable_reasons
+            and isinstance(reserved_at, datetime)
+            and reserved_at + timedelta(hours=20) > datetime.now(UTC)
+        ):
+            next_attempt = next_delivery_attempt_at(
+                reserved_at, completed_attempts=row["attempts"]
+            )
+            if next_attempt is not None:
+                self._append_delivery_attempt(
+                    snapshot_id=snapshot["snapshot_id"],
+                    attempt_state="retry_scheduled",
+                    failure_category=self._delivery_failure_category(result.reason),
                 )
-                if next_attempt is not None:
-                    row["state"] = "pending"
-                    row["lease_token"] = None
-                    row["last_error"] = result.diagnostic_code
-                    row["available_in_seconds"] = max(
-                        0.0, (next_attempt - datetime.now(UTC)).total_seconds()
-                    )
-                    return SettlementOutcome.RETRIED
+                row["state"] = "pending"
+                row["lease_token"] = None
+                row["leased_until"] = None
+                row["last_error"] = result.diagnostic_code
+                row["available_in_seconds"] = max(
+                    0.0, (next_attempt - datetime.now(UTC)).total_seconds()
+                )
+                return SettlementOutcome.RETRIED
 
+        self._append_delivery_attempt(
+            snapshot_id=snapshot["snapshot_id"],
+            attempt_state="needs_operator",
+            failure_category=self._delivery_failure_category(result.reason),
+        )
         run["status"] = RunStatus.NEEDS_OPERATOR.value
         run["error_reason"] = (
             "DeliveryReview"
             if purpose == "confirmation"
             else "ClarificationDeliveryReview"
         )
-        run["error_detail"] = f"delivery_review:{result.reason.value}"
+        run["error_detail"] = (
+            f"delivery_review:{self._delivery_failure_category(result.reason)}"
+        )
         row["state"] = "done"
         row["lease_token"] = None
+        row["leased_until"] = None
         row["last_error"] = result.diagnostic_code
         return SettlementOutcome.DONE
 
@@ -1320,6 +1454,53 @@ class InMemoryRepo:
         )
         for _index, row in candidates:
             if row["kind"] == JobKind.INGEST.value and row["run_id"] is None:
+                row["state"] = "dead"
+                row["lease_token"] = None
+                row["leased_until"] = None
+                return SettlementOutcome.REAPED_FINAL_LEASE
+            if row["kind"] == JobKind.SEND_OUTBOUND.value:
+                if row["run_id"] is None or row["email_id"] is None:
+                    return SettlementOutcome.FENCED
+                snapshot = self.load_outbound_snapshot(
+                    row["run_id"], row["email_id"]
+                )
+                run = self.runs.get(str(row["run_id"]))
+                if snapshot is None or run is None:
+                    return SettlementOutcome.FENCED
+                purpose = snapshot.get("purpose")
+                expected_status = (
+                    RunStatus.APPROVED.value
+                    if purpose == "confirmation"
+                    else RunStatus.AWAITING_REPLY.value
+                )
+                if purpose not in {
+                    "confirmation",
+                    "clarification",
+                    "clarification_field_regression",
+                } or run.get("status") != expected_status:
+                    return SettlementOutcome.FENCED
+                outbound = next(
+                    (
+                        message
+                        for message in self.outbound.get(str(row["run_id"]), [])
+                        if message.get("id") == row["email_id"]
+                    ),
+                    None,
+                )
+                if outbound is None or outbound.get("send_state") != "reserved":
+                    return SettlementOutcome.FENCED
+                self._append_delivery_attempt(
+                    snapshot_id=snapshot["snapshot_id"],
+                    attempt_state="needs_operator",
+                    failure_category="final_attempt_lease_expired",
+                )
+                run["status"] = RunStatus.NEEDS_OPERATOR.value
+                run["error_reason"] = (
+                    "DeliveryReview"
+                    if purpose == "confirmation"
+                    else "ClarificationDeliveryReview"
+                )
+                run["error_detail"] = "delivery_review:final_attempt_lease_expired"
                 row["state"] = "dead"
                 row["lease_token"] = None
                 row["leased_until"] = None
@@ -1538,7 +1719,10 @@ class InMemoryRepo:
             "to_addr": snapshot["to_addr"],
             "subject": snapshot["subject"],
             "reserved_at": snapshot["reserved_at"],
-            "attempt_count": 0,
+            "attempt_count": sum(
+                attempt["snapshot_id"] == snapshot["snapshot_id"]
+                for attempt in self.delivery_attempts
+            ),
             "attachments": [
                 {key: attachment[key] for key in ("id", "ordinal", "filename")}
                 for attachment in snapshot["attachments"]
@@ -2080,6 +2264,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "rewind_for_reclaim",
         "enqueue_job",
         "advance_existing_send_job_due_now",
+        "advance_existing_clarification_delivery_review_job_due_now",
         "claim_job",
         "complete_job",
         "fail_job",

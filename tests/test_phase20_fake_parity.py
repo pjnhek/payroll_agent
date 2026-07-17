@@ -62,6 +62,30 @@ def _delivery_result(reason: PipelineReason, outcome: PipelineOutcome) -> Pipeli
     return PipelineResult(outcome=outcome, stage=PipelineStage.DELIVERY, reason=reason)
 
 
+def _failure_category(reason: PipelineReason) -> str:
+    if reason in {
+        PipelineReason.DELIVERY_TIMEOUT,
+        PipelineReason.DELIVERY_CONNECTION_FAILURE,
+    }:
+        return "transport"
+    if reason is PipelineReason.DELIVERY_SERVER_FAILURE:
+        return "provider_5xx"
+    if reason is PipelineReason.DELIVERY_RATE_LIMIT:
+        return "rate_limited"
+    if reason is PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH:
+        return "payload_mismatch"
+    if reason in {
+        PipelineReason.DELIVERY_AUTHENTICATION_FAILURE,
+        PipelineReason.DELIVERY_AUTHORIZATION_FAILURE,
+    }:
+        return "authorization"
+    if reason is PipelineReason.DELIVERY_VALIDATION_FAILURE:
+        return "validation"
+    if reason is PipelineReason.DELIVERY_CONFIGURATION_FAILURE:
+        return "configuration"
+    return "unknown"
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_message"),
     [
@@ -195,26 +219,11 @@ def test_fake_outbound_settlement_direct_reviews_every_other_retryable_reason(
     assert job is not None and job["state"] == "done"
     assert run["status"] == RunStatus.NEEDS_OPERATOR.value
     assert run["error_reason"] == "DeliveryReview"
-    assert run["error_detail"] == f"delivery_review:{reason.value}"
+    assert run["error_detail"] == f"delivery_review:{_failure_category(reason)}"
     assert fake_repo.delivery_attempts[-1] == {
         "snapshot_id": snapshot["snapshot_id"],
         "attempt_state": "needs_operator",
-        "failure_category": "unknown"
-        if reason
-        not in {
-            PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH,
-            PipelineReason.DELIVERY_AUTHENTICATION_FAILURE,
-            PipelineReason.DELIVERY_AUTHORIZATION_FAILURE,
-            PipelineReason.DELIVERY_VALIDATION_FAILURE,
-            PipelineReason.DELIVERY_CONFIGURATION_FAILURE,
-        }
-        else {
-            PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH: "payload_mismatch",
-            PipelineReason.DELIVERY_AUTHENTICATION_FAILURE: "authorization",
-            PipelineReason.DELIVERY_AUTHORIZATION_FAILURE: "authorization",
-            PipelineReason.DELIVERY_VALIDATION_FAILURE: "validation",
-            PipelineReason.DELIVERY_CONFIGURATION_FAILURE: "configuration",
-        }[reason],
+        "failure_category": _failure_category(reason),
     }
 
 
