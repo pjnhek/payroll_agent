@@ -4,17 +4,17 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
-status: executing
-stopped_at: Completed 20-08-PLAN.md
-last_updated: "2026-07-17T22:39:23.926Z"
+status: needs_review
+stopped_at: Verification gaps found (26/32 must-haves)
+last_updated: "2026-07-17T23:54:07Z"
 last_activity: 2026-07-17
-last_activity_desc: Phase 20 gap-closure planning complete — 4 plans ready
+last_activity_desc: Phase 20 executed; verifier found 6 closure gaps
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 53
-  completed_plans: 53
-  percent: 83
+  completed_phases: 4
+  total_plans: 57
+  completed_plans: 57
+  percent: 67
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 — Exactly-Once Send
-Plan: 12 of 16
-Status: Ready to execute
-Last activity: 2026-07-17 — Phase 20 gap-closure planning complete (4 plans ready)
+Plan: 16 of 16
+Status: Verification gaps — replan required
+Last activity: 2026-07-17 — 26/32 must-haves verified; six closure gaps remain
 
 ## Performance Metrics
 

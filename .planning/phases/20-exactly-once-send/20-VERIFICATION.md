@@ -1,104 +1,96 @@
 ---
 phase: 20-exactly-once-send
-verified: 2026-07-17T21:54:11Z
+verified: 2026-07-17T23:54:07Z
 status: gaps_found
-score: 25/32 must-haves verified
+score: 26/32 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: gaps_found
+  previous_score: 25/32
+  gaps_closed:
+    - "Final SEND_OUTBOUND lease expiry now preserves the reservation, appends bounded attempt evidence, and enters purpose-specific delivery review."
+    - "Settlement now allowlists the four replayable delivery reasons and fences persisted email_id."
+    - "Retry-now and settlement now use job-first lock ordering."
+    - "Current-epoch awaiting-reply routing, body-free review projection, and fail-closed legacy email mutation are implemented."
+    - "InMemoryRepo SEND_OUTBOUND validation, fixed eight-attempt budget, attempt ledger, replay allowlist, final reaper, and stale-header parity are implemented."
+    - "Clarification delivery review loading, frozen-question evidence, isolated actions, and generic resolve/retrigger guards are implemented."
+  gaps_remaining:
+    - "Confirmation sent-proof lookup is not scoped to the current reply epoch."
+    - "Old-epoch SEND_OUTBOUND jobs are not rejected before provider work or settlement."
+    - "Confirmation-only delivery actions accept clarification reviews on direct POST."
+    - "Invalid-context fenced leases can remain leased after the drain discards the worker token."
+    - "Generic delivery retry is not purpose-isolated."
+    - "The repo-wide strict mypy gate remains red with 10 errors."
+  regressions: []
 gaps:
-  - truth: "Final lease expiry for SEND_OUTBOUND preserves ambiguity as delivery review and cannot create a duplicate confirmation"
+  - truth: "SEND-01: sent confirmation idempotency is scoped to the current run reply epoch."
     status: failed
-    reason: "reap_expired_final_attempt treats SEND_OUTBOUND like every other non-ingest job, marks the job dead, and can leave an accepted provider send outside the delivery-review path."
+    reason: "get_outbound_message_id selects any sent confirmation for the run and purpose, without em.epoch = payroll_runs.reply_epoch; a sent epoch-0 row can suppress the epoch-1 confirmation after retrigger."
     artifacts:
-      - path: "app/db/repo/job_settlement.py:722-768"
-        issue: "The final-lease reaper has no SEND_OUTBOUND branch, attempt append, reservation lock, or purpose-aware review transition."
+      - path: "app/db/repo/emails.py:399-430"
+        issue: "The proof-of-delivery lookup has no current-epoch predicate."
+      - path: "app/pipeline/delivery.py:91-97"
+        issue: "Confirmation delivery treats that unscoped result as proof that the current confirmation was sent."
     missing:
-      - "Add confirmation and clarification-specific final-lease handling that preserves the frozen reservation and routes ambiguity to an operator workflow before generic retrigger can compose again."
-      - "Add crash-after-provider-acceptance coverage for both outbound purposes."
-  - truth: "Header reply routing is restricted to the run's current reply epoch"
+      - "Add the current-epoch predicate and a regression with a sent old-epoch confirmation followed by a new epoch."
+  - truth: "D-07/D-08: an old-epoch SEND_OUTBOUND job cannot reach the provider or be settled as the current delivery."
     status: failed
-    reason: "find_awaiting_reply_for_header matches any outbound row for an awaiting run without comparing em.epoch to pr.reply_epoch."
+    reason: "The handler validates snapshot shape and authorized run status but never compares snapshot/message epoch with the locked run reply_epoch; settlement and final-lease reaping likewise accept the reservation without an epoch check."
     artifacts:
-      - path: "app/db/repo/emails.py:783-809"
-        issue: "A stale pre-retrigger Message-ID can be accepted as the current clarification reply."
+      - path: "app/queue/handlers/send_outbound.py:28-80"
+        issue: "_snapshot_matches_job checks that epoch is a nonnegative integer, not that it is current."
+      - path: "app/db/repo/job_settlement.py:151-179, 235-255, 759-805"
+        issue: "Reservation locking and final reaping do not require the current reply epoch."
     missing:
-      - "Add the current-epoch predicate and a regression covering a stale header after an epoch bump."
-  - truth: "Only the approved transient delivery categories are automatically replayable"
+      - "Reject stale epochs before provider work and again in settlement/reaping; terminalize or safely no-op old jobs when a retrigger bumps the epoch."
+  - truth: "D-09/D-16: confirmation-only delivery actions cannot resolve or authorize a clarification delivery review."
     status: failed
-    reason: "settle_outbound_delivery_job schedules every PipelineResult with RETRYABLE outcome while the reservation window is open; it never gates on the mapped delivery category."
+    reason: "mark_delivery_delivered and authorize_new_confirmation only check that a review exists; they do not require review_kind == confirmation. A direct POST can reconcile a clarification run or clone its frozen question into a confirmation slot."
     artifacts:
-      - path: "app/db/repo/job_settlement.py:279-300"
-        issue: "Authentication, validation, configuration, mismatch, unknown, or future retryable results can be rescheduled."
+      - path: "app/routes/runs.py:1011-1081"
+        issue: "Both confirmation action endpoints accept the shared loader's clarification result."
     missing:
-      - "Gate scheduling on timeout, connection, eligible rate limit, and provider 5xx reasons; route all other categories directly to review."
-      - "Add parameterized settlement tests for every non-replayable category."
-  - truth: "The lease fence verifies the claimed job's persisted email_id before touching a snapshot"
+      - "Require an explicit confirmation review kind before mark-delivered or new-confirmation authorization, with negative direct-POST tests proving no mutation."
+  - truth: "Queue fencing durably retires an invalid-context job before the drain drops its lease token."
     status: failed
-    reason: "_locked_job selects no email_id and settlement locks the snapshot using caller-supplied job.email_id."
+    reason: "settle_outbound_delivery_job returns FENCED for a still-owned lease whose run status or context is invalid; drain_once treats every FENCED result as settled and removes the held token, but no SQL transition retires or releases the still-leased row."
     artifacts:
-      - path: "app/db/repo/job_settlement.py:81-94"
-        issue: "A claimed object with a valid job id/token but a mismatched email_id is not logically fenced."
-      - path: "app/db/repo/job_settlement.py:210-225"
-        issue: "The caller value is used for reservation and email state writes."
+      - path: "app/db/repo/job_settlement.py:220-255"
+        issue: "Lost lease and invalid current context share the same FENCED outcome."
+      - path: "app/queue/drain.py:186-245"
+        issue: "Any settlement result, including invalid-context FENCED, sets lease_settled and discards the token."
     missing:
-      - "Select persisted email_id in _locked_job, compare it to the claimed object, and return FENCED before reservation or attempt writes on mismatch."
-      - "Add a mismatched-claimed-email regression."
-  - truth: "Clarification delivery ambiguity has explicit operator review and evidence isolated from alias resolution"
+      - "Separate LOST_LEASE from INVALID_CONTEXT and durably complete, dead-letter, or release an exact current lease before token discard."
+  - truth: "D-01/D-07: confirmation retry-now cannot advance a clarification delivery review through the generic confirmation operation."
     status: failed
-    reason: "Settlement emits ClarificationDeliveryReview, but the route projection and template only recognize confirmation DeliveryReview."
+    reason: "retry_delivery_now calls _load_delivery_review and advance_existing_send_job_due_now without requiring review_kind == confirmation; the generic repository operation also does not enforce confirmation purpose/review ownership."
     artifacts:
-      - path: "app/routes/runs.py:257-291"
-        issue: "_load_delivery_review rejects ClarificationDeliveryReview and loads only purpose=confirmation."
-      - path: "app/templates/run_detail.html:110-179"
-        issue: "The review card is confirmation-only; clarification ambiguity falls through to generic name resolution."
+      - path: "app/routes/runs.py:934-952"
+        issue: "The generic retry endpoint accepts either review kind."
+      - path: "app/db/repo/jobs.py:225-285"
+        issue: "The generic due-now operation checks only send kind, identity, pending state, and age."
     missing:
-      - "Add purpose-aware frozen-question review evidence and explicit retry/handled/reject actions that cannot enter alias confirmation."
-      - "Add dashboard coverage for ClarificationDeliveryReview."
-  - truth: "The in-memory queue mirrors SEND_OUTBOUND validation and its eight-attempt budget"
+      - "Restrict the generic action/repository seam to confirmation and leave clarification retry on its dedicated purpose-checked operation."
+  - truth: "The phase's strict type-check quality gate is green across the repository."
     status: failed
-    reason: "The fake enqueue_job validates older kinds only and defaults send jobs to five attempts."
+    reason: "uv run mypy exits 1 with 10 errors: one incompatible fake connection argument and nine app.routes.runs.repo attr-defined errors in the new clarification-review tests."
     artifacts:
-      - path: "tests/conftest.py:808-893"
-        issue: "No SEND_OUTBOUND branch enforces run_id, email_id, exact dedup key, or max_attempts=8."
+      - path: "tests/test_phase20_fake_parity.py:320"
+        issue: "object is passed where a psycopg Connection is expected."
+      - path: "tests/test_phase20_clarification_review.py:98-221"
+        issue: "The test module accesses app.routes.runs.repo without an exported type-visible attribute."
     missing:
-      - "Mirror production send-job validation, deduplication, and forced attempt budget in InMemoryRepo."
-      - "Add paired malformed-context and attempt-budget tests."
-  - truth: "Final lease reaping, retry-now, and settlement use one deadlock-safe lock order"
-    status: failed
-    reason: "Retry-now locks snapshot/message before job while settlement locks job before snapshot/message."
-    artifacts:
-      - path: "app/db/repo/jobs.py:240-264"
-        issue: "advance_existing_send_job_due_now uses reservation-then-job order."
-      - path: "app/db/repo/job_settlement.py:210-225"
-        issue: "settle_outbound_delivery_job uses job-then-reservation order."
-    missing:
-      - "Choose one lock order and add concurrent retry-versus-settlement coverage."
-  - truth: "The bounded delivery-review projection excludes the frozen message body"
-    status: failed
-    reason: "The repository projection selects body_text even though the route currently omits it from the browser-safe projection."
-    artifacts:
-      - path: "app/db/repo/emails.py:335-367"
-        issue: "Every caller of the review projection receives immutable client/payroll body content unnecessarily."
-    missing:
-      - "Remove body_text from the review projection and retain it only in the authorized frozen-email reader."
-  - truth: "The legacy email-state mutator cannot update inbound rows or arbitrary states"
-    status: failed
-    reason: "update_email_message_state updates by message_id alone and accepts any state string."
-    artifacts:
-      - path: "app/db/repo/emails.py:661-677"
-        issue: "The public compatibility mutator can corrupt inbound audit rows or write invalid send state."
-    missing:
-      - "Remove/fail-close the mutator or constrain it to outbound rows and an explicit allowed transition set."
-deferred: []
+      - "Fix the test typing or provide the appropriate typed seam, then rerun the bare configured mypy command."
 ---
 
 # Phase 20: Exactly-Once Send Verification Report
 
 **Phase Goal:** A client is sent at most one payroll confirmation per approved run, per epoch — a retry never redrafts, never regenerates non-deterministic bytes, and never silently orphans a reply into a phantom run.
 
-**Verified:** 2026-07-17T21:54:11Z  
+**Verified:** 2026-07-17T23:54:07Z
 **Status:** gaps_found  
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — after Plans 20-13 through 20-16
 
 ## Goal Achievement
 
@@ -106,90 +98,89 @@ deferred: []
 
 | # | Truth | Status | Evidence |
 |---:|---|---|---|
-| 1 | D-12: provider-ready envelope and ordered attachment bytes are reserved before provider work | ✓ VERIFIED | `schema.sql` defines immutable snapshot/attachment tables and append-only triggers; `delivery.py` reserves then enqueues inside the caller transaction; focused reservation/queue tests pass. The guarded live trigger test is unavailable locally. |
-| 2 | D-13: retries reuse the original Message-ID, body, headers, recipient, and bytes | ✓ VERIFIED | `reserve_outbound_snapshot` locks and returns the existing snapshot without caller-content updates; `gateway.send_reserved_outbound_snapshot` uses only stored fields; replay tests pass. |
-| 3 | SEND-01: one logical run/purpose/round/epoch slot keeps its original Message-ID | ✓ VERIFIED | The unique slot arbiter and conflict branch return the original snapshot; the legacy caller send is fail-closed. |
-| 4 | D-01: approval and retry-now create/advance durable work without synchronous provider calls | ✓ VERIFIED | Approval reserves/enqueues in `delivery.py` and `runs.py`; retry-now only advances an existing pending job; named approval/retry tests pass. |
-| 5 | D-07: scheduled and accelerated retry converge on one identifier-only, lease-fenced send job | ✗ FAILED | Normal handler/settlement paths are wired, but final lease expiry enters the generic reaper, marks the send dead, and permits a generic retrigger/new snapshot path. |
-| 6 | SEND-03: send queue rows admit only run plus persisted email/snapshot identity | ✗ FAILED | Production validation is exact in `app/db/repo/jobs.py`, but `InMemoryRepo.enqueue_job` has no SEND_OUTBOUND branch and accepts malformed context with the wrong attempt default. |
-| 7 | D-02: only timeout, connection, eligible rate limit, and Resend 5xx are replayable | ✗ FAILED | The gateway classifier is allowlisted, but settlement reschedules any `RETRYABLE` result without checking its delivery reason/category. |
-| 8 | D-03: reservation time, not attempt/restart time, bounds replay below 20 hours | ✓ VERIFIED | `delivery_replay_allowed`, `next_delivery_attempt_at`, handler, and database settlement all use `reserved_at`; cutoff tests pass. Live Postgres queueproof is skipped. |
-| 9 | D-04: provider calls are deterministic projections of persisted snapshots | ✓ VERIFIED | The snapshot-only gateway rehydrates headers, body, recipients, and ordered encoded bytes and the legacy caller-argument method raises before provider setup. |
-| 10 | D-06: payload mismatch is terminal review with no replacement key | ✓ VERIFIED | Resend 409 `invalid_idempotent_request` maps to terminal mismatch; no replacement key is minted; gateway tests pass. The unsafe generic settlement gate remains a related gap. |
-| 11 | D-04: composition and PDF generation occur only for an absent confirmation snapshot | ✓ VERIFIED | `delivery.py` gates composition/YTD/PDF work behind `policy.has_existing_snapshot`; named replay test passes. |
-| 12 | D-05: safe confirmation replay retains approved business state | ✓ VERIFIED | Delivery settlement reschedules the same job without updating approved status; named test passes. Final-lease ambiguity is a separate failed path. |
-| 13 | D-12: snapshot and job commit before a worker can call Resend | ✓ VERIFIED | Approval and clarification producers reserve and enqueue in caller-owned transactions; the handler is reached only from the durable queue. |
-| 14 | D-01/D-07: an executable SEND_OUTBOUND handler is backed by fenced settlement before producers enqueue | ✓ VERIFIED | `dispatch.HANDLERS` registers `send_outbound`; the handler loads the snapshot, calls the snapshot gateway, and forwards the exact lease to settlement. |
-| 15 | D-04: the handler cannot call composition/PDF/current-payroll code | ✓ VERIFIED | `send_outbound.py` has no imports or calls to delivery, composition, PDF, or mutable payroll loaders; fail-if-called handler tests pass. |
-| 16 | D-08: stale/non-replayable delivery uncertainty always appears as explicit delivery review | ✗ FAILED | Confirmation terminal paths set `DeliveryReview`, but final lease expiry bypasses it and clarification terminal paths have no route/template review workflow. |
-| 17 | D-09: mark-delivered is provider-free and typed authorization creates a distinct human slot | ✓ VERIFIED | Routes use CAS/transaction, exact acknowledgement, frozen snapshot cloning, one job, and post-commit wake; dashboard tests pass. |
-| 18 | D-10: review shows safe basis and frozen artifacts without raw provider dumps | ✓ VERIFIED | Browser projection allowlists recipient/subject/time/attempts/category/key/artifact references and routes read owned frozen artifacts. Repository projection unnecessarily includes body_text; see warning gap. |
-| 19 | D-11: human authorization copies original frozen bytes, not current payroll/contact values | ✓ VERIFIED | `_snapshot_clone_fields` copies stored envelope and attachment bytes; authorization tests pass after historical data changes. |
-| 20 | D-04: YTD presentation affects only future snapshot creation | ✓ VERIFIED | YTD aggregation is called only on first-time confirmation creation; PDF consumes supplied totals; YTD/PDF tests pass. |
-| 21 | D-11: human-authorized repeat keeps original frozen attachment bytes | ✓ VERIFIED | Authorization clones persisted attachment content rather than regenerating; named dashboard test passes. |
-| 22 | D-12/D-13: paystub presentation is captured before provider work and remains append-only | ✓ VERIFIED | PDF bytes are inserted into immutable attachment rows before queue/provider work; schema triggers and PDF boundary tests pass. |
-| 23 | Eval chart is offline and isolated from delivery/database writers | ✓ VERIFIED | `tests/test_eval.py` boundary checks pass and `eval/run_eval.py --check` passes. |
-| 24 | Changing eval artifacts cannot mutate outbound audit records | ✓ VERIFIED | Chart generation consumes aggregate eval data only and does not import delivery/queue/repository mutation modules. |
-| 25 | SEND-01/SEND-02/SEND-03 safety remains green through the chart-polish gate | ✓ VERIFIED (test gate only) | Full suite: `1080 passed, 78 skipped`; focused phase suite: `339 passed, 8 skipped`; this does not override the code-level gaps above. |
-| 26 | D-01/D-07: settlement fences the exact leased send job identity | ✗ FAILED | Lease token and job id are checked, but persisted `email_id` is not selected or compared before locking the caller-supplied snapshot. |
-| 27 | D-07: winner appends bounded attempt history and fenced loser writes nothing | ✗ FAILED | The exact-token loser path is tested, but the logical identity fence is incomplete; a mismatched claimed email can target another snapshot. |
-| 28 | Clarification initial/retry/retry-now work converges on one SEND_OUTBOUND job | ✓ VERIFIED | `clarification.py` reserves/loads by purpose/round/epoch, enqueues identifier-only work, and wakes after commit; clarification tests pass. |
-| 29 | Clarification replay uses frozen RFC thread/round content before drafting | ✓ VERIFIED | Reentry loads the existing snapshot before suggestion/drafting; named replay and field-regression tests pass. |
-| 30 | Clarification settlement preserves awaiting_reply and never confirms aliases | ✓ VERIFIED (settlement only) | Purpose-aware settlement preserves awaiting-reply and avoids alias writes; named clarification tests pass. Its emitted review state is not operator-routable, covered by Truth 16. |
-| 31 | No confirmation or clarification producer bypasses the durable job/handler | ✓ VERIFIED | Both producers use reservation plus SEND_OUTBOUND; `gateway.send_outbound` is a fail-closed stub; legacy-path test passes. |
-| 32 | No legacy caller can evade bounded classification, cutoff, fixed key, or fenced settlement | ✗ FAILED | The legacy method is inert, but settlement accepts unsafe retryable results and final lease reaping bypasses delivery-specific settlement/review. |
+| 1 | D-12: envelope and ordered attachment bytes are committed before provider work | ✓ VERIFIED | `schema.sql` has immutable snapshot/attachment tables and append-only triggers; producers reserve and enqueue before the handler. |
+| 2 | D-13: retries reuse the original Message-ID, payload, headers, recipient, and bytes | ✓ VERIFIED | `reserve_outbound_snapshot` returns the existing row unchanged and the snapshot gateway reads stored fields/bytes only. |
+| 3 | SEND-01: one logical run/purpose/round/epoch slot keeps its original Message-ID | ✗ FAILED | The reservation slot is epoch-keyed, but `get_outbound_message_id` is not epoch-scoped and can suppress a new epoch's send; see gap 1. |
+| 4 | D-01: approval and retry-now use durable work without synchronous provider calls | ✓ VERIFIED | Approval and retry routes enqueue/advance jobs and wake after commit; no route calls the provider directly. |
+| 5 | D-07: scheduled and accelerated retry work converges on one fenced send job | ✗ FAILED | Normal same-row paths exist, but stale-epoch jobs remain provider-eligible and invalid-context leases can be stranded; see gaps 2 and 4. |
+| 6 | SEND-03: send jobs carry only run plus persisted email/snapshot identity | ✓ VERIFIED | Production and fake enqueue validation require the exact identifiers, dedup key, and fixed eight-attempt policy. |
+| 7 | D-02: only timeout, connection, eligible rate-limit, and provider-5xx results replay automatically | ✓ VERIFIED | Production and fake settlement use the exact four-reason allowlist; all other retryable reasons enter review. |
+| 8 | D-03: reservation time, not restart/attempt time, bounds replay at 20 hours | ✓ VERIFIED | Handler, settlement, retry-now, and fake paths use `reserved_at`; the cutoff regression passes. |
+| 9 | D-04: provider calls are projections of persisted snapshots | ✓ VERIFIED | `send_outbound.py` has no composition/PDF/current-payroll calls and invokes the snapshot-only gateway. |
+| 10 | D-06: payload mismatch is terminal review with no replacement key | ✓ VERIFIED | Gateway classification maps the mismatch to review and no replacement key is minted. |
+| 11 | D-04: composition/PDF generation occurs only for an absent snapshot | ✓ VERIFIED | `delivery.py` gates composition, YTD, and PDF work behind the absent-snapshot branch. |
+| 12 | D-05: safe confirmation retry retains approved business state | ✓ VERIFIED | Allowlisted replay reschedules the same job and leaves the run approved. |
+| 13 | D-12: snapshot and job commit before a worker can call Resend | ✓ VERIFIED | Producer transactions reserve the snapshot and enqueue identifier-only work before post-commit wake. |
+| 14 | D-01/D-07: an executable handler is backed by fenced settlement | ✓ VERIFIED | `dispatch.HANDLERS` registers `handle_send_outbound`, which passes the exact claimed job to settlement. |
+| 15 | D-04: handler cannot compose or regenerate content | ✓ VERIFIED | Handler imports only repository, gateway, job/status, and result modules. |
+| 16 | D-08: stale/non-replayable ambiguity always reaches explicit delivery review | ✗ FAILED | Normal terminal/final-lease paths now review, but old-epoch provider eligibility and invalid-context lease handling bypass safe retirement; see gaps 2 and 4. |
+| 17 | D-09: delivery actions are provider-free or explicitly typed human authorization | ✗ FAILED | Confirmation actions do not reject a clarification review on direct POST; see gap 3. |
+| 18 | D-10: review exposes safe facts and frozen artifact references without provider dumps | ✓ VERIFIED | Review projection omits body/provider payloads; frozen email/attachment routes are separate and ownership-scoped. |
+| 19 | D-11: human-authorized repeat copies the original frozen snapshot | ✗ FAILED | The confirmation clone is byte-preserving, but the confirmation authorization endpoint is not restricted to confirmation reviews. |
+| 20 | D-04: YTD presentation affects only future snapshot creation | ✓ VERIFIED | YTD/PDF work is absent from replay and uses persisted bytes for repeats. |
+| 21 | D-11: authorized repeat retains original attachment bytes | ✓ VERIFIED | `_snapshot_clone_fields` copies stored attachment content. |
+| 22 | D-12/D-13: paystub bytes are append-only provider evidence | ✓ VERIFIED | Attachment rows are immutable and guarded by database triggers. |
+| 23 | Eval chart is offline and isolated from delivery writers | ✓ VERIFIED | `uv run python eval/run_eval.py --check` passed and module-boundary tests are present. |
+| 24 | Eval artifact changes cannot mutate outbound audit records | ✓ VERIFIED | Eval code consumes aggregate fixture/scoring data and has no delivery/database writer path. |
+| 25 | SEND-01/02/03 ordinary regression gate is green | ✓ VERIFIED | Full suite: `1144 passed, 82 skipped`; targeted Phase 20 suite: `236 passed, 51 skipped`. This does not erase source-level gaps. |
+| 26 | Settlement fences persisted leased job identity before snapshot access | ✓ VERIFIED | `_locked_job` selects persisted `email_id` and settlement compares it before reservation/attempt writes. |
+| 27 | Fenced loser writes no delivery evidence | ✓ VERIFIED | Identity mismatch returns before snapshot/attempt SQL; targeted fence tests pass. |
+| 28 | Clarification initial/retry/retry-now work uses one SEND_OUTBOUND row | ✓ VERIFIED | Dedicated clarification retry advances the existing row and no new slot/key is created; generic cross-purpose retry remains a separate failed boundary. |
+| 29 | Clarification replay uses frozen question/thread/round content | ✓ VERIFIED | Clarification producer loads the existing snapshot before drafting/provider work; frozen evidence tests pass. |
+| 30 | Clarification settlement preserves awaiting-reply and avoids alias writes | ✓ VERIFIED | Purpose-aware settlement and clarification actions keep `awaiting_reply` semantics and do not write aliases. |
+| 31 | No confirmation or clarification producer bypasses durable SEND_OUTBOUND | ✓ VERIFIED | Both producers reserve snapshots and enqueue identifier-only jobs; legacy gateway path is inert. |
+| 32 | No legacy path evades bounded category, cutoff, key, and epoch fencing | ✗ FAILED | Category/cutoff/key fencing is present, but the sent-proof and handler/settlement epoch fences are incomplete. |
 
-**Score:** 25/32 truths verified.
+**Score:** 26/32 truths verified.
 
 ## Required Artifacts
 
-| Artifact | Expected | Status | Details |
-|---|---|---|---|
-| `app/db/schema.sql` | Immutable snapshots, ordered bytes, bounded attempts, repair triggers | ✓ VERIFIED | Tables/checks/triggers are present; guarded deployed-schema mutation proof skipped. |
-| `app/db/repo/emails.py` | Read-or-reserve and scoped snapshot/review readers | ⚠️ PRESENT WITH WARNINGS | Snapshot APIs are substantive and wired; review projection includes `body_text`, header routing lacks epoch, and legacy state mutator is broad. |
-| `app/db/repo/jobs.py` | Exact send context and existing-job-only retry-now | ✓ VERIFIED | Production validation and transaction path pass; lock order conflicts with settlement. |
-| `app/db/repo/job_settlement.py` | Purpose-aware exact-token settlement and bounded replay | ✗ FAILED | Missing persisted email-id fence, category gate, and final SEND_OUTBOUND reaper handling. |
-| `app/email/gateway.py` | Snapshot-only provider adapter and inert legacy path | ✓ VERIFIED | Stable Message-ID/idempotency key and byte-equivalent request tests pass. |
-| `app/pipeline/delivery.py` | Atomic confirmation reserve/enqueue and replay guard | ✓ VERIFIED | No synchronous send; first-time-only composition/YTD/PDF path. |
-| `app/pipeline/clarification.py` | Atomic clarification reserve/enqueue and frozen replay | ✓ VERIFIED | Standard and field-regression paths are wired and tested. |
-| `app/queue/handlers/send_outbound.py` | Identifier-only snapshot consumer | ✓ VERIFIED | Handler is substantive, registered, and calls only snapshot gateway/settlement. |
-| `app/routes/runs.py` / `app/templates/run_detail.html` | Safe confirmation delivery review and actions | ⚠️ PARTIAL | Confirmation review works; clarification review is absent. |
-| `app/pipeline/pdf.py` | Pure current/YTD PDF generation | ✓ VERIFIED | Supplied YTD totals and complete columns are tested. |
-| `eval/run_eval.py` / `eval/chart.svg` | Offline aggregate-only chart | ✓ VERIFIED | Style, reproducibility, and boundary tests pass. |
+| Artifact | Status | Evidence |
+|---|---|---|
+| `app/db/schema.sql` | ✓ VERIFIED | Snapshot, ordered `BYTEA` attachments, bounded attempts, and append-only triggers are substantive. Live deployed-schema mutation proof is unavailable locally. |
+| `app/db/repo/emails.py` | ⚠️ PARTIAL | Reservation/review APIs are wired and body-free; sent-proof lookup and references-chain lookup lack current-epoch scoping. |
+| `app/db/repo/jobs.py` | ⚠️ PARTIAL | Production retry seams are job-first and purpose-aware for clarification; generic retry lacks purpose enforcement and fake ordering/timing diverges. |
+| `app/db/repo/job_settlement.py` | ⚠️ PARTIAL | Allowlist, identity fence, final reaper, and attempt ledger exist; epoch validation and invalid-context lease retirement do not. |
+| `app/email/gateway.py` | ✓ VERIFIED | Snapshot-only Resend adapter carries the stored idempotency key and payload; legacy caller-content path is fail-closed. |
+| `app/pipeline/delivery.py` / `app/pipeline/clarification.py` | ✓ VERIFIED | Producers reserve immutable snapshots and enqueue one identifier-only job before wake/provider work. |
+| `app/queue/handlers/send_outbound.py` | ⚠️ PARTIAL | Snapshot-only handler is substantive and wired, but it lacks a run-current-epoch check before provider work. |
+| `app/routes/runs.py` / `app/templates/run_detail.html` | ⚠️ PARTIAL | Distinct clarification UI/actions and generic guards exist; direct confirmation endpoints are not purpose-authorized. |
+| `tests/conftest.py` / Phase 20 tests | ⚠️ PARTIAL | Fake safety contracts and regressions exist, but fake claim timing/reclaim behavior and strict typing are incomplete. |
 
 ## Key Link Verification
 
-| From | To | Via | Status | Details |
-|---|---|---|---|---|
-| `reserve_outbound_snapshot` | immutable snapshot + attachments | caller-owned transaction | ✓ WIRED | Insert/read-back and producer transaction paths are present. |
-| approval/clarification producers | `SEND_OUTBOUND` | enqueue after reservation | ✓ WIRED | Both producers enqueue identifier-only context and wake after commit. |
-| `SEND_OUTBOUND` | snapshot gateway | late-bound handler | ✓ WIRED | Handler loads by run/email ownership and forwards stored snapshot. |
-| handler | settlement | exact lease token | ⚠️ PARTIAL | Lease token is passed, but settlement does not compare persisted job `email_id` to claimed `email_id`. |
-| result classification | retry settlement | category gate | ✗ NOT WIRED | Settlement checks outcome only, not the allowed delivery reason set. |
-| final lease reaper | delivery review | purpose-aware send settlement | ✗ NOT WIRED | Generic reaper kills final send leases without snapshot/attempt/review handling. |
-| inbound RFC header | current reply epoch | `find_awaiting_reply_for_header` SQL | ✗ NOT WIRED | Query has run/status scope but no `em.epoch = pr.reply_epoch`. |
-| clarification review state | operator actions/template | delivery-review routes | ✗ NOT WIRED | `ClarificationDeliveryReview` is emitted but rejected by `_load_delivery_review`. |
-| eval chart | delivery/persistence | module boundary | ✓ WIRED (isolated) | Boundary tests and eval check pass. |
+| From | To | Status | Details |
+|---|---|---|---|
+| Producer reservation | snapshot + attachments + SEND_OUTBOUND job | ✓ WIRED | Caller-owned transaction; post-commit wake. |
+| SEND_OUTBOUND dispatch | snapshot gateway | ⚠️ PARTIAL | Identifier-only and snapshot-backed, but no current-epoch comparison. |
+| Handler | settlement | ✓ WIRED | Exact job/token passed; persisted email identity is checked. |
+| Result reason | replay settlement | ✓ WIRED | Four-category allowlist and 20-hour reservation cutoff. |
+| Final lease reaper | purpose-specific review | ✓ WIRED | Confirmation/clarification markers and bounded attempt fact are persisted. |
+| Sent-proof lookup | current epoch | ✗ NOT WIRED | `get_outbound_message_id` omits `epoch = reply_epoch`. |
+| Generic delivery retry | confirmation-only seam | ✗ NOT WIRED | Generic route/repository operation accepts clarification review context. |
+| Confirmation actions | confirmation-only review | ✗ NOT WIRED | `mark_delivery_delivered` and `authorize_new_confirmation` do not inspect `review_kind`. |
+| Invalid context | durable lease retirement | ✗ NOT WIRED | `FENCED` is treated as settled without a corresponding row transition. |
+| Clarification review marker | isolated review actions/UI | ✓ WIRED | Loader, frozen evidence, dedicated retry, handled/reject, and resolve/retrigger guards are connected. |
 
 ## Data-Flow Trace (Level 4)
 
-| Artifact | Data variable | Source | Produces real data | Status |
-|---|---|---|---|---|
-| `send_outbound.py` | provider payload | `load_outbound_snapshot` → stored envelope/bytes | Yes | ✓ FLOWING |
-| confirmation delivery | PDF/YTD inputs | reconciled history query on absent snapshot only | Yes | ✓ FLOWING |
-| delivery review card | safe facts/artifact links | owned review projection and attachment reader | Yes | ✓ FLOWING, but clarification review disconnected |
-| eval chart | aggregate metrics | committed fixtures/scoring output | Yes | ✓ FLOWING |
+| Artifact | Data source | Produces real data | Status |
+|---|---|---|---|
+| `send_outbound.py` | `load_outbound_snapshot` → stored envelope/attachment bytes | Yes | ⚠️ FLOWING but epoch authorization is incomplete. |
+| Confirmation producer | roster/payroll inputs only on absent snapshot | Yes | ✓ FLOWING. |
+| Clarification review | persisted review projection plus authorized frozen reader | Yes | ✓ FLOWING and purpose-matched. |
+| Eval chart | committed aggregate fixtures/scoring output | Yes | ✓ FLOWING. |
 
 ## Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Phase-focused implementation regression | `uv run pytest -q tests/test_send_idempotency.py tests/test_delivery.py tests/test_queue_drain.py tests/test_clarify.py tests/test_dashboard.py tests/test_gateway.py tests/test_orchestrator_states.py tests/test_repo_jobs_sql.py tests/test_job_kind_drift.py` | 339 passed, 8 skipped | ✓ PASS |
-| Named replay/fence/clarification/authorization transitions | `uv run pytest -q` with 10 named tests | 10 passed | ✓ PASS |
-| Whole repository regression | `uv run pytest -q` | 1080 passed, 78 skipped | ✓ PASS |
-| Eval regression | `uv run python eval/run_eval.py --check` and `uv run pytest -q tests/test_eval.py tests/test_pdf.py` | check passed; 27 passed | ✓ PASS |
-| Type/lint quality | `uv run mypy` on 12 implementation files; `uv run ruff check` on phase implementation | no issues; all checks passed | ✓ PASS |
-| Configured Postgres settlement/trigger proof | `uv run pytest -q -m integration tests/test_queue_durability.py` | 42 skipped; no DATABASE_URL/ALLOW_DB_RESET | ? UNAVAILABLE EVIDENCE |
+| Phase 20 targeted regressions | `uv run pytest -q tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_phase20_fake_parity.py tests/test_phase20_clarification_review.py tests/test_phase20_repo_hygiene.py tests/test_threading.py tests/test_dashboard.py tests/test_repo_jobs_sql.py tests/test_job_kind_drift.py` | 236 passed, 51 skipped | ✓ PASS |
+| Whole repository regression | `uv run pytest -q` | 1144 passed, 82 skipped | ✓ PASS |
+| Eval regression | `uv run python eval/run_eval.py --check` | Check passed | ✓ PASS |
+| Ruff quality gate | `uv run ruff check` | All checks passed | ✓ PASS |
+| Strict type quality gate | `uv run mypy` | 10 errors in two Phase 20 test files | ✗ FAIL |
+| Guarded live Postgres evidence | `uv run pytest -q -m 'integration and queueproof' tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_threading.py` | 49 skipped; no `DATABASE_URL`/`ALLOW_DB_RESET=1` | ? UNAVAILABLE |
 
 ## Probe Execution
 
@@ -197,40 +188,43 @@ No phase-declared or conventional `scripts/*/tests/probe-*.sh` probes were found
 
 ## Requirements Coverage
 
-| Requirement | Source Plan | Description | Status | Evidence |
-|---|---|---|---|---|
-| SEND-01 | 20-01, 20-02, 20-03, 20-04, 20-05, 20-09, 20-10, 20-12 | Reuse one reserved Message-ID and one durable send path per approved epoch | ✗ BLOCKED | Normal snapshot/job/idempotency paths pass; final-lease duplicate path, stale header routing, and logical email-id fencing remain. |
-| SEND-02 | 20-01, 20-03, 20-04, 20-07, 20-09, 20-10, 20-12 | Replay exact persisted subject/body/PDF bytes with bounded retry | ✗ BLOCKED | Snapshot/PDF/YTD replay passes; settlement can replay an arbitrary retryable result and live DB proof is unavailable. |
-| SEND-03 | 20-02, 20-03, 20-05, 20-06, 20-08, 20-09, 20-10, 20-11, 20-12 | Idempotency header, bounded ambiguity, safe human review, and isolated recruiter evidence | ✗ BLOCKED | Header and confirmation review paths pass; clarification review is not wired, fake parity is incomplete, and final send ambiguity bypasses review. |
+| Requirement | Status | Evidence |
+|---|---|---|
+| SEND-01 | ✗ BLOCKED | Normal reservation/idempotency tests pass, but unscoped sent-proof lookup and stale-epoch provider eligibility violate the per-epoch contract. |
+| SEND-02 | ✗ BLOCKED | Frozen payload replay and bounded allowlist pass; stale-epoch handler authorization and provider-success rollback risk remain. |
+| SEND-03 | ✗ BLOCKED | Idempotency header, queue vocabulary, and review projections pass; purpose-isolated action authorization and strict type/live evidence gates remain incomplete. |
 
 ## Anti-Patterns Found
 
-No unreferenced `TBD`, `FIXME`, or `XXX` markers, placeholder implementations, console-only handlers, or hardcoded empty user-visible data were found in the phase implementation/test files. The findings below are correctness/wiring defects, not debt-marker matches.
+| File | Pattern | Severity | Impact |
+|---|---|---|---|
+| `app/db/repo/emails.py:420-429` | Sent confirmation lookup is not epoch-scoped | 🛑 BLOCKER | Can suppress the current epoch's confirmation. |
+| `app/queue/handlers/send_outbound.py:66-80` | Stale epoch accepted as provider-authorized | 🛑 BLOCKER | Old frozen sends can reach the provider after retrigger. |
+| `app/routes/runs.py:1016-1050` | Confirmation actions lack review-kind authorization | 🛑 BLOCKER | Clarification review can be reconciled or cloned as confirmation. |
+| `app/queue/drain.py:194-245` | Invalid-context `FENCED` discards a still-held lease token | 🛑 BLOCKER | Lease can remain stranded and later be misleadingly reaped. |
+| `app/routes/runs.py:940-947` | Generic retry accepts clarification review | ⚠️ WARNING | Purpose-specific action boundary is incomplete. |
+| `tests/conftest.py:915-937` | Fake claim ignores due time and expired-lease reclaim | ⚠️ WARNING | Offline tests do not model durable retry timing/recovery. |
+| `app/db/repo/emails.py:710-713` | References chain is not current-epoch filtered | ⚠️ WARNING | New epoch threading can inherit stale outbound references. |
+| `app/db/repo/job_settlement.py:182-204` | Roster load occurs before durable success settlement completes | ⚠️ WARNING | A post-provider roster failure can roll back local sent evidence. |
+| `app/db/schema.sql:451-465` | Snapshot duplicates canonical `message_id` without equality enforcement | ⚠️ WARNING | Direct malformed SQL could split audit and provider identity. |
+| `tests/conftest.py:1042-1051` | Fake error detail stores raw exception text | ⚠️ WARNING | Fake does not exercise production diagnostic scrubbing. |
+| `uv run mypy` | Ten strict typing errors in Phase 20 tests | 🛑 BLOCKER | The configured repository type gate is red. |
 
-| File | Line | Pattern | Severity | Impact |
-|---|---:|---|---|---|
-| `app/db/repo/job_settlement.py` | 722-768 | Generic final-lease reaper for SEND_OUTBOUND | 🛑 BLOCKER | Ambiguous accepted sends can be retriggered as fresh confirmations. |
-| `app/db/repo/job_settlement.py` | 279-300 | Retry outcome without category allowlist | 🛑 BLOCKER | Unsafe/permanent failures may be automatically replayed. |
-| `app/db/repo/job_settlement.py` | 81-225 | Claimed email identity supplied by caller | 🛑 BLOCKER | Lease token does not fence logical snapshot identity. |
-| `app/db/repo/emails.py` | 795-800 | Header routing lacks current epoch | 🛑 BLOCKER | Stale clarification replies can resume the wrong round. |
-| `app/routes/runs.py` | 257-291 | Confirmation-only delivery review loader | 🛑 BLOCKER | Clarification delivery ambiguity has no operator-safe route. |
-| `tests/conftest.py` | 808-893 | Fake send validation/attempt budget drift | ⚠️ WARNING | Tests can accept malformed send jobs and miss production attempt policy. |
-| `app/db/repo/jobs.py` / `app/db/repo/job_settlement.py` | 240-264 / 210-225 | Opposite lock order | ⚠️ WARNING | Retry-now/worker races can deadlock and lose operator acceleration. |
-| `app/db/repo/emails.py` | 344-345 | Body included in bounded review projection | ⚠️ WARNING | Unnecessary PII exposure to projection callers. |
-| `tests/conftest.py` | 1524-1526 | Fake review attempts hardcoded to zero | ⚠️ WARNING | Nonzero attempt evidence is not tested through the fake. |
-| `app/db/repo/emails.py` | 661-677 | Broad legacy email-state mutator | ⚠️ WARNING | Inbound/arbitrary state mutation remains reachable. |
+No unreferenced `TBD`, `FIXME`, or `XXX` markers were found in the inspected Phase 20 implementation/test files.
+
+## Authentication/CSRF Review Judgment
+
+The review's CR-04 is a real deployment security risk: mutating dashboard routes have no operator authentication or CSRF protection. It is not counted as a Phase 20 SEND requirement failure because `.planning/REQUIREMENTS.md` explicitly lists operator authentication as out of scope/known accepted risk, and `.planning/PROJECT.md` explicitly says dashboard auth is out of scope for the demo. The Phase 16 action-boundary issue above is different and is in-scope: it violates the Phase 20 purpose-isolation contract even without considering authentication.
 
 ## Human Verification Required
 
-The automated gate is blocked before browser/UAT can be authoritative. After the blockers are fixed, manually verify the clarification delivery-review card, frozen-question evidence, retry/handled actions, and stale-epoch reply behavior in a browser. Visual appearance and end-to-end external-provider behavior remain human checks.
+After the blockers are fixed, run the guarded live-Postgres snapshot/trigger, epoch, lease-fence, and concurrency proofs with `DATABASE_URL` and `ALLOW_DB_RESET=1`; then manually inspect the confirmation and clarification review cards and exercise same-row retry, handled, reject, and typed confirmation authorization in a browser. External Resend crash/timeout behavior also remains a human/integration check.
 
 ## Gaps Summary
 
-The phase successfully implements the normal immutable snapshot → identifier-only job → snapshot gateway → lease settlement path, and all available unit/fake/full-suite checks pass. The phase goal is nevertheless not achieved because the most failure-sensitive paths are incomplete: final lease expiry bypasses delivery review, replay eligibility is not enforced at settlement, claimed logical email identity is not fenced, stale headers ignore the current epoch, and clarification ambiguity has no operator workflow. Fake parity and projection/mutator hygiene also need correction. The live Postgres proofs were skipped because the required database configuration is absent; they must be run after the code gaps are closed.
-
-**Next action:** fix the five blocker paths first (final-lease send handling, epoch predicate, replay category gate, persisted email-id fence, clarification review workflow), then fix the parity/wiring warnings, run the configured Postgres queueproof and full suite, and re-verify Phase 20.
+Plans 20-13 through 20-16 closed the prior settlement, replay-category, persisted-email fence, epoch-routing query, body-projection, fake enqueue, final-reaper, and clarification-review gaps in the normal paths. The goal is still not achieved: current-epoch fencing is incomplete at sent-proof lookup and provider dispatch, confirmation actions are not purpose-authorized, and invalid-context leases are not durably retired. Generic retry isolation, fake queue timing/reclaim parity, provider-success transaction ordering, and the strict mypy gate remain quality gaps. Authentication/CSRF is separately recorded as an explicitly accepted broader demo risk, not silently treated as a Phase 20 requirement.
 
 ---
 
-_Verified: 2026-07-17T21:54:11Z_  
+_Verified: 2026-07-17T23:54:07Z_
 _Verifier: the agent (gsd-verifier)_
