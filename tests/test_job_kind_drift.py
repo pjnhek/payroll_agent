@@ -226,6 +226,24 @@ class TestDispatchTableMatchesJobKind:
             dispatch.HANDLERS.keys()
         )
 
+    def test_unregistered_send_outbound_dispatch_fails_closed(self) -> None:
+        from app.queue import dispatch
+
+        job = Job(
+            id=uuid.uuid4(),
+            kind=JobKind.SEND_OUTBOUND,
+            run_id=uuid.uuid4(),
+            email_id=uuid.uuid4(),
+            operator_resolution_id=None,
+            event_id=None,
+            attempts=1,
+            max_attempts=8,
+            lease_token=uuid.uuid4(),
+        )
+
+        with pytest.raises(ValueError, match="no handler registered"):
+            dispatch.handle(job)
+
     def test_all_job_kinds_sql_and_handlers_land_atomically(self) -> None:
         """Every declared transport operation has one SQL value and handler."""
         from app.queue import dispatch

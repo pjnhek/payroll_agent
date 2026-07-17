@@ -13,6 +13,7 @@ import inspect
 import re
 import types
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -258,6 +259,64 @@ def test_advance_existing_send_job_due_now_requires_a_caller_transaction(
     with pytest.raises(ValueError, match="caller-owned transaction"):
         jobs.advance_existing_send_job_due_now(uuid.uuid4(), uuid.uuid4())
     assert fake_conn.executed == []
+
+
+def test_fake_retry_now_advances_only_the_one_eligible_send_job(fake_repo) -> None:
+    from app.db.repo.jobs import AdvanceSendJobOutcome, send_outbound_dedup_key
+
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = {"id": run_id, "reply_epoch": 0}
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<frozen@example.test>",
+        from_addr="agent@example.test",
+        to_addr="client@example.test",
+        reply_to="reply@example.test",
+        in_reply_to=None,
+        references_header=None,
+        subject="Confirmation",
+        body_text="Frozen body",
+        attachments=[],
+    )
+    email_id = snapshot["email_id"]
+    first = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=send_outbound_dedup_key(email_id),
+        run_id=run_id,
+        email_id=email_id,
+    )
+    assert first is not None
+    assert (
+        fake_repo.enqueue_job(
+            kind=JobKind.SEND_OUTBOUND,
+            dedup_key=send_outbound_dedup_key(email_id),
+            run_id=run_id,
+            email_id=email_id,
+        )
+        is None
+    )
+
+    assert (
+        fake_repo.advance_existing_send_job_due_now(run_id, email_id, conn=object())
+        is AdvanceSendJobOutcome.ADVANCED
+    )
+    job = fake_repo.get_job(first)
+    assert job is not None and job["available_in_seconds"] == 0.0
+    job["state"] = "leased"
+    assert (
+        fake_repo.advance_existing_send_job_due_now(run_id, email_id, conn=object())
+        is AdvanceSendJobOutcome.NOT_PENDING
+    )
+    job["state"] = "pending"
+    fake_repo.outbound_snapshots[str(email_id)]["payload"]["reserved_at"] = datetime.now(
+        UTC
+    ) - timedelta(hours=20)
+    assert (
+        fake_repo.advance_existing_send_job_due_now(run_id, email_id, conn=object())
+        is AdvanceSendJobOutcome.EXPIRED
+    )
 
 
 def test_claim_sql_shape(fake_conn) -> None:
@@ -774,7 +833,9 @@ def test_job_kind_schema_widens_when_handler_lands() -> None:
     jobs = schema.split("CREATE TABLE IF NOT EXISTS jobs", 1)[1].split(");", 1)[0]
     kind_check = re.search(r"CHECK \(kind IN \(([^)]*)\)\)", jobs)
     assert kind_check is not None
-    assert kind_check.group(1) == "'ingest','run_pipeline','resume_reply','operator_resume','send_outbound'"
+    assert kind_check.group(1) == (
+        "'ingest','run_pipeline','resume_reply','operator_resume','send_outbound'"
+    )
 
 
 def test_jobs_kind_live_migration_casts_catalog_names_to_text() -> None:

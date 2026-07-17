@@ -27,7 +27,7 @@ import os
 import threading
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -911,6 +911,32 @@ class InMemoryRepo:
         job["state"] = "done"
         job["lease_token"] = None
         return True
+
+    def advance_existing_send_job_due_now(self, run_id, email_id, *, conn=None):
+        """Mirror the existing-job-only delivery retry operation."""
+        from app.db.repo.jobs import AdvanceSendJobOutcome
+        from app.models.job import JobKind
+
+        if conn is None:
+            raise ValueError(
+                "advance_existing_send_job_due_now requires a caller-owned transaction"
+            )
+        snapshot = self.load_outbound_snapshot(run_id, email_id, conn=conn)
+        if snapshot is None:
+            return AdvanceSendJobOutcome.MISSING
+        if snapshot["reserved_at"] + timedelta(hours=20) <= datetime.now(UTC):
+            return AdvanceSendJobOutcome.EXPIRED
+        for job in self.jobs.values():
+            if (
+                job["kind"] == JobKind.SEND_OUTBOUND.value
+                and job["run_id"] == run_id
+                and job["email_id"] == email_id
+            ):
+                if job["state"] != "pending":
+                    return AdvanceSendJobOutcome.NOT_PENDING
+                job["available_in_seconds"] = 0.0
+                return AdvanceSendJobOutcome.ADVANCED
+        return AdvanceSendJobOutcome.MISSING
 
     def fail_job(self, job_id, lease_token, *, error, backoff_seconds, conn=None):
         """Mirror repo.fail_job: fenced on lease_token, dead-letters at
@@ -1922,6 +1948,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         # class of miss impossible to reintroduce.
         "rewind_for_reclaim",
         "enqueue_job",
+        "advance_existing_send_job_due_now",
         "claim_job",
         "complete_job",
         "fail_job",
