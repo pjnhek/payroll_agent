@@ -5,8 +5,8 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: ready_to_plan
-stopped_at: Phase 19 complete; ready to discuss or plan Phase 20
-last_updated: "2026-07-17T15:22:06.513Z"
+stopped_at: Phase 20 context gathered
+last_updated: "2026-07-17T16:55:12.216Z"
 last_activity: 2026-07-17
 last_activity_desc: Phase 19 complete, transitioned to Phase 20
 progress:
@@ -317,9 +317,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T15:22:06.513Z
-Stopped at: Phase 19 complete; ready to discuss or plan Phase 20
-Resume file: None
+Last session: 2026-07-17T16:55:12.204Z
+Stopped at: Phase 20 context gathered
+Resume file: .planning/phases/20-exactly-once-send/20-CONTEXT.md
 
 ## Operator Next Steps
 
