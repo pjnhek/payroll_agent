@@ -69,6 +69,23 @@ def test_chart_svg_is_styled_aggregate_only_and_does_not_mutate_summary(
     assert before == after
 
 
+def test_committed_chart_is_the_styled_aggregate_artifact() -> None:
+    """The checked-in SVG carries the same safe, dashboard-aligned structure."""
+    svg = (_REPO_ROOT / "eval" / "chart.svg").read_text()
+    lowered = svg.lower()
+
+    assert "#1e3a5f" in lowered
+    assert "#6b7280" in lowered
+    assert "#e8eaed" in lowered
+    assert "#4682b4" not in lowered
+    assert "#2e8b57" not in lowered
+    assert "stroke: #000000" not in lowered
+    assert "Extraction scored against committed extraction caches" in svg
+    assert "FALSE-PROCESS" in svg
+    assert "Thomas Bergmann" not in svg
+    assert "David Reyes" not in svg
+
+
 def test_eval_chart_module_boundary_excludes_delivery_and_mutation_code() -> None:
     """D-04/D-13: eval chart code cannot import delivery or persistence writers."""
     tree = ast.parse(_RUN_EVAL_PATH.read_text())
