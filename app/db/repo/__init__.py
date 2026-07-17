@@ -43,6 +43,10 @@ from app.db.repo.emails import (
     update_email_message_sent,
     update_email_message_state,
 )
+from app.db.repo.inbound_events import (
+    insert_or_get_inbound_event,
+    load_inbound_event,
+)
 from app.db.repo.job_settlement import (
     SettlementOutcome,
     enqueue_classified_retry,
@@ -162,6 +166,8 @@ __all__ = [
     "settle_background_terminal",
     "settle_infrastructure_failure",
     "reap_expired_final_attempt",
+    "insert_or_get_inbound_event",
+    "load_inbound_event",
     "load_roster_for_business",
     "_ACCENT_CLASS_MAP",
     "_TERMINAL_STATUSES",

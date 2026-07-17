@@ -83,7 +83,8 @@ def test_event_repository_boundary_and_stable_conflict_identity(fake_conn) -> No
     assert len(fake_conn.executed) == 2
     assert "ON CONFLICT (external_event_id) DO NOTHING" in fake_conn.all_sql()
     assert "WHERE external_event_id = %s" in fake_conn.all_sql()
-    assert fake_conn.executed[0][1] == ("evt_123", payload)
+    assert fake_conn.executed[0][1][0] == "evt_123"
+    assert fake_conn.executed[0][1][1].obj == payload
     assert fake_conn.executed[1][1] == ("evt_123",)
 
 
