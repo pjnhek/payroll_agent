@@ -12,20 +12,22 @@ A messy real-world payroll email goes in; a correct, human-approved payroll come
 
 ## Current State
 
-**v4 — Durable Execution — IN PROGRESS.** Phase 18 is complete: 3 of 6 phases and 9 of 19 requirements
-are now finished. The queue substrate, external pump, and failure policy are in place before the Phase 19
-webhook cutover, preserving the milestone's required dependency order.
+**v4 — Durable Execution — IN PROGRESS.** Phase 19 is complete: 4 of 6 phases and 10 of 19 requirements
+are now finished. The durable queue, pump, failure policy, and webhook cutover are live; Phase 20 now closes
+the remaining ambiguous-send window with provider idempotency.
 
-- **Failures settle honestly** — both orchestration entry points return one explicit
-  `ok | retryable | terminal` contract; active consumers no longer accept `None` as success.
-- **Recovery is queue-owned** — replay-safe failures become bounded delayed retries, exhaustion and expired
-  final-attempt leases dead-letter atomically, and operator Retrigger starts a fresh generation without
-  rewriting dead history.
-- **Legacy sweep recovery is gone** — both sweep APIs and every caller/fake/export were deleted, and
-  `GET /runs` is now a side-effect-free read.
-- **Phase 18 evidence** — canonical verification passed **9/9** with a clean 41-file code review; the root
-  hermetic suite passed **900 tests** with 68 guarded skips. The reset-enabled live-Postgres environment was
-  unavailable, so its 17 selected queueproof cases remain additional evidence rather than claimed passes.
+- **Accepted means durable** — the authenticated webhook commits a bounded inbound event and identifier-only
+  `INGEST` job before returning 200; provider body fetch, sender routing, run creation, and orchestration happen
+  only in later durable execution.
+- **Every producer is durable** — all eight historical in-process payroll producers and their compatibility
+  wrappers were migrated or deleted, with a non-vacuous architecture guard preventing their return.
+- **Replay and authority remain deterministic** — Svix event identity and RFC Message-ID are independent dedup
+  layers; operator generations are immutable, commit-serialized, and only the first valid winner can affect
+  payroll or alias learning.
+- **Phase 19 evidence** — canonical verification passed **40/40**, UAT passed **1/1**, and the ASVS L1 threat
+  register closed all **49** authored threats (one documented low-risk demo tradeoff accepted). GitHub run
+  `29589513220` executed the exact concurrent same-Svix proof against ephemeral Postgres: one event, one
+  `INGEST` job, one run; **44 passed, 1060 deselected**. All four exact-revision workflows were green.
 
 **v3 — Production-Ready Codebase — SHIPPED 2026-07-13.** The codebase now reads as production-quality
 without a line of money behavior changed. 4 phases (12–15), 16/16 requirements, 227 commits, audit PASSED.
@@ -83,6 +85,15 @@ dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
 ## Requirements
 
 ### Validated
+
+- **Phase 19 (Webhook Cutover & Durable Ingest), 2026-07-17:** An authenticated inbound receipt now commits
+  the bounded provider envelope and one identifier-only `INGEST` job atomically before HTTP 200; provider fetch,
+  sender checks, RFC Message-ID dedup, run creation, and orchestration occur only in durable handlers. All eight
+  historical in-process payroll producers were migrated, stale wrappers deleted, demo/reply/operator paths made
+  transactionally queue-owned, and terminal-only inbound retention added without erasing job audit. Immutable
+  operator generations make the first valid committed winner authoritative while later generations remain safe
+  no-ops. Verified 40/40, UAT 1/1, security threats open 0; exact real-Postgres same-Svix proof passed in GitHub
+  concurrency run `29589513220` with one event, one `INGEST` job, and one run. QUEUE-04.
 
 - **Phase 18 (Failure Policy & Sweep Deletion), 2026-07-16:** Initial and clarification-resume orchestration
   now share one bounded `PipelineResult`; replay-safe failures bridge into durable backoff while terminal work,
@@ -214,8 +225,8 @@ Prior milestones: **v1.0** (email-driven pipeline, archived in `milestones/v1.0-
 | **v2:** Every multi-write op wrapped in one transaction; dedup + run-creation resolved transactionally; alias write in a nested SAVEPOINT (Phase 9) | A half-written run (paystubs replaced but status stale; email sent but status not advanced; duplicate run on a raced webhook) is the exact senior-engineer failure the milestone must not have | ✓ Good — proven via fault injection + the Phase 10 concurrency capstone under genuine parallelism |
 | **v2:** Alias learning binds on explicit client confirmation of the suggestion, not a re-extraction count-diff (Phase 11) | The original count-diff condition was circular and unreachable, so the write side never fired; binding on human-stated evidence preserves the misname guard's never-learn-from-inference intent | ✓ Good — full-loop hermetic test proves the system stops re-asking; same-record evidence guard added after review |
 | **v2:** Round cap escalates to a first-class `needs_operator` status rather than spamming or silently stalling (Phase 11) | The real failure was a silent park at `awaiting_reply` with no email out (WR-05), not spam; a bounded machine with a human escape is the safe terminal | ✓ Good — round-aware idempotency + 3-round cap + operator resolve/resume shipped |
-| **v4:** `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine | A job row that also encodes "what payroll status comes next" creates two sources of truth for the same question — the classic way a queue corrupts a state machine it was added to protect | ⏳ v4 |
-| **v4:** An authenticated pump endpoint + frequent cron, not an internal timer loop | Render free wakes only on **inbound HTTP**; internal sleeps do not keep it alive. Without an external pump, a queue is durable *storage* and never durable *execution* — a job retried with a future `available_at` would sit forever | ⏳ v4 |
+| **v4:** `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine | A job row that also encodes "what payroll status comes next" creates two sources of truth for the same question — the classic way a queue corrupts a state machine it was added to protect | ✓ Good through Phase 19 — queue state remains a bounded secondary projection and never drives payroll status |
+| **v4:** An authenticated pump endpoint + frequent cron, not an internal timer loop | Render free wakes only on **inbound HTTP**; internal sleeps do not keep it alive. Without an external pump, a queue is durable *storage* and never durable *execution* — a job retried with a future `available_at` would sit forever | ✓ Good through Phase 19 — the pump drains all durable kinds and owns bounded terminal-event retention |
 | **v4:** Exactly-once send via Resend's `Idempotency-Key`, keyed on the existing pre-send reserved `message_id` | `gateway.py` already mints a durable unique synthetic `message_id` and writes a `reserved` row *before* calling Resend — it just discards it. Handing it to the provider (and reusing it on retry, never minting a fresh uuid4) closes the double-payroll-email window that retries would otherwise open | ⏳ v4 |
 | **v4:** Milestone scoped to durability, not throughput | At ~1 payroll email per client per week, fairness/priority/backpressure machinery is building for load that never arrives; durability is the claim that is both true and load-bearing for any future productization | ⏳ v4 |
 
@@ -237,13 +248,12 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-16 — **v4 Phase 18 (Failure Policy & Sweep Deletion) complete.** Both orchestrator
-entry points now return an explicit bounded result; retryable work is durably rescheduled, terminal/exhausted
-work settles atomically, final-attempt lease reaping is exhaustive and starvation-free, and the legacy sweep
-plus page-load mutation path are deleted. Canonical verification passed 9/9 after closing CR-01, CR-02, and
-WR-01; standard-depth code review is clean; root hermetic suite 900 passed / 68 guarded skips. Phase 19 is next:
-move webhook body-fetch and every remaining `BackgroundTask` producer onto durable ingest. Prior: Milestone v4
-started 2026-07-13; v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
+*Last updated: 2026-07-17 — **v4 Phase 19 (Webhook Cutover & Durable Ingest) complete.** The webhook now
+commits an authenticated event plus `INGEST` job before 200, all eight historical in-process payroll producers
+are durable, and immutable operator generations preserve one commit-selected authority. Canonical verification
+passed 40/40, UAT passed 1/1, security threats open 0, and exact real-Postgres same-Svix concurrency passed in
+GitHub run `29589513220`. Phase 20 is next: make confirmation delivery exactly-once through provider idempotency.
+Prior: Milestone v4 started 2026-07-13; v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
 
 <!-- Prior footer (v4 start): Last updated: 2026-07-13 — Milestone v4 Durable Execution started. Scoped from an adversarial audit finding two independent break-under-pressure defects: in-memory BackgroundTask durability and synchronous webhook work blocking the event loop. Target features: durable handoff, authenticated external pump, explicit failure policy, exactly-once send, and durability proofs. Throughput machinery explicitly out of scope. Design: docs/superpowers/specs/2026-07-13-durable-execution-design.md. -->
 

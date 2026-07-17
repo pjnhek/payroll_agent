@@ -2,42 +2,42 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 19
-current_phase_name: webhook-cutover-durable-ingest
-status: verifying
-stopped_at: Completed 19-10-PLAN.md; Phase 19 plans complete, verification next
-last_updated: "2026-07-17T05:03:45.528Z"
-last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 10 completed; all 12 plans executed and phase verification is next
+current_phase: 20
+current_phase_name: Exactly-Once Send
+status: ready_to_plan
+stopped_at: Phase 19 complete; ready to discuss or plan Phase 20
+last_updated: "2026-07-17T15:22:06.513Z"
+last_activity: 2026-07-17
+last_activity_desc: Phase 19 complete, transitioned to Phase 20
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 41
   completed_plans: 41
-  percent: 100
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execution started)
+See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 19 — webhook-cutover-durable-ingest
+**Current focus:** Phase 20 — Exactly-Once Send
 
 ## Current Position
 
-Phase: 19 (webhook-cutover-durable-ingest) — VERIFYING
-Plan: 12 of 12
-Status: All plans executed — ready for phase verification
-Last activity: 2026-07-16 — Phase 19 Plan 10 completed; all 12 plans executed and phase verification is next
+Phase: 20 — Exactly-Once Send
+Plan: Not started
+Status: Phase 19 verified and complete — ready to discuss or plan Phase 20
+Last activity: 2026-07-17 — Phase 19 complete, transitioned to Phase 20
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 103
+- Total plans completed: 113
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -63,6 +63,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 10 completed; all 12 plans executed 
 | 16 | 10 | - | - |
 | 17 | 5 | - | - |
 | 18 | 14 | - | - |
+| 19 | 12 | - | - |
 
 **Recent Trend:**
 
@@ -316,10 +317,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T05:03:45.519Z
-Stopped at: Completed 19-10-PLAN.md; Phase 19 plans complete, verification next
+Last session: 2026-07-17T15:22:06.513Z
+Stopped at: Phase 19 complete; ready to discuss or plan Phase 20
 Resume file: None
 
 ## Operator Next Steps
 
-- Discuss the first v4 phase with `/gsd-discuss-phase 16` (Queue Substrate & Unblocked Webhook)
+- Discuss Phase 20 with `/gsd-discuss-phase 20` (Exactly-Once Send), then create its executable plans with `/gsd-plan-phase 20`.
