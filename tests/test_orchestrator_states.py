@@ -195,7 +195,10 @@ def test_delivery_retries_only_explicit_transient_provider_failures(exc, reason)
         (_resend_error(400, "validation_error"), PipelineReason.DELIVERY_VALIDATION_FAILURE),
         (_resend_error(401, "missing_api_key"), PipelineReason.DELIVERY_CONFIGURATION_FAILURE),
         (_resend_error(403, "invalid_api_key"), PipelineReason.DELIVERY_AUTHORIZATION_FAILURE),
-        (_resend_error(409, "concurrent_idempotent_requests"), PipelineReason.DELIVERY_PROVIDER_FAILURE),
+        (
+            _resend_error(409, "concurrent_idempotent_requests"),
+            PipelineReason.DELIVERY_PROVIDER_FAILURE,
+        ),
         (RuntimeError("provider SECRET-BODY"), PipelineReason.DELIVERY_PROVIDER_FAILURE),
     ],
 )
