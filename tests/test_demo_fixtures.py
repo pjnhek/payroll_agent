@@ -1,7 +1,7 @@
 """Demo-fixture replay tests (DEMO-01).
 
-The committed CLEAN fixture replays end-to-end via POST and reaches
-awaiting_approval — then a crude approve drives it to APPROVED.
+The committed CLEAN fixture is accepted as a durable receipt, drains through
+INGEST and RUN_PIPELINE, reaches awaiting_approval, and then approves.
 
 The reframed GATE-BLOCK hero ("David Reyez" vs seeded "David Reyes") and the new
 COLLISION-SAFETY fixture ("D. Reyes" — a shared alias on two Business-2 employees)
@@ -23,7 +23,11 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db import repo
 from app.models.contracts import InboundEmail
+from app.models.job import JobKind
+from app.queue import drain
+from app.queue.drain import DrainOutcome
 from tests.test_demo_landing import (
     _AtomicDemoStore,
     _demo_client,
@@ -82,13 +86,63 @@ def test_clean_fixture_validates_as_inbound_email():
     assert email.from_addr in seeded_emails, "fixture from_addr must match a seed contact_email"
 
 
-def test_clean_fixture_replays_to_pause_and_approves(client, fake_repo, mock_llm):
+def test_clean_fixture_replays_to_pause_and_approves(
+    client, fake_repo, mock_llm, monkeypatch: pytest.MonkeyPatch
+):
     _script_clean_run(mock_llm)
+    events: dict[uuid.UUID, dict[str, object]] = {}
+
+    def _insert_or_get_event(*, external_event_id, payload, conn=None):
+        for event in events.values():
+            if event["external_event_id"] == external_event_id:
+                return event["id"], False
+        event_id = uuid.uuid4()
+        events[event_id] = {
+            "id": event_id,
+            "external_event_id": external_event_id,
+            "payload": payload,
+        }
+        return event_id, True
+
+    def _load_event(event_id, conn=None):
+        event = events.get(event_id)
+        if event is None:
+            return None
+        return {"id": event["id"], "payload": event["payload"]}
+
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get_event)
+    monkeypatch.setattr(repo, "load_inbound_event", _load_event)
 
     r = client.post("/webhook/inbound", json=json.loads(_FIXTURE.read_text()))
     assert r.status_code == 200
+    receipt = r.json()
+    assert receipt["status"] == "accepted"
+    assert set(receipt) == {"status", "event_id"}
+    event_id = uuid.UUID(receipt["event_id"])
+    assert events[event_id]["payload"] == json.loads(_FIXTURE.read_text())
 
-    run_id = r.json()["run_id"]
+    ingest_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.INGEST.value
+    ]
+    assert len(ingest_jobs) == 1
+    assert ingest_jobs[0]["event_id"] == event_id
+    assert fake_repo.runs == {}, "the request must not execute payroll inline"
+
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert len(fake_repo.runs) == 1
+    run_id = next(iter(fake_repo.runs.values()))["id"]
+    pipeline_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RUN_PIPELINE.value
+    ]
+    assert len(pipeline_jobs) == 1
+    assert pipeline_jobs[0]["run_id"] == run_id
+
+    assert drain.drain_once() is DrainOutcome.DONE
+
     run = fake_repo.load_run(run_id)
     assert run["status"] == "awaiting_approval", "clean fixture must reach the pause"
 
