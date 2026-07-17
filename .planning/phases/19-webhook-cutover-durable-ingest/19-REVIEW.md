@@ -1,6 +1,6 @@
 ---
 phase: 19
-reviewed: 2026-07-17T05:11:51Z
+reviewed: 2026-07-17T05:26:04Z
 depth: standard
 files_reviewed: 56
 files_reviewed_list:
@@ -61,59 +61,55 @@ files_reviewed_list:
   - tests/test_webhook_dedup_race.py
   - tests/test_webhook_unblocked.py
 findings:
-  critical: 2
-  warning: 2
+  critical: 0
+  warning: 1
   info: 0
-  total: 4
+  total: 1
 status: issues_found
 ---
 
-# Phase 19 Code Review
+# Phase 19: Code Review Report
+
+**Reviewed:** 2026-07-17T05:26:04Z
+**Depth:** standard
+**Files Reviewed:** 56
+**Status:** issues_found
+
+## Summary
+
+All four findings from the first review are resolved by the committed fixes. The authority postflight now rejects remembering overrides and malformed supersession relationships; clarification backfill is scoped to the current reply epoch; deployment revision input requires a canonical 40-character SHA; and a single live state-machine CHECK containing extra values now produces schema drift.
+
+The full persisted scope was reviewed again after those changes. One distinct schema-health false-pass remains when PostgreSQL has more than one CHECK constraint on the same state-machine column.
+
+## Original Finding Resolution
+
+| Original finding | Result | Evidence |
+|---|---|---|
+| CRITICAL-01: incomplete authority postflight | Resolved | `28049f4` adds zero-required counters for remembered overrides, authoritative rows with supersession targets, and losers not pointing to the authoritative generation for the same run; reopen consumes the expanded predicate. |
+| CRITICAL-02: all-epoch clarification backfill | Resolved | `cd65f09` groups by `(run_id, epoch)` and joins `sub.epoch` to the run's current `reply_epoch`. |
+| WARNING-01: abbreviated deployment revision | Resolved | `0e1c340` requires exactly 40 lowercase hexadecimal characters and rejects short, long, and uppercase inputs. |
+| WARNING-02: extra live state value accepted | Resolved for the reported single-constraint case | `7363fb8` records unexpected status/purpose values and makes them fail `SchemaDiff.is_in_sync`. |
 
 ## Narrative Findings (AI reviewer)
 
-### CRITICAL-01 — Authority postflight can reopen writes over invalid or remembering legacy generations
+### WR-01 — Multiple CHECK constraints are unioned, masking restrictive schema drift
 
-**Path:** `scripts/migrate_operator_resolution_authority.py:38-59`, `scripts/migrate_operator_resolution_authority.py:240-262`, `scripts/migrate_operator_resolution_authority.py:278-292`
+**File:** `app/db/schema_introspect.py:431-453`
 
-The migration explicitly resets legacy overrides to `remember = FALSE`, and the runtime rejects malformed parent states such as an authoritative generation that also has `superseded_by` set. The postflight does not verify either invariant. Its five counters only detect winner counts and non-authoritative rows with a null supersession target. It therefore returns success for at least these unsafe states:
+**Issue:** `diff_against_live` gathers every CHECK whose constrained column is `payroll_runs.status` or `email_messages.purpose`, then unions all values into one set with `|=`. PostgreSQL applies multiple CHECK constraints with AND semantics, not OR semantics. If the expected status CHECK exists alongside a second restrictive CHECK such as `status IN ('received')`, the union is still the complete expected set and the health check returns `is_in_sync=True`, even though nearly every legal application transition will fail at the database. An unparseable second CHECK is similarly ignored because it contributes an empty set. The same false-pass is used by `/health/schema`, the schema CLI, and the writer-fence reopen gate.
 
-- a legacy override still has `remember = TRUE`;
-- an authoritative generation also has `superseded_by` set;
-- a losing generation points at a winner from another run or at a non-authoritative generation.
+This was reproduced against the existing hermetic schema-introspection test double by supplying the normal expected status constraint plus `CHECK (status = ANY (ARRAY['received'::text]))`; the current result was `is_in_sync=True` with empty diagnostics.
 
-`--reopen-writes` relies on this same incomplete predicate immediately before opening the persistent writer fence. A migration defect or manual/live-data drift can consequently pass the advertised authority gate even though the Phase 19 reader later rejects the generation, or can retain alias-learning intent that was never explicitly approved under the new contract.
-
-**Fix:** Extend `_POSTFLIGHT_SQL` and `_POSTFLIGHT_FIELDS` with zero-required counters for `remember = TRUE` on migrated legacy overrides and for invalid supersession relationships. Validate that an authoritative row has no supersession target, and that every non-authoritative row points to the authoritative generation for the same run. Make `_postflight_ok` require those counters to be zero, and add negative tests for every malformed state before allowing reopen.
-
-### CRITICAL-02 — Reapplying schema resurrects historical clarification rounds after a retrigger
-
-**Path:** `app/db/schema.sql:378-395`
-
-The backfill sets `payroll_runs.clarification_round` to the count of every sent clarification row for the run, across all `reply_epoch` values. Retrigger intentionally resets `clarification_round` to zero and increments `reply_epoch`, while preserving old email rows as immutable audit history. Reapplying `schema.sql` after such a retrigger therefore counts stale prior-epoch sends and raises the current epoch's counter. A run that had three historical sends can immediately look capped in its fresh conversation and escalate to `needs_operator` instead of sending the first new clarification.
-
-The comment calling the update idempotent is only true before epoch-scoped retriggers exist; it is not safe as a permanently re-runnable schema statement.
-
-**Fix:** Restrict the backfill to `email_messages.epoch = payroll_runs.reply_epoch`, using a correlated aggregate or by joining the run inside the aggregate. Prefer an explicit migration marker or a condition that only initializes rows introduced with the new column, so future bootstrap runs cannot recompute mutable current-epoch state from all-time history. Add a regression with prior-epoch sent rows, a retriggered run at round zero, and schema reapplication.
-
-### WARNING-01 — “Exact revision” gate accepts abbreviated commit prefixes
-
-**Path:** `scripts/migrate_operator_resolution_authority.py:266-275`; `tests/test_operator_resolution_migration.py:251-279`
-
-`_revision_is_exact` accepts any lowercase hexadecimal string from 7 to 40 characters, and the green-path test uses a 16-character prefix. That is a bounded prefix, not the exact immutable git revision required by the cutover protocol. The reopen command can print and accept an ambiguous or mistyped prefix while claiming the live Phase 19 artifact was proven.
-
-**Fix:** Require the canonical full 40-character commit SHA (`[0-9a-f]{40}`) and update the positive test to use one. Keep abbreviated values in the rejection matrix.
-
-### WARNING-02 — Schema health treats extra state-machine values as in sync
-
-**Path:** `app/db/schema_introspect.py:415-441`, `app/db/schema_introspect.py:552-560`
-
-The live status and email-purpose checks compute only `expected - live`. A live CHECK constraint that permits all expected values plus a stale or misspelled extra value reports `is_in_sync`. Extra state-machine values are not equivalent to harmless extra columns: the database can persist them while Python enum construction and handlers do not recognize them. This also weakens the schema check used by the writer-fence reopen path.
-
-**Fix:** Compare these two finite state-machine catalogs exactly. Add `unexpected_status_values` and `unexpected_purpose_values` to `SchemaDiff` (or otherwise treat the symmetric difference as drift), include them in `is_in_sync`/diagnostics, and add tests where the live CHECK contains one extra value.
+**Fix:** Preserve constraints as separate parsed rows instead of unioning them. For these exact finite state-machine catalogs, fail closed unless each column has exactly one parseable CHECK and that CHECK's value set exactly equals the expected set. Alternatively, compute the actual intersection while separately rejecting any unparseable or additional constraint. Add regression cases for an expected CHECK plus a restrictive second CHECK and for an expected CHECK plus an unparseable second CHECK.
 
 ## Verification Notes
 
-- Reviewed the 56 scoped production, migration, template/static, and test files against base `a6efbbf37ee6828680abf6694abf99f0a5acd4ee`.
-- Targeted existing coverage passes: `UV_CACHE_DIR=/tmp/gsd-phase19-review-uv-cache uv run --offline --no-sync pytest -q tests/test_operator_resolution_migration.py tests/test_schema_introspect.py` -> `41 passed`.
-- The passing targeted suite does not invalidate the findings: its positive reopen case explicitly accepts a short SHA, and it has no negative coverage for `remember=true`, malformed supersession relationships, extra state values, or a prior-epoch clarification backfill.
+- Persisted-scope test run: `487 passed, 55 skipped` in 173.51s. The skips are guarded live-database cases unavailable to the local run.
+- Ruff across all scoped Python source and test files: `All checks passed!`.
+- No source file was modified during re-review.
+
+---
+
+_Reviewed: 2026-07-17T05:26:04Z_
+_Reviewer: the agent (gsd-code-reviewer generic-agent workaround)_
+_Depth: standard_
