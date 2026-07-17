@@ -204,7 +204,7 @@ pump and the failure policy exist would ship a durability regression, not an imp
   3. Killing the process immediately after the webhook returns 200 — before any pipeline work starts — does not lose the email; the accepted event is durably recorded and the run completes once a worker or the pump picks it up.
   4. A clarification reply from an unauthorized sender is still rejected exactly as it is today — moving the ingest transaction into a worker did not weaken the sender-revalidation guard.
 
-**Plans**: 12/12 plans complete
+**Plans**: 12/16 plans complete
 
 **Wave 1** (additive receipt and operator-authority foundation):
 
@@ -257,19 +257,54 @@ parallel with it.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
 **Plans**: 12/12 plans complete
+**Wave 1**
 
 - [x] 20-01-PLAN.md
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [x] 20-02-PLAN.md
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [x] 20-03-PLAN.md
-- [x] 20-04-PLAN.md
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 20-09-PLAN.md
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [x] 20-05-PLAN.md
+- [x] 20-11-PLAN.md
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [x] 20-04-PLAN.md
+- [x] 20-10-PLAN.md
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
 - [x] 20-06-PLAN.md
+- [x] 20-12-PLAN.md
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
 - [x] 20-07-PLAN.md
 - [x] 20-08-PLAN.md
-- [x] 20-09-PLAN.md
-- [x] 20-10-PLAN.md
-- [x] 20-11-PLAN.md
-- [x] 20-12-PLAN.md
+
+**Wave 9** *(gap closure; blocked on completed Wave 8)*
+
+- [ ] 20-13-PLAN.md
+- [ ] 20-14-PLAN.md
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
+- [ ] 20-15-PLAN.md
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
+- [ ] 20-16-PLAN.md
 
 ### Phase 21: Durability Proofs & Ops View
 
