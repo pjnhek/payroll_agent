@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Completed 19-03-PLAN.md
-last_updated: "2026-07-17T00:42:48.303Z"
+stopped_at: Completed 19-04-PLAN.md
+last_updated: "2026-07-17T00:57:18.645Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 02 completed
+last_activity_desc: Phase 19 Plan 04 completed
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 32
-  percent: 50
+  completed_plans: 33
+  percent: 80
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
-Plan: 4 of 12
+Plan: 5 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 02 completed
+Last activity: 2026-07-16 — Phase 19 Plan 04 completed
 
 ## Performance Metrics
 
@@ -113,6 +113,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 02 completed
 | Phase 19 P01 | 12min | 3 tasks | 9 files |
 | Phase 19 P02 | 12min | 2 tasks | 2 files |
 | Phase 19 P03 | 13min | 3 tasks | 4 files |
+| Phase 19 P04 | 13min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -218,6 +219,9 @@ Recent decisions affecting current work:
 - [Phase 19]: Delayed ingest returns only a bounded PipelineResult while its internal outcome enum keeps normal business classifications payload-free. — Queue handlers need a settlement-safe value boundary without exposing message or provider data.
 - [Phase 19]: New-run and reply dedup keys are derived only from persisted run and email identifiers. — Identifier-only queue records preserve transport and payroll state separation.
 - [Phase 19]: RFC duplicate replies rehydrate the stored inbound row and must pass consumption, same-run, awaiting-reply, and sender-ownership checks before enqueue. — Transport retry must not weaken reply authorization or reconstruct authority from a redelivered payload.
+- [Phase 19]: Open INGEST work carries event_id only; bounded retention may null it only after done or dead.
+- [Phase 19]: INGEST enqueue uses the exact ingest:{event_id} dedup key and rejects every mixed business identifier before SQL.
+- [Phase 19]: The late-bound ingest handler validates kind and context, then forwards only the bounded delayed-ingest result.
 
 ### Pending Todos
 
@@ -283,8 +287,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T00:42:08.271Z
-Stopped at: Completed 19-03-PLAN.md
+Last session: 2026-07-17T00:57:18.634Z
+Stopped at: Completed 19-04-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
