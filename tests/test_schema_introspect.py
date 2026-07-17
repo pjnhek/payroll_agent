@@ -217,6 +217,8 @@ def _script_in_sync(
     conn: FakeConnection,
     *,
     drop_status: str | None = None,
+    extra_status: str | None = None,
+    extra_purpose: str | None = None,
     drop_column: tuple[str, str] | None = None,
     drop_table: str | None = None,
     drop_uq: bool = False,
@@ -246,6 +248,11 @@ def _script_in_sync(
     status_def = LIVE_STATUS_DEF
     if drop_status:
         status_def = status_def.replace(f", '{drop_status}'::text", "")
+    if extra_status:
+        status_def = status_def.replace("])))", f", '{extra_status}'::text])))")
+    purpose_def = LIVE_PURPOSE_DEF
+    if extra_purpose:
+        purpose_def = purpose_def.replace("])))", f", '{extra_purpose}'::text])))")
     uq_present = set() if drop_uq else {"uq_email_run_purpose_round_epoch"}
     for table in exp.tables:
         rows = []
@@ -256,7 +263,7 @@ def _script_in_sync(
                 data_type = "text" if data_type != "text" else "uuid"
             rows.append((column, data_type, "YES" if nullable else "NO"))
         conn.script_fetchall(rows)
-    conn.script_fetchall([("status", status_def), ("purpose", LIVE_PURPOSE_DEF)])
+    conn.script_fetchall([("status", status_def), ("purpose", purpose_def)])
     conn.script_fetchall([(name,) for name in uq_present])
 
     index_rows = [
@@ -419,6 +426,29 @@ def test_diff_missing_status_value_live_form():
     _script_in_sync(conn, drop_status="needs_operator")
     diff = _diff(conn)
     assert diff.missing_status_values == ["needs_operator"]
+
+
+@pytest.mark.parametrize(
+    ("catalog", "extra", "diagnostic_key"),
+    [
+        ("status", "stale_status", "unexpected_status_values"),
+        ("purpose", "stale_purpose", "unexpected_purpose_values"),
+    ],
+)
+def test_diff_rejects_extra_state_machine_value(
+    catalog: str, extra: str, diagnostic_key: str
+):
+    conn = FakeConnection()
+    _script_in_sync(
+        conn,
+        extra_status=extra if catalog == "status" else None,
+        extra_purpose=extra if catalog == "purpose" else None,
+    )
+
+    diff = _diff(conn)
+
+    assert not diff.is_in_sync
+    assert diff.as_missing_dict()[diagnostic_key] == [extra]
 
 
 def test_diff_missing_unique_constraint():
