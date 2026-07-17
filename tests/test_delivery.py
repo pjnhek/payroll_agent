@@ -446,6 +446,124 @@ def _minimal_roster_and_item(run_id: uuid.UUID):
     return roster, item
 
 
+def test_confirmation_reservation_enqueues_one_frozen_send_job(fake_repo, monkeypatch):
+    """Creating a confirmation intent composes once and queues only its snapshot ID."""
+    from app.models.job import JobKind
+    from app.pipeline import delivery as orch
+
+    run_id = _run_id()
+    roster, item = _minimal_roster_and_item(run_id)
+    fake_repo.runs[str(run_id)] = {
+        "id": run_id,
+        "business_id": roster.business_id,
+        "status": RunStatus.APPROVED.value,
+        "reply_epoch": 0,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "record_only": False,
+    }
+    run = fake_repo.load_run(run_id)
+    assert run is not None
+
+    calls = {"compose": 0, "pdf": 0}
+    monkeypatch.setattr(orch.repo, "load_business_name", lambda *_args, **_kw: "Coastal")
+    monkeypatch.setattr(orch.repo, "load_line_items", lambda *_args, **_kw: [item])
+    monkeypatch.setattr(
+        orch.repo, "load_roster_for_business", lambda *_args, **_kw: roster
+    )
+    monkeypatch.setattr(orch.repo, "load_inbound_email", lambda *_args, **_kw: None)
+    monkeypatch.setattr(orch.repo, "get_record_only_flag", lambda *_args, **_kw: False)
+
+    def _compose(*_args, **_kwargs):
+        calls["compose"] += 1
+        return "frozen confirmation"
+
+    def _pdf(*_args, **_kwargs):
+        calls["pdf"] += 1
+        return b"frozen pdf"
+
+    monkeypatch.setattr(orch, "compose_confirmation", _compose)
+    monkeypatch.setattr(orch, "generate_paystub_pdf", _pdf)
+    monkeypatch.setattr(
+        orch.gateway,
+        "send_outbound",
+        lambda **_kwargs: pytest.fail("approval-time delivery reached the legacy gateway"),
+    )
+
+    assert orch.deliver(run_id, run) is True
+    assert orch.deliver(run_id, run) is True
+    assert calls == {"compose": 1, "pdf": 1}
+
+    snapshot = next(iter(fake_repo.outbound_snapshots.values()))["payload"]
+    send_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.SEND_OUTBOUND.value
+    ]
+    assert len(send_jobs) == 1
+    assert send_jobs[0]["run_id"] == run_id
+    assert send_jobs[0]["email_id"] == snapshot["email_id"]
+    assert send_jobs[0]["dedup_key"] == f"send_outbound:{snapshot['email_id']}"
+
+
+def test_confirmation_replay_loads_snapshot_without_rebuilding_payload(fake_repo, monkeypatch):
+    """A reserved confirmation is re-queued from stored data without mutable reads."""
+    from app.models.job import JobKind
+    from app.pipeline import delivery as orch
+
+    run_id = _run_id()
+    business_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = {
+        "id": run_id,
+        "business_id": business_id,
+        "status": RunStatus.APPROVED.value,
+        "reply_epoch": 0,
+        "record_only": False,
+    }
+    run = fake_repo.load_run(run_id)
+    assert run is not None
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<frozen@payroll-agent.local>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen",
+        body_text="Frozen body",
+        attachments=[("paystub.pdf", b"frozen bytes")],
+    )
+    for name in (
+        "load_business_name",
+        "load_line_items",
+        "load_roster_for_business",
+        "load_inbound_email",
+    ):
+        monkeypatch.setattr(
+            orch.repo,
+            name,
+            lambda *_args, _name=name, **_kwargs: pytest.fail(f"replay read {_name}"),
+        )
+    monkeypatch.setattr(
+        orch, "compose_confirmation", lambda *_args, **_kwargs: pytest.fail("replay drafted")
+    )
+    monkeypatch.setattr(
+        orch, "generate_paystub_pdf", lambda *_args, **_kwargs: pytest.fail("replay made PDF")
+    )
+
+    assert orch.deliver(run_id, run) is True
+    send_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.SEND_OUTBOUND.value
+    ]
+    assert len(send_jobs) == 1
+    assert send_jobs[0]["email_id"] == snapshot["email_id"]
+
+
 def test_deliver_attaches_roster_to_exception_after_roster_load(monkeypatch):
     """A failure AFTER the roster load re-raises carrying the roster on the exception.
 
