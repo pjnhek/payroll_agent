@@ -138,7 +138,12 @@ def test_pump_runs_retention_after_drain_without_exposing_maintenance_fields(
 
     monkeypatch.setattr(pump_module, "drain_once", _drain)
     monkeypatch.setattr(repo, "purge_terminal_inbound_events", _purge, raising=False)
-    monkeypatch.setattr(repo, "count_open_jobs", lambda: calls.append("count") or 0)
+
+    def _count_open_jobs() -> int:
+        calls.append("count")
+        return 0
+
+    monkeypatch.setattr(repo, "count_open_jobs", _count_open_jobs)
 
     client = _client_with_token(monkeypatch, "secret-token")
     resp = client.get(PUMP_PATH, headers=_auth_header("secret-token"))

@@ -37,7 +37,7 @@ COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
 
 
-def _ingest_module():
+def _ingest_module() -> Any:
     spec = importlib.util.find_spec("app.ingest")
     assert spec is not None, "the delayed app.ingest service boundary is missing"
     return importlib.import_module("app.ingest")
@@ -163,11 +163,12 @@ def test_delayed_processing_fetches_only_from_persisted_event(
     envelope = {"data": {"email_id": "em_delayed"}}
     _event_loader(monkeypatch, {event_id: {"id": event_id, "payload": envelope}})
     calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        gateway,
-        "parse_inbound",
-        lambda raw: calls.append(raw) or _email("<delayed@example.test>"),
-    )
+
+    def _parse(raw: dict[str, Any]) -> InboundEmail:
+        calls.append(raw)
+        return _email("<delayed@example.test>")
+
+    monkeypatch.setattr(gateway, "parse_inbound", _parse)
 
     result = ingest.process_inbound_event(event_id)
 
