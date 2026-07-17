@@ -1,6 +1,6 @@
 ---
 phase: 19
-reviewed: 2026-07-17T05:26:04Z
+reviewed: 2026-07-17T05:35:22Z
 depth: standard
 files_reviewed: 56
 files_reviewed_list:
@@ -62,54 +62,51 @@ files_reviewed_list:
   - tests/test_webhook_unblocked.py
 findings:
   critical: 0
-  warning: 1
+  warning: 0
   info: 0
-  total: 1
-status: issues_found
+  total: 0
+status: clean
 ---
 
 # Phase 19: Code Review Report
 
-**Reviewed:** 2026-07-17T05:26:04Z
+**Reviewed:** 2026-07-17T05:35:22Z
 **Depth:** standard
 **Files Reviewed:** 56
-**Status:** issues_found
+**Status:** clean
 
 ## Summary
 
-All four findings from the first review are resolved by the committed fixes. The authority postflight now rejects remembering overrides and malformed supersession relationships; clarification backfill is scoped to the current reply epoch; deployment revision input requires a canonical 40-character SHA; and a single live state-machine CHECK containing extra values now produces schema drift.
+The complete persisted Phase 19 scope was reviewed after fix commit `09c3340` and fix report `658f86d`. The previous multiple-CHECK false-pass is resolved, all five findings across the review/fix iterations are now closed, and no remaining or new Critical, Warning, or Info issues were found.
 
-The full persisted scope was reviewed again after those changes. One distinct schema-health false-pass remains when PostgreSQL has more than one CHECK constraint on the same state-machine column.
+All reviewed files meet the Phase 19 correctness, security, and maintainability gate.
 
-## Original Finding Resolution
+## Finding Resolution
 
-| Original finding | Result | Evidence |
+| Finding | Result | Evidence |
 |---|---|---|
-| CRITICAL-01: incomplete authority postflight | Resolved | `28049f4` adds zero-required counters for remembered overrides, authoritative rows with supersession targets, and losers not pointing to the authoritative generation for the same run; reopen consumes the expanded predicate. |
-| CRITICAL-02: all-epoch clarification backfill | Resolved | `cd65f09` groups by `(run_id, epoch)` and joins `sub.epoch` to the run's current `reply_epoch`. |
-| WARNING-01: abbreviated deployment revision | Resolved | `0e1c340` requires exactly 40 lowercase hexadecimal characters and rejects short, long, and uppercase inputs. |
-| WARNING-02: extra live state value accepted | Resolved for the reported single-constraint case | `7363fb8` records unexpected status/purpose values and makes them fail `SchemaDiff.is_in_sync`. |
+| CRITICAL-01: incomplete authority postflight | Resolved | `28049f4` makes remembered overrides and malformed supersession relationships fail postflight and fence reopen. |
+| CRITICAL-02: all-epoch clarification backfill | Resolved | `cd65f09` scopes the aggregate and update to the current `reply_epoch`. |
+| WARNING-01: abbreviated deployment revision | Resolved | `0e1c340` requires a canonical lowercase 40-character SHA. |
+| WARNING-02: extra live state values accepted | Resolved | `7363fb8` reports unexpected finite-catalog values and fails schema synchronization. |
+| WR-01: multiple CHECK constraints unioned | Resolved | `09c3340` preserves each catalog separately and fails unless each state column has exactly one parseable CHECK equal to the expected finite catalog. |
 
 ## Narrative Findings (AI reviewer)
 
-### WR-01 — Multiple CHECK constraints are unioned, masking restrictive schema drift
+No Critical, Warning, or Info findings remain after standard-depth review of the 56-file persisted scope.
 
-**File:** `app/db/schema_introspect.py:431-453`
-
-**Issue:** `diff_against_live` gathers every CHECK whose constrained column is `payroll_runs.status` or `email_messages.purpose`, then unions all values into one set with `|=`. PostgreSQL applies multiple CHECK constraints with AND semantics, not OR semantics. If the expected status CHECK exists alongside a second restrictive CHECK such as `status IN ('received')`, the union is still the complete expected set and the health check returns `is_in_sync=True`, even though nearly every legal application transition will fail at the database. An unparseable second CHECK is similarly ignored because it contributes an empty set. The same false-pass is used by `/health/schema`, the schema CLI, and the writer-fence reopen gate.
-
-This was reproduced against the existing hermetic schema-introspection test double by supplying the normal expected status constraint plus `CHECK (status = ANY (ARRAY['received'::text]))`; the current result was `is_in_sync=True` with empty diagnostics.
-
-**Fix:** Preserve constraints as separate parsed rows instead of unioning them. For these exact finite state-machine catalogs, fail closed unless each column has exactly one parseable CHECK and that CHECK's value set exactly equals the expected set. Alternatively, compute the actual intersection while separately rejecting any unparseable or additional constraint. Add regression cases for an expected CHECK plus a restrictive second CHECK and for an expected CHECK plus an unparseable second CHECK.
+The previous WR-01 reproduction now returns `is_in_sync=False` with `invalid_state_constraints: ['payroll_runs.status']` when the normal status CHECK is accompanied by a restrictive second CHECK. The same fail-closed field participates in `SchemaDiff.is_in_sync` and diagnostics consumed by `/health/schema`, the schema CLI, and the writer-fence reopen path.
 
 ## Verification Notes
 
-- Persisted-scope test run: `487 passed, 55 skipped` in 173.51s. The skips are guarded live-database cases unavailable to the local run.
+- Focused schema/authority suite: `57 passed`.
+- Previous restrictive second-CHECK reproduction: `is_in_sync=False` with the expected invalid-constraint diagnostic.
+- Full persisted-scope suite: `489 passed, 55 skipped` in 173.33s. The skips are guarded live-database cases unavailable locally.
 - Ruff across all scoped Python source and test files: `All checks passed!`.
-- No source file was modified during re-review.
+- No source file was modified and no commit was created during review.
 
 ---
 
-_Reviewed: 2026-07-17T05:26:04Z_
+_Reviewed: 2026-07-17T05:35:22Z_
 _Reviewer: the agent (gsd-code-reviewer generic-agent workaround)_
 _Depth: standard_
