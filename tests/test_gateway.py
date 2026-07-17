@@ -23,6 +23,7 @@ from app.email import gateway
 from app.models.contracts import Decision
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
@@ -1579,3 +1580,106 @@ def test_allow_unsigned_fixtures_canonical_shape_dev_mode_returns_200(
     assert fake_repo.emails == {}
     assert fake_repo.runs == {}
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Reserved snapshots — fixed provider payload and idempotency key
+# ---------------------------------------------------------------------------
+
+
+def _reserved_snapshot() -> dict[str, Any]:
+    return {
+        "email_id": uuid.uuid4(),
+        "message_id": "<reserved-send@payroll-agent.local>",
+        "from_addr": "Payroll Agent <agent@payroll-agent.local>",
+        "to_addr": "client@acme.test",
+        "reply_to": "inbound@resend.test",
+        "in_reply_to": "<client-hours@acme.test>",
+        "references_header": "<older@acme.test> <client-hours@acme.test>",
+        "subject": "Frozen payroll confirmation",
+        "body_text": "This exact body is frozen.",
+        "attachments": [
+            {"ordinal": 0, "filename": "maria.pdf", "content": b"maria-bytes"},
+            {"ordinal": 1, "filename": "james.pdf", "content": b"james-bytes"},
+        ],
+    }
+
+
+def test_send_reserved_snapshot_replays_fixed_payload_and_idempotency_key(monkeypatch):
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("RESEND_API_KEY", "snapshot-test-key")
+    monkeypatch.setenv("RESEND_REPLY_TO", "different-configured-reply-to@test.invalid")
+    captured: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    def _capture_send(params, options):
+        captured.append((params, options))
+        return {"id": "provider-message-id"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
+    snapshot = _reserved_snapshot()
+
+    first = gateway.send_reserved_outbound_snapshot(snapshot)
+    second = gateway.send_reserved_outbound_snapshot(snapshot)
+
+    assert first == PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
+    assert second == first
+    assert captured[0] == captured[1], "replay must make a byte-equivalent provider request"
+    params, options = captured[0]
+    assert options == {"idempotency_key": snapshot["message_id"]}
+    assert params["from"] == snapshot["from_addr"]
+    assert params["to"] == [snapshot["to_addr"]]
+    assert params["reply_to"] == snapshot["reply_to"]
+    assert params["headers"] == {
+        "Message-ID": snapshot["message_id"],
+        "In-Reply-To": snapshot["in_reply_to"],
+        "References": snapshot["references_header"],
+    }
+    assert [attachment["filename"] for attachment in params["attachments"]] == [
+        "maria.pdf",
+        "james.pdf",
+    ]
+    assert [attachment["content"] for attachment in params["attachments"]] == [
+        "bWFyaWEtYnl0ZXM=",
+        "amFtZXMtYnl0ZXM=",
+    ]
+    assert resend.api_key == "snapshot-test-key"
+    get_settings.cache_clear()
+
+
+def test_send_reserved_snapshot_returns_bounded_failure_without_db_write(monkeypatch):
+    from resend.exceptions import ResendError
+
+    def _raise_payload_mismatch(_params, _options):
+        raise ResendError(
+            code=409,
+            error_type="invalid_idempotent_request",
+            message="sensitive provider response",
+            suggested_action="sensitive provider action",
+        )
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_raise_payload_mismatch))
+    monkeypatch.setattr(
+        repo,
+        "update_email_message_state",
+        lambda *_args, **_kwargs: pytest.fail("snapshot gateway must not write delivery state"),
+    )
+    monkeypatch.setattr(
+        repo,
+        "update_email_message_sent",
+        lambda *_args, **_kwargs: pytest.fail("snapshot gateway must not write delivery state"),
+    )
+
+    result = gateway.send_reserved_outbound_snapshot(_reserved_snapshot())
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.DELIVERY,
+        reason=PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH,
+    )
+    assert "sensitive" not in repr(result)
+
+
+def test_snapshot_gateway_keeps_legacy_caller_argument_send_available():
+    assert callable(gateway.send_outbound)
