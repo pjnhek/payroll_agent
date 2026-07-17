@@ -592,6 +592,118 @@ def test_operator_resume_uses_complete_durable_mapping_not_alias_candidates(
     ]
 
 
+def test_operator_resume_superseded_generation_is_bounded_ok_before_side_effects(
+    fake_repo, monkeypatch
+) -> None:
+    """A committed loser is auditable work, never money-moving work."""
+    from app.db.repo.operator_resume_resolutions import OperatorResolutionSubmission
+    from app.queue.handlers import operator_resume
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    winner_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["PRIVATE TOKEN"]
+    )
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        "app.db.repo.prepare_authoritative_operator_resume",
+        lambda rid, oid, conn=None: (
+            events.append("prepare")
+            or OperatorResolutionSubmission(
+                resolution_id=oid,
+                authoritative=False,
+                winner_id=winner_id,
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.db.repo.load_operator_resume_resolution",
+        lambda *args, **kwargs: pytest.fail("loser loaded a money-moving mapping"),
+    )
+    monkeypatch.setattr(
+        "app.db.repo.claim_status",
+        lambda *args, **kwargs: pytest.fail("loser claimed business state"),
+    )
+    monkeypatch.setattr(
+        "app.pipeline.orchestrator.resume_pipeline",
+        lambda *args, **kwargs: pytest.fail("loser resumed payroll"),
+    )
+
+    result = operator_resume.handle_operator_resume(
+        _operator_resume_job(
+            run_id=run_id,
+            operator_resolution_id=resolution_id,
+        )
+    )
+
+    assert result == PipelineResult(outcome=PipelineOutcome.OK)
+    assert events == ["prepare"]
+
+
+def test_operator_resume_authoritative_generation_prepares_claims_then_resumes(
+    fake_repo, monkeypatch
+) -> None:
+    """Only the commit-selected winner may claim and invoke orchestration."""
+    from app.db.repo.operator_resume_resolutions import OperatorResolutionSubmission
+    from app.queue.handlers import operator_resume
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employee_id = "e0000002-0000-0000-0000-000000000002"
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        "app.db.repo.prepare_authoritative_operator_resume",
+        lambda rid, oid, conn=None: (
+            events.append("prepare")
+            or OperatorResolutionSubmission(
+                resolution_id=oid,
+                authoritative=True,
+                winner_id=oid,
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.db.repo.load_operator_resume_resolution",
+        lambda *args, **kwargs: events.append("mapping") or {"Jimmy": employee_id},
+    )
+
+    def claim(rid, old, new, conn=None):
+        events.append("claim")
+        assert (rid, old, new) == (run_id, RunStatus.NEEDS_OPERATOR, RunStatus.RECEIVED)
+        fake_repo.runs[str(run_id)]["status"] = RunStatus.RECEIVED.value
+        return True
+
+    monkeypatch.setattr("app.db.repo.claim_status", claim)
+    expected = PipelineResult(outcome=PipelineOutcome.OK)
+
+    def resume(rid, inbound, *, from_status, overrides):
+        events.append("resume")
+        assert rid == run_id and inbound is None
+        assert from_status is RunStatus.RECEIVED
+        assert overrides == {"Jimmy": employee_id}
+        return expected
+
+    monkeypatch.setattr("app.pipeline.orchestrator.resume_pipeline", resume)
+
+    result = operator_resume.handle_operator_resume(
+        _operator_resume_job(
+            run_id=run_id,
+            operator_resolution_id=resolution_id,
+        )
+    )
+
+    assert result is expected
+    assert events == ["prepare", "mapping", "claim", "resume"]
+
+
 def test_operator_resume_dispatch_rejects_none_from_unsound_handler(monkeypatch) -> None:
     from app.queue import dispatch
     from app.queue.handlers import operator_resume
@@ -1458,6 +1570,159 @@ def test_resolve_persists_complete_mapping_before_identifier_only_dispatch(
     assert fake_repo.runs[str(run_id)]["alias_candidates"] == {
         "Jimmy": {"suggested": str(first_id), "bound": str(first_id)}
     }
+
+
+def test_resolve_commits_generation_and_job_in_same_transaction(
+    monkeypatch, fake_repo
+) -> None:
+    """The immutable authority and identifier-only job are one atomic write unit."""
+    from app.db.repo.operator_resume_resolutions import OperatorResolutionSubmission
+    from app.models.roster import Employee, Roster
+    from app.queue import wake
+
+    business_id = COASTAL_BIZ_ID
+    employee_id = uuid.uuid4()
+    roster = Roster(
+        business_id=business_id,
+        employees=[
+            Employee(
+                id=employee_id,
+                business_id=business_id,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, business_id, ["Jimmy"]
+    )
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **k: roster)
+    calls: list[tuple[str, object, object]] = []
+
+    def commit(rid, oid, overrides, remember, conn=None):
+        calls.append(("commit", conn, (rid, oid, dict(overrides), dict(remember))))
+        return OperatorResolutionSubmission(oid, True, oid)
+
+    def enqueue(*, kind, dedup_key, run_id, operator_resolution_id, conn=None, **kw):
+        calls.append(
+            (
+                "enqueue",
+                conn,
+                (kind, dedup_key, run_id, operator_resolution_id, kw),
+            )
+        )
+        return uuid.uuid4()
+
+    wakes: list[str] = []
+    monkeypatch.setattr(repo_mod, "commit_operator_resume_resolution", commit, raising=False)
+    monkeypatch.setattr(repo_mod, "enqueue_job", enqueue)
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
+    monkeypatch.setattr("app.routes.pipeline_glue.operator_resume_bg", lambda *a: None)
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(employee_id), "remember_0": "on"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert [call[0] for call in calls] == ["commit", "enqueue"]
+    assert calls[0][1] is calls[1][1]
+    _, _, (rid, resolution_id, overrides, remember) = calls[0]
+    assert rid == run_id
+    assert overrides == {"Jimmy": str(employee_id)}
+    assert remember == {"Jimmy": True}
+    _, _, (kind, dedup_key, job_run_id, job_resolution_id, extras) = calls[1]
+    assert kind is JobKind.OPERATOR_RESUME
+    assert dedup_key == f"operator_resume:{run_id}:{resolution_id}"
+    assert (job_run_id, job_resolution_id, extras) == (run_id, resolution_id, {})
+    assert wakes == ["wake"]
+
+
+def test_resolve_superseded_generation_keeps_job_and_uses_fixed_notice(
+    monkeypatch, fake_repo
+) -> None:
+    """A loser is queued for audit and only a fixed browser flag identifies it."""
+    from app.db.repo.operator_resume_resolutions import OperatorResolutionSubmission
+    from app.models.roster import Employee, Roster
+    from app.queue import wake
+
+    employee_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["PRIVATE TOKEN"]
+    )
+    roster = Roster(
+        business_id=COASTAL_BIZ_ID,
+        employees=[
+            Employee(
+                id=employee_id,
+                business_id=COASTAL_BIZ_ID,
+                full_name="Private Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **k: roster)
+    jobs: list[tuple[str, uuid.UUID]] = []
+    monkeypatch.setattr(
+        repo_mod,
+        "commit_operator_resume_resolution",
+        lambda rid, oid, *a, **k: OperatorResolutionSubmission(
+            oid, False, uuid.uuid4()
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "enqueue_job",
+        lambda *, dedup_key, operator_resolution_id, **kw: jobs.append(
+            (dedup_key, operator_resolution_id)
+        )
+        or uuid.uuid4(),
+    )
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
+    monkeypatch.setattr("app.routes.pipeline_glue.operator_resume_bg", lambda *a: None)
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(employee_id)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?resolution_superseded=1"
+    assert len(jobs) == 1 and wakes == ["wake"]
+    assert "PRIVATE" not in response.headers["location"]
+    assert str(employee_id) not in response.headers["location"]
 
 
 def test_resolve_persistence_failure_schedules_nothing(monkeypatch, fake_repo) -> None:
