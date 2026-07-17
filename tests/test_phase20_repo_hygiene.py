@@ -1,4 +1,4 @@
-"""Repository boundary regressions for Phase 20 review and send state."""
+"""Repository boundary regressions for exact-once review and send state."""
 
 from __future__ import annotations
 
