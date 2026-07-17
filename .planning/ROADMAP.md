@@ -292,17 +292,14 @@ parallel with it.
 
 - [x] 20-07-PLAN.md
 - [x] 20-08-PLAN.md
-
-**Wave 9** *(gap closure; blocked on completed Wave 8)*
-
 - [ ] 20-13-PLAN.md
 - [ ] 20-14-PLAN.md
 
-**Wave 10** *(blocked on Wave 9 completion)*
+**Wave 9** *(blocked on Wave 8 completion)*
 
 - [ ] 20-15-PLAN.md
 
-**Wave 11** *(blocked on Wave 10 completion)*
+**Wave 10** *(blocked on Wave 9 completion)*
 
 - [ ] 20-16-PLAN.md
 
