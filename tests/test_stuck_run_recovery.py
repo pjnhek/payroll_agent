@@ -34,7 +34,10 @@ def test_runs_list_ast_is_read_only_and_has_no_background_tasks_parameter() -> N
     tree = ast.parse(source)
     function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef))
 
-    assert [argument.arg for argument in function.args.args] == ["request"]
+    assert [argument.arg for argument in function.args.args] == [
+        "request",
+        "demo_queue_error",
+    ]
     calls = {
         qualified
         for node in ast.walk(function)
