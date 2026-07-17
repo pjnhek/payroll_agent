@@ -149,7 +149,7 @@ class TestJobsDdlInventory:
             "cannot silently vaporize a run's attempt history"
         )
         assert "event_id" in body, (
-            "Phase 19 durable ingest requires jobs.event_id to point at the "
+            "Durable ingest requires jobs.event_id to point at the "
             "verified inbound envelope before any payroll run exists"
         )
 

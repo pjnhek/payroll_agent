@@ -510,7 +510,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- can reject accidental payload mixing at the initial CREATE boundary.
     -- The history-preserving FK is installed after the target table exists.
     operator_resolution_id UUID,
-    -- Phase 19 durable-ingest receipt identifier. Nullable because the three
+    -- Durable-ingest receipt identifier. Nullable because the three
     -- pre-existing run-associated kinds do not own a transport event. SET NULL
     -- lets the bounded retention job remove a terminal envelope while preserving
     -- append-only job history.
@@ -615,7 +615,7 @@ CREATE TABLE IF NOT EXISTS operator_resume_overrides (
 
 -- Persistent deployment writer fence. The singleton starts open only on first
 -- creation. Reapplying schema never UPDATEs the row, so a fence closed by the
--- Phase 19 cutover procedure remains closed across bootstrap retries/redeploys.
+-- guarded cutover procedure remains closed across bootstrap retries/redeploys.
 CREATE TABLE IF NOT EXISTS operator_resolution_writer_fence (
     singleton   BOOLEAN     NOT NULL DEFAULT TRUE,
     writes_open BOOLEAN     NOT NULL DEFAULT TRUE,
@@ -666,7 +666,7 @@ ALTER TABLE operator_resume_overrides
     ADD COLUMN IF NOT EXISTS remember BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- This must follow the additive authoritative-column ALTER: on an existing
--- Phase 18 table, CREATE TABLE IF NOT EXISTS above is a no-op and the index
+-- pre-existing table, CREATE TABLE IF NOT EXISTS above is a no-op and the index
 -- would otherwise reference a column that has not been installed yet.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_operator_resume_authoritative_run
     ON operator_resume_resolutions (run_id)

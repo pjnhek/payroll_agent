@@ -228,7 +228,7 @@ def _script_in_sync(
     malformed_trigger: str | None = None,
     malformed_column: tuple[str, str] | None = None,
 ) -> None:
-    """Script the Phase 19 diff queries in their explicit order.
+    """Script the durable-receipt and authority diff queries in explicit order.
 
     The first queries fetch one typed column set per expected table in insertion
     order. The final queries fetch status/purpose checks, legacy unique constraints,

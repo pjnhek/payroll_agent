@@ -162,7 +162,7 @@ def _fence_closed(conn: Any) -> bool:
 
 def _fence_writes(conn: Any) -> bool:
     with conn.transaction():
-        # ACCESS EXCLUSIVE waits for every earlier Phase 18 INSERT transaction to
+        # ACCESS EXCLUSIVE waits for every earlier legacy-writer INSERT transaction to
         # finish, then prevents a later INSERT from crossing the close boundary.
         conn.execute(
             "LOCK TABLE operator_resume_resolutions IN ACCESS EXCLUSIVE MODE"

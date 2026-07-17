@@ -18,7 +18,7 @@ EXPECTED_FIELDS = (
 
 
 def _load_script() -> ModuleType:
-    assert SCRIPT.exists(), "Phase 19 operator-resolution inventory script is missing"
+    assert SCRIPT.exists(), "operator-resolution inventory script is missing"
     spec = importlib.util.spec_from_file_location("operator_resolution_inventory", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
