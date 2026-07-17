@@ -25,6 +25,7 @@ WHAT THIS MODULE PROVES (assert REAL re-schedule facts, never a log string):
 from __future__ import annotations
 
 import ast
+import copy
 import inspect
 import uuid
 from datetime import UTC, datetime
@@ -373,3 +374,153 @@ def test_simulated_reply_persists_one_identifier_only_job_and_never_runs_inline(
     assert job["event_id"] is None
     assert job["dedup_key"] == f"resume_reply:{run_id}:{job['email_id']}"
     assert "Maria Chen" not in repr(job)
+
+
+def test_persisted_reply_redelivery_ensures_the_same_deduplicated_job(
+    fake_repo,
+) -> None:
+    """RFC redelivery rehydrates the row and cannot create a second resume job."""
+    from app.routes import pipeline_glue
+
+    source_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<source-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+    )
+    assert inserted and source_id is not None
+    run_id = fake_repo.create_run(
+        business_id=COASTAL_BIZ_ID,
+        source_email_id=source_id,
+    )
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    clarification_id = "<clarify-redelivery@payroll-agent.local>"
+    fake_repo.outbound[str(run_id)] = [
+        {
+            "message_id": clarification_id,
+            "direction": "outbound",
+            "purpose": "clarification",
+            "send_state": "sent",
+            "round": 0,
+        }
+    ]
+    message_id = f"<reply-{uuid.uuid4()}@test.example>"
+    reply = InboundEmail(
+        id=uuid.uuid4(),
+        message_id=message_id,
+        in_reply_to=clarification_id,
+        references_header=clarification_id,
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular, confirmed",
+        created_at=datetime.now(UTC),
+    )
+
+    first = pipeline_glue.persist_and_enqueue_reply(
+        reply, reply.body_text, conn=object()
+    )
+    duplicate = pipeline_glue.persist_and_enqueue_reply(
+        reply, "hostile redelivery body must be ignored", conn=object()
+    )
+
+    assert first.should_wake is True
+    assert duplicate.should_wake is True
+    assert len(fake_repo.jobs) == 1
+    job = next(iter(fake_repo.jobs.values()))
+    persisted = fake_repo.emails[message_id]
+    assert job["dedup_key"] == f"resume_reply:{run_id}:{persisted['id']}"
+    assert persisted["body_text"] == reply.body_text
+
+
+def test_simulated_reply_enqueue_failure_rolls_back_email_and_never_wakes(
+    client, fake_repo, monkeypatch
+) -> None:
+    """The reply row and owed job share one rollback boundary."""
+    import app.db.repo as repo_module
+    from app.queue import wake
+
+    source_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<source-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+    )
+    assert inserted and source_id is not None
+    run_id = fake_repo.create_run(
+        business_id=COASTAL_BIZ_ID,
+        source_email_id=source_id,
+    )
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    clarification_id = "<clarify-rollback@payroll-agent.local>"
+    fake_repo.outbound[str(run_id)] = [
+        {
+            "message_id": clarification_id,
+            "direction": "outbound",
+            "purpose": "clarification",
+            "send_state": "sent",
+            "round": 0,
+        }
+    ]
+    before_email_ids = set(fake_repo.email_by_id)
+
+    class _SnapshotTransaction:
+        def __enter__(self):
+            self.snapshot = copy.deepcopy(
+                (
+                    fake_repo.emails,
+                    fake_repo.email_by_id,
+                    fake_repo.jobs,
+                    fake_repo._job_dedup_keys,
+                )
+            )
+            return self
+
+        def __exit__(self, exc_type, _exc, _tb):
+            if exc_type is not None:
+                (
+                    fake_repo.emails,
+                    fake_repo.email_by_id,
+                    fake_repo.jobs,
+                    fake_repo._job_dedup_keys,
+                ) = self.snapshot
+            return False
+
+    class _SnapshotConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+        def transaction(self):
+            return _SnapshotTransaction()
+
+    monkeypatch.setattr(
+        repo_module,
+        "get_connection",
+        lambda: _SnapshotConnection(),
+    )
+    monkeypatch.setattr(
+        repo_module,
+        "enqueue_job",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("injected")),
+    )
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "Maria Chen 40 regular, confirmed"},
+    )
+
+    assert response.status_code in (200, 303)
+    assert set(fake_repo.email_by_id) == before_email_ids
+    assert fake_repo.jobs == {}
+    assert wakes == []

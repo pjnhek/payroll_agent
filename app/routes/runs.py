@@ -1,7 +1,6 @@
 """Everything under /runs* — operator list, gate, recovery action, and detail."""
 from __future__ import annotations
 
-import json
 import logging
 import re
 import uuid
@@ -847,7 +846,6 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID) -> StreamingResponse:
 @router.post("/runs/{run_id}/simulate-reply")
 def simulate_reply(
     run_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     reply_body: str = Form(default=""),
 ) -> RedirectResponse:
     """Simulate a client email reply to complete an awaiting_reply run in the demo.
@@ -924,49 +922,20 @@ def simulate_reply(
     email = gateway.parse_inbound(synthetic_payload)
     cleaned = clean_body(email.body_text)
 
-    # Insert the synthetic inbound row (mirrors the real webhook path; the
-    # uq_message_id unique constraint dedupes if somehow the same synthetic ID
-    # appears twice — that is not possible with uuid4 but is handled gracefully).
     try:
-        # Link the synthetic reply row to its run for a complete audit trail. Routing
-        # and resume key off the RFC header chain, not this column, so the link is
-        # purely for traceability — it lets a join-based audit query see the reply.
-        repo.insert_inbound_email(
-            message_id=email.message_id,
-            in_reply_to=email.in_reply_to,
-            references_header=email.references_header,
-            subject=email.subject,
-            from_addr=email.from_addr,
-            to_addr=email.to_addr,
-            body_text=cleaned,
-            run_id=run_id,
-        )
+        with repo.get_connection() as conn, conn.transaction():
+            routed = pipeline_glue.persist_and_enqueue_reply(
+                email,
+                cleaned,
+                conn=conn,
+            )
     except Exception:
-        logger.debug("simulate-reply: insert_inbound_email failed for run %s", run_id)
+        logger.warning("simulate-reply durable enqueue failed")
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-    # Hand off to the real reply-routing path — all guards (the sender spoof check,
-    # late-reply detection) execute exactly as they would for a real inbound.
-    # Branch on route_reply's BODY, not on None: it returns a JSONResponse on EVERY
-    # header match — {"status": "resumed"} when it scheduled the background resume, and
-    # {"status": "sender_mismatch"} / {"status": "late_reply"} when a guard stopped it —
-    # and None ONLY when the header matched nothing at all. A bare None-check reads a
-    # successful resume as a failure and logs "NOT resumed" on every happy path.
-    handled = pipeline_glue.route_reply(email, cleaned, background_tasks)
-    outcome = (
-        json.loads(bytes(handled.body))["status"]
-        if handled is not None
-        else "no_header_match"
-    )
-    if outcome == "resumed":
-        logger.info(
-            "simulate-reply: resume scheduled for run %s (demo-only)", run_id
-        )
+    if routed.should_wake:
+        wake.wake()
+        logger.info("simulate-reply durable resume queued")
     else:
-        logger.warning(
-            "simulate-reply: reply NOT resumed for run %s (outcome=%s); "
-            "run stays at awaiting_reply",
-            run_id,
-            outcome,
-        )
+        logger.info("simulate-reply no-op outcome=%s", routed.outcome.value)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)

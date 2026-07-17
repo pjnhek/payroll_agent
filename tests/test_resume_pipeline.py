@@ -149,6 +149,7 @@ def test_resume_reply_handler_reloads_exact_persisted_body_from_received(
     from app.queue.handlers import resume_reply
 
     run_id = _seed_run(fake_repo, body="original inbound")
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value
     email_id, inserted = fake_repo.insert_inbound_email(
         message_id=f"<reply-{uuid.uuid4()}@test.example>",
         in_reply_to="<clarification@test.example>",
@@ -399,11 +400,9 @@ def test_resume_reply_handler_rejects_unowned_persisted_context_before_conversio
     monkeypatch.setattr(orchestrator, "resume_pipeline", _fail_resume)
     job = _resume_reply_job(run_id=job_run_id, email_id=email_id)
 
-    terminal = resume_reply.handle_resume_reply(job)
+    no_op = resume_reply.handle_resume_reply(job)
 
-    assert terminal.outcome is PipelineOutcome.TERMINAL
-    assert terminal.diagnostic_code == "load:invalid_operator_override_context"
-    assert caplog.text.count("invalid_operator_override_context") == 1
+    assert no_op.outcome is PipelineOutcome.OK
     forbidden = (
         str(job.id),
         str(job_run_id),
@@ -449,11 +448,10 @@ def test_resume_reply_handler_rejects_missing_or_non_inbound_context(
     assert hostile_email_id is not None
     fake_repo.email_by_id[str(hostile_email_id)]["direction"] = "outbound"
 
-    terminal = resume_reply.handle_resume_reply(
+    no_op = resume_reply.handle_resume_reply(
         _resume_reply_job(run_id=run_id, email_id=hostile_email_id)
     )
-    assert terminal.outcome is PipelineOutcome.TERMINAL
-    assert terminal.diagnostic_code == "load:invalid_operator_override_context"
+    assert no_op.outcome is PipelineOutcome.OK
     assert "SECRET" not in caplog.text
     assert "Maria Chen" not in caplog.text
 

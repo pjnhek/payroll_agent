@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from fastapi import BackgroundTasks
@@ -62,7 +64,9 @@ def row_to_inbound(row: dict[str, Any]) -> InboundEmail:
     )
 
 
-def reply_sender_ok(row: dict[str, Any], run: dict[str, Any]) -> bool:
+def reply_sender_ok(
+    row: dict[str, Any], run: dict[str, Any], *, conn: Any = None
+) -> bool:
     """Re-assert the reply sender revalidation for an already-persisted reply row.
 
     A reply is linked to its run INSIDE the webhook's ingest transaction based purely
@@ -81,10 +85,143 @@ def reply_sender_ok(row: dict[str, Any], run: dict[str, Any]) -> bool:
 
     Calls `find_business_by_sender` exactly ONCE (assigned to a local first).
     """
-    reply_business_id = repo.find_business_by_sender(row.get("from_addr") or "")
+    reply_business_id = repo.find_business_by_sender(
+        row.get("from_addr") or "", conn=conn
+    )
     return reply_business_id is not None and str(reply_business_id) == str(
         run.get("business_id")
     )
+
+
+class ReplyRoutingOutcome(StrEnum):
+    """Fixed reply-producer outcomes safe to cross route and log boundaries."""
+
+    RESUMED = "resumed"
+    DUPLICATE_NOOP = "duplicate_noop"
+    SENDER_MISMATCH = "sender_mismatch"
+    ADVANCED_NOOP = "advanced_noop"
+    LATE_REPLY = "late_reply"
+    NO_HEADER_MATCH = "no_header_match"
+    INVALID_CONTEXT = "invalid_context"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyRoutingResult:
+    """PII-free result of persisting, classifying, and enqueueing one reply."""
+
+    outcome: ReplyRoutingOutcome
+    should_wake: bool = False
+
+
+def _canonical_uuid(value: object) -> uuid.UUID | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _ensure_authorized_reply_job(
+    row: dict[str, Any],
+    *,
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    conn: Any,
+) -> ReplyRoutingResult:
+    """Authorize one persisted same-run row and ensure its identifier-only job."""
+    if _canonical_uuid(row.get("run_id")) != run_id:
+        return ReplyRoutingResult(ReplyRoutingOutcome.INVALID_CONTEXT)
+    if row.get("consumed_round") is not None:
+        return ReplyRoutingResult(ReplyRoutingOutcome.DUPLICATE_NOOP)
+
+    run = repo.load_run(run_id, conn=conn)
+    if run is None or run.get("status") != RunStatus.AWAITING_REPLY.value:
+        return ReplyRoutingResult(ReplyRoutingOutcome.ADVANCED_NOOP)
+    if not reply_sender_ok(row, run, conn=conn):
+        return ReplyRoutingResult(ReplyRoutingOutcome.SENDER_MISMATCH)
+
+    repo.enqueue_job(
+        kind=JobKind.RESUME_REPLY,
+        dedup_key=f"resume_reply:{run_id}:{email_id}",
+        run_id=run_id,
+        email_id=email_id,
+        conn=conn,
+    )
+    # Wake even when ON CONFLICT found the same owed job. A redelivery can be the
+    # signal that revives already-durable work after a sleeping instance restarts.
+    return ReplyRoutingResult(ReplyRoutingOutcome.RESUMED, should_wake=True)
+
+
+def persist_and_enqueue_reply(
+    email: InboundEmail,
+    cleaned: str,
+    *,
+    conn: Any,
+) -> ReplyRoutingResult:
+    """Persist, classify, authorize, and enqueue a reply in the caller transaction.
+
+    The caller owns commit/rollback and fires ``wake.wake()`` only after this function
+    returns and that transaction commits. Duplicate RFC deliveries rehydrate the
+    existing row and ensure the same ``resume_reply:{run_id}:{email_id}`` job.
+    """
+    email_id, inserted = repo.insert_inbound_email(
+        message_id=email.message_id,
+        in_reply_to=email.in_reply_to,
+        references_header=email.references_header,
+        subject=email.subject,
+        from_addr=email.from_addr,
+        to_addr=email.to_addr,
+        body_text=cleaned,
+        run_id=None,
+        conn=conn,
+    )
+
+    if not inserted:
+        persisted = repo.get_inbound_by_message_id(email.message_id, conn=conn)
+        if persisted is None:
+            return ReplyRoutingResult(ReplyRoutingOutcome.INVALID_CONTEXT)
+        persisted_email_id = _canonical_uuid(persisted.get("id"))
+        persisted_run_id = _canonical_uuid(persisted.get("run_id"))
+        if persisted_email_id is None or persisted_run_id is None:
+            return ReplyRoutingResult(ReplyRoutingOutcome.DUPLICATE_NOOP)
+        return _ensure_authorized_reply_job(
+            persisted,
+            run_id=persisted_run_id,
+            email_id=persisted_email_id,
+            conn=conn,
+        )
+
+    if email_id is None:
+        return ReplyRoutingResult(ReplyRoutingOutcome.INVALID_CONTEXT)
+
+    run_id = repo.find_awaiting_reply_for_header(
+        in_reply_to=email.in_reply_to,
+        references_header=email.references_header,
+        conn=conn,
+    )
+    if run_id is not None:
+        repo.link_email_to_run(email_id, run_id, conn=conn)
+        persisted = repo.get_inbound_email_by_id(email_id, conn=conn)
+        if persisted is None:
+            return ReplyRoutingResult(ReplyRoutingOutcome.INVALID_CONTEXT)
+        return _ensure_authorized_reply_job(
+            persisted,
+            run_id=run_id,
+            email_id=email_id,
+            conn=conn,
+        )
+
+    late_run_id = repo.find_any_run_for_header(
+        in_reply_to=email.in_reply_to,
+        references_header=email.references_header,
+        conn=conn,
+    )
+    if late_run_id is not None:
+        repo.link_email_to_run(email_id, late_run_id, conn=conn)
+        return ReplyRoutingResult(ReplyRoutingOutcome.LATE_REPLY)
+
+    return ReplyRoutingResult(ReplyRoutingOutcome.NO_HEADER_MATCH)
 
 
 def finish_reply_resume(
