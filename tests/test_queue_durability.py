@@ -473,6 +473,114 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert terminal_run_row["status"] == RunStatus.ERROR.value
 
 
+def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
+    seeded_db,
+) -> None:
+    """A configured database proves one reservation never grows a replacement send job."""
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+
+    retryable = PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.DELIVERY,
+        reason=PipelineReason.DELIVERY_TIMEOUT,
+    )
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.APPROVED)
+    snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<delivery-retry-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Payroll confirmation",
+        body_text="Delivery proof",
+        attachments=(),
+    )
+    job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    claimed = repo.claim_job()
+    assert claimed is not None and claimed.id == job_id
+    assert repo.settle_outbound_delivery_job(claimed, retryable) is SettlementOutcome.RETRIED
+    assert repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    ) is None
+    retry_row = repo.get_job(job_id)
+    retry_run = repo.load_run(run_id)
+    assert retry_row is not None and retry_row["state"] == "pending"
+    assert retry_run is not None and retry_run["status"] == RunStatus.APPROVED.value
+
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET state = 'leased', lease_token = %s, leased_until = now() "
+            "WHERE id = %s",
+            (str(uuid.uuid4()), str(job_id)),
+        )
+    with repo.get_connection() as conn:
+        attempts_before = conn.execute(
+            "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
+            (str(snapshot["snapshot_id"]),),
+        ).fetchone()[0]
+    assert repo.settle_outbound_delivery_job(claimed, retryable) is SettlementOutcome.FENCED
+    with repo.get_connection() as conn:
+        attempts_after = conn.execute(
+            "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
+            (str(snapshot["snapshot_id"]),),
+        ).fetchone()[0]
+    assert attempts_after == attempts_before
+
+    cutoff_run = _seed_run_for_queue_proof()
+    repo.set_status(cutoff_run, RunStatus.APPROVED)
+    with repo.get_connection() as conn, conn.transaction():
+        email_row = conn.execute(
+            "INSERT INTO email_messages "
+            "(run_id, direction, message_id, subject, from_addr, to_addr, body_text, "
+            "purpose, send_state, round, epoch) "
+            "VALUES (%s, 'outbound', %s, 'Payroll confirmation', "
+            "'agent@payroll-agent.local', 'payroll@coastalcleaning.example', "
+            "'Delivery proof', 'confirmation', 'reserved', 0, 0) RETURNING id",
+            (str(cutoff_run), f"<delivery-cutoff-{uuid.uuid4()}@test.example>"),
+        ).fetchone()
+        assert email_row is not None
+        cutoff_email_id = email_row[0]
+        snapshot_row = conn.execute(
+            "INSERT INTO outbound_email_snapshots "
+            "(email_id, message_id, from_addr, to_addr, subject, body_text, reserved_at) "
+            "VALUES (%s, %s, 'agent@payroll-agent.local', "
+            "'payroll@coastalcleaning.example', 'Payroll confirmation', "
+            "'Delivery proof', now() - interval '20 hours') RETURNING id",
+            (str(cutoff_email_id), f"<delivery-cutoff-{uuid.uuid4()}@test.example>"),
+        ).fetchone()
+        assert snapshot_row is not None
+    cutoff_job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(cutoff_email_id),
+        run_id=cutoff_run,
+        email_id=cutoff_email_id,
+    )
+    assert cutoff_job_id is not None
+    cutoff_job = repo.claim_job()
+    assert cutoff_job is not None and cutoff_job.id == cutoff_job_id
+    assert repo.settle_outbound_delivery_job(cutoff_job, retryable) is SettlementOutcome.DONE
+    cutoff_row = repo.get_job(cutoff_job_id)
+    cutoff_run_row = repo.load_run(cutoff_run)
+    assert cutoff_row is not None and cutoff_row["state"] == "done"
+    assert cutoff_run_row is not None and cutoff_run_row["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
 def _payroll_status_snapshot() -> list[tuple[object, ...]]:
     from app.db import repo
 
