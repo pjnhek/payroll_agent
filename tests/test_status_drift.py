@@ -275,7 +275,7 @@ class TestIndexStaticGuard:
     """The static half of the hot-path index guard (the other half runs against a live DB).
 
     Mirrors TestEnumCheckDrift's parse-and-assert shape: purely textual assertions against
-    schema.sql, no DB connection. It proves the three hot-path CREATE INDEX statements
+    schema.sql, no DB connection. It proves the declared hot-path CREATE INDEX statements
     exist with their exact column ORDER — a composite index with its columns transposed
     still creates cleanly and still fails to serve the query it was written for — and that
     the businesses.contact_email and uq_email_run_purpose coverage facts still hold, which
@@ -347,6 +347,7 @@ class TestIndexStaticGuard:
             "idx_payroll_runs_status",
             "idx_email_messages_run_direction_state",
             "idx_jobs_claimable",
+            "idx_inbound_events_received_at",
             "idx_operator_resume_resolutions_run_id",
         }
         found = set(re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", sql))
