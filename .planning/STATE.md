@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Completed 19-01-PLAN.md
-last_updated: "2026-07-16T23:29:46.101Z"
+stopped_at: Completed 19-02-PLAN.md
+last_updated: "2026-07-17T00:27:16.319Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 01 completed
+last_activity_desc: Phase 19 Plan 02 completed
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 30
-  percent: 73
+  completed_plans: 31
+  percent: 76
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
-Plan: 2 of 12
+Plan: 3 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 01 completed
+Last activity: 2026-07-16 — Phase 19 Plan 02 completed
 
 ## Performance Metrics
 
@@ -111,6 +111,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 01 completed
 | Phase 18 P07 | 12min | 2 tasks | 6 files |
 | Phase 18 P08 | 10min | 2 tasks | 9 files |
 | Phase 19 P01 | 12min | 3 tasks | 9 files |
+| Phase 19 P02 | 12min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -210,6 +211,9 @@ Recent decisions affecting current work:
 - [Phase 19]: Initialize the singleton writer fence with insert-if-absent semantics so schema reapplication cannot reopen a closed cutover boundary.
 - [Phase 19]: Classify only an unresolved run's sole legacy generation as authoritative; any multiple-generation history aborts before the first authority write.
 - [Phase 19]: Reopen requires a deployed revision plus schema, fence, and authority postflights under an access-exclusive lock.
+- [Phase 19]: Exact resolution UUID replay is idempotent only when mapping and remember intent are byte-for-byte equivalent. — Conflicting reuse must fail closed even after the run advances.
+- [Phase 19]: New operator generations validate unresolved-name completeness and business-roster ownership while holding the target run row lock. — Commit serialization, not worker order or timestamps, selects payroll authority.
+- [Phase 19]: Only authoritative preparation merges remember=true bindings into alias_candidates; superseded preparation is a bounded no-op. — Alias learning must follow the same generation that owns payroll authority.
 
 ### Pending Todos
 
@@ -275,8 +279,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-16T23:29:15.862Z
-Stopped at: Completed 19-01-PLAN.md
+Last session: 2026-07-17T00:26:35.825Z
+Stopped at: Completed 19-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
