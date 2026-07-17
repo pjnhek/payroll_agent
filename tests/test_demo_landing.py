@@ -138,6 +138,16 @@ def _patch_atomic_demo_store(monkeypatch, store: _AtomicDemoStore) -> None:
     monkeypatch.setattr(wake_mod, "wake", store.wake)
 
 
+def _patch_demo_queue_dependencies(monkeypatch, repo_mod) -> None:
+    """Give older focused route tests a transaction and durable enqueue seam."""
+    from app.queue import wake as wake_mod
+
+    store = _AtomicDemoStore()
+    monkeypatch.setattr(repo_mod, "get_connection", store.get_connection)
+    monkeypatch.setattr(repo_mod, "enqueue_job", lambda **_kwargs: uuid.uuid4())
+    monkeypatch.setattr(wake_mod, "wake", lambda: None)
+
+
 def _demo_client():
     from fastapi.testclient import TestClient
 
@@ -946,13 +956,7 @@ def test_compose_routes_by_business_id_not_find_sender(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    # Patch run_pipeline_bg to be a no-op. raising=True (the default) is used
-    # deliberately: if run_pipeline_bg is ever renamed again, this patch must
-    # fail LOUDLY (AttributeError) instead of silently becoming a no-op that would let
-    # the real route call the REAL pipeline_glue.run_pipeline_bg against this repo's
-    # live LLM/gateway keys — a test that quietly bills real API calls.
-    import app.routes.pipeline_glue as pipeline_glue_mod
-    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
+    _patch_demo_queue_dependencies(monkeypatch, repo_mod)
 
     from fastapi.testclient import TestClient
 
@@ -1016,11 +1020,7 @@ def test_compose_sets_record_only_via_create_run(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    # raising=True (the default) is used deliberately here: if run_pipeline_bg is ever
-    # renamed, this patch must fail LOUDLY instead of silently becoming a no-op that
-    # lets the real pipeline fire against this repo's live LLM/gateway keys.
-    import app.routes.pipeline_glue as pipeline_glue_mod
-    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
+    _patch_demo_queue_dependencies(monkeypatch, repo_mod)
 
     from fastapi.testclient import TestClient
 
@@ -1077,11 +1077,7 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
 
-    # raising=True (the default) is used deliberately here: if run_pipeline_bg is ever
-    # renamed, this patch must fail LOUDLY instead of silently becoming a no-op that
-    # lets the real pipeline fire against this repo's live LLM/gateway keys.
-    import app.routes.pipeline_glue as pipeline_glue_mod
-    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_bg", lambda run_id: None)
+    _patch_demo_queue_dependencies(monkeypatch, repo_mod)
 
     from fastapi.testclient import TestClient
 
@@ -1353,7 +1349,7 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Phase 19 durable composer producer
+# Durable composer producer
 # ---------------------------------------------------------------------------
 
 

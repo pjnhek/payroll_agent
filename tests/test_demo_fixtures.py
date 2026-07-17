@@ -302,7 +302,7 @@ def test_all_three_fixtures_replay_end_to_end(client, fake_repo, mock_llm):
 
 
 # ---------------------------------------------------------------------------
-# Phase 19 durable curated-fixture producer
+# Durable curated-fixture producer
 # ---------------------------------------------------------------------------
 
 

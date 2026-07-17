@@ -11,7 +11,7 @@ from io import BytesIO
 from typing import Any, TypedDict
 
 import psycopg
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.db import repo
@@ -635,7 +635,10 @@ def _build_alias_rationale_notes(
 
 
 @router.get("/runs")
-def runs_list(request: Request) -> Response:
+def runs_list(
+    request: Request,
+    demo_queue_error: str = Query(default=""),
+) -> Response:
     """DASH-01: Read and render the reverse-chronological runs list.
 
     This unauthenticated GET is deliberately side-effect free. Durable queue workers
@@ -656,6 +659,7 @@ def runs_list(request: Request) -> Response:
             "runs": runs,
             "demo_fixtures": DEMO_FIXTURES,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),
+            "demo_queue_error": demo_queue_error == "1",
         },
     )
 

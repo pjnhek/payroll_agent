@@ -35,6 +35,7 @@ def landing(
     request: Request,
     business: str = Query(default=""),
     bound: str = Query(default=""),
+    demo_queue_error: str = Query(default=""),
 ) -> Response:
     """Recruiter landing page with business picker + in-app composer.
 
@@ -95,6 +96,7 @@ def landing(
             "armed_business_id": armed_business_id,
             "armed_business_name": armed_business_name,
             "bound": bound,
+            "demo_queue_error": demo_queue_error == "1",
             "demo_operator_email": DEMO_OPERATOR_EMAIL,
         },
     )

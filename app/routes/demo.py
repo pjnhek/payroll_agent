@@ -12,13 +12,16 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Form
+import psycopg
+from fastapi import APIRouter, Form
 from fastapi.responses import RedirectResponse
 
 from app.db import repo
 from app.email import gateway
 from app.email.clean import clean_body
-from app.routes import pipeline_glue
+from app.models.contracts import InboundEmail
+from app.models.job import JobKind
+from app.queue import wake
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -87,6 +90,47 @@ SEED_BUSINESS_IDS: dict[str, uuid.UUID] = {
 }
 
 
+def _write_demo_run(
+    *,
+    email: InboundEmail,
+    cleaned: str,
+    business_id: uuid.UUID,
+    record_only: bool,
+    conn: psycopg.Connection,
+) -> uuid.UUID:
+    """Write the email, run, and owed pipeline job through one transaction."""
+    email_id, inserted = repo.insert_inbound_email(
+        message_id=email.message_id,
+        in_reply_to=email.in_reply_to,
+        references_header=email.references_header,
+        subject=email.subject,
+        from_addr=email.from_addr,
+        to_addr=email.to_addr,
+        body_text=cleaned,
+        run_id=None,
+        conn=conn,
+    )
+    if not inserted or email_id is None:
+        raise RuntimeError("demo inbound insert did not create a row")
+
+    run_id = repo.create_run(
+        business_id=business_id,
+        source_email_id=email_id,
+        record_only=record_only,
+        conn=conn,
+    )
+    job_id = repo.enqueue_job(
+        kind=JobKind.RUN_PIPELINE,
+        dedup_key=f"demo_run:{run_id}",
+        run_id=run_id,
+        business_id=business_id,
+        conn=conn,
+    )
+    if job_id is None:
+        raise RuntimeError("demo pipeline job insert did not create a row")
+    return run_id
+
+
 # ---------------------------------------------------------------------------
 # POST /demo/bind — unlinked operator route (NOT on landing page)
 # ---------------------------------------------------------------------------
@@ -122,7 +166,6 @@ def demo_bind(
 
 @router.post("/demo/compose")
 def demo_compose(
-    background_tasks: BackgroundTasks,
     business_name: str = Form(...),
     subject: str = Form(default="Payroll submission"),
     body: str = Form(default=""),
@@ -175,39 +218,27 @@ def demo_compose(
     }
 
     try:
-        # Step 6: Parse, clean, insert inbound email row.
+        # Step 6: Parse and clean before opening the transaction.
         email = gateway.parse_inbound(inbound_payload)
         cleaned = clean_body(email.body_text)
 
-        email_id, inserted = repo.insert_inbound_email(
-            message_id=email.message_id,
-            in_reply_to=email.in_reply_to,
-            references_header=email.references_header,
-            subject=email.subject,
-            from_addr=email.from_addr,
-            to_addr=email.to_addr,
-            body_text=cleaned,
-            run_id=None,
-        )
-        if not inserted:
-            # Shouldn't happen (fresh uuid4 message_id per click), but handle gracefully.
-            logger.warning("demo_compose: duplicate message_id — redirecting to /runs")
-            return RedirectResponse(url="/runs", status_code=303)
+        # Step 7: Email, run, and owed work commit as one durable unit.
+        with repo.get_connection() as conn, conn.transaction():
+            run_id = _write_demo_run(
+                email=email,
+                cleaned=cleaned,
+                business_id=business_id,
+                record_only=True,
+                conn=conn,
+            )
 
-        # Step 7: Create the run with record_only=True — no provider send.
-        run_id = repo.create_run(
-            business_id=business_id,
-            source_email_id=email_id,
-            record_only=True,
-        )
-
-        # Step 8: Schedule pipeline in background; redirect to run detail.
-        background_tasks.add_task(pipeline_glue.run_pipeline_bg, run_id)
+        # Step 8: Wake only after commit, then open the real run detail page.
+        wake.wake()
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-    except Exception:
-        logger.exception("demo_compose: failed to create compose run")
-        return RedirectResponse(url="/", status_code=303)
+    except Exception as exc:
+        logger.warning("demo_compose enqueue failed: %s", type(exc).__name__)
+        return RedirectResponse(url="/?demo_queue_error=1", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +248,6 @@ def demo_compose(
 
 @router.post("/demo/send-test")
 def demo_send_test(
-    background_tasks: BackgroundTasks,
     fixture_key: str = Form(default=DEMO_FIXTURE_DEFAULT_KEY),
 ) -> RedirectResponse:
     """DASH-05: Fire a curated demo fixture through the pipeline with a fresh Message-ID.
@@ -288,38 +318,23 @@ def demo_send_test(
     cleaned = clean_body(inbound_email.body_text)
 
     try:
-        email_id, inserted = repo.insert_inbound_email(
-            message_id=inbound_email.message_id,
-            in_reply_to=inbound_email.in_reply_to,
-            references_header=inbound_email.references_header,
-            subject=inbound_email.subject,
-            from_addr=inbound_email.from_addr,
-            to_addr=inbound_email.to_addr,
-            body_text=cleaned,
-            run_id=None,
-        )
+        with repo.get_connection() as conn, conn.transaction():
+            business_id = repo.find_business_by_sender(
+                inbound_email.from_addr,
+                conn=conn,
+            )
+            if business_id is None:
+                raise RuntimeError("demo fixture sender did not resolve")
+            run_id = _write_demo_run(
+                email=inbound_email,
+                cleaned=cleaned,
+                business_id=business_id,
+                record_only=False,
+                conn=conn,
+            )
 
-        if not inserted:
-            # Collision is extremely unlikely (uuid4 IDs) but if it happens, redirect anyway.
-            logger.warning("demo send-test: unexpected duplicate message_id %s", fresh_message_id)
-            return RedirectResponse(url="/runs", status_code=303)
-
-        business_id = repo.find_business_by_sender(inbound_email.from_addr)
-        if business_id is None:
-            logger.warning("demo send-test: unknown sender %s", inbound_email.from_addr)
-            return RedirectResponse(url="/runs", status_code=303)
-
-        run_id = repo.create_run(business_id=business_id, source_email_id=email_id)
-        background_tasks.add_task(pipeline_glue.run_pipeline_bg, run_id)
-        # Redirect to the /runs queue so the operator can watch the new run appear
-        # and advance through statuses. Each click still creates a distinct run
-        # (fresh Message-ID per click).
-        return RedirectResponse(url="/runs", status_code=303)
-    except Exception:
-        # DB unavailable: still redirect to /runs rather than returning 500.
-        # The run will not be created but the operator can see the (empty) list.
-        logger.debug("demo send-test: DB unavailable — redirecting without creating run")
-
-    # Fallback (duplicate Message-ID, unknown sender, or DB error): no specific run
-    # to show — land on the triage queue.
-    return RedirectResponse(url="/runs", status_code=303)
+        wake.wake()
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+    except Exception as exc:
+        logger.warning("demo send-test enqueue failed: %s", type(exc).__name__)
+        return RedirectResponse(url="/runs?demo_queue_error=1", status_code=303)

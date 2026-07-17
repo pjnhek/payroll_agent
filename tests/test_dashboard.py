@@ -892,11 +892,10 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(monkeypatch):
 @pytest.mark.integration
 def test_send_test_mints_fresh_message_id_each_click():
     """Two consecutive POST /demo/send-test calls must produce DISTINCT runs with
-    DISTINCT message_ids — even though both redirect to /runs (the queue view, not
-    the individual run detail URL).
+    DISTINCT message_ids and redirect directly to each new run detail.
 
     Contract (DASH-05):
-    - Both clicks → 303 to /runs (success path).
+    - Both clicks → 303 to their exact /runs/{run_id} detail (success path).
     - Each click inserts a distinct email_messages row (different message_id).
     - Each click creates a distinct payroll_runs row.
 
@@ -917,16 +916,16 @@ def test_send_test_mints_fresh_message_id_each_click():
         f"got {response2.status_code}"
     )
 
-    # Both clicks redirect to /runs (the triage queue), not to a specific run URL,
-    # so the operator watches the queue as the runs advance.
+    # Each click opens its own real run detail so the demo remains one-click.
     loc1 = response1.headers.get("location", "")
     loc2 = response2.headers.get("location", "")
-    assert loc1 == "/runs", (
-        f"First /demo/send-test must redirect to /runs; got {loc1!r}"
+    assert loc1.startswith("/runs/") and loc1 != "/runs/", (
+        f"First /demo/send-test must redirect to run detail; got {loc1!r}"
     )
-    assert loc2 == "/runs", (
-        f"Second /demo/send-test must redirect to /runs; got {loc2!r}"
+    assert loc2.startswith("/runs/") and loc2 != "/runs/", (
+        f"Second /demo/send-test must redirect to run detail; got {loc2!r}"
     )
+    assert loc1 != loc2
 
     # DASH-05 core contract: two distinct runs were created in the DB.
     # We verify this by loading all runs and checking the two most-recent ones
@@ -1021,6 +1020,10 @@ def test_demo_send_test_coastal_routes_to_coastal(monkeypatch):
     monkeypatch.setattr(_repo, "insert_inbound_email", _fake_insert_inbound_email)
     monkeypatch.setattr(_repo, "create_run", _fake_create_run)
 
+    from tests.test_demo_landing import _patch_demo_queue_dependencies
+
+    _patch_demo_queue_dependencies(monkeypatch, _repo)
+
     import resend as _resend
     monkeypatch.setattr(
         _resend.Emails, "send", staticmethod(lambda p: {"id": "fake"}), raising=True
@@ -1082,6 +1085,10 @@ def test_demo_send_test_metro_unknown_shorthand_routes_to_metro(monkeypatch):
     monkeypatch.setattr(_repo, "find_business_by_sender", _fake_find_business_by_sender)
     monkeypatch.setattr(_repo, "insert_inbound_email", _fake_insert_inbound_email)
     monkeypatch.setattr(_repo, "create_run", _fake_create_run)
+
+    from tests.test_demo_landing import _patch_demo_queue_dependencies
+
+    _patch_demo_queue_dependencies(monkeypatch, _repo)
 
     import resend as _resend
     monkeypatch.setattr(

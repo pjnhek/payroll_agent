@@ -98,6 +98,11 @@
 
 {# Demo send-test with business/fixture picker #}
 <div class="mt-2xl">
+  {% if demo_queue_error %}
+  <div class="callout callout-error" role="alert">
+    <p>We couldn't queue this demo run. Please try again.</p>
+  </div>
+  {% endif %}
   <form method="post" action="/demo/send-test" class="form-inline" style="margin-bottom: 0;">
     <label for="fixture_key_runs" class="form-help" style="font-weight: 600;">Demo scenario</label>
     <select id="fixture_key_runs" name="fixture_key" class="demo-select">

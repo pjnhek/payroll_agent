@@ -588,6 +588,13 @@ td a:hover {
   color: #3730A3;
 }
 
+.callout-error {
+  background: #FEF2F2;
+  border-color: #FECACA;
+  color: #DC2626;
+  font-size: 14px;
+}
+
 /* --- Cards --- */
 .card {
   background: var(--surface);
