@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -137,6 +139,70 @@ def load_line_items(
         cur.execute(sql, (str(run_id),))
         rows = cur.fetchall()
     return [PaystubLineItem(**row) for row in rows]
+
+
+def load_prior_reconciled_paystub_totals(
+    business_id: uuid.UUID,
+    employee_ids: list[uuid.UUID],
+    pay_period_start: date | None,
+    conn: psycopg.Connection | None = None,
+) -> dict[uuid.UUID, dict[str, Decimal]]:
+    """Return each employee's completed calendar-year totals before this pay period.
+
+    The paystub display ledger is intentionally separate from the employee's Social
+    Security wage-base field.  A missing current-period start has no honest calendar
+    scope, so it yields no prior values instead of treating one category as complete.
+    """
+    if pay_period_start is None or not employee_ids:
+        return {}
+
+    sql = (
+        "SELECT item.employee_id,"
+        " COALESCE(SUM(item.gross_pay), 0) AS gross_pay,"
+        " COALESCE(SUM(item.federal_withholding), 0) AS federal_withholding,"
+        " COALESCE(SUM(item.fica_ss), 0) AS fica_ss,"
+        " COALESCE(SUM(item.fica_medicare), 0) AS fica_medicare,"
+        " COALESCE(SUM(item.state_withholding), 0) AS state_withholding,"
+        " COALESCE(SUM(item.pretax_401k), 0) AS pretax_401k,"
+        " COALESCE(SUM(item.net_pay), 0) AS net_pay"
+        " FROM paystub_line_items AS item"
+        " JOIN payroll_runs AS historical ON historical.id = item.run_id"
+        " WHERE historical.business_id = %s"
+        " AND historical.status = 'reconciled'"
+        " AND item.employee_id = ANY(%s::uuid[])"
+        " AND historical.pay_period_start >= date_trunc('year', %s::date)::date"
+        " AND historical.pay_period_end < %s"
+        " GROUP BY item.employee_id"
+    )
+    with (
+        _conn_ctx(conn) as (c, _owns),
+        c.cursor(row_factory=psycopg.rows.dict_row) as cur,
+    ):
+        cur.execute(
+            sql,
+            (
+                str(business_id),
+                [str(employee_id) for employee_id in employee_ids],
+                pay_period_start,
+                pay_period_start,
+            ),
+        )
+        rows = cur.fetchall()
+    categories = (
+        "gross_pay",
+        "federal_withholding",
+        "fica_ss",
+        "fica_medicare",
+        "state_withholding",
+        "pretax_401k",
+        "net_pay",
+    )
+    return {
+        uuid.UUID(str(row["employee_id"])): {
+            category: Decimal(str(row[category])) for category in categories
+        }
+        for row in rows
+    }
 
 
 def load_all_runs(conn: psycopg.Connection | None = None) -> list[dict[str, Any]]:

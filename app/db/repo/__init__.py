@@ -22,6 +22,7 @@ from app.db.repo.demo import (
     list_businesses,
     load_all_runs,
     load_line_items,
+    load_prior_reconciled_paystub_totals,
     set_record_only,
 )
 from app.db.repo.emails import (
@@ -130,6 +131,7 @@ __all__ = [
     "list_businesses",
     "load_all_runs",
     "load_line_items",
+    "load_prior_reconciled_paystub_totals",
     "set_record_only",
     "get_record_only_flag",
     "_HEADER_MATCH_PREDICATE",

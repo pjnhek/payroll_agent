@@ -15,7 +15,7 @@ from app.models.job import JobKind
 from app.models.status import RunStatus
 from app.pipeline import alias_learning, send_guard
 from app.pipeline.compose_email import compose_confirmation, confirmation_subject
-from app.pipeline.pdf import generate_paystub_pdf
+from app.pipeline.pdf import PaystubYtdTotals, generate_paystub_pdf
 
 logger = logging.getLogger("payroll_agent.orchestrator")
 
@@ -107,6 +107,12 @@ def deliver(
     body = compose_confirmation(paystubs, composed_run, timeout_s=3.0)
     roster = repo.load_roster_for_business(run["business_id"], conn=conn)
     employees = {str(employee.id): employee for employee in roster.employees}
+    employee_ids = [
+        item.employee_id for item in paystubs if item.employee_id is not None
+    ]
+    prior_ytd = repo.load_prior_reconciled_paystub_totals(
+        run["business_id"], employee_ids, run.get("pay_period_start"), conn=conn
+    )
 
     try:
         attachments: list[tuple[str, bytes]] = []
@@ -121,6 +127,10 @@ def deliver(
                 business_name=composed_run.get("business_name"),
                 filing_status=employee.filing_status if employee else None,
                 hourly_rate=employee.hourly_rate if employee else None,
+                ytd=PaystubYtdTotals.from_prior(
+                    prior_ytd.get(item.employee_id) if item.employee_id else None,
+                    item,
+                ),
             )
             safe_name = re.sub(r"[^\w.\-]", "_", employee_name, flags=re.ASCII) or "employee"
             attachments.append((f"paystub_{safe_name}.pdf", pdf_bytes))

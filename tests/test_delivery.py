@@ -19,7 +19,8 @@ tests/test_email_epoch_arbiter_integration.py.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC
+from datetime import UTC, date
+from decimal import Decimal
 
 import pytest
 
@@ -28,6 +29,7 @@ from app.db.repo import (
     claim_status,
     get_outbound_message_id,
     insert_email_message,
+    load_prior_reconciled_paystub_totals,
     record_run_error,
 )
 from app.models.status import RunStatus
@@ -507,6 +509,151 @@ def test_confirmation_reservation_enqueues_one_frozen_send_job(fake_repo, monkey
     assert send_jobs[0]["dedup_key"] == f"send_outbound:{snapshot['email_id']}"
 
 
+def test_new_confirmation_passes_complete_prior_ytd_to_paystub(fake_repo, monkeypatch):
+    """A first reservation receives every display category from reconciled history."""
+    from app.pipeline import delivery as orch
+
+    run_id = _run_id()
+    roster, item = _minimal_roster_and_item(run_id)
+    fake_repo.runs[str(run_id)] = {
+        "id": run_id,
+        "business_id": roster.business_id,
+        "status": RunStatus.APPROVED.value,
+        "reply_epoch": 0,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "record_only": False,
+    }
+    run = fake_repo.load_run(run_id)
+    assert run is not None
+    prior = {
+        "gross_pay": Decimal("1200.00"),
+        "federal_withholding": Decimal("50.00"),
+        "fica_ss": Decimal("74.40"),
+        "fica_medicare": Decimal("17.40"),
+        "state_withholding": Decimal("20.00"),
+        "pretax_401k": Decimal("30.00"),
+        "net_pay": Decimal("1008.20"),
+    }
+    captured_ytd: list[object] = []
+
+    monkeypatch.setattr(orch.repo, "load_business_name", lambda *_args, **_kw: "Coastal")
+    monkeypatch.setattr(orch.repo, "load_line_items", lambda *_args, **_kw: [item])
+    monkeypatch.setattr(orch.repo, "load_roster_for_business", lambda *_args, **_kw: roster)
+    monkeypatch.setattr(orch.repo, "load_inbound_email", lambda *_args, **_kw: None)
+    monkeypatch.setattr(
+        orch.repo,
+        "load_prior_reconciled_paystub_totals",
+        lambda *_args, **_kw: {item.employee_id: prior},
+        raising=False,
+    )
+    monkeypatch.setattr(orch, "compose_confirmation", lambda *_args, **_kw: "frozen")
+
+    def _pdf(*_args, **kwargs):
+        captured_ytd.append(kwargs["ytd"])
+        return b"frozen pdf"
+
+    monkeypatch.setattr(orch, "generate_paystub_pdf", _pdf)
+
+    assert orch.deliver(run_id, run) is True
+    ytd = captured_ytd[0]
+    assert ytd.gross_pay == prior["gross_pay"] + item.gross_pay
+    assert ytd.federal_withholding == prior["federal_withholding"] + item.federal_withholding
+    assert ytd.fica_ss == prior["fica_ss"] + item.fica_ss
+    assert ytd.fica_medicare == prior["fica_medicare"] + item.fica_medicare
+    assert ytd.state_withholding == prior["state_withholding"] + (item.state_withholding or 0)
+    assert ytd.pretax_401k == prior["pretax_401k"] + item.pretax_401k
+    assert ytd.net_pay == prior["net_pay"] + item.net_pay
+
+
+def test_new_confirmation_uses_current_values_when_history_is_empty(fake_repo, monkeypatch):
+    """No reconciled predecessor makes each YTD amount equal this current pay period."""
+    from app.pipeline import delivery as orch
+
+    run_id = _run_id()
+    roster, item = _minimal_roster_and_item(run_id)
+    fake_repo.runs[str(run_id)] = {
+        "id": run_id,
+        "business_id": roster.business_id,
+        "status": RunStatus.APPROVED.value,
+        "reply_epoch": 0,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "record_only": False,
+    }
+    run = fake_repo.load_run(run_id)
+    assert run is not None
+    captured_ytd: list[object] = []
+
+    monkeypatch.setattr(orch.repo, "load_business_name", lambda *_args, **_kw: "Coastal")
+    monkeypatch.setattr(orch.repo, "load_line_items", lambda *_args, **_kw: [item])
+    monkeypatch.setattr(orch.repo, "load_roster_for_business", lambda *_args, **_kw: roster)
+    monkeypatch.setattr(orch.repo, "load_inbound_email", lambda *_args, **_kw: None)
+    monkeypatch.setattr(
+        orch.repo,
+        "load_prior_reconciled_paystub_totals",
+        lambda *_args, **_kw: {},
+        raising=False,
+    )
+    monkeypatch.setattr(orch, "compose_confirmation", lambda *_args, **_kw: "frozen")
+    monkeypatch.setattr(
+        orch,
+        "generate_paystub_pdf",
+        lambda *_args, **kwargs: captured_ytd.append(kwargs["ytd"]) or b"frozen pdf",
+    )
+
+    assert orch.deliver(run_id, run) is True
+    ytd = captured_ytd[0]
+    assert ytd.gross_pay == item.gross_pay
+    assert ytd.federal_withholding == item.federal_withholding
+    assert ytd.fica_ss == item.fica_ss
+    assert ytd.fica_medicare == item.fica_medicare
+    assert ytd.state_withholding == Decimal("0")
+    assert ytd.pretax_401k == item.pretax_401k
+    assert ytd.net_pay == item.net_pay
+
+
+def test_prior_ytd_query_is_employee_scoped_and_complete(fake_conn):
+    """The display ledger sums only reconciled predecessor rows for requested staff."""
+    business_id = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    fake_conn.script_fetchall(
+        [
+            {
+                "employee_id": str(employee_id),
+                "gross_pay": Decimal("1200.00"),
+                "federal_withholding": Decimal("50.00"),
+                "fica_ss": Decimal("74.40"),
+                "fica_medicare": Decimal("17.40"),
+                "state_withholding": Decimal("20.00"),
+                "pretax_401k": Decimal("30.00"),
+                "net_pay": Decimal("1008.20"),
+            }
+        ]
+    )
+
+    totals = load_prior_reconciled_paystub_totals(
+        business_id, [employee_id], date(2026, 6, 22), conn=fake_conn
+    )
+
+    assert totals[employee_id] == {
+        "gross_pay": Decimal("1200.00"),
+        "federal_withholding": Decimal("50.00"),
+        "fica_ss": Decimal("74.40"),
+        "fica_medicare": Decimal("17.40"),
+        "state_withholding": Decimal("20.00"),
+        "pretax_401k": Decimal("30.00"),
+        "net_pay": Decimal("1008.20"),
+    }
+    sql, params = fake_conn.last()
+    assert "historical.status = 'reconciled'" in sql
+    assert "historical.business_id = %s" in sql
+    assert "item.employee_id = ANY(%s::uuid[])" in sql
+    assert "historical.pay_period_end < %s" in sql
+    assert params[0] == str(business_id)
+    assert params[1] == [str(employee_id)]
+
+
 def test_confirmation_replay_loads_snapshot_without_rebuilding_payload(fake_repo, monkeypatch):
     """A reserved confirmation is re-queued from stored data without mutable reads."""
     from app.models.job import JobKind
@@ -553,6 +700,12 @@ def test_confirmation_replay_loads_snapshot_without_rebuilding_payload(fake_repo
     )
     monkeypatch.setattr(
         orch, "generate_paystub_pdf", lambda *_args, **_kwargs: pytest.fail("replay made PDF")
+    )
+    monkeypatch.setattr(
+        orch.repo,
+        "load_prior_reconciled_paystub_totals",
+        lambda *_args, **_kwargs: pytest.fail("replay derived YTD"),
+        raising=False,
     )
 
     assert orch.deliver(run_id, run) is True

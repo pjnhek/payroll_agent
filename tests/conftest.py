@@ -551,6 +551,17 @@ class InMemoryRepo:
         """Return stored PaystubLineItem list for a run (mirrors repo.load_line_items)."""
         return list(self.line_items.get(str(run_id), []))
 
+    def load_prior_reconciled_paystub_totals(
+        self, business_id, employee_ids, pay_period_start, conn=None
+    ):
+        """Return configured historical display totals for a first-time paystub."""
+        configured = getattr(self, "prior_reconciled_paystub_totals", {})
+        return {
+            employee_id: copy.deepcopy(configured[employee_id])
+            for employee_id in employee_ids
+            if employee_id in configured
+        }
+
     def load_all_runs(self, conn=None):
         """Return all runs as dicts with business_name (mirrors repo.load_all_runs).
 
@@ -1987,6 +1998,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "persist_reconciliation",
         "replace_line_items",
         "load_line_items",
+        "load_prior_reconciled_paystub_totals",
         "load_all_runs",
         "get_run_queue_label",
         "set_alias_candidates",
