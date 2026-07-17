@@ -98,6 +98,7 @@ Each task was committed atomically:
 
 1. **Task 1: Add append-only outbound snapshot, attachment, and attempt storage** - `aa4289a` (feat)
 2. **Task 2: Replace outbound conflict overwrite with read-or-reserve repository APIs** - `4f28cb9` (feat)
+3. **Post-plan correction: Remove prohibited planning provenance from source comments and docstrings** - `526d90a` (fix)
 
 ## Files Created/Modified
 
@@ -116,9 +117,17 @@ Each task was committed atomically:
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
 
-**Total deviations:** 0 auto-fixed. **Impact:** None.
+**1. [Rule 3 - Blocking] Source-comment provenance guard rejected planning labels**
+- **Found during:** Post-wave integration gate
+- **Issue:** New comments and docstrings cited planning decision and phase labels, which the repository guard prohibits in production and test source.
+- **Fix:** Replaced only the labels with plain-language explanations of immutable reservation, byte preservation, and bounded review behavior.
+- **Files modified:** `app/db/repo/emails.py`, `app/db/schema.sql`, `tests/conftest.py`, `tests/test_delivery.py`, `tests/test_send_idempotency.py`
+- **Verification:** Provenance guard, focused Plan 01 tests, Ruff, and mypy all passed.
+- **Committed in:** `526d90a`
+
+**Total deviations:** 1 auto-fixed (1 Rule 3 blocking issue). **Impact:** Commentary-only correction; no runtime or schema behavior changed.
 
 ## Issues Encountered
 
@@ -137,6 +146,7 @@ None - no external service configuration required. A configured test Postgres da
 ## Verification
 
 - `uv run pytest tests/test_send_idempotency.py tests/test_delivery.py -q` — 22 passed, 3 skipped.
+- `uv run pytest tests/test_comment_provenance_guard.py -q` — 5 passed.
 - `uv run pytest tests/test_fake_repo_pairing.py -q` — 10 passed, 1 unchanged Starlette/httpx deprecation warning.
 - `uv run mypy app/db/repo/emails.py tests/conftest.py` — passed.
 - `uv run ruff check app/db/repo/emails.py app/db/repo/__init__.py tests/conftest.py tests/test_send_idempotency.py tests/test_delivery.py` — passed.
@@ -145,7 +155,7 @@ None - no external service configuration required. A configured test Postgres da
 ## Self-Check: PASSED
 
 - The summary and all six listed files exist.
-- Task commits `aa4289a` and `4f28cb9` are present in history.
+- Task commits `aa4289a`, `4f28cb9`, and correction `526d90a` are present in history.
 - Focused tests, fake-pairing guard, lint, mypy, and diff checks passed; the guarded live-Postgres test is explicitly reported as unavailable evidence.
 
 ---
