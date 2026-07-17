@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -992,6 +993,44 @@ def test_delivery_review_authorization_clones_frozen_bytes_into_one_new_slot(
     assert replacement["attachments"][0]["content"] == original["attachments"][0]["content"]
     assert len(fake_repo.jobs) == 2
     assert wake_calls == [None]
+
+
+def test_delivery_review_card_uses_only_the_safe_projection(fake_repo):
+    """The detail page gives two explicit choices without provider diagnostics."""
+    run_id, _snapshot = _delivery_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:payload_mismatch"
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert "Review confirmation delivery" in response.text
+    assert "Frozen payload mismatch" in response.text
+    assert "Frozen confirmation" in response.text
+    assert "View frozen email" in response.text
+    assert "View frozen attachment" in response.text
+    assert "Mark delivered" in response.text
+    assert "Authorize a new confirmation" in response.text
+    assert "AUTHORIZE A NEW CONFIRMATION" in response.text
+    assert "Resolve unresolved names" not in response.text
+    for unsafe_name in (
+        "error_detail",
+        "last_error",
+        "provider_response",
+        "provider_request",
+        "queue_id",
+    ):
+        assert unsafe_name not in response.text
+
+
+def test_delivery_review_template_has_no_automatic_recovery_action():
+    """Review stays server-rendered and polling never creates or restarts work."""
+    template = Path("app/templates/run_detail.html").read_text()
+
+    assert "delivery-review" in template
+    assert "delivery-review/mark-delivered" in template
+    assert "delivery-review/authorize" in template
+    assert "fetch('/runs/' + RUN_ID + '/delivery-review" not in template
+    assert "enqueue" not in template
 
 
 @pytest.mark.parametrize(

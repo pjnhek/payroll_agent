@@ -107,6 +107,43 @@
   </div>
   {% endif %}
 </div>
+{% elif delivery_review %}
+<section class="delivery-review-card banner-mb" aria-labelledby="delivery-review-title">
+  <div class="delivery-review-header">
+    <div>
+      <p class="column-label">Delivery review</p>
+      <h2 id="delivery-review-title">Review confirmation delivery</h2>
+    </div>
+    <span class="badge badge-escalate">Action required</span>
+  </div>
+  <p>A provider result could not prove whether this confirmation was delivered. Review the frozen evidence before choosing an outcome.</p>
+  <dl class="delivery-review-facts">
+    <div><dt>Recipient</dt><dd>{{ delivery_review.recipient }}</dd></div>
+    <div><dt>Subject</dt><dd>{{ delivery_review.subject }}</dd></div>
+    <div><dt>Reserved</dt><dd>{% if delivery_review.reserved_at is string %}{{ delivery_review.reserved_at[:16] }}{% else %}{{ delivery_review.reserved_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</dd></div>
+    <div><dt>Attempts</dt><dd>{{ delivery_review.attempt_count }}</dd></div>
+    <div><dt>Safe failure category</dt><dd>{{ delivery_review.failure_category }}</dd></div>
+    <div><dt>Message-ID / replay key</dt><dd class="delivery-review-key">{{ delivery_review.message_id }}</dd></div>
+  </dl>
+  <div class="delivery-review-evidence">
+    <a href="{{ delivery_review.email_url }}">View frozen email</a>
+    {% for attachment in delivery_review.attachments %}
+    <a href="{{ attachment.url }}">View frozen attachment: {{ attachment.filename }}</a>
+    {% endfor %}
+  </div>
+  <div class="delivery-review-actions">
+    <form method="post" action="/runs/{{ run.id }}/delivery-review/mark-delivered">
+      <button type="submit" class="btn-approve">Mark delivered</button>
+      <p class="form-help">Use only when you have confirmed the client received this frozen confirmation. No new email is sent.</p>
+    </form>
+    <form method="post" action="/runs/{{ run.id }}/delivery-review/authorize" class="delivery-review-authorize">
+      <label for="new-confirmation-ack">To send another copy, type <code>AUTHORIZE A NEW CONFIRMATION</code>.</label>
+      <input id="new-confirmation-ack" name="acknowledgement" type="text" autocomplete="off" required>
+      <button type="submit" class="btn-reject">Authorize a new confirmation</button>
+      <p class="form-help">This creates a distinct delivery slot and may send the client a second email.</p>
+    </form>
+  </div>
+</section>
 {% elif run.status == 'needs_operator' %}
 <div class="banner banner-clarify banner-mb">
   <strong>Needs Operator</strong> — the client did not resolve every name after {{ run.clarification_round if run.clarification_round else 3 }} clarification round(s). Resolve each unresolved name below, or reject this run.

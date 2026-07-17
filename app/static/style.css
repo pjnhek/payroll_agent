@@ -324,6 +324,81 @@ td a:hover {
   margin: calc(-1 * var(--space-sm)) 0 var(--space-lg) 0;
 }
 
+/* --- Delivery-review card --- */
+.delivery-review-card {
+  background: #FFF7ED;
+  border: 1px solid #FDBA74;
+  border-radius: var(--radius-md);
+  padding: var(--space-lg);
+}
+
+.delivery-review-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.delivery-review-header h2 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.delivery-review-header .column-label {
+  margin-bottom: 2px;
+}
+
+.delivery-review-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-sm) var(--space-lg);
+  margin: var(--space-md) 0;
+}
+
+.delivery-review-facts div {
+  min-width: 0;
+}
+
+.delivery-review-facts dt {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.delivery-review-facts dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.delivery-review-key {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.delivery-review-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+  margin: var(--space-md) 0;
+}
+
+.delivery-review-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-lg);
+  margin-top: var(--space-lg);
+}
+
+.delivery-review-authorize {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.delivery-review-authorize input {
+  width: 100%;
+}
+
 /* --- Buttons --- */
 .btn {
   display: inline-flex;
