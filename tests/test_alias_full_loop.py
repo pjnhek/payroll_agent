@@ -47,7 +47,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.models.contracts import InboundEmail
+from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
+from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
 from app.pipeline.orchestrator import resume_pipeline, run_pipeline
 from tests.conftest import InMemoryRepo
@@ -141,6 +142,18 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm, monkeypatc
     Money-path discipline: the SECOND submission's paystub line-item VALUE is asserted,
     not merely a status label — a run can reach awaiting_approval having paid nobody.
     """
+    from app.pipeline.result import PipelineOutcome, PipelineResult, PipelineStage
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
+
+    monkeypatch.setattr(
+        "app.email.gateway.send_reserved_outbound_snapshot",
+        lambda snapshot: PipelineResult(
+            outcome=PipelineOutcome.OK,
+            stage=PipelineStage.DELIVERY,
+        ),
+    )
+
     # ---- STEP 1: FIRST submission — a nickname with NO stored alias yet -----
     run_id = _seed_inbound_run(fake_repo, body="Jimmy worked 40 regular hours this week.")
 
@@ -178,6 +191,7 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm, monkeypatc
         "('James Okafor'), which must be mapped to James's employee id at persist "
         "time, and must NOT be bound yet: nobody has confirmed anything."
     )
+    assert drain.drain_once() is DrainOutcome.DONE
 
     # ---- STEP 2: a CONFIRMING reply restates the suggested canonical name ---
     # Real reconcile_names must resolve "James Okafor" -> james.id. No
@@ -206,18 +220,6 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm, monkeypatc
     # Approval creates frozen delivery work. The worker performs alias learning only
     # after it has recorded a fenced successful confirmation send.
     from app.pipeline.delivery import deliver as _deliver
-    from app.pipeline.result import PipelineOutcome, PipelineResult, PipelineStage
-    from app.queue import drain
-    from app.queue.drain import DrainOutcome
-
-    monkeypatch.setattr(
-        "app.email.gateway.send_reserved_outbound_snapshot",
-        lambda snapshot: PipelineResult(
-            outcome=PipelineOutcome.OK,
-            stage=PipelineStage.DELIVERY,
-        ),
-    )
-
     claimed = fake_repo.claim_status(
         run_id, RunStatus.AWAITING_APPROVAL, RunStatus.APPROVED
     )
@@ -305,6 +307,103 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm, monkeypatc
         f"the second run's paystub must pay James Okafor for the hours "
         f"submitted under his learned nickname; got {james_items[0].hours_regular!r}"
     )
+
+
+def test_field_regression_replay_preserves_its_slot_without_confirming_an_alias(
+    fake_repo, mock_llm, monkeypatch
+):
+    """A field-regression delivery replays one frozen thread and never learns a name."""
+    from app.db import repo
+    from app.pipeline.clarification import clarify
+    from app.pipeline.result import PipelineOutcome, PipelineResult, PipelineStage
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
+
+    run_id = _seed_inbound_run(fake_repo, body="Zimmy worked 40 regular hours this week.")
+    run = fake_repo.load_run(run_id)
+    inbound = repo.load_inbound_email(run_id)
+    assert inbound is not None
+    roster = repo.load_roster_for_business(run["business_id"])
+    decision = Decision(
+        final_action="request_clarification",
+        gate_reasons=["Zimmy: unresolved"],
+        unresolved_names=["Zimmy"],
+        missing_fields=[],
+        resolutions=[
+            NameMatchResult(
+                submitted_name="Zimmy",
+                matched_employee_id=None,
+                source="none",
+                resolved=False,
+                reason="no roster match",
+            )
+        ],
+    )
+    extracted = Extracted(
+        run_id=run_id,
+        employees=[ExtractedEmployee(submitted_name="Zimmy", hours_regular=Decimal("40"))],
+    )
+    monkeypatch.setattr(
+        "app.pipeline.clarification.suggest_employees",
+        lambda *_args, **_kwargs: {"Zimmy": "James Okafor"},
+    )
+    monkeypatch.setattr(
+        "app.pipeline.clarification.compose_clarification",
+        lambda *_args, **_kwargs: "Please confirm the missing field for Zimmy.",
+    )
+
+    clarify(
+        run_id,
+        inbound,
+        decision,
+        roster,
+        extracted,
+        llm=None,
+        purpose="clarification_field_regression",
+    )
+    original = fake_repo.outbound[str(run_id)][0]
+    original_snapshot = fake_repo.load_outbound_snapshot(run_id, original["id"])
+    assert original_snapshot is not None
+    fake_repo.runs[str(run_id)]["clarification_round"] = 0
+
+    def _should_not_compose(*_args, **_kwargs):
+        raise AssertionError("a field-regression replay must use its frozen snapshot")
+
+    monkeypatch.setattr("app.pipeline.clarification.suggest_employees", _should_not_compose)
+    monkeypatch.setattr("app.pipeline.clarification.compose_clarification", _should_not_compose)
+    clarify(
+        run_id,
+        inbound,
+        decision,
+        roster,
+        extracted,
+        llm=mock_llm,
+        purpose="clarification_field_regression",
+    )
+
+    assert fake_repo.load_outbound_snapshot(run_id, original["id"]) == original_snapshot
+    jobs = [job for job in fake_repo.jobs.values() if job["kind"] == "send_outbound"]
+    assert len(jobs) == 1 and jobs[0]["email_id"] == original["id"]
+    fake_repo.set_alias_candidates(
+        run_id, {"Zimmy": {"suggested": JAMES_ID_STR, "bound": None}}
+    )
+    monkeypatch.setattr(
+        "app.email.gateway.send_reserved_outbound_snapshot",
+        lambda snapshot: PipelineResult(
+            outcome=PipelineOutcome.OK,
+            stage=PipelineStage.DELIVERY,
+        ),
+    )
+    assert drain.drain_once() is DrainOutcome.DONE
+
+    candidate = fake_repo.load_run(run_id)["alias_candidates"]["Zimmy"]
+    assert candidate == {"suggested": JAMES_ID_STR, "bound": None}
+    james = next(
+        employee
+        for employee in fake_repo.business_employees[str(COASTAL_BIZ_ID)]
+        if employee.id == JAMES_ID
+    )
+    assert "Zimmy" not in james.known_aliases
 
 
 def test_misname_reply_binds_nothing_end_to_end(fake_repo, mock_llm):
