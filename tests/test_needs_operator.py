@@ -210,7 +210,7 @@ def test_commit_operator_resolution_locks_before_selecting_first_authority(
     assert {params[-1] for params in override_writes} == {True, False}
 
 
-def test_commit_operator_resolution_exact_replay_is_idempotent_but_conflict_fails(
+def test_operator_resolution_generation_exact_replay_is_idempotent_but_conflict_fails(
     fake_conn,
 ) -> None:
     from app.db.repo.operator_resume_resolutions import (
@@ -254,6 +254,98 @@ def test_commit_operator_resolution_exact_replay_is_idempotent_but_conflict_fail
             conn=conflicting,
         )
     assert "INSERT INTO operator_resume_resolutions" not in conflicting.all_sql()
+
+
+def test_commit_operator_resolution_rejects_incomplete_and_cross_roster_mapping(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        commit_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    run_row = (
+        run_id,
+        COASTAL_BIZ_ID,
+        RunStatus.NEEDS_OPERATOR.value,
+        _authority_decision("PRIVATE A", "PRIVATE B"),
+        {},
+    )
+    fake_conn.script_fetchone(run_row)
+    fake_conn.script_fetchall([])
+    with pytest.raises(ValueError, match="complete mapping"):
+        commit_operator_resume_resolution(
+            run_id,
+            resolution_id,
+            {"PRIVATE A": employee_id},
+            {"PRIVATE A": True},
+            conn=fake_conn,
+        )
+    assert "INSERT INTO operator_resume_resolutions" not in fake_conn.all_sql()
+
+    cross_roster = type(fake_conn)()
+    cross_roster.script_fetchone(run_row)
+    cross_roster.script_fetchall([])
+    cross_roster.script_fetchall([])
+    with pytest.raises(ValueError, match="business roster"):
+        commit_operator_resume_resolution(
+            run_id,
+            resolution_id,
+            {"PRIVATE A": employee_id, "PRIVATE B": employee_id},
+            {"PRIVATE A": True, "PRIVATE B": False},
+            conn=cross_roster,
+        )
+    assert "INSERT INTO operator_resume_resolutions" not in cross_roster.all_sql()
+
+
+def test_commit_operator_resolution_retains_later_generation_as_superseded(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        commit_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    winner_id = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    fake_conn.script_fetchone(
+        (
+            run_id,
+            COASTAL_BIZ_ID,
+            RunStatus.NEEDS_OPERATOR.value,
+            _authority_decision("PRIVATE A"),
+            {},
+        )
+    )
+    fake_conn.script_fetchall([])
+    fake_conn.script_fetchall([(employee_id,)])
+    fake_conn.script_fetchone((winner_id,))
+    fake_conn.script_fetchone((resolution_id,))
+
+    result = commit_operator_resume_resolution(
+        run_id,
+        resolution_id,
+        {"PRIVATE A": employee_id},
+        {"PRIVATE A": False},
+        conn=fake_conn,
+    )
+
+    assert result.authoritative is False
+    assert result.winner_id == winner_id
+    parent_params = next(
+        params
+        for sql, params in fake_conn.executed
+        if "INSERT INTO operator_resume_resolutions" in str(sql)
+    )
+    assert parent_params == (
+        str(resolution_id),
+        str(run_id),
+        False,
+        str(winner_id),
+    )
 
 
 def test_prepare_operator_resolution_keeps_loser_noop_and_projects_only_winner_remember(
@@ -311,9 +403,9 @@ def test_prepare_operator_resolution_keeps_loser_noop_and_projects_only_winner_r
         if "UPDATE payroll_runs" in str(sql)
     )
     assert "alias_candidates" in str(update[0])
-    projected = update[1][0]
+    assert "|| %s::jsonb" in str(update[0])
+    projected = json.loads(update[1][0])
     assert projected == {
-        "existing": {"suggested": str(employee_a)},
         "PRIVATE A": {
             "suggested": str(employee_a),
             "bound": str(employee_a),
