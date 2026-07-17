@@ -479,9 +479,40 @@ CREATE TABLE IF NOT EXISTS outbound_delivery_attempts (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     snapshot_id      UUID        NOT NULL REFERENCES outbound_email_snapshots(id),
     attempt_state    TEXT        NOT NULL CHECK (attempt_state IN ('attempting', 'retry_scheduled', 'sent', 'needs_operator')),
-    failure_category TEXT        NOT NULL CHECK (failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', 'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown')),
+    failure_category TEXT        NOT NULL CHECK (failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', 'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown', 'final_attempt_lease_expired')),
     occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Live-database migration: final lease reaping records a fixed, PII-safe fact
+-- distinct from provider failure categories.  Match the constrained column,
+-- not a historical constraint name, so the migration remains idempotent.
+DO $$
+DECLARE
+    _con RECORD;
+BEGIN
+    FOR _con IN
+        SELECT c.conname
+        FROM pg_constraint c
+        WHERE c.contype = 'c'
+          AND c.conrelid = 'outbound_delivery_attempts'::regclass
+          AND (SELECT array_agg(a.attname::text ORDER BY u.ord)
+               FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+               JOIN pg_attribute a
+                 ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+              ) = ARRAY['failure_category']
+    LOOP
+        EXECUTE 'ALTER TABLE outbound_delivery_attempts DROP CONSTRAINT '
+            || quote_ident(_con.conname);
+    END LOOP;
+    ALTER TABLE outbound_delivery_attempts
+        ADD CONSTRAINT outbound_delivery_attempts_failure_category_check
+        CHECK (failure_category IN (
+            'none', 'transport', 'provider_5xx', 'rate_limited',
+            'payload_mismatch', 'authorization', 'validation', 'configuration',
+            'unknown', 'final_attempt_lease_expired'
+        ));
+END;
+$$;
 
 -- Database enforcement is required because repository discipline alone cannot stop a
 -- future SQL caller from altering the bytes or delivery evidence after reservation.

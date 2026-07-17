@@ -545,7 +545,8 @@ def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
     assert "attempt_state IN ('attempting', 'retry_scheduled', 'sent', 'needs_operator')" in schema
     assert (
         "failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', "
-        "'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown')" in schema
+        "'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown', "
+        "'final_attempt_lease_expired')" in schema
     )
 
     for trigger in (
@@ -593,7 +594,7 @@ def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
         max_attempts=8,
         lease_token=uuid.uuid4(),
     )
-    fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound", email_id))
     fake_conn.script_fetchone(
         (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
     )
@@ -644,7 +645,7 @@ def test_delivery_settlement_reschedules_the_same_job_without_rewinding_approval
         max_attempts=8,
         lease_token=uuid.uuid4(),
     )
-    fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound", email_id))
     fake_conn.script_fetchone(
         (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
     )
@@ -690,7 +691,7 @@ def test_delivery_settlement_moves_expired_or_terminal_delivery_to_review(
         max_attempts=8,
         lease_token=uuid.uuid4(),
     )
-    fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound", email_id))
     fake_conn.script_fetchone(
         (
             uuid.uuid4(),

@@ -65,6 +65,15 @@ assert frozenset(RunStatus) == (
     _FINAL_LEASE_ERROR_STATUSES | _FINAL_LEASE_PRESERVE_STATUSES
 )
 
+_REPLAYABLE_DELIVERY_REASONS = frozenset(
+    {
+        PipelineReason.DELIVERY_TIMEOUT,
+        PipelineReason.DELIVERY_CONNECTION_FAILURE,
+        PipelineReason.DELIVERY_RATE_LIMIT,
+        PipelineReason.DELIVERY_SERVER_FAILURE,
+    }
+)
+
 
 def _bounded_detail(
     result: PipelineResult,
@@ -81,9 +90,9 @@ def _bounded_detail(
 def _locked_job(
     conn: psycopg.Connection,
     job: Job,
-) -> tuple[int, int, uuid.UUID | None, JobKind] | None:
+) -> tuple[int, int, uuid.UUID | None, JobKind, uuid.UUID | None] | None:
     row = conn.execute(
-        "SELECT attempts, max_attempts, run_id, kind FROM jobs"
+        "SELECT attempts, max_attempts, run_id, kind, email_id FROM jobs"
         " WHERE id = %s AND state = 'leased' AND lease_token = %s"
         " FOR UPDATE",
         (str(job.id), str(job.lease_token)),
@@ -91,7 +100,8 @@ def _locked_job(
     if row is None:
         return None
     run_id = uuid.UUID(str(row[2])) if row[2] is not None else None
-    return int(row[0]), int(row[1]), run_id, JobKind(str(row[3]))
+    email_id = uuid.UUID(str(row[4])) if row[4] is not None else None
+    return int(row[0]), int(row[1]), run_id, JobKind(str(row[3])), email_id
 
 
 def _delivery_failure_category(result: PipelineResult) -> str:
@@ -210,13 +220,15 @@ def settle_outbound_delivery_job(
         locked = _locked_job(c, job)
         if locked is None:
             return SettlementOutcome.FENCED
-        attempts, _max_attempts, stored_run_id, stored_kind = locked
+        attempts, _max_attempts, stored_run_id, stored_kind, stored_email_id = locked
         if (
             stored_kind is not JobKind.SEND_OUTBOUND
             or job.kind is not JobKind.SEND_OUTBOUND
             or stored_run_id is None
             or stored_run_id != job.run_id
             or job.email_id is None
+            or stored_email_id is None
+            or stored_email_id != job.email_id
         ):
             return SettlementOutcome.FENCED
 
@@ -277,7 +289,11 @@ def settle_outbound_delivery_job(
             return SettlementOutcome.DONE
 
         next_attempt = None
-        if result.outcome is PipelineOutcome.RETRYABLE and replay_window_open:
+        if (
+            result.outcome is PipelineOutcome.RETRYABLE
+            and result.reason in _REPLAYABLE_DELIVERY_REASONS
+            and replay_window_open
+        ):
             next_attempt = next_delivery_attempt_at(
                 reserved_at, completed_attempts=attempts
             )
@@ -594,7 +610,7 @@ def settle_pipeline_job(
         locked = _locked_job(c, job)
         if locked is None:
             return SettlementOutcome.FENCED
-        attempts, max_attempts, stored_run_id, stored_kind = locked
+        attempts, max_attempts, stored_run_id, stored_kind, _stored_email_id = locked
         if stored_kind is not job.kind:
             return SettlementOutcome.FENCED
         if stored_kind is JobKind.INGEST:
@@ -725,7 +741,7 @@ def reap_expired_final_attempt(
     """Atomically dead-letter one exact expired final-attempt lease."""
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
-            "SELECT id, run_id, attempts, max_attempts, kind FROM jobs"
+            "SELECT id, run_id, email_id, attempts, max_attempts, kind FROM jobs"
             " WHERE state = 'leased' AND attempts = max_attempts"
             " AND leased_until < now() ORDER BY leased_until"
             " FOR UPDATE SKIP LOCKED LIMIT 1"
@@ -734,11 +750,59 @@ def reap_expired_final_attempt(
             return None
         job_id = uuid.UUID(str(row[0]))
         run_id = uuid.UUID(str(row[1])) if row[1] is not None else None
-        attempts, max_attempts = int(row[2]), int(row[3])
-        kind = JobKind(str(row[4]))
+        email_id = uuid.UUID(str(row[2])) if row[2] is not None else None
+        attempts, max_attempts = int(row[3]), int(row[4])
+        kind = JobKind(str(row[5]))
         if kind is JobKind.INGEST:
             if run_id is not None:
                 return SettlementOutcome.FENCED
+        elif kind is JobKind.SEND_OUTBOUND:
+            if run_id is None or email_id is None:
+                return SettlementOutcome.FENCED
+            reservation = _lock_outbound_reservation(
+                c, run_id=run_id, email_id=email_id
+            )
+            if reservation is None:
+                return SettlementOutcome.FENCED
+            snapshot_id, _reserved_at, purpose, send_state, _replay_window_open = reservation
+            if purpose not in {
+                "confirmation",
+                "clarification",
+                "clarification_field_regression",
+            } or send_state != "reserved":
+                return SettlementOutcome.FENCED
+            run_status = _lock_run_status(c, run_id)
+            expected_status = (
+                RunStatus.APPROVED
+                if purpose == "confirmation"
+                else RunStatus.AWAITING_REPLY
+            )
+            if run_status is not expected_status:
+                return SettlementOutcome.FENCED
+            _append_delivery_attempt(
+                c,
+                snapshot_id=snapshot_id,
+                attempt_state="needs_operator",
+                failure_category="final_attempt_lease_expired",
+            )
+            review_reason = (
+                "DeliveryReview"
+                if purpose == "confirmation"
+                else "ClarificationDeliveryReview"
+            )
+            reviewed = c.execute(
+                "UPDATE payroll_runs SET status = 'needs_operator', error_reason = %s, "
+                "error_detail = %s, updated_at = now() WHERE id = %s AND status = %s "
+                "RETURNING id",
+                (
+                    review_reason,
+                    "delivery_review:final_attempt_lease_expired",
+                    str(run_id),
+                    expected_status.value,
+                ),
+            ).fetchone()
+            if reviewed is None:
+                raise RuntimeError("locked final delivery reap lost its run status")
         else:
             if run_id is None:
                 return SettlementOutcome.FENCED
@@ -760,6 +824,7 @@ def reap_expired_final_attempt(
             "UPDATE jobs SET state = 'dead',"
             " lease_token = NULL, leased_until = NULL, updated_at = now()"
             " WHERE id = %s AND state = 'leased' AND attempts = max_attempts"
+            " AND leased_until < now()"
             " RETURNING id",
             (str(job_id),),
         ).fetchone()
