@@ -39,6 +39,7 @@ import pytest
 from app.db import repo
 from app.models.contracts import InboundEmail
 from app.pipeline.send_guard import UnconfirmedSendError
+from app.pipeline.result import PipelineReason
 from app.routes import pipeline_glue
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
@@ -749,6 +750,144 @@ def test_delivery_settlement_rejects_a_lost_lease_before_any_attempt_write(fake_
     assert "INSERT INTO outbound_delivery_attempts" not in sql
     assert "UPDATE jobs" not in sql
     assert "UPDATE payroll_runs" not in sql
+
+
+def test_delivery_settlement_fences_a_claimed_email_id_against_the_persisted_job(
+    fake_conn: Any,
+) -> None:
+    """A valid lease token cannot settle a different frozen email slot."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineResult
+
+    run_id = uuid.uuid4()
+    claimed_email_id = uuid.uuid4()
+    persisted_email_id = uuid.uuid4()
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=claimed_email_id,
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound", persisted_email_id))
+
+    assert (
+        settle_outbound_delivery_job(job, PipelineResult(), conn=fake_conn)
+        is SettlementOutcome.FENCED
+    )
+    sql = fake_conn.all_sql()
+    assert "email_id" in sql
+    assert "outbound_email_snapshots" not in sql
+    assert "outbound_delivery_attempts" not in sql
+    assert "UPDATE email_messages" not in sql
+    assert "UPDATE payroll_runs" not in sql
+    assert "UPDATE jobs" not in sql
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH,
+        PipelineReason.DELIVERY_QUOTA_EXHAUSTED,
+        PipelineReason.DELIVERY_VALIDATION_FAILURE,
+        PipelineReason.DELIVERY_AUTHENTICATION_FAILURE,
+        PipelineReason.DELIVERY_AUTHORIZATION_FAILURE,
+        PipelineReason.DELIVERY_CONFIGURATION_FAILURE,
+        PipelineReason.DELIVERY_PROVIDER_FAILURE,
+        PipelineReason.UNCLASSIFIED,
+    ],
+)
+def test_retryable_non_replayable_delivery_reason_goes_to_review(
+    fake_conn: Any, reason: PipelineReason
+) -> None:
+    """Retryability alone never grants an automatic replay."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineOutcome, PipelineResult, PipelineStage
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound", email_id))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
+    )
+    fake_conn.script_fetchone(("approved",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.RETRYABLE,
+            stage=PipelineStage.DELIVERY,
+            reason=reason,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome is SettlementOutcome.DONE
+    sql = fake_conn.all_sql()
+    assert "status = 'needs_operator'" in sql
+    assert "state = 'pending'" not in sql
+    assert "delivery_review" not in sql.split("UPDATE payroll_runs", 1)[0]
+
+
+def test_retry_now_locks_the_job_before_its_owned_snapshot(fake_conn: Any) -> None:
+    """Operator acceleration shares settlement's job-first lock order."""
+    from app.db.repo.jobs import advance_existing_send_job_due_now
+
+    run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((True,))
+    fake_conn.script_fetchone((job_id,))
+
+    assert (
+        advance_existing_send_job_due_now(run_id, email_id, conn=fake_conn).value
+        == "advanced"
+    )
+    sql_statements = [str(statement) for statement, _ in fake_conn.executed]
+    assert "FROM jobs" in sql_statements[0]
+    assert "outbound_email_snapshots" in sql_statements[1]
+
+
+def test_clarification_delivery_review_retry_reopens_the_same_row(fake_conn: Any) -> None:
+    """Explicit clarification retry advances only the existing durable send row."""
+    from app.db.repo.jobs import (
+        AdvanceSendJobOutcome,
+        advance_existing_clarification_delivery_review_job_due_now,
+    )
+
+    run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((True, "clarification", "reserved"))
+    fake_conn.script_fetchone(("needs_operator", "ClarificationDeliveryReview"))
+    fake_conn.script_fetchone((job_id,))
+
+    assert (
+        advance_existing_clarification_delivery_review_job_due_now(
+            run_id, email_id, conn=fake_conn
+        )
+        is AdvanceSendJobOutcome.ADVANCED
+    )
+    sql_statements = [str(statement) for statement, _ in fake_conn.executed]
+    assert "FROM jobs" in sql_statements[0]
+    assert "outbound_email_snapshots" in sql_statements[1]
+    assert "UPDATE jobs" in sql_statements[-1]
+    assert "INSERT INTO jobs" not in fake_conn.all_sql()
+    assert "INSERT INTO email_messages" not in fake_conn.all_sql()
 
 
 @_SKIP_LIVE_DB
