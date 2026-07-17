@@ -75,21 +75,9 @@ def _script_clean_run(mock_llm) -> None:
     ]
 
 
-def test_clean_fixture_validates_as_inbound_email():
-    """The committed fixture is a valid canonical InboundEmail and its from_addr is
-    a seeded businesses.contact_email."""
-    from app.db.seed import seed
-
-    payload = json.loads(_FIXTURE.read_text())
-    email = InboundEmail.model_validate(payload)
-    seeded_emails = {b["contact_email"] for b in seed(dry_run=True).businesses}
-    assert email.from_addr in seeded_emails, "fixture from_addr must match a seed contact_email"
-
-
-def test_clean_fixture_replays_to_pause_and_approves(
-    client, fake_repo, mock_llm, monkeypatch: pytest.MonkeyPatch
-):
-    _script_clean_run(mock_llm)
+def _install_durable_event_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[uuid.UUID, dict[str, object]]:
     events: dict[uuid.UUID, dict[str, object]] = {}
 
     def _insert_or_get_event(*, external_event_id, payload, conn=None):
@@ -112,36 +100,71 @@ def test_clean_fixture_replays_to_pause_and_approves(
 
     monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get_event)
     monkeypatch.setattr(repo, "load_inbound_event", _load_event)
+    return events
 
-    r = client.post("/webhook/inbound", json=json.loads(_FIXTURE.read_text()))
-    assert r.status_code == 200
-    receipt = r.json()
+
+def _replay_fixture_durably(
+    *, client, fake_repo, fixture: pathlib.Path, events: dict[uuid.UUID, dict[str, object]]
+) -> uuid.UUID:
+    payload = json.loads(fixture.read_text())
+    prior_run_ids = set(fake_repo.runs)
+
+    response = client.post("/webhook/inbound", json=payload)
+
+    assert response.status_code == 200
+    receipt = response.json()
     assert receipt["status"] == "accepted"
     assert set(receipt) == {"status", "event_id"}
     event_id = uuid.UUID(receipt["event_id"])
-    assert events[event_id]["payload"] == json.loads(_FIXTURE.read_text())
+    assert events[event_id]["payload"] == payload
 
-    ingest_jobs = [
+    matching_ingest_jobs = [
         job
         for job in fake_repo.jobs.values()
-        if job["kind"] == JobKind.INGEST.value
+        if job["kind"] == JobKind.INGEST.value and job["event_id"] == event_id
     ]
-    assert len(ingest_jobs) == 1
-    assert ingest_jobs[0]["event_id"] == event_id
-    assert fake_repo.runs == {}, "the request must not execute payroll inline"
+    assert len(matching_ingest_jobs) == 1
+    assert set(fake_repo.runs) == prior_run_ids, (
+        "the webhook request must stop at durable receipt and never execute payroll inline"
+    )
 
     assert drain.drain_once() is DrainOutcome.DONE
-    assert len(fake_repo.runs) == 1
-    run_id = next(iter(fake_repo.runs.values()))["id"]
-    pipeline_jobs = [
+    new_run_ids = set(fake_repo.runs) - prior_run_ids
+    assert len(new_run_ids) == 1
+    run_id = uuid.UUID(new_run_ids.pop())
+    matching_pipeline_jobs = [
         job
         for job in fake_repo.jobs.values()
-        if job["kind"] == JobKind.RUN_PIPELINE.value
+        if job["kind"] == JobKind.RUN_PIPELINE.value and job["run_id"] == run_id
     ]
-    assert len(pipeline_jobs) == 1
-    assert pipeline_jobs[0]["run_id"] == run_id
+    assert len(matching_pipeline_jobs) == 1
 
     assert drain.drain_once() is DrainOutcome.DONE
+    return run_id
+
+
+def test_clean_fixture_validates_as_inbound_email():
+    """The committed fixture is a valid canonical InboundEmail and its from_addr is
+    a seeded businesses.contact_email."""
+    from app.db.seed import seed
+
+    payload = json.loads(_FIXTURE.read_text())
+    email = InboundEmail.model_validate(payload)
+    seeded_emails = {b["contact_email"] for b in seed(dry_run=True).businesses}
+    assert email.from_addr in seeded_emails, "fixture from_addr must match a seed contact_email"
+
+
+def test_clean_fixture_replays_to_pause_and_approves(
+    client, fake_repo, mock_llm, monkeypatch: pytest.MonkeyPatch
+):
+    _script_clean_run(mock_llm)
+    events = _install_durable_event_store(monkeypatch)
+    run_id = _replay_fixture_durably(
+        client=client,
+        fake_repo=fake_repo,
+        fixture=_FIXTURE,
+        events=events,
+    )
 
     run = fake_repo.load_run(run_id)
     assert run["status"] == "awaiting_approval", "clean fixture must reach the pause"
@@ -214,18 +237,22 @@ def test_gate_block_fixture_validates_as_inbound_email():
     assert email.from_addr in seeded_emails
 
 
-def test_hero_fixture_replays_to_deterministic_clarify(client, fake_repo, mock_llm):
+def test_hero_fixture_replays_to_deterministic_clarify(
+    client, fake_repo, mock_llm, monkeypatch: pytest.MonkeyPatch
+):
     """DEMO-01: an unknown shorthand 'David Reyez' cannot be resolved
     deterministically, so decide gates the run to request_clarification and the run
     pauses at awaiting_reply end-to-end. There is NO model action and NO score —
     final_action is computed purely from the resolution facts, and the gate_reason
     names the unresolved name."""
     _script_hero_run(mock_llm)
-
-    r = client.post("/webhook/inbound", json=json.loads(_GATE_BLOCK_FIXTURE.read_text()))
-    assert r.status_code == 200
-
-    run_id = r.json()["run_id"]
+    events = _install_durable_event_store(monkeypatch)
+    run_id = _replay_fixture_durably(
+        client=client,
+        fake_repo=fake_repo,
+        fixture=_GATE_BLOCK_FIXTURE,
+        events=events,
+    )
     run = fake_repo.load_run(run_id)
 
     decision = run["decision"]
@@ -295,17 +322,21 @@ def test_collision_fixture_validates_as_inbound_email():
     assert email.from_addr in seeded_emails
 
 
-def test_collision_fixture_replays_to_deterministic_clarify(client, fake_repo, mock_llm):
+def test_collision_fixture_replays_to_deterministic_clarify(
+    client, fake_repo, mock_llm, monkeypatch: pytest.MonkeyPatch
+):
     """Collision safety: 'D. Reyes' is an alias shared by two Business-2
     employees, so the resolver cannot uniquely resolve it — it returns unresolved
     rather than guessing. decide gates the run to request_clarification; the system
     never picks one of two plausible matches."""
     _script_collision_run(mock_llm)
-
-    r = client.post("/webhook/inbound", json=json.loads(_COLLISION_FIXTURE.read_text()))
-    assert r.status_code == 200
-
-    run_id = r.json()["run_id"]
+    events = _install_durable_event_store(monkeypatch)
+    run_id = _replay_fixture_durably(
+        client=client,
+        fake_repo=fake_repo,
+        fixture=_COLLISION_FIXTURE,
+        events=events,
+    )
     run = fake_repo.load_run(run_id)
 
     decision = run["decision"]
@@ -328,31 +359,40 @@ def test_collision_fixture_replays_to_deterministic_clarify(client, fake_repo, m
     assert recon[0]["matched_employee_id"] is None
 
 
-def test_all_three_fixtures_replay_end_to_end(client, fake_repo, mock_llm):
+def test_all_three_fixtures_replay_end_to_end(
+    client, fake_repo, mock_llm, monkeypatch: pytest.MonkeyPatch
+):
     """DEMO-01 fully exercised on mocks (deterministic): all three committed fixtures
     replay via POST — the clean one to awaiting_approval, the hero (unknown
     shorthand) and the collision (shared alias) both to awaiting_reply."""
+    events = _install_durable_event_store(monkeypatch)
+
     # Clean fixture → awaiting_approval.
     _script_clean_run(mock_llm)
-    r1 = client.post("/webhook/inbound", json=json.loads(_FIXTURE.read_text()))
-    assert r1.status_code == 200
-    assert fake_repo.load_run(r1.json()["run_id"])["status"] == "awaiting_approval"
+    clean_run_id = _replay_fixture_durably(
+        client=client, fake_repo=fake_repo, fixture=_FIXTURE, events=events
+    )
+    assert fake_repo.load_run(clean_run_id)["status"] == "awaiting_approval"
 
     # Hero fixture (unknown shorthand) → awaiting_reply (fresh FIFO script).
     _script_hero_run(mock_llm)
-    r2 = client.post(
-        "/webhook/inbound", json=json.loads(_GATE_BLOCK_FIXTURE.read_text())
+    hero_run_id = _replay_fixture_durably(
+        client=client,
+        fake_repo=fake_repo,
+        fixture=_GATE_BLOCK_FIXTURE,
+        events=events,
     )
-    assert r2.status_code == 200
-    assert fake_repo.load_run(r2.json()["run_id"])["status"] == "awaiting_reply"
+    assert fake_repo.load_run(hero_run_id)["status"] == "awaiting_reply"
 
     # Collision fixture (shared alias) → awaiting_reply (fresh FIFO script).
     _script_collision_run(mock_llm)
-    r3 = client.post(
-        "/webhook/inbound", json=json.loads(_COLLISION_FIXTURE.read_text())
+    collision_run_id = _replay_fixture_durably(
+        client=client,
+        fake_repo=fake_repo,
+        fixture=_COLLISION_FIXTURE,
+        events=events,
     )
-    assert r3.status_code == 200
-    assert fake_repo.load_run(r3.json()["run_id"])["status"] == "awaiting_reply"
+    assert fake_repo.load_run(collision_run_id)["status"] == "awaiting_reply"
 
 
 # ---------------------------------------------------------------------------
