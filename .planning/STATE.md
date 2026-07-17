@@ -5,8 +5,8 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Completed 20-09-PLAN.md
-last_updated: "2026-07-17T19:00:27.163Z"
+stopped_at: Completed 20-11-PLAN.md
+last_updated: "2026-07-17T19:06:31Z"
 last_activity: 2026-07-17
 progress:
   total_phases: 6
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 — Exactly-Once Send
-Plan: 4/12 plans complete (20-01, 20-02, 20-03, 20-09)
+Plan: 5/12 plans complete (20-01, 20-02, 20-03, 20-09, 20-11)
 Status: Executing
 Last activity: 2026-07-17
 
@@ -36,7 +36,7 @@ Last activity: 2026-07-17
 
 **Velocity:**
 
-- Total plans completed: 114
+- Total plans completed: 115
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -126,6 +126,7 @@ Last activity: 2026-07-17
 | Phase 20 P02 | 13min | 2 tasks | 7 files |
 | Phase 20 P03 | 18min | 2 tasks | 4 files |
 | Phase 20 P09 | 9 | 2 tasks | 4 files |
+| Phase 20 P11 | 11min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -175,6 +176,7 @@ Recent decisions affecting current work:
 - [Phase 20 P01]: D-12/D-13 reservation is now an append-only snapshot keyed to the logical outbound row; ordered bytes and bounded attempt evidence are separate, while a same-slot conflict locks and returns stored content without applying caller fields.
 - [Phase 20 P02]: A frozen email UUID is the one send-job identity; retry-now only advances that existing pending job after locking the database reservation cutoff, while the unregistered handler path fails closed.
 - [Phase 20 P03]: Resend replay is snapshot-only under the stored Message-ID-derived key; only bounded transport, 5xx, and rate-limit failures can replay within the reservation-time schedule, while payload mismatch and quota require review.
+- [Phase 20 P11]: Clarification delivery settlement preserves the frozen reply workflow under the exact lease: success and retry do not mutate awaiting-reply state, round, or RFC thread facts; terminal delivery uses clarification-safe operator escalation; alias confirmation remains outside transport settlement.
 - [Phase ?]: D-05 OT explicit-zero decision: hours_overtime=0 treated same as absent — never silently underpays a weekly employee
 - [Phase 11 P05]: clear_reply_context is called ONCE at the retrigger route's single 'if claimed:' post-claim convergence point (reached by both the ERROR/APPROVED CAS and the stale in-flight CAS) rather than duplicated inside each branch — satisfies WR-06/D-11-04 clearing ALL reply-round context (clarified_fields, pre_clarify_extracted, clarification_round, alias_candidates) before _run_pipeline is scheduled.
 - [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).
@@ -325,10 +327,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T19:00:27.155Z
-Stopped at: Completed 20-09-PLAN.md
+Last session: 2026-07-17T19:06:31Z
+Stopped at: Completed 20-11-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
 
-- Resume Phase 20 execution with `/gsd-execute-phase 20`; remaining handler and producer work can now call the fenced delivery settlement coordinator.
+- Resume Phase 20 execution with `/gsd-execute-phase 20`; clarification producer migration can now rely on the fenced reply-workflow and alias-write boundaries.
