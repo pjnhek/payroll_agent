@@ -315,3 +315,61 @@ def test_redelivery_never_resumes_sender_mismatched_reply(client, fake_repo, res
         f"redelivery; got {len(resume_spy)} unexpected re-schedule(s)"
     )
     assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
+
+
+def test_simulated_reply_persists_one_identifier_only_job_and_never_runs_inline(
+    client, fake_repo, resume_spy, monkeypatch
+) -> None:
+    """The demo affordance uses the same durable reply producer as real mail."""
+    from app.models.job import JobKind
+    from app.queue import wake
+
+    source_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<source-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+    )
+    assert inserted and source_id is not None
+    run_id = fake_repo.create_run(
+        business_id=COASTAL_BIZ_ID,
+        source_email_id=source_id,
+    )
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    clarification_id = "<clarify@payroll-agent.local>"
+    fake_repo.outbound[str(run_id)] = [
+        {
+            "message_id": clarification_id,
+            "direction": "outbound",
+            "purpose": "clarification",
+            "send_state": "sent",
+            "round": 0,
+        }
+    ]
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "Maria Chen 40 regular, confirmed"},
+    )
+
+    assert response.status_code in (200, 303)
+    assert resume_spy == []
+    assert wakes == ["wake"]
+    jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RESUME_REPLY.value
+    ]
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["run_id"] == run_id
+    assert job["email_id"] is not None
+    assert job["operator_resolution_id"] is None
+    assert job["event_id"] is None
+    assert job["dedup_key"] == f"resume_reply:{run_id}:{job['email_id']}"
+    assert "Maria Chen" not in repr(job)

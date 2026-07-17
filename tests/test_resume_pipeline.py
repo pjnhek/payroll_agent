@@ -183,6 +183,130 @@ def test_resume_reply_handler_reloads_exact_persisted_body_from_received(
     assert called_status is RunStatus.RECEIVED
 
 
+def test_resume_reply_handler_revalidates_sender_before_conversion_on_first_attempt(
+    fake_repo, monkeypatch
+) -> None:
+    """A same-run persisted row is still untrusted until sender ownership passes."""
+    from app.pipeline import orchestrator
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run(fake_repo, body="original inbound")
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value
+    email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<spoof-{uuid.uuid4()}@test.example>",
+        in_reply_to="<clarification@test.example>",
+        references_header="<clarification@test.example>",
+        subject="SECRET SUBJECT",
+        from_addr="attacker@evil.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="SECRET BODY Maria Chen",
+    )
+    assert inserted and email_id is not None
+    fake_repo.link_email_to_run(email_id, run_id)
+
+    monkeypatch.setattr(
+        resume_reply,
+        "row_to_inbound",
+        lambda _row: (_ for _ in ()).throw(
+            AssertionError("row_to_inbound must follow sender authorization")
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "resume_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("orchestration must follow sender authorization")
+        ),
+    )
+
+    result = resume_reply.handle_resume_reply(
+        _resume_reply_job(run_id=run_id, email_id=email_id)
+    )
+
+    assert result.outcome is PipelineOutcome.OK
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.AWAITING_REPLY.value
+
+
+def test_resume_reply_handler_claims_stored_awaiting_state_before_conversion(
+    fake_repo, monkeypatch
+) -> None:
+    """First delivery must win the stored AWAITING_REPLY -> RECEIVED transition."""
+    from app.pipeline import orchestrator
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run(fake_repo, body="original inbound")
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value
+    email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to="<clarification@test.example>",
+        references_header="<clarification@test.example>",
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="persisted cleaned reply",
+    )
+    assert inserted and email_id is not None
+    fake_repo.link_email_to_run(email_id, run_id)
+
+    seen_statuses: list[str] = []
+
+    def _resume(_rid, _inbound, *, from_status, **_kwargs):
+        seen_statuses.append(fake_repo.runs[str(run_id)]["status"])
+        assert from_status is RunStatus.RECEIVED
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(orchestrator, "resume_pipeline", _resume)
+
+    result = resume_reply.handle_resume_reply(
+        _resume_reply_job(run_id=run_id, email_id=email_id)
+    )
+
+    assert result.outcome is PipelineOutcome.OK
+    assert seen_statuses == [RunStatus.RECEIVED.value]
+
+
+def test_resume_reply_handler_advanced_state_is_bounded_noop_before_conversion(
+    fake_repo, monkeypatch
+) -> None:
+    """A delayed job cannot re-drive payroll after its run already advanced."""
+    from app.pipeline import orchestrator
+    from app.queue.handlers import resume_reply
+
+    run_id = _seed_run(fake_repo, body="original inbound")
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.RECONCILED.value
+    email_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<late-{uuid.uuid4()}@test.example>",
+        in_reply_to="<clarification@test.example>",
+        references_header="<clarification@test.example>",
+        subject="SECRET SUBJECT",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="SECRET BODY Maria Chen",
+    )
+    assert inserted and email_id is not None
+    fake_repo.link_email_to_run(email_id, run_id)
+    monkeypatch.setattr(
+        resume_reply,
+        "row_to_inbound",
+        lambda _row: (_ for _ in ()).throw(
+            AssertionError("advanced-state reply must not be converted")
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "resume_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("advanced-state reply must not be orchestrated")
+        ),
+    )
+
+    result = resume_reply.handle_resume_reply(
+        _resume_reply_job(run_id=run_id, email_id=email_id)
+    )
+
+    assert result.outcome is PipelineOutcome.OK
+
+
 def test_resume_reply_handler_reclaims_without_advancing_epoch(
     fake_repo, monkeypatch
 ) -> None:
