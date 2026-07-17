@@ -38,8 +38,8 @@ import pytest
 
 from app.db import repo
 from app.models.contracts import InboundEmail
-from app.pipeline.send_guard import UnconfirmedSendError
 from app.pipeline.result import PipelineReason
+from app.pipeline.send_guard import UnconfirmedSendError
 from app.routes import pipeline_glue
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
@@ -889,6 +889,45 @@ def test_clarification_delivery_review_retry_reopens_the_same_row(fake_conn: Any
     assert "UPDATE jobs" in sql_statements[-1]
     assert "INSERT INTO jobs" not in fake_conn.all_sql()
     assert "INSERT INTO email_messages" not in fake_conn.all_sql()
+
+
+def test_clarification_delivery_review_retry_expiry_is_a_bounded_noop(fake_conn: Any) -> None:
+    from app.db import repo
+    from app.db.repo.jobs import AdvanceSendJobOutcome
+
+    run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((False, "clarification", "reserved"))
+
+    assert (
+        repo.advance_existing_clarification_delivery_review_job_due_now(
+            run_id, email_id, conn=fake_conn
+        )
+        is AdvanceSendJobOutcome.EXPIRED
+    )
+    assert "UPDATE jobs" not in fake_conn.all_sql()
+    assert "INSERT INTO" not in fake_conn.all_sql()
+
+
+def test_clarification_delivery_review_retry_rejects_confirmation_purpose(
+    fake_conn: Any,
+) -> None:
+    from app.db.repo.jobs import (
+        AdvanceSendJobOutcome,
+        advance_existing_clarification_delivery_review_job_due_now,
+    )
+
+    run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((True, "confirmation", "reserved"))
+
+    assert (
+        advance_existing_clarification_delivery_review_job_due_now(
+            run_id, email_id, conn=fake_conn
+        )
+        is AdvanceSendJobOutcome.MISSING
+    )
+    assert "UPDATE jobs" not in fake_conn.all_sql()
 
 
 @_SKIP_LIVE_DB

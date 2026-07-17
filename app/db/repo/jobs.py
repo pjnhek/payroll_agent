@@ -237,6 +237,22 @@ def advance_existing_send_job_due_now(
     if conn is None:
         raise ValueError("advance_existing_send_job_due_now requires a caller-owned transaction")
 
+    job = conn.execute(
+        """
+        SELECT id, state
+          FROM jobs
+         WHERE kind = 'send_outbound'
+           AND run_id = %s
+           AND email_id = %s
+         FOR UPDATE
+        """,
+        (str(run_id), str(email_id)),
+    ).fetchone()
+    if job is None:
+        return AdvanceSendJobOutcome.MISSING
+    if job[1] != JobState.PENDING:
+        return AdvanceSendJobOutcome.NOT_PENDING
+
     reservation = conn.execute(
         """
         SELECT snapshot.reserved_at + interval '20 hours' > now()
@@ -254,6 +270,40 @@ def advance_existing_send_job_due_now(
     if not bool(reservation[0]):
         return AdvanceSendJobOutcome.EXPIRED
 
+    updated = conn.execute(
+        """
+        UPDATE jobs
+           SET available_at = now(), updated_at = now()
+         WHERE id = %s AND state = 'pending'
+        RETURNING id
+        """,
+        (str(job[0]),),
+    ).fetchone()
+    return (
+        AdvanceSendJobOutcome.ADVANCED
+        if updated is not None
+        else AdvanceSendJobOutcome.NOT_PENDING
+    )
+
+
+def advance_existing_clarification_delivery_review_job_due_now(
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    *,
+    conn: psycopg.Connection | None = None,
+) -> AdvanceSendJobOutcome:
+    """Reopen one existing clarification delivery job after operator review.
+
+    The caller owns the transaction and wakes the queue only after commit.  The
+    job and its immutable reservation are locked in that order so this explicit
+    action cannot deadlock with delivery settlement or mint a replacement slot.
+    """
+    if conn is None:
+        raise ValueError(
+            "advance_existing_clarification_delivery_review_job_due_now "
+            "requires a caller-owned transaction"
+        )
+
     job = conn.execute(
         """
         SELECT id, state
@@ -269,6 +319,43 @@ def advance_existing_send_job_due_now(
         return AdvanceSendJobOutcome.MISSING
     if job[1] != JobState.PENDING:
         return AdvanceSendJobOutcome.NOT_PENDING
+
+    reservation = conn.execute(
+        """
+        SELECT snapshot.reserved_at + interval '20 hours' > now(),
+               message.purpose, message.send_state
+          FROM outbound_email_snapshots AS snapshot
+          JOIN email_messages AS message ON message.id = snapshot.email_id
+         WHERE message.id = %s
+           AND message.run_id = %s
+           AND message.direction = 'outbound'
+         FOR UPDATE OF snapshot, message
+        """,
+        (str(email_id), str(run_id)),
+    ).fetchone()
+    if reservation is None:
+        return AdvanceSendJobOutcome.MISSING
+    if not bool(reservation[0]):
+        return AdvanceSendJobOutcome.EXPIRED
+    if reservation[1] not in {
+        "clarification",
+        "clarification_field_regression",
+    } or reservation[2] != "reserved":
+        return AdvanceSendJobOutcome.MISSING
+
+    review = conn.execute(
+        """
+        SELECT status, error_reason
+          FROM payroll_runs
+         WHERE id = %s
+         FOR UPDATE
+        """,
+        (str(run_id),),
+    ).fetchone()
+    if review is None or review[0] != "needs_operator" or review[1] != (
+        "ClarificationDeliveryReview"
+    ):
+        return AdvanceSendJobOutcome.MISSING
 
     updated = conn.execute(
         """

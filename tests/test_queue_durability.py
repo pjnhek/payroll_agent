@@ -585,6 +585,93 @@ def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
     assert cutoff_run_row is not None and cutoff_run_row["status"] == RunStatus.NEEDS_OPERATOR.value
 
 
+@pytest.mark.integration
+@pytest.mark.queueproof
+@pytest.mark.parametrize(
+    ("purpose", "run_status", "review_reason"),
+    [
+        ("confirmation", RunStatus.APPROVED, "DeliveryReview"),
+        ("clarification", RunStatus.AWAITING_REPLY, "ClarificationDeliveryReview"),
+        (
+            "clarification_field_regression",
+            RunStatus.AWAITING_REPLY,
+            "ClarificationDeliveryReview",
+        ),
+    ],
+)
+def test_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review(
+    seeded_db,
+    purpose: str,
+    run_status: RunStatus,
+    review_reason: str,
+) -> None:
+    """A crash after provider acceptance cannot become generic recovery."""
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, run_status)
+    original_message_id = f"<final-lease-{purpose}-{uuid.uuid4()}@test.example>"
+    snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose=purpose,
+        round=0,
+        message_id=original_message_id,
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Payroll delivery review",
+        body_text="Frozen delivery content",
+        attachments=(),
+    )
+    job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+        max_attempts=1,
+    )
+    assert job_id is not None
+    claimed = repo.claim_job()
+    assert claimed is not None and claimed.id == job_id
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '60 seconds' "
+            "WHERE id = %s",
+            (str(job_id),),
+        )
+
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    run = repo.load_run(run_id)
+    job = repo.get_job(job_id)
+    frozen = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    assert run is not None
+    assert job is not None
+    assert frozen is not None
+    assert run["status"] == RunStatus.NEEDS_OPERATOR.value
+    assert run["error_reason"] == review_reason
+    assert run["error_detail"] == "delivery_review:final_attempt_lease_expired"
+    assert job["state"] == "dead"
+    assert frozen["message_id"] == original_message_id
+    assert frozen["body_text"] == "Frozen delivery content"
+    with repo.get_connection() as conn:
+        attempt = conn.execute(
+            "SELECT attempt_state, failure_category "
+            "FROM outbound_delivery_attempts WHERE snapshot_id = %s",
+            (str(snapshot["snapshot_id"]),),
+        ).fetchone()
+        open_jobs = conn.execute(
+            "SELECT count(*) FROM jobs WHERE run_id = %s "
+            "AND state IN ('pending', 'leased')",
+            (str(run_id),),
+        ).fetchone()
+    assert attempt == ("needs_operator", "final_attempt_lease_expired")
+    assert open_jobs == (0,)
+
+
 def _payroll_status_snapshot() -> list[tuple[object, ...]]:
     from app.db import repo
 

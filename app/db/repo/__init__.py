@@ -65,6 +65,7 @@ from app.db.repo.job_settlement import (
 )
 from app.db.repo.jobs import (
     AdvanceSendJobOutcome,
+    advance_existing_clarification_delivery_review_job_due_now,
     advance_existing_send_job_due_now,
     claim_job,
     complete_job,
@@ -177,6 +178,7 @@ __all__ = [
     "update_known_alias",
     "rewind_for_reclaim",
     "AdvanceSendJobOutcome",
+    "advance_existing_clarification_delivery_review_job_due_now",
     "advance_existing_send_job_due_now",
     "claim_job",
     "complete_job",
