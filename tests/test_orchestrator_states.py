@@ -20,13 +20,14 @@ import json
 import pathlib
 import uuid
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, ValidationError
+from resend.exceptions import ResendError
 
 from app.models.contracts import InboundEmail
 from app.models.status import RunStatus
@@ -37,6 +38,8 @@ from app.pipeline.result import (
     PipelineResult,
     PipelineStage,
     classify_pipeline_exception,
+    delivery_replay_allowed,
+    next_delivery_attempt_at,
     normalize_pipeline_result,
 )
 
@@ -53,6 +56,15 @@ def _provider_status_error(
     if status_code == 429:
         return RateLimitError(message, response=response, body={"detail": "sensitive"})
     return APIStatusError(message, response=response, body={"detail": "sensitive"})
+
+
+def _resend_error(status_code: int, error_type: str) -> ResendError:
+    return ResendError(
+        code=status_code,
+        error_type=error_type,
+        message="provider response containing SECRET-BODY",
+        suggested_action="sensitive provider guidance",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +143,6 @@ def test_extraction_terminal_classification_counterexamples(exc, reason):
     )
 
 
-@pytest.mark.parametrize("stage", [PipelineStage.CLARIFICATION, PipelineStage.DELIVERY])
 @pytest.mark.parametrize(
     "exc",
     [
@@ -144,14 +155,80 @@ def test_extraction_terminal_classification_counterexamples(exc, reason):
         _provider_status_error(503),
     ],
 )
-def test_ambiguous_send_stage_classification_is_terminal(stage, exc):
-    result = classify_pipeline_exception(stage, exc)
+def test_clarification_send_stage_classification_remains_terminal(exc):
+    result = classify_pipeline_exception(PipelineStage.CLARIFICATION, exc)
 
     assert result == PipelineResult(
         outcome=PipelineOutcome.TERMINAL,
-        stage=stage,
+        stage=PipelineStage.CLARIFICATION,
         reason=PipelineReason.AMBIGUOUS_SEND_FAILURE,
     )
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (TimeoutError("provider timeout"), PipelineReason.DELIVERY_TIMEOUT),
+        (ConnectionError("provider connection failed"), PipelineReason.DELIVERY_CONNECTION_FAILURE),
+        (_resend_error(503, "internal_server_error"), PipelineReason.DELIVERY_SERVER_FAILURE),
+        (_resend_error(429, "rate_limit_exceeded"), PipelineReason.DELIVERY_RATE_LIMIT),
+    ],
+)
+def test_delivery_retries_only_explicit_transient_provider_failures(exc, reason):
+    result = classify_pipeline_exception(PipelineStage.DELIVERY, exc)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.RETRYABLE,
+        stage=PipelineStage.DELIVERY,
+        reason=reason,
+    )
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (
+            _resend_error(409, "invalid_idempotent_request"),
+            PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH,
+        ),
+        (_resend_error(429, "daily_quota_exceeded"), PipelineReason.DELIVERY_QUOTA_EXHAUSTED),
+        (_resend_error(400, "validation_error"), PipelineReason.DELIVERY_VALIDATION_FAILURE),
+        (_resend_error(401, "missing_api_key"), PipelineReason.DELIVERY_CONFIGURATION_FAILURE),
+        (_resend_error(403, "invalid_api_key"), PipelineReason.DELIVERY_AUTHORIZATION_FAILURE),
+        (_resend_error(409, "concurrent_idempotent_requests"), PipelineReason.DELIVERY_PROVIDER_FAILURE),
+        (RuntimeError("provider SECRET-BODY"), PipelineReason.DELIVERY_PROVIDER_FAILURE),
+    ],
+)
+def test_delivery_terminal_categories_never_authorize_automatic_replay(exc, reason):
+    result = classify_pipeline_exception(PipelineStage.DELIVERY, exc)
+
+    assert result == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.DELIVERY,
+        reason=reason,
+    )
+    assert "SECRET-BODY" not in repr(result)
+
+
+def test_delivery_replay_schedule_is_anchored_to_reservation_time():
+    reserved_at = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+
+    assert next_delivery_attempt_at(reserved_at, completed_attempts=0) == reserved_at
+    assert next_delivery_attempt_at(reserved_at, completed_attempts=1) == reserved_at + timedelta(
+        minutes=1
+    )
+    assert next_delivery_attempt_at(reserved_at, completed_attempts=7) == reserved_at + timedelta(
+        hours=16
+    )
+    assert next_delivery_attempt_at(reserved_at, completed_attempts=8) is None
+
+
+def test_delivery_replay_cutoff_rejects_claims_and_schedules_at_twenty_hours():
+    reserved_at = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+
+    assert delivery_replay_allowed(reserved_at, reserved_at + timedelta(hours=19, minutes=59))
+    assert not delivery_replay_allowed(reserved_at, reserved_at + timedelta(hours=20))
+    assert not delivery_replay_allowed(reserved_at, reserved_at + timedelta(hours=21))
 
 
 def test_pipeline_result_never_retains_sensitive_exception_content():
