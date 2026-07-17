@@ -360,10 +360,15 @@ def test_ingest_sql_requires_only_an_event_identifier_while_open() -> None:
     assert schema.count(expected) == 2
 
 
-def test_http_routes_do_not_produce_ingest_jobs() -> None:
-    """The internal consumer must remain unreachable from request handlers."""
-    route_source = "\n".join(
-        path.read_text()
+def test_only_webhook_receipt_produces_ingest_jobs() -> None:
+    """Only the authenticated receipt boundary may create transport ingest work."""
+    route_sources = {
+        path.name: path.read_text()
         for path in sorted((pathlib.Path("app") / "routes").glob("*.py"))
+    }
+    assert "JobKind.INGEST" in route_sources["webhook.py"]
+    assert all(
+        "JobKind.INGEST" not in source
+        for name, source in route_sources.items()
+        if name != "webhook.py"
     )
-    assert "JobKind.INGEST" not in route_source

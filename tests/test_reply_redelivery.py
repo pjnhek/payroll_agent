@@ -35,8 +35,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db import repo
 from app.models.contracts import InboundEmail
+from app.models.job import JobKind
 from app.models.status import RunStatus
+from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -44,6 +48,7 @@ COASTAL_EMAIL = "payroll@coastalcleaning.example"
 
 def test_supported_recovery_entry_points_exclude_runs_list() -> None:
     """Recovery remains explicit and durable; no test preserves list-page recovery."""
+    import app.ingest as ingest_service
     import app.queue.handlers.operator_resume as operator_resume
     import app.queue.handlers.resume_reply as resume_reply
     import app.routes.runs as runs_module
@@ -56,19 +61,21 @@ def test_supported_recovery_entry_points_exclude_runs_list() -> None:
     assert not any(name.startswith("test_runs_list_") for name in test_names)
 
     supported_sources = {
-        "webhook_redelivery": inspect.getsource(webhook_module),
+        "durable_receipt": inspect.getsource(webhook_module),
+        "delayed_redelivery": inspect.getsource(ingest_service),
         "durable_reply_resume": inspect.getsource(resume_reply.handle_resume_reply),
         "durable_operator_resume": inspect.getsource(
             operator_resume.handle_operator_resume
         ),
     }
-    assert "resume_pipeline_bg" in supported_sources["webhook_redelivery"]
+    assert "JobKind.INGEST" in supported_sources["durable_receipt"]
+    assert "JobKind.RESUME_REPLY" in supported_sources["delayed_redelivery"]
     assert "row_to_inbound" in supported_sources["durable_reply_resume"]
     assert (
         "prepare_authoritative_operator_resume"
         in supported_sources["durable_operator_resume"]
     )
-    assert "resume_pipeline_bg" not in inspect.getsource(runs_module.runs_list)
+    assert "enqueue_job" not in inspect.getsource(runs_module.runs_list)
 
 
 @pytest.fixture
@@ -81,26 +88,52 @@ def client(fake_repo, monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    events = {}
+
+    def _insert_or_get(*, external_event_id, payload, conn=None):
+        for event in events.values():
+            if event["external_event_id"] == external_event_id:
+                return event["id"], False
+        event_id = uuid.uuid4()
+        events[event_id] = {
+            "id": event_id,
+            "external_event_id": external_event_id,
+            "payload": payload,
+        }
+        return event_id, True
+
+    def _load(event_id, conn=None):
+        event = events.get(event_id)
+        return None if event is None else {"id": event["id"], "payload": event["payload"]}
+
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get)
+    monkeypatch.setattr(repo, "load_inbound_event", _load)
     yield TestClient(app)
     get_settings.cache_clear()
 
 
 @pytest.fixture
 def resume_spy(monkeypatch):
-    """Monkeypatch app.routes.pipeline_glue.resume_pipeline_bg to a spy that
-    records calls instead of driving the real orchestrator — this module
-    only needs to prove WHETHER/WITH-WHAT a re-schedule happened, not
-    exercise the full resume pipeline (that is test_combined_context.py's
-    job)."""
+    """Fail closed if a request crosses an explicit pipeline value seam inline."""
     import app.routes.pipeline_glue as pipeline_glue_mod
 
-    calls: list[tuple[uuid.UUID, InboundEmail]] = []
+    calls: list[tuple[object, ...]] = []
 
-    def _spy(run_id, inbound):
-        calls.append((run_id, inbound))
+    def _spy(*args, **kwargs):
+        calls.append(args)
+        pytest.fail("request executed a pipeline value seam inline")
 
-    monkeypatch.setattr(pipeline_glue_mod, "resume_pipeline_bg", _spy)
+    monkeypatch.setattr(pipeline_glue_mod, "resume_pipeline_now", _spy)
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _spy)
     return calls
+
+
+def _pending_resume_jobs(fake_repo) -> list[dict[str, Any]]:
+    return [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RESUME_REPLY.value and job["state"] == "pending"
+    ]
 
 
 def _seed_awaiting_reply_run_with_reply(
@@ -185,23 +218,19 @@ def test_unconsumed_redelivery_reschedules(client, fake_repo, resume_spy):
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
     assert r.status_code == 200
-    assert r.json()["status"] == "duplicate"
+    assert r.json()["status"] == "accepted"
+    assert resume_spy == []
+    assert drain.drain_once() is DrainOutcome.DONE
 
-    assert len(resume_spy) == 1, (
-        "an unconsumed redelivery to an awaiting_reply run must re-schedule "
-        f"_resume_pipeline exactly once; got {len(resume_spy)} calls"
-    )
-    scheduled_run_id, scheduled_inbound = resume_spy[0]
-    assert str(scheduled_run_id) == str(run_id)
-    assert scheduled_inbound.body_text == row["body_text"], (
-        "the scheduled reply's body_text must equal the PERSISTED (already-"
-        "cleaned) body, never a re-cleaned copy of the redelivered request "
-        f"body; got {scheduled_inbound.body_text!r}"
-    )
-    assert (
-        scheduled_inbound.body_text
-        != "a completely different redelivered body — must be ignored"
-    )
+    jobs = _pending_resume_jobs(fake_repo)
+    assert len(jobs) == 1
+    assert jobs[0]["run_id"] == run_id
+    assert jobs[0]["email_id"] == row["id"]
+    assert jobs[0]["operator_resolution_id"] is None
+    assert jobs[0]["dedup_key"] == f"resume_reply:{run_id}:{row['id']}"
+    persisted = fake_repo.get_inbound_email_by_id(jobs[0]["email_id"])
+    assert persisted is not None and persisted["body_text"] == row["body_text"]
+    assert persisted["body_text"] != redelivered_payload["body_text"]
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +260,14 @@ def test_consumed_redelivery_no_ops(client, fake_repo, resume_spy):
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
     assert r.status_code == 200
-    assert r.json()["status"] == "duplicate"
+    assert r.json()["status"] == "accepted"
+    assert drain.drain_once() is DrainOutcome.DONE
 
     assert resume_spy == [], (
         "a redelivery of an ALREADY-consumed reply must stay a no-op — "
         f"got {len(resume_spy)} unexpected re-schedule(s)"
     )
+    assert _pending_resume_jobs(fake_repo) == []
 
 
 # ---------------------------------------------------------------------------
@@ -266,12 +297,14 @@ def test_redelivery_to_non_awaiting_reply_run_no_ops(client, fake_repo, resume_s
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
     assert r.status_code == 200
-    assert r.json()["status"] == "duplicate"
+    assert r.json()["status"] == "accepted"
+    assert drain.drain_once() is DrainOutcome.DONE
 
     assert resume_spy == [], (
         "a redelivery whose linked run is NOT awaiting_reply must NOT "
         f"re-schedule; got {len(resume_spy)} unexpected re-schedule(s)"
     )
+    assert _pending_resume_jobs(fake_repo) == []
 
 
 # ---------------------------------------------------------------------------
@@ -312,12 +345,14 @@ def test_redelivery_never_resumes_sender_mismatched_reply(client, fake_repo, res
 
     r = client.post("/webhook/inbound", json=redelivered_payload)
     assert r.status_code == 200
-    assert r.json()["status"] == "duplicate"
+    assert r.json()["status"] == "accepted"
+    assert drain.drain_once() is DrainOutcome.DONE
 
     assert resume_spy == [], (
         "a reply that failed sender revalidation must NEVER be resumed via "
         f"redelivery; got {len(resume_spy)} unexpected re-schedule(s)"
     )
+    assert _pending_resume_jobs(fake_repo) == []
     assert str(run_id) in fake_repo.runs, "sanity: run must exist and be untouched"
 
 

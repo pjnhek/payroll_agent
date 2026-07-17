@@ -34,7 +34,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db import repo
 from app.models.contracts import Decision, InboundEmail
+from app.models.job import JobKind
+from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 # The seeded David Reyes employee id (app/db/seed.py emp 3) — the hero gate run.
 _DAVID_REYES_ID = "e0000003-0000-0000-0000-000000000003"
@@ -65,6 +69,26 @@ def client(fake_repo, monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    events = {}
+
+    def _insert_or_get(*, external_event_id, payload, conn=None):
+        for event in events.values():
+            if event["external_event_id"] == external_event_id:
+                return event["id"], False
+        event_id = uuid.uuid4()
+        events[event_id] = {
+            "id": event_id,
+            "external_event_id": external_event_id,
+            "payload": payload,
+        }
+        return event_id, True
+
+    def _load(event_id, conn=None):
+        event = events.get(event_id)
+        return None if event is None else {"id": event["id"], "payload": event["payload"]}
+
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get)
+    monkeypatch.setattr(repo, "load_inbound_event", _load)
     yield TestClient(app)
     get_settings.cache_clear()
 
@@ -119,9 +143,15 @@ def _script_resume_resolved(mock_llm) -> None:
 def _drive_to_awaiting_reply(client, fake_repo, mock_llm) -> tuple[str, str]:
     """POST the gate-block fixture → awaiting_reply; return (run_id, outbound_msg_id)."""
     _script_gate_block_to_reply(mock_llm)
+    before = set(fake_repo.runs)
     r = client.post("/webhook/inbound", json=json.loads(_GATE_BLOCK_FIXTURE.read_text()))
     assert r.status_code == 200
-    run_id = r.json()["run_id"]
+    assert set(r.json()) == {"status", "event_id"}
+    assert drain.drain_once() is DrainOutcome.DONE
+    created = set(fake_repo.runs) - before
+    assert len(created) == 1
+    run_id = created.pop()
+    assert drain.drain_once() is DrainOutcome.DONE
     assert fake_repo.load_run(run_id)["status"] == "awaiting_reply"
     msg_id = fake_repo.get_outbound_message_id(run_id)
     assert msg_id is not None
@@ -161,6 +191,8 @@ def test_header_chain_match(client, fake_repo, mock_llm):
     )
     r = client.post("/webhook/inbound", json=reply)
     assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert drain.drain_once() is DrainOutcome.DONE
 
     run = fake_repo.load_run(run_id)
     # The run resumed and advanced past awaiting_reply (no longer paused there).
@@ -187,6 +219,8 @@ def test_header_chain_match_via_references(client, fake_repo, mock_llm):
     ).model_dump(mode="json")
     r = client.post("/webhook/inbound", json=reply)
     assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert drain.drain_once() is DrainOutcome.DONE
     assert fake_repo.load_run(run_id)["status"] != "awaiting_reply"
 
 
@@ -262,6 +296,12 @@ def test_reply_sender_revalidated_mismatch_not_resumed(client, fake_repo, mock_l
     )
     r = client.post("/webhook/inbound", json=spoof)
     assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert not [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RESUME_REPLY.value and job["state"] == "pending"
+    ]
 
     # The spoofed reply on a guessed Message-ID must NOT resume the run.
     run = fake_repo.load_run(run_id)
@@ -286,6 +326,8 @@ def test_reply_sender_match_resumes(client, fake_repo, mock_llm):
     )
     r = client.post("/webhook/inbound", json=reply)
     assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert drain.drain_once() is DrainOutcome.DONE
     assert fake_repo.load_run(run_id)["status"] != "awaiting_reply"
 
 
@@ -516,6 +558,8 @@ def test_idempotent_resume(client, fake_repo, mock_llm):
     )
     r1 = client.post("/webhook/inbound", json=reply)
     assert r1.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert drain.drain_once() is DrainOutcome.DONE
     state_after_first = fake_repo.load_run(run_id)["status"]
     extracted_after_first = fake_repo.load_run(run_id)["extracted_data"]
 
@@ -556,13 +600,18 @@ def test_late_reply_logged_not_resumed(client, fake_repo, mock_llm):
     )
     r = client.post("/webhook/inbound", json=reply)
     assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
 
     # The late reply did NOT resume — the run stays at sent (only awaiting_reply resumes).
     assert fake_repo.load_run(run_id)["status"] == "sent", (
         "a header match to a non-awaiting_reply run must NOT resume"
     )
-    # The response surfaces the late-reply observation (not a fresh accepted run).
-    assert r.json().get("status") == "late_reply"
+    assert r.json().get("status") == "accepted"
+    assert not [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RESUME_REPLY.value and job["state"] == "pending"
+    ]
 
 
 def test_webhook_uses_both_header_lookups():
@@ -574,9 +623,9 @@ def test_webhook_uses_both_header_lookups():
     """
     import inspect
 
-    import app.routes.webhook as webhook_mod
+    import app.ingest as ingest_mod
 
-    src = inspect.getsource(webhook_mod)
+    src = inspect.getsource(ingest_mod)
     assert "find_awaiting_reply_for_header" in src
     assert "find_any_run_for_header" in src
 
@@ -647,7 +696,9 @@ def test_clarify_reply_fixture_completes_full_loop(client, fake_repo, mock_llm):
     _script_resume_resolved(mock_llm)
     r = client.post("/webhook/inbound", json=reply_payload)
     assert r.status_code == 200
-    assert r.json()["status"] == "resumed", "the reply must route to resume, not a new run"
+    assert r.json()["status"] == "accepted"
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert drain.drain_once() is DrainOutcome.DONE
 
     # 5. The run resumed at extraction and advanced (retaining original hours via the
     #    combined-context re-extraction — the loop is exercisable with zero real email).
@@ -672,6 +723,7 @@ def test_reply_with_no_matching_outbound_handled_gracefully(client, fake_repo, m
     )
     r = client.post("/webhook/inbound", json=reply)
     assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
     # No header match → falls through to ordinary first ingest (a NEW run is opened,
     # never a wrong-run resume). The reply's sender is a seeded business, so the
     # ordinary path accepts it.
