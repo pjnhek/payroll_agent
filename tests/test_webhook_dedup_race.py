@@ -1,12 +1,9 @@
-"""SC2 concurrency race proof — webhook dedup under real Postgres MVCC (09-03, DATA-02).
+"""RFC Message-ID dedup race through durable receipt and delayed ingest.
 
-Two real OS threads fire two real Postgres transactions (via a real TestClient
-hitting a real/local Postgres) with the SAME message_id, near-simultaneously.
-Asserts exactly one run exists across both responses — proving the ingest
-transaction's dedup-insert + reply-classification + create_run sequence resolves
-the race via Postgres's own MVCC blocking behavior on the uq_message_id UNIQUE
-index. FakeConnection cannot simulate this — only a real connection proves
-atomicity, as opposed to merely proving SQL shape.
+Two real OS threads commit distinct transport events carrying one RFC ``message_id``.
+Two more barrier-released threads then drive the committed event identifiers through
+the real delayed-ingest handler against Postgres. Exactly one email, run, and downstream
+RUN_PIPELINE job may survive the RFC-identity race.
 
 Skip-guarded on DATABASE_URL (matches test_claim_status.py's exact skip shape).
 This is a SEPARATE test module from tests/test_webhook.py and does NOT inherit
@@ -28,9 +25,7 @@ import pytest
 
 @pytest.mark.integration
 def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
-    """Two concurrent duplicate webhook deliveries for the same message_id must
-    result in exactly one payroll run (SC2) — proven against real Postgres
-    concurrency, not a mocked simulation."""
+    """Distinct transport events with one RFC identity create exactly one run."""
     if not os.environ.get("DATABASE_URL"):
         pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
 
@@ -47,66 +42,144 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
 
     import app.main as app_main
     import app.routes.pipeline_glue as pipeline_glue_mod
+    from app.db import repo
+    from app.email import gateway
+    from app.models.job import Job, JobKind
+    from app.queue import wake
+    from app.queue.handlers import ingest as ingest_handler
+    from app.queue.handlers import pipeline, resume_reply
 
-    # Test isolation: TestClient runs FastAPI BackgroundTasks
-    # SYNCHRONOUSLY, so the "winning" thread's request would otherwise launch the
-    # REAL pipeline (real LLM calls) inside this test. Monkeypatch run_pipeline_bg
-    # to a no-op BEFORE firing the two threads so this test proves ONLY the
-    # dedup/race property against real Postgres. This test's message_id is fresh
-    # and carries no reply headers, so the race can only ever hit the new-run
-    # path — resume_pipeline_bg is not monkeypatched because it cannot be reached.
-    pipeline_calls: list[uuid.UUID] = []
-    monkeypatch.setattr(
-        pipeline_glue_mod, "run_pipeline_bg", lambda run_id: pipeline_calls.append(run_id)
-    )
+    real_parse_inbound = gateway.parse_inbound
+    real_handle_ingest = ingest_handler.handle_ingest
+
+    def _forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("webhook request executed provider or payroll work inline")
+
+    monkeypatch.setattr(gateway, "parse_inbound", _forbidden)
+    monkeypatch.setattr(pipeline_glue_mod, "run_pipeline_now", _forbidden)
+    monkeypatch.setattr(pipeline_glue_mod, "resume_pipeline_now", _forbidden)
+    monkeypatch.setattr(ingest_handler, "handle_ingest", _forbidden)
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _forbidden)
+    monkeypatch.setattr(resume_reply, "handle_resume_reply", _forbidden)
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
 
     client = TestClient(app_main.app)
 
     same_message_id = f"<race-{uuid.uuid4()}@acme.test>"
-    payload = {
-        "id": str(uuid.uuid4()),
-        "message_id": same_message_id,
-        "in_reply_to": None,
-        "references_header": None,
-        "subject": "Payroll hours",
-        "from_addr": "payroll@coastalcleaning.example",
-        "to_addr": "agent@payroll-agent.local",
-        "body_text": "Maria Chen 40 regular hours.",
-        "created_at": "2026-06-15T10:00:00Z",
-    }
+    def _payload() -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()),
+            "message_id": same_message_id,
+            "in_reply_to": None,
+            "references_header": None,
+            "subject": "Payroll hours",
+            "from_addr": "payroll@coastalcleaning.example",
+            "to_addr": "agent@payroll-agent.local",
+            "body_text": "Maria Chen 40 regular hours.",
+            "created_at": "2026-06-15T10:00:00Z",
+        }
+
+    payloads = [_payload(), _payload()]
 
     results: list[dict[str, Any]] = []
     lock = threading.Lock()
 
-    def _post() -> None:
+    request_barrier = threading.Barrier(2, timeout=30)
+
+    def _post(payload: dict[str, Any]) -> None:
+        request_barrier.wait()
         r = client.post("/webhook/inbound", json=payload)
         with lock:
-            results.append(r.json())
+            results.append({"status_code": r.status_code, **r.json()})
 
-    t1 = threading.Thread(target=_post)
-    t2 = threading.Thread(target=_post)
+    t1 = threading.Thread(target=_post, args=(payloads[0],))
+    t2 = threading.Thread(target=_post, args=(payloads[1],))
     t1.start()
     t2.start()
     t1.join()
     t2.join()
 
     assert len(results) == 2
-    run_ids = {r.get("run_id") for r in results if r.get("run_id")}
-    assert len(run_ids) == 1, (
-        f"two concurrent duplicate webhook deliveries for the same message_id "
-        f"must create EXACTLY ONE run (SC2); got run_ids={run_ids}"
-    )
+    assert {r["status_code"] for r in results} == {200}
+    assert {r["status"] for r in results} == {"accepted"}
+    event_ids = {uuid.UUID(r["event_id"]) for r in results}
+    assert len(event_ids) == 2, "the request race must commit two transport identities"
+    assert len(wakes) == 2
 
-    # Exactly one of the two responses is the winner ("accepted"); the other is
-    # the loser ("duplicate", reporting the winner's run_id).
-    statuses = {r.get("status") for r in results}
-    assert statuses <= {"accepted", "duplicate"}, f"unexpected statuses: {statuses}"
+    with repo.get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kind, run_id, email_id, operator_resolution_id, event_id,
+                   attempts, max_attempts, lease_token, dedup_key, state
+              FROM jobs
+             WHERE event_id = ANY(%s)
+            """,
+            (list(event_ids),),
+        ).fetchall()
+    assert len(rows) == 2
+    assert {row[1] for row in rows} == {JobKind.INGEST.value}
+    assert {uuid.UUID(str(row[5])) for row in rows} == event_ids
+    assert {row[9] for row in rows} == {f"ingest:{event_id}" for event_id in event_ids}
+    assert {row[10] for row in rows} == {"pending"}
+    assert all(row[2] is None and row[3] is None and row[4] is None for row in rows)
 
-    # The winner's background task was scheduled (proving the race resolved to
-    # exactly one _run_pipeline call, matching the exactly-one-run assertion).
-    assert len(pipeline_calls) == 1, (
-        f"exactly one _run_pipeline call expected (one winner schedules the "
-        f"pipeline); got {len(pipeline_calls)}"
-    )
+    monkeypatch.setattr(gateway, "parse_inbound", real_parse_inbound)
+    monkeypatch.setattr(ingest_handler, "handle_ingest", real_handle_ingest)
+    ingest_jobs = [
+        Job(
+            id=uuid.UUID(str(row[0])),
+            kind=JobKind.INGEST,
+            run_id=None,
+            email_id=None,
+            operator_resolution_id=None,
+            event_id=uuid.UUID(str(row[5])),
+            attempts=int(row[6]),
+            max_attempts=int(row[7]),
+            lease_token=(uuid.UUID(str(row[8])) if row[8] is not None else None),
+        )
+        for row in rows
+    ]
+    ingest_barrier = threading.Barrier(2, timeout=30)
+    handler_results = []
+
+    def _process(job: Job) -> None:
+        ingest_barrier.wait()
+        result = real_handle_ingest(job)
+        with lock:
+            handler_results.append(result)
+
+    workers = [threading.Thread(target=_process, args=(job,)) for job in ingest_jobs]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert len(handler_results) == 2
+    assert {result.outcome.value for result in handler_results} == {"ok"}
+
+    with repo.get_connection() as conn:
+        email_row = conn.execute(
+            "SELECT id, count(*) OVER () FROM email_messages WHERE message_id = %s",
+            (same_message_id,),
+        ).fetchone()
+        assert email_row is not None and email_row[1] == 1
+        run_rows = conn.execute(
+            "SELECT id FROM payroll_runs WHERE source_email_id = %s",
+            (email_row[0],),
+        ).fetchall()
+        pipeline_rows = conn.execute(
+            """
+            SELECT kind, dedup_key, run_id, email_id, operator_resolution_id, event_id
+              FROM jobs
+             WHERE kind = 'run_pipeline' AND run_id = ANY(%s)
+            """,
+            ([row[0] for row in run_rows],),
+        ).fetchall()
+    assert len(run_rows) == 1
+    run_id = uuid.UUID(str(run_rows[0][0]))
+    assert pipeline_rows == [
+        (JobKind.RUN_PIPELINE.value, f"run_pipeline:{run_id}:0", run_id, None, None, None)
+    ]
 
     get_settings.cache_clear()
