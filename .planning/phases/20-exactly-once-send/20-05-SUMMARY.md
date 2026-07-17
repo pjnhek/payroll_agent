@@ -109,7 +109,19 @@ status: complete
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
+
+**1. [Rule 1 - Bug] Unexpected send-handler exceptions reached generic pipeline settlement**
+
+- **Found during:** Final plan verification
+- **Issue:** The drain's exception branch sent every handler failure through generic pipeline settlement, which could apply an invalid business-state policy to a frozen outbound job.
+- **Fix:** Routed unexpected `SEND_OUTBOUND` handler failures to the delivery-specific fenced coordinator with a bounded delivery result.
+- **Files modified:** `app/queue/drain.py`, `tests/test_queue_drain.py`
+- **Verification:** Focused queue, dispatch, gateway, type, lint, and diff checks passed.
+- **Committed in:** `987e0d9`
+
+**Total deviations:** 1 auto-fixed (Rule 1 bug).
+**Impact on plan:** Preserves the plan's delivery-only settlement boundary for both classified results and unexpected handler failures.
 
 ## Issues Encountered
 
@@ -126,7 +138,7 @@ None - no external service configuration required.
 
 ## Verification
 
-- `uv run pytest tests/test_queue_drain.py tests/test_job_kind_drift.py tests/test_gateway.py -q` - 124 passed, 3 skipped.
+- `uv run pytest tests/test_queue_drain.py tests/test_job_kind_drift.py tests/test_gateway.py -q` - 125 passed, 3 skipped.
 - `uv run pytest tests/test_fake_repo_pairing.py -q` - 10 passed.
 - `uv run mypy app/queue/handlers/send_outbound.py app/queue/dispatch.py app/queue/drain.py` - passed.
 - `uv run ruff check app/queue/handlers/send_outbound.py app/queue/dispatch.py app/queue/drain.py tests/conftest.py tests/test_queue_drain.py tests/test_job_kind_drift.py tests/test_fake_repo_pairing.py` - passed.
@@ -135,7 +147,7 @@ None - no external service configuration required.
 ## Self-Check: PASSED
 
 - All planned consumer, dispatch, drain, fake-pair, and test artifacts exist.
-- Task commits `4e0e82f` and `bac627c` are present in history.
+- Task commits `4e0e82f`, `bac627c`, and `987e0d9` are present in history.
 - Required focused verification passed with guarded database checks explicitly unavailable rather than treated as passing.
 
 ---
