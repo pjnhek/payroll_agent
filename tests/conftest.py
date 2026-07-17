@@ -1126,6 +1126,95 @@ class InMemoryRepo:
         run["error_detail"] = result.diagnostic_code
         return SettlementOutcome.DONE
 
+    def settle_outbound_delivery_job(self, job, result, *, conn=None):
+        """Mirror fenced settlement for one immutable outbound reservation."""
+        from app.db.repo.job_settlement import SettlementOutcome
+        from app.models.job import JobKind
+        from app.models.status import RunStatus
+        from app.pipeline.result import (
+            PipelineOutcome,
+            next_delivery_attempt_at,
+        )
+
+        row = self.jobs.get(str(job.id))
+        if (
+            row is None
+            or row["state"] != "leased"
+            or row["lease_token"] != job.lease_token
+            or job.kind is not JobKind.SEND_OUTBOUND
+            or row["kind"] != JobKind.SEND_OUTBOUND.value
+            or row["run_id"] != job.run_id
+            or row["email_id"] != job.email_id
+            or job.run_id is None
+            or job.email_id is None
+        ):
+            return SettlementOutcome.FENCED
+
+        snapshot = self.load_outbound_snapshot(job.run_id, job.email_id)
+        run = self.runs.get(str(job.run_id))
+        if snapshot is None or run is None:
+            return SettlementOutcome.FENCED
+        purpose = snapshot.get("purpose")
+        expected_status = (
+            RunStatus.APPROVED.value
+            if purpose == "confirmation"
+            else RunStatus.AWAITING_REPLY.value
+        )
+        if purpose not in {
+            "confirmation",
+            "clarification",
+            "clarification_field_regression",
+        } or run.get("status") != expected_status:
+            return SettlementOutcome.FENCED
+        outbound = next(
+            (
+                message
+                for message in self.outbound.get(str(job.run_id), [])
+                if message.get("id") == job.email_id
+            ),
+            None,
+        )
+        if outbound is None or outbound.get("send_state") != "reserved":
+            return SettlementOutcome.FENCED
+
+        if result.outcome is PipelineOutcome.OK:
+            outbound["send_state"] = "sent"
+            if purpose == "confirmation":
+                run["status"] = RunStatus.SENT.value
+            row["state"] = "done"
+            row["lease_token"] = None
+            return SettlementOutcome.DONE
+
+        if result.outcome is PipelineOutcome.RETRYABLE:
+            reserved_at = snapshot.get("reserved_at")
+            if (
+                isinstance(reserved_at, datetime)
+                and reserved_at + timedelta(hours=20) > datetime.now(UTC)
+            ):
+                next_attempt = next_delivery_attempt_at(
+                    reserved_at, completed_attempts=row["attempts"]
+                )
+                if next_attempt is not None:
+                    row["state"] = "pending"
+                    row["lease_token"] = None
+                    row["last_error"] = result.diagnostic_code
+                    row["available_in_seconds"] = max(
+                        0.0, (next_attempt - datetime.now(UTC)).total_seconds()
+                    )
+                    return SettlementOutcome.RETRIED
+
+        run["status"] = RunStatus.NEEDS_OPERATOR.value
+        run["error_reason"] = (
+            "DeliveryReview"
+            if purpose == "confirmation"
+            else "ClarificationDeliveryReview"
+        )
+        run["error_detail"] = f"delivery_review:{result.reason.value}"
+        row["state"] = "done"
+        row["lease_token"] = None
+        row["last_error"] = result.diagnostic_code
+        return SettlementOutcome.DONE
+
     def settle_background_terminal(
         self, run_id, result, *, expected_status=None, conn=None
     ):
@@ -1957,6 +2046,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "enqueue_classified_retry",
         "enqueue_operator_resume_retry",
         "settle_pipeline_job",
+        "settle_outbound_delivery_job",
         "settle_background_terminal",
         "settle_infrastructure_failure",
         "reap_expired_final_attempt",

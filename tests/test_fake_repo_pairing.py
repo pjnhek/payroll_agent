@@ -35,6 +35,7 @@ _DURABLE_RECOVERY_SYMBOLS = {
     "enqueue_classified_retry",
     "enqueue_operator_resume_retry",
     "settle_pipeline_job",
+    "settle_outbound_delivery_job",
     "settle_background_terminal",
     "settle_infrastructure_failure",
     "reap_expired_final_attempt",

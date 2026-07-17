@@ -826,6 +826,46 @@ def test_send_drain_uses_delivery_settlement_with_the_claimed_lease(
     assert observed[0][1] is expected
 
 
+def test_send_drain_settles_a_frozen_snapshot_through_the_fake_pair(
+    fake_repo, monkeypatch
+):
+    from app.email import gateway
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<paired@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen payroll",
+        body_text="Frozen bytes only",
+        attachments=[],
+    )
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        lambda _snapshot: PipelineResult(
+            outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY
+        ),
+    )
+
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert fake_repo.get_job(job_id)["state"] == "done"
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.SENT.value
+
+
 def test_final_attempt_reap_runs_only_after_empty_claim_and_stays_truthy(
     fake_repo, monkeypatch
 ):
