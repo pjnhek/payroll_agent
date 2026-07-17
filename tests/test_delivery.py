@@ -448,6 +448,7 @@ def _minimal_roster_and_item(run_id: uuid.UUID):
 
 def test_confirmation_reservation_enqueues_one_frozen_send_job(fake_repo, monkeypatch):
     """Creating a confirmation intent composes once and queues only its snapshot ID."""
+    from app.email import gateway
     from app.models.job import JobKind
     from app.pipeline import delivery as orch
 
@@ -485,7 +486,7 @@ def test_confirmation_reservation_enqueues_one_frozen_send_job(fake_repo, monkey
     monkeypatch.setattr(orch, "compose_confirmation", _compose)
     monkeypatch.setattr(orch, "generate_paystub_pdf", _pdf)
     monkeypatch.setattr(
-        orch.gateway,
+        gateway,
         "send_outbound",
         lambda **_kwargs: pytest.fail("approval-time delivery reached the legacy gateway"),
     )

@@ -16,12 +16,25 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 
 import psycopg
 
 from app.db import repo
 
 logger = logging.getLogger("payroll_agent.orchestrator")
+
+
+@dataclass(frozen=True)
+class OutboundReplayPolicy:
+    """Describe whether a logical send slot is new or has frozen work to replay."""
+
+    email_id: uuid.UUID | None
+
+    @property
+    def has_existing_snapshot(self) -> bool:
+        """Return whether the caller must load stored provider-visible data."""
+        return self.email_id is not None
 
 
 class UnconfirmedSendError(RuntimeError):
@@ -35,6 +48,32 @@ class UnconfirmedSendError(RuntimeError):
     is genuinely wanted, use the run's retrigger action — which opens a new send slot
     and thereby authorises a new send.
     """
+
+
+def outbound_replay_policy(
+    run_id: uuid.UUID,
+    *,
+    purpose: str,
+    round: int = 0,
+    conn: psycopg.Connection | None = None,
+) -> OutboundReplayPolicy:
+    """Return the frozen slot that durable work may replay, if one exists.
+
+    The lookup remains purpose, round, and epoch scoped.  This function only decides
+    whether a producer must use an existing immutable snapshot; the queued handler
+    remains responsible for the bounded provider replay decision.
+    """
+    row = repo.get_unconfirmed_outbound(run_id, purpose=purpose, round=round, conn=conn)
+    if row is None:
+        return OutboundReplayPolicy(email_id=None)
+    email_id = row.get("email_id")
+    try:
+        return OutboundReplayPolicy(email_id=uuid.UUID(str(email_id)))
+    except (TypeError, ValueError) as exc:
+        raise UnconfirmedSendError(
+            f"run {run_id}: an unconfirmed {purpose!r} send exists at round {round} "
+            "without an immutable snapshot id; refusing to send again"
+        ) from exc
 
 
 def assert_no_unconfirmed_send(

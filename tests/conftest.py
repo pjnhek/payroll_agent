@@ -1613,6 +1613,7 @@ class InMemoryRepo:
             return None
         found = matching[-1]
         return {
+            "email_id": found.get("id"),
             "message_id": found["message_id"],
             "send_state": found.get("send_state"),
             "round": found.get("round", 0),

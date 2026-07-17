@@ -536,7 +536,7 @@ def get_unconfirmed_outbound(
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
             """
-            SELECT message_id, send_state, round, created_at FROM email_messages
+            SELECT id, message_id, send_state, round, created_at FROM email_messages
             WHERE run_id = %s AND direction = 'outbound'
               AND purpose = %s AND round = %s
               AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
@@ -548,7 +548,13 @@ def get_unconfirmed_outbound(
         ).fetchone()
     if row is None:
         return None
-    return {"message_id": row[0], "send_state": row[1], "round": row[2], "created_at": row[3]}
+    return {
+        "email_id": uuid.UUID(str(row[0])),
+        "message_id": row[1],
+        "send_state": row[2],
+        "round": row[3],
+        "created_at": row[4],
+    }
 
 
 def mark_reply_consumed(
