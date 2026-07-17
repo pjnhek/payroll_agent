@@ -540,6 +540,266 @@ def test_load_all_runs_projects_only_bounded_failure_inputs(fake_conn):
 
 
 @pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        (("Running",), "Running"),
+        (("Queued",), "Queued"),
+        (("Retry queued",), "Retry queued"),
+        ((None,), None),
+        (None, None),
+    ],
+)
+def test_get_run_queue_label_returns_only_bounded_labels(fake_conn, row, expected):
+    """The per-run projection emits one fixed label or ``None``, never job data."""
+    from app.db import repo
+
+    fake_conn.script_fetchone(row)
+    run_id = uuid.uuid4()
+
+    assert repo.get_run_queue_label(run_id, conn=fake_conn) == expected
+
+    sql, params = fake_conn.last()
+    assert "state IN ('pending', 'leased')" in sql
+    assert params == (str(run_id),)
+    for forbidden in ("dedup_key", "last_error", "attempts", "payload"):
+        assert forbidden not in sql
+
+
+def test_get_run_queue_label_sql_pins_running_queued_retry_precedence(fake_conn):
+    """Leased wins, then due pending, then delayed pending, in one bounded read."""
+    from app.db import repo
+
+    fake_conn.script_fetchone(("Running",))
+    repo.get_run_queue_label(uuid.uuid4(), conn=fake_conn)
+
+    sql = fake_conn.all_sql()
+    running = sql.index("THEN 'Running'")
+    queued = sql.index("THEN 'Queued'")
+    retry = sql.index("THEN 'Retry queued'")
+    assert running < queued < retry
+    assert "available_at <= now()" in sql
+
+
+def test_running_queue_status_json_is_bounded_and_read_only(monkeypatch):
+    """Polling exposes fixed presentation only and cannot trigger recovery work."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    hostile = "job-SECRET attempts=99 payload=Maria <maria@example.test>"
+    run = {
+        "id": run_id,
+        "status": "received",
+        "error_reason": None,
+        "error_detail": None,
+        "last_error": hostile,
+        "job_id": hostile,
+        "job_attempts": 99,
+        "job_max_attempts": 100,
+        "available_at": hostile,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: dict(run))
+    monkeypatch.setattr(
+        _repo, "get_run_queue_label", lambda rid, conn=None: "Running"
+    )
+    for name in (
+        "enqueue_job",
+        "claim_status",
+        "clear_reply_context",
+        "mark_reply_consumed",
+    ):
+        monkeypatch.setattr(
+            _repo,
+            name,
+            lambda *args, _name=name, **kwargs: pytest.fail(
+                f"status poll called recovery seam {_name}"
+            ),
+        )
+
+    response = client.get(f"/runs/{run_id}/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["queue_label"] == "Running"
+    assert body["queue_badge_class"] == "running"
+    assert body["has_open_job"] is True
+    response_text = response.text
+    assert hostile not in response_text
+    for forbidden in (
+        "job_id",
+        "job_attempts",
+        "job_max_attempts",
+        "available_at",
+        "last_error",
+        "payload",
+    ):
+        assert forbidden not in body
+
+
+def test_queued_run_detail_has_secondary_badge_durability_and_bounded_polling(
+    monkeypatch,
+):
+    """Open work is secondary, accessible, and polled for exactly two minutes."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "awaiting_approval",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: dict(run))
+    monkeypatch.setattr(
+        _repo, "get_run_queue_label", lambda rid, conn=None: "Queued"
+    )
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    text = response.text
+    assert text.index("Awaiting Approval") < text.index("Queued")
+    assert "This action is durably saved; you can safely leave this page." in text
+    assert 'aria-live="polite"' in text
+    assert "var MAX_ATTEMPTS = 60" in text
+    assert "setInterval(poll, 2000)" in text
+    assert "data.queue_label !== INITIAL_QUEUE_LABEL" in text
+    poll_script = text[text.index("<script>") : text.index("</script>")]
+    for forbidden in ("enqueue", "retrigger", "simulate-reply", "claim_status"):
+        assert forbidden not in poll_script.lower()
+
+
+def test_retry_queued_runs_list_keeps_payroll_badge_first_and_updates_in_place(
+    monkeypatch,
+):
+    """List polling preserves the existing row and renders one secondary badge."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    monkeypatch.setattr(
+        _repo,
+        "load_all_runs",
+        lambda: [
+            {
+                "id": run_id,
+                "business_id": uuid.uuid4(),
+                "status": "received",
+                "created_at": None,
+                "updated_at": None,
+                "business_name": "Safe Co",
+                "summary_gate_reason": None,
+                "employee_count": 0,
+                "error_reason": None,
+                "error_detail": None,
+                "queue_label": "Retry queued",
+            }
+        ],
+    )
+
+    text = client.get("/runs").text
+
+    assert text.index("Received") < text.index("Retry queued")
+    assert text.count("Retry queued") == 1
+    assert 'data-has-open-job="true"' in text
+    assert "var MAX_ATTEMPTS = 60" in text
+    assert "setInterval(function()" in text and "}, 2000)" in text
+    assert "window.location.reload" not in text
+    assert "data.has_open_job" in text
+
+
+def test_queue_feedback_hidden_when_no_open_work(monkeypatch):
+    """Settled work has no queue badge, durability note, or polling script."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "awaiting_approval",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: dict(run))
+    monkeypatch.setattr(_repo, "get_run_queue_label", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    text = client.get(f"/runs/{run_id}").text
+
+    assert "This action is durably saved; you can safely leave this page." not in text
+    assert "run-queue-badge" not in text
+    assert "MAX_ATTEMPTS" not in text
+
+
+def test_resolution_superseded_notice_uses_fixed_copy_not_query_text(monkeypatch):
+    """Browser-controlled query values select fixed copy and are never echoed."""
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    hostile = "Maria Chen <maria@example.test><script>alert(1)</script>"
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "needs_operator",
+        "extracted_data": None,
+        "decision": {"unresolved_names": []},
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: dict(run))
+    monkeypatch.setattr(_repo, "get_run_queue_label", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+
+    response = client.get(
+        f"/runs/{run_id}", params={"resolution_superseded": hostile}
+    )
+
+    assert response.status_code == 200
+    assert (
+        "An earlier resolution was already accepted. This submission was recorded "
+        "but not applied."
+    ) in response.text
+    assert hostile not in response.text
+
+
+def test_demo_queue_error_notice_uses_fixed_copy_not_query_text(monkeypatch):
+    """The demo failure flag is an allowlisted presence bit, not rendered text."""
+    from app.db import repo as _repo
+
+    hostile = "DB exploded for Maria <maria@example.test><script>alert(1)</script>"
+    monkeypatch.setattr(_repo, "load_all_runs", lambda: [])
+
+    response = client.get("/runs", params={"demo_queue_error": hostile})
+
+    assert response.status_code == 200
+    assert "We couldn't queue this demo run. Please try again." in response.text
+    assert hostile not in response.text
+
+
+@pytest.mark.parametrize(
     "bad_name",
     [
         'Bad "Name"\r\nX-Injected: evil',  # quote + CRLF header injection
