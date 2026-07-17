@@ -77,6 +77,7 @@ def test_confirmation_review_does_not_load_clarification_marker(fake_repo):
     fake_repo.outbound_snapshots[str(snapshot["email_id"])]["payload"]["purpose"] = (
         "confirmation"
     )
+    fake_repo.outbound[str(run_id)][0]["purpose"] = "confirmation"
     assert runs_mod._load_delivery_review(run_id) is not None
 
     fake_repo.runs[str(run_id)]["error_reason"] = "ClarificationDeliveryReview"

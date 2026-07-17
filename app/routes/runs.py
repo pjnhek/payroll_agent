@@ -128,8 +128,16 @@ _DELIVERY_REVIEW_CATEGORY_LABELS = {
     "authorization": "Provider authorization issue",
     "validation": "Provider validation issue",
     "configuration": "Delivery configuration issue",
+    "final_attempt_lease_expired": "Final attempt lease expired",
     "unknown": "Unknown delivery outcome",
 }
+_DELIVERY_REVIEW_PURPOSES = {
+    "DeliveryReview": frozenset({"confirmation"}),
+    "ClarificationDeliveryReview": frozenset(
+        {"clarification", "clarification_field_regression"}
+    ),
+}
+_DELIVERY_REVIEW_MARKERS = frozenset(_DELIVERY_REVIEW_PURPOSES)
 _NEW_CONFIRMATION_ACKNOWLEDGEMENT = "AUTHORIZE A NEW CONFIRMATION"
 
 
@@ -257,12 +265,13 @@ def _safe_run_with_queue_projection(
 def _load_delivery_review(
     run_id: uuid.UUID, *, conn: psycopg.Connection | None = None
 ) -> dict[str, Any] | None:
-    """Load a confirmation review only while its owned reservation is actionable."""
+    """Load one purpose-owned review while its frozen reservation is actionable."""
     run = repo.load_run(run_id, conn=conn)
+    review_reason = run.get("error_reason") if run is not None else None
     if (
         run is None
         or run.get("status") != RunStatus.NEEDS_OPERATOR.value
-        or run.get("error_reason") != "DeliveryReview"
+        or review_reason not in _DELIVERY_REVIEW_PURPOSES
     ):
         return None
     detail = run.get("error_detail")
@@ -271,15 +280,21 @@ def _load_delivery_review(
     category = detail.removeprefix("delivery_review:")
     if category not in _DELIVERY_REVIEW_CATEGORY_LABELS:
         return None
-    pending = repo.get_unconfirmed_outbound(
-        run_id, purpose="confirmation", conn=conn
-    )
+    allowed_purposes = _DELIVERY_REVIEW_PURPOSES[review_reason]
+    pending = None
+    for purpose in allowed_purposes:
+        pending = repo.get_unconfirmed_outbound(run_id, purpose=purpose, conn=conn)
+        if pending is not None:
+            break
     if pending is None or not isinstance(pending.get("email_id"), uuid.UUID):
         return None
     review = repo.load_delivery_review_snapshot(
         run_id, pending["email_id"], conn=conn
     )
     if review is None or review.get("email_id") != pending["email_id"]:
+        return None
+    review_purpose = review.get("purpose")
+    if review_purpose not in allowed_purposes:
         return None
     if not isinstance(review.get("snapshot_id"), uuid.UUID):
         return None
@@ -288,7 +303,13 @@ def _load_delivery_review(
         return None
     if not 0 <= attempts <= 100:
         return None
-    return {"category": category, "review": review}
+    return {
+        "category": category,
+        "review_kind": "confirmation"
+        if review_reason == "DeliveryReview"
+        else "clarification",
+        "review": review,
+    }
 
 
 def _safe_delivery_review_projection(
@@ -310,6 +331,8 @@ def _safe_delivery_review_projection(
                 }
             )
     return {
+        "purpose": review["purpose"],
+        "review_kind": delivery_review["review_kind"],
         "recipient": review["to_addr"],
         "subject": review["subject"],
         "reserved_at": review["reserved_at"],
@@ -319,6 +342,17 @@ def _safe_delivery_review_projection(
         "email_url": f"/runs/{run_id}/delivery-review/email",
         "attachments": attachments,
     }
+
+
+def _is_delivery_review_marker(run: dict[str, Any] | None) -> bool:
+    """Identify review-owned runs before generic operator recovery can mutate them."""
+    return bool(
+        run is not None
+        and run.get("status") == RunStatus.NEEDS_OPERATOR.value
+        and run.get("error_reason") in _DELIVERY_REVIEW_MARKERS
+        and isinstance(run.get("error_detail"), str)
+        and run["error_detail"].startswith("delivery_review:")
+    )
 
 
 def _snapshot_clone_fields(
@@ -476,6 +510,11 @@ async def resolve(
     if run.get("status") != RunStatus.NEEDS_OPERATOR.value:
         # Not (or no longer) awaiting an operator resolution — no-op redirect
         # rather than erroring; a stale page reload/double-submit is harmless.
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+    if _is_delivery_review_marker(run):
+        # Delivery uncertainty is a separate operator decision. In particular, do
+        # not let a clarification that may already have reached the client become an
+        # alias write or a generic pipeline restart through this form.
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
     decision = run.get("decision") or {}
@@ -662,6 +701,10 @@ def retrigger(run_id: uuid.UUID) -> RedirectResponse:
     the client receiving a second confirmation email.
     """
     with repo.get_connection() as conn, conn.transaction():
+        # A possible provider acceptance must be resolved through its purpose-aware
+        # delivery review. Guard before any status CAS, context clear, or job enqueue.
+        if _is_delivery_review_marker(repo.load_run(run_id, conn=conn)):
+            return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
         # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
         # prevents a duplicate confirmation email even if the run already sent one.
         claimed = (
@@ -850,10 +893,16 @@ def delivery_review_email(run_id: uuid.UUID) -> Response:
     if isinstance(references_header, str):
         lines.append(f"References: {references_header}")
     lines.extend(("", body_text))
+    purpose = snapshot.get("purpose")
+    filename = (
+        "frozen-confirmation.txt"
+        if purpose == "confirmation"
+        else "frozen-clarification.txt"
+    )
     return Response(
         content="\n".join(lines),
         media_type="text/plain",
-        headers={"Content-Disposition": 'attachment; filename="frozen-confirmation.txt"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -903,6 +952,62 @@ def retry_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
     if should_wake:
         wake.wake()
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+@router.post("/runs/{run_id}/delivery-review/clarification/retry-now")
+def retry_clarification_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
+    """Reopen only the existing frozen clarification job while replay is eligible."""
+    should_wake = False
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            delivery_review = _load_delivery_review(run_id, conn=conn)
+            if delivery_review is not None and delivery_review["review_kind"] == (
+                "clarification"
+            ):
+                outcome = repo.advance_existing_clarification_delivery_review_job_due_now(
+                    run_id,
+                    delivery_review["review"]["email_id"],
+                    conn=conn,
+                )
+                should_wake = outcome == repo.AdvanceSendJobOutcome.ADVANCED
+    except Exception:
+        logger.warning("clarification delivery retry unavailable for run %s", run_id)
+    if should_wake:
+        wake.wake()
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+def _finish_clarification_delivery_review(
+    run_id: uuid.UUID, target: RunStatus
+) -> RedirectResponse:
+    """CAS a clarification review to a provider-free explicit operator outcome."""
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            delivery_review = _load_delivery_review(run_id, conn=conn)
+            if delivery_review is not None and delivery_review["review_kind"] == (
+                "clarification"
+            ):
+                repo.claim_status(
+                    run_id,
+                    RunStatus.NEEDS_OPERATOR,
+                    target,
+                    conn=conn,
+                )
+    except Exception:
+        logger.warning("clarification delivery review outcome unavailable for run %s", run_id)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+@router.post("/runs/{run_id}/delivery-review/clarification/mark-handled")
+def mark_clarification_delivery_handled(run_id: uuid.UUID) -> RedirectResponse:
+    """Acknowledge the frozen question without sending another provider request."""
+    return _finish_clarification_delivery_review(run_id, RunStatus.AWAITING_REPLY)
+
+
+@router.post("/runs/{run_id}/delivery-review/clarification/reject")
+def reject_clarification_delivery(run_id: uuid.UUID) -> RedirectResponse:
+    """Reject an ambiguous clarification without alias writes or provider work."""
+    return _finish_clarification_delivery_review(run_id, RunStatus.REJECTED)
 
 
 @router.post("/runs/{run_id}/delivery-review/mark-delivered")
@@ -1053,7 +1158,9 @@ def run_detail(
     # other try/except-debug block on this route.
     roster_employees: list[Employee] = []
     unresolved_suggestions: dict[str, str] = {}
-    if run.get("status") == RunStatus.NEEDS_OPERATOR.value:
+    if run.get("status") == RunStatus.NEEDS_OPERATOR.value and not _is_delivery_review_marker(
+        run
+    ):
         try:
             roster_employees = repo.load_roster_for_business(run["business_id"]).employees
         except Exception:
