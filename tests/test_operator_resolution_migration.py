@@ -57,17 +57,78 @@ def test_fence_close_locks_before_closing_and_enables_trigger(
     assert module.main(["--fence-writes"], conn=conn) == 0
     sql = _normalized_sql(conn)
     lock_index = next(i for i, stmt in enumerate(sql) if "ACCESS EXCLUSIVE" in stmt)
+    table_index = next(
+        i
+        for i, stmt in enumerate(sql)
+        if "CREATE TABLE IF NOT EXISTS OPERATOR_RESOLUTION_WRITER_FENCE" in stmt
+    )
+    function_index = next(
+        i for i, stmt in enumerate(sql) if "CREATE OR REPLACE FUNCTION" in stmt
+    )
+    trigger_index = next(i for i, stmt in enumerate(sql) if "CREATE TRIGGER" in stmt)
+    insert_index = next(
+        i
+        for i, stmt in enumerate(sql)
+        if "INSERT INTO OPERATOR_RESOLUTION_WRITER_FENCE" in stmt
+    )
     close_index = next(
         i
         for i, stmt in enumerate(sql)
         if "UPDATE OPERATOR_RESOLUTION_WRITER_FENCE" in stmt
     )
     enable_index = next(i for i, stmt in enumerate(sql) if "ENABLE TRIGGER" in stmt)
-    assert lock_index < close_index < enable_index
-    assert any("CREATE OR REPLACE FUNCTION" in stmt for stmt in sql)
-    assert any("CREATE TRIGGER" in stmt for stmt in sql)
+    assert (
+        lock_index
+        < table_index
+        < function_index
+        < trigger_index
+        < insert_index
+        < close_index
+        < enable_index
+    )
+    assert "WRITES_OPEN) VALUES (TRUE, FALSE)" in sql[insert_index]
     assert conn.transaction_exited
     assert capsys.readouterr().out == "writer_fence=closed\n"
+
+
+def test_fence_install_failure_rolls_back_without_reporting_closed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_script()
+
+    class RollbackConnection(FakeConnection):
+        rolled_back = False
+
+        def transaction(self) -> FakeTransaction:
+            outer = self
+
+            class RollbackTransaction(FakeTransaction):
+                def __exit__(self, exc_type: Any, *exc: Any) -> None:
+                    outer.rolled_back = exc_type is not None
+                    return None
+
+            return RollbackTransaction()
+
+        def execute(self, sql: str, params: Any = None) -> Any:
+            if "CREATE OR REPLACE FUNCTION" in sql:
+                raise RuntimeError("simulated fence install failure")
+            self.executed.append((sql, params))
+            return self
+
+    conn = RollbackConnection()
+
+    assert module.main(["--fence-writes"], conn=conn) == 2
+    sql = _normalized_sql(conn)
+    assert any("ACCESS EXCLUSIVE" in stmt for stmt in sql)
+    assert any(
+        "CREATE TABLE IF NOT EXISTS OPERATOR_RESOLUTION_WRITER_FENCE" in stmt
+        for stmt in sql
+    )
+    assert not any("WRITES_OPEN = FALSE" in stmt for stmt in sql)
+    assert conn.rolled_back
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_schema_trigger_rejects_parent_insert_while_closed() -> None:

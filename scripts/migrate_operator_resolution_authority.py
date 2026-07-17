@@ -94,6 +94,16 @@ END;
 $$
 """
 
+_FENCE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS operator_resolution_writer_fence (
+    singleton   BOOLEAN     NOT NULL DEFAULT TRUE,
+    writes_open BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT operator_resolution_writer_fence_pkey PRIMARY KEY (singleton),
+    CONSTRAINT ck_operator_resolution_writer_fence_singleton CHECK (singleton)
+)
+"""
+
 _INSTALL_TRIGGER_SQL = """
 DO $$
 BEGIN
@@ -167,6 +177,10 @@ def _fence_writes(conn: Any) -> bool:
         conn.execute(
             "LOCK TABLE operator_resume_resolutions IN ACCESS EXCLUSIVE MODE"
         )
+        # Phase 18 does not have the Phase 19 fence table yet. Install only this
+        # cutover prerequisite while the legacy writer table is exclusively locked;
+        # the full additive schema still belongs to the later bootstrap gate.
+        conn.execute(_FENCE_TABLE_SQL)
         conn.execute(_FENCE_FUNCTION_SQL)
         conn.execute(_INSTALL_TRIGGER_SQL)
         conn.execute(
