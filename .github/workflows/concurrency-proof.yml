@@ -121,8 +121,8 @@ jobs:
         # (test_atomic_persist, test_claim_status, test_dashboard, test_gateway,
         # test_ingest, test_persistence, test_seed_roundtrip, test_stuck_run_recovery,
         # test_threading, plus non-queueproof tests in test_webhook_dedup_race)
-        # stay dormant in CI. Phase 19 promotes only the concurrent same-Svix
-        # durability proof in test_webhook_dedup_race to this marker-selected gate;
+        # stay dormant in CI. Only the concurrent same-Svix durability case in
+        # test_webhook_dedup_race is promoted to this marker-selected gate;
         # the rest of that module remains outside the live-DB CI surface. The wider
         # pre-existing gap remains tracked in the roadmap backlog.
         #
