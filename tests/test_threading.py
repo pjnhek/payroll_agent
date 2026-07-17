@@ -227,6 +227,58 @@ def test_header_chain_match_via_references(client, fake_repo, mock_llm):
     assert fake_repo.load_run(run_id)["status"] != "awaiting_reply"
 
 
+def test_stale_epoch_header_cannot_resume_current_awaiting_run(fake_repo):
+    """A retriggered run may observe an old header but cannot resume from it.
+
+    The append-only outbound log retains the old clarification Message-ID for late
+    reply observability.  The resume lookup must nevertheless require the row's
+    stamped epoch to equal the run's current reply_epoch.
+    """
+    from app.models.status import RunStatus
+
+    run_id = fake_repo.create_run(
+        business_id=uuid.uuid4(),
+        source_email_id=uuid.uuid4(),
+        pay_period_start="2026-06-15",
+        pay_period_end="2026-06-21",
+    )
+    old_header = "<clarification-epoch-0@payroll-agent.local>"
+    current_header = "<clarification-epoch-1@payroll-agent.local>"
+
+    fake_repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=old_header,
+        purpose="clarification",
+        send_state="sent",
+    )
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    assert fake_repo.clear_reply_context(run_id) == 1
+    fake_repo.insert_email_message(
+        run_id=run_id,
+        direction="outbound",
+        message_id=current_header,
+        purpose="clarification",
+        send_state="sent",
+    )
+
+    assert (
+        fake_repo.find_awaiting_reply_for_header(
+            in_reply_to=old_header,
+            references_header=None,
+        )
+        is None
+    )
+    assert fake_repo.find_awaiting_reply_for_header(
+        in_reply_to=current_header,
+        references_header=None,
+    ) == run_id
+    assert fake_repo.find_any_run_for_header(
+        in_reply_to=old_header,
+        references_header=None,
+    ) == run_id
+
+
 def test_references_like_is_parameterized():
     """The references LIKE is a NAMED placeholder, never an f-string.
 
