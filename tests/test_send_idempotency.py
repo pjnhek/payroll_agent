@@ -31,7 +31,7 @@ import json
 import os
 import pathlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -576,7 +576,9 @@ def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
         lease_token=uuid.uuid4(),
     )
     fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
-    fake_conn.script_fetchone((uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved"))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
+    )
     fake_conn.script_fetchone(("approved",))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
@@ -601,6 +603,133 @@ def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
     assert "attempt_state" in sql and "failure_category" in sql
     assert "status = 'approved'" in sql
     assert "status = 'sent'" in sql
+
+
+def test_delivery_settlement_reschedules_the_same_job_without_rewinding_approval(
+    fake_conn: Any,
+) -> None:
+    """A transient delivery result keeps approval intact and reuses the leased job."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
+    )
+    fake_conn.script_fetchone(("approved",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.RETRYABLE,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_TIMEOUT,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome is SettlementOutcome.RETRIED
+    sql = fake_conn.all_sql()
+    assert "INSERT INTO outbound_delivery_attempts" in sql
+    assert "'retry_scheduled'" not in sql  # values stay parameterized
+    assert "state = 'pending', available_at = %s" in sql
+    assert "UPDATE payroll_runs SET status = 'sent'" not in sql
+    assert "UPDATE payroll_runs SET status = 'needs_operator'" not in sql
+
+
+def test_delivery_settlement_moves_expired_or_terminal_delivery_to_review(
+    fake_conn: Any,
+) -> None:
+    """No automatic path may continue past the fixed provider-deduplication window."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
+    fake_conn.script_fetchone(
+        (
+            uuid.uuid4(),
+            datetime.now(UTC) - timedelta(hours=20),
+            "confirmation",
+            0,
+            0,
+            "reserved",
+            False,
+        )
+    )
+    fake_conn.script_fetchone(("approved",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.RETRYABLE,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_TIMEOUT,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome is SettlementOutcome.DONE
+    sql = fake_conn.all_sql()
+    assert "attempt_state, failure_category" in sql
+    assert "status = 'needs_operator'" in sql
+    assert "delivery_review:%s" not in sql
+    assert "state = 'done', last_error = %s" in sql
+
+
+def test_delivery_settlement_rejects_a_lost_lease_before_any_attempt_write(fake_conn: Any) -> None:
+    """A reclaimed worker cannot append evidence, change a run, or settle the replacement lease."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineResult
+
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=uuid.uuid4(),
+        email_id=uuid.uuid4(),
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone(None)
+
+    assert (
+        settle_outbound_delivery_job(job, PipelineResult(), conn=fake_conn)
+        is SettlementOutcome.FENCED
+    )
+    sql = fake_conn.all_sql()
+    assert "INSERT INTO outbound_delivery_attempts" not in sql
+    assert "UPDATE jobs" not in sql
+    assert "UPDATE payroll_runs" not in sql
 
 
 @_SKIP_LIVE_DB

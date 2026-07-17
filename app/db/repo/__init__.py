@@ -59,6 +59,7 @@ from app.db.repo.job_settlement import (
     reap_expired_final_attempt,
     settle_background_terminal,
     settle_infrastructure_failure,
+    settle_outbound_delivery_job,
     settle_pipeline_job,
 )
 from app.db.repo.jobs import (
@@ -188,6 +189,7 @@ __all__ = [
     "enqueue_classified_retry",
     "enqueue_operator_resume_retry",
     "settle_pipeline_job",
+    "settle_outbound_delivery_job",
     "settle_background_terminal",
     "settle_infrastructure_failure",
     "reap_expired_final_attempt",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from datetime import datetime
 
 import psycopg
 
@@ -21,6 +22,7 @@ from app.pipeline.result import (
     PipelineReason,
     PipelineResult,
     PipelineStage,
+    next_delivery_attempt_at,
 )
 
 
@@ -85,6 +87,220 @@ def _locked_job(
         return None
     run_id = uuid.UUID(str(row[2])) if row[2] is not None else None
     return int(row[0]), int(row[1]), run_id, JobKind(str(row[3]))
+
+
+def _delivery_failure_category(result: PipelineResult) -> str:
+    """Map a bounded delivery result to the fixed attempt-ledger vocabulary."""
+    reason = result.reason
+    if reason in {
+        PipelineReason.DELIVERY_TIMEOUT,
+        PipelineReason.DELIVERY_CONNECTION_FAILURE,
+    }:
+        return "transport"
+    if reason is PipelineReason.DELIVERY_SERVER_FAILURE:
+        return "provider_5xx"
+    if reason is PipelineReason.DELIVERY_RATE_LIMIT:
+        return "rate_limited"
+    if reason is PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH:
+        return "payload_mismatch"
+    if reason in {
+        PipelineReason.DELIVERY_AUTHENTICATION_FAILURE,
+        PipelineReason.DELIVERY_AUTHORIZATION_FAILURE,
+    }:
+        return "authorization"
+    if reason is PipelineReason.DELIVERY_VALIDATION_FAILURE:
+        return "validation"
+    if reason is PipelineReason.DELIVERY_CONFIGURATION_FAILURE:
+        return "configuration"
+    return "unknown"
+
+
+def _append_delivery_attempt(
+    conn: psycopg.Connection,
+    *,
+    snapshot_id: uuid.UUID,
+    attempt_state: str,
+    failure_category: str,
+) -> None:
+    """Append one bounded fact without retaining a provider payload or error message."""
+    row = conn.execute(
+        "INSERT INTO outbound_delivery_attempts "
+        "(snapshot_id, attempt_state, failure_category) VALUES (%s, %s, %s) "
+        "RETURNING id",
+        (str(snapshot_id), attempt_state, failure_category),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("delivery attempt append did not return an id")
+
+
+def _lock_outbound_reservation(
+    conn: psycopg.Connection,
+    *,
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+) -> tuple[uuid.UUID, datetime, str, str, bool] | None:
+    """Lock one immutable outbound slot and return its delivery-safe facts."""
+    row = conn.execute(
+        "SELECT snapshot.id, snapshot.reserved_at, message.purpose, message.round, "
+        "message.epoch, message.send_state, "
+        "snapshot.reserved_at + interval '20 hours' > now() "
+        "FROM outbound_email_snapshots AS snapshot "
+        "JOIN email_messages AS message ON message.id = snapshot.email_id "
+        "WHERE message.id = %s AND message.run_id = %s "
+        "AND message.direction = 'outbound' FOR UPDATE OF snapshot, message",
+        (str(email_id), str(run_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    reserved_at = row[1]
+    if not isinstance(reserved_at, datetime):
+        raise RuntimeError("outbound reservation timestamp is not a datetime")
+    return (
+        uuid.UUID(str(row[0])),
+        reserved_at,
+        str(row[2]),
+        str(row[5]),
+        bool(row[6]),
+    )
+
+
+def settle_outbound_delivery_job(
+    job: Job,
+    result: PipelineResult,
+    *,
+    conn: psycopg.Connection | None = None,
+) -> SettlementOutcome:
+    """Settle one snapshot-backed delivery job under its exact lease token.
+
+    The provider call happens before this function.  Every resulting database write is
+    therefore made only after the leased queue row, immutable reservation, and expected
+    run state have been locked together in one transaction.
+    """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        locked = _locked_job(c, job)
+        if locked is None:
+            return SettlementOutcome.FENCED
+        attempts, _max_attempts, stored_run_id, stored_kind = locked
+        if (
+            stored_kind is not JobKind.SEND_OUTBOUND
+            or job.kind is not JobKind.SEND_OUTBOUND
+            or stored_run_id is None
+            or stored_run_id != job.run_id
+            or job.email_id is None
+        ):
+            return SettlementOutcome.FENCED
+
+        reservation = _lock_outbound_reservation(
+            c, run_id=stored_run_id, email_id=job.email_id
+        )
+        if reservation is None:
+            return SettlementOutcome.FENCED
+        snapshot_id, reserved_at, purpose, send_state, replay_window_open = reservation
+        if purpose not in {
+            "confirmation",
+            "clarification",
+            "clarification_field_regression",
+        } or send_state != "reserved":
+            return SettlementOutcome.FENCED
+
+        run_status = _lock_run_status(c, stored_run_id)
+        expected_status = (
+            RunStatus.APPROVED
+            if purpose == "confirmation"
+            else RunStatus.AWAITING_REPLY
+        )
+        if run_status is not expected_status:
+            return SettlementOutcome.FENCED
+
+        if result.outcome is PipelineOutcome.OK:
+            _append_delivery_attempt(
+                c,
+                snapshot_id=snapshot_id,
+                attempt_state="sent",
+                failure_category="none",
+            )
+            sent = c.execute(
+                "UPDATE email_messages SET send_state = 'sent' "
+                "WHERE id = %s AND run_id = %s AND direction = 'outbound' "
+                "AND send_state = 'reserved' RETURNING id",
+                (str(job.email_id), str(stored_run_id)),
+            ).fetchone()
+            if sent is None:
+                raise RuntimeError("locked delivery success lost its reservation")
+            if purpose == "confirmation":
+                advanced = c.execute(
+                    "UPDATE payroll_runs SET status = 'sent', updated_at = now() "
+                    "WHERE id = %s AND status = 'approved' RETURNING id",
+                    (str(stored_run_id),),
+                ).fetchone()
+                if advanced is None:
+                    raise RuntimeError("locked confirmation success lost its run state")
+            completed = c.execute(
+                "UPDATE jobs SET state = 'done', lease_token = NULL, leased_until = NULL, "
+                "updated_at = now() WHERE id = %s AND state = 'leased' "
+                "AND lease_token = %s RETURNING id",
+                (str(job.id), str(job.lease_token)),
+            ).fetchone()
+            if completed is None:
+                raise RuntimeError("locked delivery success lost its lease")
+            return SettlementOutcome.DONE
+
+        next_attempt = None
+        if result.outcome is PipelineOutcome.RETRYABLE and replay_window_open:
+            next_attempt = next_delivery_attempt_at(
+                reserved_at, completed_attempts=attempts
+            )
+        category = _delivery_failure_category(result)
+        if next_attempt is not None:
+            _append_delivery_attempt(
+                c,
+                snapshot_id=snapshot_id,
+                attempt_state="retry_scheduled",
+                failure_category=category,
+            )
+            rescheduled = c.execute(
+                "UPDATE jobs SET state = 'pending', available_at = %s, last_error = %s, "
+                "lease_token = NULL, leased_until = NULL, updated_at = now() "
+                "WHERE id = %s AND state = 'leased' AND lease_token = %s RETURNING id",
+                (next_attempt, result.diagnostic_code, str(job.id), str(job.lease_token)),
+            ).fetchone()
+            if rescheduled is None:
+                raise RuntimeError("locked delivery retry lost its lease")
+            return SettlementOutcome.RETRIED
+
+        _append_delivery_attempt(
+            c,
+            snapshot_id=snapshot_id,
+            attempt_state="needs_operator",
+            failure_category=category,
+        )
+        review_reason = (
+            "DeliveryReview"
+            if purpose == "confirmation"
+            else "ClarificationDeliveryReview"
+        )
+        reviewed = c.execute(
+            "UPDATE payroll_runs SET status = 'needs_operator', error_reason = %s, "
+            "error_detail = %s, updated_at = now() WHERE id = %s AND status = %s "
+            "RETURNING id",
+            (
+                review_reason,
+                f"delivery_review:{category}",
+                str(stored_run_id),
+                expected_status.value,
+            ),
+        ).fetchone()
+        if reviewed is None:
+            raise RuntimeError("locked delivery review lost its run state")
+        completed = c.execute(
+            "UPDATE jobs SET state = 'done', last_error = %s, lease_token = NULL, "
+            "leased_until = NULL, updated_at = now() WHERE id = %s "
+            "AND state = 'leased' AND lease_token = %s RETURNING id",
+            (result.diagnostic_code, str(job.id), str(job.lease_token)),
+        ).fetchone()
+        if completed is None:
+            raise RuntimeError("locked delivery review lost its lease")
+        return SettlementOutcome.DONE
 
 
 def _settle_ingest_job(
