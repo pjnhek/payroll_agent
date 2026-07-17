@@ -262,7 +262,7 @@ parallel with it.
 - [x] 20-02-PLAN.md
 - [x] 20-03-PLAN.md
 - [ ] 20-04-PLAN.md
-- [ ] 20-05-PLAN.md
+- [x] 20-05-PLAN.md
 - [ ] 20-06-PLAN.md
 - [ ] 20-07-PLAN.md
 - [ ] 20-08-PLAN.md
@@ -326,5 +326,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
-| 20. Exactly-Once Send | v4 | 5/12 | In Progress|  |
+| 20. Exactly-Once Send | v4 | 6/12 | In Progress|  |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
