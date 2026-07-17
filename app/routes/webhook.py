@@ -1,450 +1,182 @@
-"""POST /webhook/inbound — the thin webhook adapter.
+"""Authenticated durable receipt boundary for inbound email webhooks.
 
-This is a THIN HTTP adapter: no business logic, no LLM, no calc. It does only
-the cheap, synchronous, idempotency-critical work, then schedules the LLM-heavy
-pipeline as a FastAPI BackgroundTask and returns 200 fast (INGEST-01). Doing the
-LLM work inline would blow the provider's webhook timeout and trigger redelivery
-of an email that is already being processed.
+The public request owns transport work only: bounded streaming, exact-byte
+signature verification, and one off-loop transaction that persists the event
+plus its identifier-only ingest job. Provider fetches and payroll work begin
+later in the durable ingest worker.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.db import repo
 from app.email import gateway
-from app.email.clean import clean_body
-from app.models.contracts import InboundEmail
-from app.models.status import RunStatus
-from app.routes import pipeline_glue
+from app.models.job import JobKind
+from app.queue import wake
 
 logger = logging.getLogger("payroll_agent.webhook")
 
 router = APIRouter()
 
+_MAX_INBOUND_BYTES = 256 * 1024
+
+
+class _InvalidInboundEnvelope(ValueError):
+    """Authenticated bytes do not contain the required transport identity."""
+
 
 @dataclass(frozen=True)
-class IngestResult:
-    """Everything the post-`run_in_threadpool` response-shaping block needs.
+class ReceiptResult:
+    """Bounded result returned across the worker-thread boundary."""
 
-    Carries the locals `_parse_and_ingest_sync` computed across the worker-thread
-    boundary back to the `async def inbound` route. `outcome` is one of:
-    "parse_failed" / "duplicate" / "reply_candidate" / "late_reply" /
-    "unknown_sender" / "new_run". `email`/`cleaned` are populated on every
-    outcome except "parse_failed" (where `gateway.parse_inbound` never returned
-    a value); `parse_error` is populated ONLY on "parse_failed".
-    """
-
-    outcome: str
-    email: InboundEmail | None
-    cleaned: str
-    email_id: uuid.UUID | None
-    existing_run_id: uuid.UUID | None
-    reply_run_id: uuid.UUID | None
-    late_run_id: uuid.UUID | None
-    business_id: uuid.UUID | None
-    run_id: uuid.UUID | None
-    parse_error: str | None
+    event_id: uuid.UUID
+    inserted: bool
 
 
-def _parse_and_ingest_sync(raw_body: bytes) -> IngestResult:
-    """The Resend fetch + the 5-outcome ingest transaction — runs in a worker thread.
+async def _read_bounded_body(request: Request) -> bytes:
+    """Stream at most the configured transport-envelope cap into memory."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > _MAX_INBOUND_BYTES:
+            raise _InvalidInboundEnvelope("request_too_large")
+        raw.extend(chunk)
+    return bytes(raw)
 
-    Called via `await run_in_threadpool(_parse_and_ingest_sync, raw_body)` from the
-    route. Everything below was, before this refactor, inline in `async def inbound`
-    directly on the event loop; QUEUE-01 moves it off-loop because
-    `gateway.parse_inbound`'s Resend fetch (Path A) is a real HTTP round-trip and the
-    ingest transaction below is blocking psycopg — neither has a natural `await` point,
-    so leaving them on the loop would stall every other request in the process for
-    their combined duration.
 
-    `gateway.parse_inbound` and every `repo.*` call are resolved as MODULE ATTRIBUTES
-    (`from app.email import gateway`, `from app.db import repo`, both imported at
-    module scope above) — never rebound to a bare name inside this function. A bare-name
-    import would bind the function object at import time, and the test suite's
-    `monkeypatch.setattr(gateway, "parse_inbound", ...)` / `monkeypatch.setattr(repo, ...)`
-    seams would silently stop taking effect (BOUND-01).
+def _validated_payload(raw_body: bytes, allow_unsigned_fixture: bool) -> dict[str, Any]:
+    """Parse only the minimal authenticated envelope needed by delayed ingest.
 
-    Path A (real Resend envelope) does a two-step fetch — resend.EmailsReceiving.get(email_id)
-    — which calls the Resend API and can fail (bad/insufficient RESEND_API_KEY, API error,
-    malformed payload). An unhandled raise here would propagate out of the worker thread and
-    out of `run_in_threadpool`, so it is caught HERE (inside the thread) rather than at the
-    route: the observable response contract (a clean 502, not a raw 500) must be
-    byte-identical to before this refactor, and letting the exception escape the threadpool
-    would break that.
+    Signed provider traffic must carry ``data.email_id``. Explicitly enabled
+    fixture traffic may instead carry the canonical fixture's ``message_id``;
+    its complete domain validation still belongs to the delayed ingest worker.
     """
     try:
-        email = gateway.parse_inbound(raw_body)
-    except Exception as exc:  # noqa: BLE001 — webhook boundary: never leak a raw 500 to Resend
-        logger.error(
-            "inbound parse/fetch failed: %s (likely RESEND_API_KEY invalid or "
-            "EmailsReceiving.get error) — returning 502, no run created",
-            type(exc).__name__,
-        )
-        return IngestResult(
-            outcome="parse_failed",
-            email=None,
-            cleaned="",
-            email_id=None,
-            existing_run_id=None,
-            reply_run_id=None,
-            late_run_id=None,
-            business_id=None,
-            run_id=None,
-            parse_error=type(exc).__name__,
-        )
+        decoded = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise _InvalidInboundEnvelope("invalid_json") from exc
+    if not isinstance(decoded, dict):
+        raise _InvalidInboundEnvelope("invalid_object")
 
-    # Clean the body BEFORE persisting, so email_messages.body_text holds the cleaned
-    # text — it is the single cleaned-body source of truth that extraction reads back.
-    cleaned = clean_body(email.body_text)
+    data = decoded.get("data")
+    provider_id = data.get("email_id") if isinstance(data, dict) else None
+    has_provider_id = isinstance(provider_id, str) and bool(provider_id.strip())
+    fixture_message_id = decoded.get("message_id")
+    has_fixture_id = (
+        allow_unsigned_fixture
+        and isinstance(fixture_message_id, str)
+        and bool(fixture_message_id.strip())
+    )
+    if not has_provider_id and not has_fixture_id:
+        raise _InvalidInboundEnvelope("missing_transport_identifier")
+    return decoded
 
-    # ── The ingest transaction (DATA-02) ────────────────────────────────────────
-    # ONE transaction spans dedup-insert + reply-classification + sender-routing +
-    # create_run, and it commits BEFORE this function returns to the route — the
-    # route's `background_tasks.add_task` calls, and everything else in
-    # response-shaping, only ever run strictly AFTER this whole unit returns.
-    #
-    # Two invariants live here:
-    #   1. No orphan rows. A crash mid-ingest must not leave an email row with no run.
-    #   2. A reply can never spuriously create a second run. A header-bearing reply is
-    #      classified as a reply-resume candidate INSIDE this same transaction, strictly
-    #      BEFORE any code path that could reach create_run. Classify outside the
-    #      transaction and a concurrent ingest can interleave between the read and the
-    #      create, producing a duplicate run for a single reply. On the
-    #      reply_candidate/late_reply/duplicate outcomes create_run is simply not
-    #      reachable in the block below.
-    #
-    # The transaction commits exactly ONE of five outcomes: duplicate /
-    # reply_candidate / late_reply / unknown_sender / new_run. All response shaping and
-    # background-task scheduling happens strictly AFTER the `with` block exits — never
-    # inside it, or a mid-transaction rollback would leave a background task already
-    # scheduled against state that no longer exists.
-    outcome: str
-    email_id: uuid.UUID | None = None
-    existing_run_id: uuid.UUID | None = None
-    reply_run_id: uuid.UUID | None = None
-    late_run_id: uuid.UUID | None = None
-    business_id: uuid.UUID | None = None
-    run_id: uuid.UUID | None = None
+
+def _persist_verified_receipt_sync(
+    raw_body: bytes,
+    external_event_id: str,
+    allow_unsigned_fixture: bool,
+) -> ReceiptResult:
+    """Commit one verified event and its ingest job in one blocking transaction."""
+    payload = _validated_payload(raw_body, allow_unsigned_fixture)
 
     with repo.get_connection() as conn, conn.transaction():
-        # Step 1: explicit dedup via ON CONFLICT DO NOTHING RETURNING id.
-        email_id, inserted = repo.insert_inbound_email(
-            message_id=email.message_id,
-            in_reply_to=email.in_reply_to,
-            references_header=email.references_header,
-            subject=email.subject,
-            from_addr=email.from_addr,
-            to_addr=email.to_addr,
-            body_text=cleaned,
-            run_id=None,
+        event_id, inserted = repo.insert_or_get_inbound_event(
+            external_event_id=external_event_id,
+            payload=payload,
             conn=conn,
         )
-
-        if not inserted:
-            # Duplicate delivery (ON CONFLICT DO NOTHING → not inserted): the loser
-            # attaches to the EXISTING run — report it, never create a second one.
-            # insert_inbound_email returns (None, False) on conflict, so message_id
-            # (already parsed above) is the only usable key to find the existing run.
-            outcome = "duplicate"
-            existing_run_id = repo.find_run_by_message_id(
-                email.message_id, conn=conn
-            )
-        elif email.in_reply_to or email.references_header:
-            assert email_id is not None
-            # Reply classification READS the run INSIDE the transaction, before any
-            # code path that could reach create_run — see the invariant above.
-            reply_run_id = repo.find_awaiting_reply_for_header(
-                in_reply_to=email.in_reply_to,
-                references_header=email.references_header,
+        if inserted:
+            job_id = repo.enqueue_job(
+                kind=JobKind.INGEST,
+                dedup_key=f"ingest:{event_id}",
+                event_id=event_id,
                 conn=conn,
             )
-            if reply_run_id is not None:
-                outcome = "reply_candidate"
-                # Back-fill run_id on the reply row INSIDE this same transaction so
-                # real client replies appear in the run-detail thread view
-                # (load_thread_messages), like the simulate-reply demo path already
-                # does. Safe because inbound rows keep purpose=NULL, so
-                # uq_email_run_purpose never conflicts, and every routing query on
-                # email_messages.run_id filters direction='outbound' — linking an
-                # inbound row cannot perturb reply routing.
-                repo.link_email_to_run(email_id, reply_run_id, conn=conn)
-            else:
-                late_run_id = repo.find_any_run_for_header(
-                    in_reply_to=email.in_reply_to,
-                    references_header=email.references_header,
-                    conn=conn,
-                )
-                if late_run_id is not None:
-                    outcome = "late_reply"
-                    # Link late replies too — they are otherwise invisible in any
-                    # join-based audit of the run's thread.
-                    repo.link_email_to_run(email_id, late_run_id, conn=conn)
-                else:
-                    # No header match at all — fall through to ordinary
-                    # first ingest exactly like a non-reply inbound.
-                    business_id = repo.find_business_by_sender(
-                        email.from_addr, conn=conn
-                    )
-                    if business_id is None:
-                        outcome = "unknown_sender"
-                    else:
-                        run_id = repo.create_run(
-                            business_id=business_id,
-                            source_email_id=email_id,
-                            conn=conn,
-                        )
-                        outcome = "new_run"
-        else:
-            # Ordinary (non-reply) inbound: sender-route + create_run.
-            business_id = repo.find_business_by_sender(
-                email.from_addr, conn=conn
-            )
-            if business_id is None:
-                outcome = "unknown_sender"
-            else:
-                run_id = repo.create_run(
-                    business_id=business_id,
-                    source_email_id=email_id,
-                    conn=conn,
-                )
-                outcome = "new_run"
-    # ── Transaction committed. ──────────────────────────────────────────────────
+            if job_id is None:
+                raise RuntimeError("new inbound event has no ingest job")
 
-    return IngestResult(
-        outcome=outcome,
-        email=email,
-        cleaned=cleaned,
-        email_id=email_id,
-        existing_run_id=existing_run_id,
-        reply_run_id=reply_run_id,
-        late_run_id=late_run_id,
-        business_id=business_id,
-        run_id=run_id,
-        parse_error=None,
-    )
-
-
-def _duplicate_redelivery_sync(
-    message_id: str,
-) -> tuple[uuid.UUID, InboundEmail] | None:
-    """The duplicate-branch redelivery-reschedule check — runs in a worker thread.
-
-    Every blocking repo read the response-shaping "duplicate" branch performs is
-    moved off the event loop here, not just the main ingest transaction — otherwise
-    "the webhook never blocks the event loop" would be true only on the happy path.
-
-    A redelivered webhook carrying a reply is normally just a no-op duplicate — but if
-    the PERSISTED reply row is still unconsumed AND its run is still awaiting_reply, the
-    original resume never happened (dead background task / missed delivery) and this
-    redelivery is the only signal we will ever get. Without this check the run stalls in
-    awaiting_reply forever and the client's answer is silently dropped.
-
-    Load the row by message_id — NEVER rebuild the reply from the request body. The
-    persisted row holds the CLEANED body; re-cleaning a redelivered raw body would
-    produce different text than the one the first delivery stored (that reconstruction
-    is `pipeline_glue.row_to_inbound`'s job, called below on the persisted row only).
-
-    Returns (run_id, inbound) when a re-schedule should fire, else None. The caller
-    (the route, back on the event loop) is responsible for the actual
-    `background_tasks.add_task(pipeline_glue.resume_pipeline_bg, ...)` call — scheduling
-    a BackgroundTask from inside a worker thread would attach it to the wrong context.
-
-    `pipeline_glue.reply_sender_ok` — re-asserts the sender revalidation before this
-    redelivery re-schedule fires. A spoofed reply that already failed revalidation on
-    first delivery is left linked+unconsumed — exactly the state this function resumes
-    from. Without this re-check, redelivering the same message_id would launder the
-    spoofed reply straight into the pipeline. KEPT VERBATIM (it is a security control,
-    not incidental logic) — including its own `logger.warning` on mismatch.
-    """
-    reply_row = repo.get_inbound_by_message_id(message_id)
-    if (
-        reply_row is not None
-        and reply_row.get("consumed_round") is None
-        and reply_row.get("run_id") is not None
-    ):
-        linked_run = repo.load_run(reply_row["run_id"])
-        if (
-            linked_run is not None
-            and linked_run.get("status") == RunStatus.AWAITING_REPLY.value
-        ):
-            if pipeline_glue.reply_sender_ok(reply_row, linked_run):
-                logger.info(
-                    "run_id=%s redelivery reschedule", reply_row["run_id"]
-                )
-                return reply_row["run_id"], pipeline_glue.row_to_inbound(reply_row)
-            logger.warning(
-                "run_id=%s redelivery blocked — sender mismatch persists",
-                reply_row["run_id"],
-            )
-    return None
+    return ReceiptResult(event_id=event_id, inserted=inserted)
 
 
 @router.post("/webhook/inbound")
-async def inbound(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
-    """Ingest one inbound email, schedule the pipeline, return 200 fast.
-
-    Security ordering — verify BEFORE parse. Every step below is ordered so that no
-    untrusted bytes are interpreted until the request is authenticated:
-
-      1. Read raw_body bytes first (HMAC verification is over the raw payload; parsing
-         and re-serializing would change the bytes and break the signature check).
-      2. Check for svix-* signature headers:
-         - Present (Resend-signed webhook): verify BEFORE json.loads. A verify failure
-           returns 400 before any JSON parsing happens.
-         - Absent AND allow_unsigned_fixtures=False (the production default): return 400
-           BEFORE json.loads. An unauthorized body is never parsed.
-         - Absent AND allow_unsigned_fixtures=True (dev/test only): proceed to parse.
-           Both the Resend-envelope and the canonical shape go through
-           gateway.parse_inbound, which detects the shape internally.
-      3. parse_inbound(raw_body) + the 5-outcome ingest transaction — via
-         `await run_in_threadpool(_parse_and_ingest_sync, raw_body)`. The whole unit
-         (Resend HTTP fetch + the blocking psycopg transaction) runs in a worker thread
-         so the event loop is free for other requests while it executes (QUEUE-01).
-         Response shaping and `background_tasks.add_task` calls happen strictly AFTER
-         this `await` returns, on the loop — never inside the threadpool call.
-      4. Reply routing, sender auth (also off-loop, see `_duplicate_redelivery_sync` /
-         `pipeline_glue.finish_reply_resume`), background task scheduling.
-
-    The invariant this ordering protects: in production ANY unsigned POST is rejected —
-    both the Resend-envelope shape and the canonical InboundEmail shape. Accepting the
-    canonical shape unsigned would be a full bypass of webhook authentication, letting
-    anyone inject a payroll email attributed to a real business.
-    """
-    # Step 1: capture raw body bytes (needed for HMAC verification). STAYS on the
-    # loop — HMAC verification needs the exact raw bytes, and this is a cheap read.
-    raw_body: bytes = await request.body()
+async def inbound(request: Request) -> JSONResponse:
+    """Authenticate and durably accept one bounded transport event."""
+    try:
+        raw_body = await _read_bounded_body(request)
+    except _InvalidInboundEnvelope:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "request too large"},
+        )
 
     settings = get_settings()
-    allow_unsigned = settings.allow_unsigned_fixtures
-
-    # Check for svix signature headers (indicates a Resend-signed webhook).
-    is_signed = (
-        "svix-id" in request.headers
-        and "svix-timestamp" in request.headers
-        and "svix-signature" in request.headers
+    is_signed = all(
+        header in request.headers
+        for header in ("svix-id", "svix-timestamp", "svix-signature")
     )
 
-    # Step 2: verify before parse — see the ordering contract in the docstring.
-    # STAYS on the loop — pure CPU (HMAC), no I/O.
     if is_signed:
-        # Signed Resend webhook: verify BEFORE json.loads. ValueError → 400.
         try:
-            gateway.verify(raw_body, dict(request.headers), settings.webhook_signing_secret)
-        except (ValueError, Exception) as exc:
-            logger.warning("webhook signature verification failed: %s", type(exc).__name__)
-            return JSONResponse(status_code=400, content={"error": "invalid signature"})
-        # Signature passed — proceed to parse.
-    elif not allow_unsigned:
-        # Unsigned request in prod (ALLOW_UNSIGNED_FIXTURES=False): reject BEFORE
-        # json.loads. This branch is what closes the canonical-shape bypass — without
-        # it, an attacker could skip the svix headers entirely, POST the canonical
-        # InboundEmail shape, and have it ingested as a genuine client email.
-        logger.warning("unsigned webhook rejected in production (ALLOW_UNSIGNED_FIXTURES=False)")
-        return JSONResponse(status_code=400, content={"error": "unsigned webhook not allowed"})
-    # else: allow_unsigned=True (dev/test mode) — proceed to parse without verification.
-
-    # Step 3: parse + the 5-outcome ingest transaction, entirely off the event loop.
-    result = await run_in_threadpool(_parse_and_ingest_sync, raw_body)
-
-    if result.outcome == "parse_failed":
-        return JSONResponse(
-            status_code=502,
-            content={"error": "inbound parse failed", "reason": result.parse_error},
-        )
-
-    assert result.email is not None
-    email = result.email
-    cleaned = result.cleaned
-    outcome = result.outcome
-
-    # ── Everything below is post-commit response shaping + background task
-    # scheduling — the transaction inside _parse_and_ingest_sync already committed
-    # (in a worker thread) before `result` was returned to this point. ──────
-
-    if outcome == "duplicate":
-        logger.info("duplicate inbound message_id=%s — no second run", email.message_id)
-        # The redelivery-reschedule check performs its own blocking repo reads
-        # (get_inbound_by_message_id, load_run) plus the reply_sender_ok spoof-guard
-        # (which itself calls find_business_by_sender) — all moved off-loop into
-        # _duplicate_redelivery_sync via the same run_in_threadpool mechanism as the
-        # main ingest, so this branch never touches the DB directly on the loop either.
-        reschedule = await run_in_threadpool(
-            _duplicate_redelivery_sync, email.message_id
-        )
-        if reschedule is not None:
-            resched_run_id, resched_inbound = reschedule
-            # background_tasks.add_task appends to a plain list on this REQUEST-owned
-            # object — safe to call here (back on the loop, after the await above
-            # resumed) because scheduling the task itself never touches the DB.
-            background_tasks.add_task(
-                pipeline_glue.resume_pipeline_bg, resched_run_id, resched_inbound
+            gateway.verify(
+                raw_body,
+                dict(request.headers),
+                settings.webhook_signing_secret,
             )
+        except Exception as exc:  # noqa: BLE001 - public authentication boundary
+            logger.warning(
+                "webhook signature verification failed: %s", type(exc).__name__
+            )
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid signature"},
+            )
+        external_event_id = request.headers["svix-id"]
+        fixture_payload = False
+    elif settings.allow_unsigned_fixtures:
+        external_event_id = f"sha256:{hashlib.sha256(raw_body).hexdigest()}"
+        fixture_payload = True
+    else:
+        logger.warning("unsigned webhook rejected")
         return JSONResponse(
-            status_code=200,
-            content={
-                "status": "duplicate",
-                "message_id": email.message_id,
-                "run_id": str(result.existing_run_id) if result.existing_run_id else None,
-            },
+            status_code=400,
+            content={"error": "unsigned webhook not allowed"},
         )
 
-    if outcome == "reply_candidate":
-        # The transaction's classification is authoritative — do NOT re-run
-        # find_awaiting_reply_for_header/find_any_run_for_header here. Re-reading the
-        # header match post-commit reintroduces the duplicate-run race in a different
-        # shape. finish_reply_resume performs the sender revalidation (its own blocking
-        # repo.load_run + repo.find_business_by_sender calls) and response shaping — run
-        # via run_in_threadpool so that DB work also stays off the loop.
-        #
-        # Cross-thread BackgroundTasks handoff — documented, then proven (Task 3).
-        # finish_reply_resume calls background_tasks.add_task(...) FROM INSIDE the
-        # worker thread this run_in_threadpool call dispatches to. This is safe: the
-        # object is handed off, not shared — the event loop does not touch
-        # `background_tasks` while the worker thread holds it, because this `await`
-        # suspends the route until the helper returns, giving a clean happens-before
-        # edge before Starlette ever drains the task list. Resolving
-        # `pipeline_glue.finish_reply_resume` as a module attribute at call time (not a
-        # bare-name import) keeps the existing monkeypatch seam live (BOUND-01).
-        assert result.reply_run_id is not None
-        return await run_in_threadpool(
-            pipeline_glue.finish_reply_resume,
-            result.reply_run_id,
-            email,
-            cleaned,
-            background_tasks,
+    try:
+        result = await run_in_threadpool(
+            _persist_verified_receipt_sync,
+            raw_body,
+            external_event_id,
+            fixture_payload,
         )
-
-    if outcome == "late_reply":
-        logger.info(
-            "late reply: header matched run %s not in awaiting_reply — not resumed",
-            result.late_run_id,
-        )
+    except _InvalidInboundEnvelope:
         return JSONResponse(
-            status_code=200,
-            content={"status": "late_reply", "run_id": str(result.late_run_id)},
+            status_code=400,
+            content={"error": "invalid inbound envelope"},
         )
-
-    if outcome == "unknown_sender":
-        logger.warning("unknown sender from_addr=%s — stopped, no run", email.from_addr)
+    except Exception as exc:  # noqa: BLE001 - durable boundary must invite retry
+        logger.error("durable webhook receipt failed: %s", type(exc).__name__)
         return JSONResponse(
-            status_code=200,
-            content={"status": "unknown_sender", "from_addr": email.from_addr},
+            status_code=503,
+            content={"error": "temporarily unavailable"},
         )
 
-    # outcome == "new_run"
-    # Schedule the LLM-heavy pipeline AFTER the commit (in prod); SYNCHRONOUS
-    # under TestClient so the end-to-end test can assert the pause immediately.
-    assert result.run_id is not None
-    background_tasks.add_task(pipeline_glue.run_pipeline_bg, result.run_id)
-
+    if result.inserted:
+        wake.wake()
     return JSONResponse(
         status_code=200,
-        content={"status": "accepted", "run_id": str(result.run_id)},
+        content={
+            "status": "accepted" if result.inserted else "duplicate",
+            "event_id": str(result.event_id),
+        },
     )
