@@ -316,7 +316,7 @@ def test_null_run_ingest_real_coordinator_never_calls_payroll_writers(
         kind=JobKind.INGEST,
     )
     fake_conn.script_fetchone(
-        (attempts, max_attempts, None, JobKind.INGEST.value)
+        (attempts, max_attempts, None, JobKind.INGEST.value, None)
     )
     fake_conn.script_fetchone((claimed.id,))
 
@@ -1044,7 +1044,7 @@ def test_null_run_ingest_expired_final_attempt_is_reaped_without_payroll_write(
         kind=JobKind.INGEST,
     )
     fake_conn.script_fetchone(
-        (production_job.id, None, 1, 1, JobKind.INGEST.value)
+        (production_job.id, None, None, 1, 1, JobKind.INGEST.value)
     )
     fake_conn.script_fetchone((production_job.id,))
 

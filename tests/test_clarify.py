@@ -612,7 +612,7 @@ def test_clarification_delivery_success_preserves_reply_workflow(fake_conn):
     from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 
     job = _leased_clarification_send_job()
-    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound"))
+    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound", job.email_id))
     fake_conn.script_fetchone(
         (uuid.uuid4(), datetime.now(UTC), "clarification", 3, 7, "reserved", True)
     )
@@ -648,7 +648,7 @@ def test_clarification_delivery_retry_reschedules_only_the_original_job(fake_con
     from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 
     job = _leased_clarification_send_job()
-    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound"))
+    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound", job.email_id))
     fake_conn.script_fetchone(
         (uuid.uuid4(), datetime.now(UTC), "clarification_field_regression", 2, 4, "reserved", True)
     )
@@ -701,7 +701,7 @@ def test_terminal_clarification_delivery_uses_reply_safe_escalation(fake_conn):
     from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
 
     job = _leased_clarification_send_job()
-    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound"))
+    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound", job.email_id))
     fake_conn.script_fetchone(
         (uuid.uuid4(), datetime.now(UTC), "clarification", 1, 2, "reserved", True)
     )

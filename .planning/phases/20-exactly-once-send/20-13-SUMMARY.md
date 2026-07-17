@@ -171,3 +171,9 @@ The settlement and retry seams are ready for Plan 20-16’s loadability and reso
 - Summary file exists at the expected phase path.
 - Task commits `e8470de`, `b688df2`, and `633601e` are present in git history.
 - No unplanned threat surface or blocking stub was introduced by this plan.
+
+## Correction Note
+
+2026-07-17: Wave 8’s ten blocking failures were corrected by updating stale fake
+cursor rows to the exact Plan 20-13 SQL projection shapes; production settlement,
+persisted-email fencing, and final-lease logic were unchanged.

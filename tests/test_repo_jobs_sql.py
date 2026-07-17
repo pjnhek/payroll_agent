@@ -212,8 +212,8 @@ def test_advance_existing_send_job_due_now_locks_then_updates_only_pending_work(
     from app.db.repo import jobs
 
     run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    fake_conn.script_fetchone((True,))
     fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((True,))
     fake_conn.script_fetchone((job_id,))
 
     outcome = jobs.advance_existing_send_job_due_now(
@@ -235,14 +235,14 @@ def test_advance_existing_send_job_due_now_never_advances_ineligible_or_leased_w
     from app.db.repo import jobs
 
     run_id, email_id = uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((uuid.uuid4(), "pending"))
     fake_conn.script_fetchone((False,))
     assert (
         jobs.advance_existing_send_job_due_now(run_id, email_id, conn=fake_conn)
         is jobs.AdvanceSendJobOutcome.EXPIRED
     )
-    assert len(fake_conn.executed) == 1
+    assert len(fake_conn.executed) == 2
 
-    fake_conn.script_fetchone((True,))
     fake_conn.script_fetchone((uuid.uuid4(), "leased"))
     assert (
         jobs.advance_existing_send_job_due_now(run_id, email_id, conn=fake_conn)
