@@ -714,6 +714,118 @@ def test_drain_once_empty_queue_returns_false_and_dispatches_nothing(fake_repo, 
     assert calls == []
 
 
+def test_send_handler_uses_only_the_frozen_snapshot_before_provider_work(
+    fake_repo, monkeypatch
+):
+    from app.email import gateway
+    from app.queue.handlers import send_outbound
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<frozen@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen payroll",
+        body_text="Frozen bytes only",
+        attachments=[("paystub.pdf", b"frozen-pdf")],
+    )
+    job = _job(run_id=run_id, kind=JobKind.SEND_OUTBOUND)
+    job = dataclasses.replace(job, email_id=snapshot["email_id"])
+    observed: list[dict[str, object]] = []
+
+    def send(stored_snapshot: dict[str, object]) -> PipelineResult:
+        observed.append(stored_snapshot)
+        return PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
+
+    monkeypatch.setattr(gateway, "send_reserved_outbound_snapshot", send)
+    assert send_outbound.handle_send_outbound(job).outcome is PipelineOutcome.OK
+    assert observed == [snapshot]
+
+
+def test_send_handler_drops_unowned_or_stale_context_before_provider_work(
+    fake_repo, monkeypatch
+):
+    from app.email import gateway
+    from app.queue.handlers import send_outbound
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    other_run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=other_run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<other@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Other frozen payroll",
+        body_text="Other bytes only",
+        attachments=[],
+    )
+    job = dataclasses.replace(
+        _job(run_id=run_id, kind=JobKind.SEND_OUTBOUND),
+        email_id=snapshot["email_id"],
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        lambda *_args: pytest.fail("provider work must not run for unowned context"),
+    )
+    result = send_outbound.handle_send_outbound(job)
+    assert result.outcome is PipelineOutcome.OK
+
+
+def test_send_drain_uses_delivery_settlement_with_the_claimed_lease(
+    fake_repo, monkeypatch
+):
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<settled@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen payroll",
+        body_text="Frozen bytes only",
+        attachments=[],
+    )
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    expected = PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
+    monkeypatch.setattr(dispatch, "handle", lambda _job: expected)
+    observed: list[tuple[Job, PipelineResult]] = []
+
+    def settle(job: Job, result: PipelineResult) -> SettlementOutcome:
+        observed.append((job, result))
+        return SettlementOutcome.DONE
+
+    monkeypatch.setattr(repo, "settle_outbound_delivery_job", settle)
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert observed[0][0].id == job_id
+    assert observed[0][0].lease_token is not None
+    assert observed[0][1] is expected
+
+
 def test_final_attempt_reap_runs_only_after_empty_claim_and_stays_truthy(
     fake_repo, monkeypatch
 ):

@@ -221,28 +221,7 @@ class TestDispatchTableMatchesJobKind:
     def test_job_kind_equals_dispatch_table(self) -> None:
         from app.queue import dispatch
 
-        assert JobKind.SEND_OUTBOUND not in dispatch.HANDLERS
-        assert {m for m in JobKind if m is not JobKind.SEND_OUTBOUND} == set(
-            dispatch.HANDLERS.keys()
-        )
-
-    def test_unregistered_send_outbound_dispatch_fails_closed(self) -> None:
-        from app.queue import dispatch
-
-        job = Job(
-            id=uuid.uuid4(),
-            kind=JobKind.SEND_OUTBOUND,
-            run_id=uuid.uuid4(),
-            email_id=uuid.uuid4(),
-            operator_resolution_id=None,
-            event_id=None,
-            attempts=1,
-            max_attempts=8,
-            lease_token=uuid.uuid4(),
-        )
-
-        with pytest.raises(ValueError, match="no handler registered"):
-            dispatch.handle(job)
+        assert set(JobKind) == set(dispatch.HANDLERS)
 
     def test_all_job_kinds_sql_and_handlers_land_atomically(self) -> None:
         """Every declared transport operation has one SQL value and handler."""
@@ -259,9 +238,7 @@ class TestDispatchTableMatchesJobKind:
 
         assert {member.value for member in JobKind} == expected
         assert sql_values == expected
-        assert {member.value for member in dispatch.HANDLERS} == expected - {
-            "send_outbound"
-        }
+        assert {member.value for member in dispatch.HANDLERS} == expected
 
         module, name = dispatch.HANDLERS[JobKind.RESUME_REPLY]
         assert module.__name__ == "app.queue.handlers.resume_reply"
@@ -274,6 +251,41 @@ class TestDispatchTableMatchesJobKind:
         module, name = dispatch.HANDLERS[JobKind.INGEST]
         assert module.__name__ == "app.queue.handlers.ingest"
         assert name == "handle_ingest"
+
+        module, name = dispatch.HANDLERS[JobKind.SEND_OUTBOUND]
+        assert module.__name__ == "app.queue.handlers.send_outbound"
+        assert name == "handle_send_outbound"
+
+    def test_send_dispatch_resolves_the_module_attribute_at_call_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.pipeline.result import PipelineOutcome, PipelineResult
+        from app.queue import dispatch
+
+        module, name = dispatch.HANDLERS[JobKind.SEND_OUTBOUND]
+        observed: list[tuple[uuid.UUID | None, uuid.UUID | None]] = []
+
+        def replacement(job: Job) -> PipelineResult:
+            observed.append((job.run_id, job.email_id))
+            return PipelineResult(outcome=PipelineOutcome.OK)
+
+        monkeypatch.setattr(module, name, replacement)
+        run_id = uuid.uuid4()
+        email_id = uuid.uuid4()
+        job = Job(
+            id=uuid.uuid4(),
+            kind=JobKind.SEND_OUTBOUND,
+            run_id=run_id,
+            email_id=email_id,
+            operator_resolution_id=None,
+            event_id=None,
+            attempts=1,
+            max_attempts=8,
+            lease_token=uuid.uuid4(),
+        )
+
+        assert dispatch.handle(job).outcome is PipelineOutcome.OK
+        assert observed == [(run_id, email_id)]
 
     def test_ingest_dispatch_resolves_the_module_attribute_at_call_time(
         self, monkeypatch: pytest.MonkeyPatch

@@ -26,6 +26,7 @@ import uuid
 from collections.abc import Callable
 
 from app.db import repo
+from app.models.job import JobKind
 from app.pipeline.result import normalize_pipeline_result
 from app.queue import dispatch
 
@@ -222,11 +223,14 @@ def drain_once() -> DrainOutcome:
         # write fails, the job is still leased and the held token must remain visible
         # to graceful shutdown; treating it as another dispatch failure would attempt
         # a second write and could hide the unrecorded settlement.
-        settled = repo.settle_pipeline_job(
-            job,
-            result,
-            backoff_seconds=backoff_seconds(job.attempts),
-        )
+        if job.kind is JobKind.SEND_OUTBOUND:
+            settled = repo.settle_outbound_delivery_job(job, result)
+        else:
+            settled = repo.settle_pipeline_job(
+                job,
+                result,
+                backoff_seconds=backoff_seconds(job.attempts),
+            )
         outcome = _map_settlement_outcome(settled)
         lease_settled = True
     finally:
