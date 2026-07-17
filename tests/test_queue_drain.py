@@ -866,6 +866,55 @@ def test_send_drain_settles_a_frozen_snapshot_through_the_fake_pair(
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.SENT.value
 
 
+def test_send_handler_exception_never_reaches_generic_settlement(
+    fake_repo, monkeypatch
+):
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<handler-error@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen payroll",
+        body_text="Frozen bytes only",
+        attachments=[],
+    )
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    monkeypatch.setattr(
+        dispatch,
+        "handle",
+        lambda _job: (_ for _ in ()).throw(RuntimeError("unexpected handler failure")),
+    )
+    observed: list[PipelineResult] = []
+
+    def settle(_job: Job, result: PipelineResult) -> SettlementOutcome:
+        observed.append(result)
+        return SettlementOutcome.DONE
+
+    monkeypatch.setattr(repo, "settle_outbound_delivery_job", settle)
+    monkeypatch.setattr(
+        repo,
+        "settle_infrastructure_failure",
+        lambda *_args, **_kwargs: pytest.fail("generic settlement must not run"),
+    )
+
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert observed == [PipelineResult(stage=PipelineStage.DELIVERY)]
+
+
 def test_final_attempt_reap_runs_only_after_empty_claim_and_stays_truthy(
     fake_repo, monkeypatch
 ):

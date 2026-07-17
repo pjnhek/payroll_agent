@@ -27,7 +27,7 @@ from collections.abc import Callable
 
 from app.db import repo
 from app.models.job import JobKind
-from app.pipeline.result import normalize_pipeline_result
+from app.pipeline.result import PipelineResult, PipelineStage, normalize_pipeline_result
 from app.queue import dispatch
 
 logger = logging.getLogger("payroll_agent.queue")
@@ -196,10 +196,16 @@ def drain_once() -> DrainOutcome:
         result = normalize_pipeline_result(dispatch.handle(job))
     except Exception as dispatch_exc:  # noqa: BLE001 — dispatch failures are bounded
         try:
-            settled = repo.settle_infrastructure_failure(
-                job,
-                backoff_seconds=backoff_seconds(job.attempts),
-            )
+            if job.kind is JobKind.SEND_OUTBOUND:
+                settled = repo.settle_outbound_delivery_job(
+                    job,
+                    PipelineResult(stage=PipelineStage.DELIVERY),
+                )
+            else:
+                settled = repo.settle_infrastructure_failure(
+                    job,
+                    backoff_seconds=backoff_seconds(job.attempts),
+                )
             outcome = _map_settlement_outcome(settled)
             lease_settled = True
         except Exception as settlement_exc:  # noqa: BLE001 — settlement itself failed
