@@ -35,6 +35,7 @@ below the placeholder at the bottom rather than creating a second file.
 import ast
 import pathlib
 import re
+import uuid
 
 from app.db import bootstrap
 from app.db.schema_introspect import _create_body, expected_schema
@@ -220,11 +221,11 @@ class TestDispatchTableMatchesJobKind:
 
         assert {m.value for m in JobKind} == set(dispatch.HANDLERS.keys())
 
-    def test_all_resume_kinds_sql_and_handlers_land_atomically(self) -> None:
-        """The final Plan 18-09 boundary exposes exactly three runnable kinds."""
+    def test_all_job_kinds_sql_and_handlers_land_atomically(self) -> None:
+        """Every declared transport operation has one SQL value and handler."""
         from app.queue import dispatch
 
-        expected = {"run_pipeline", "resume_reply", "operator_resume"}
+        expected = {"ingest", "run_pipeline", "resume_reply", "operator_resume"}
         sql_values = _inline_check_values(_clean_sql(), "jobs", "kind")
 
         assert {member.value for member in JobKind} == expected
@@ -238,6 +239,41 @@ class TestDispatchTableMatchesJobKind:
         module, name = dispatch.HANDLERS[JobKind.OPERATOR_RESUME]
         assert module.__name__ == "app.queue.handlers.operator_resume"
         assert name == "handle_operator_resume"
+
+        module, name = dispatch.HANDLERS[JobKind.INGEST]
+        assert module.__name__ == "app.queue.handlers.ingest"
+        assert name == "handle_ingest"
+
+    def test_ingest_dispatch_resolves_the_module_attribute_at_call_time(
+        self, monkeypatch
+    ) -> None:
+        from app.models.job import Job
+        from app.pipeline.result import PipelineOutcome, PipelineResult
+        from app.queue import dispatch
+
+        module, name = dispatch.HANDLERS[JobKind.INGEST]
+        observed = []
+
+        def replacement(job):
+            observed.append(job.event_id)
+            return PipelineResult(outcome=PipelineOutcome.OK)
+
+        monkeypatch.setattr(module, name, replacement)
+        event_id = uuid.uuid4()
+        job = Job(
+            id=uuid.uuid4(),
+            kind=JobKind.INGEST,
+            run_id=None,
+            email_id=None,
+            operator_resolution_id=None,
+            event_id=event_id,
+            attempts=1,
+            max_attempts=5,
+            lease_token=uuid.uuid4(),
+        )
+
+        assert dispatch.handle(job).outcome is PipelineOutcome.OK
+        assert observed == [event_id]
 
 
 def test_resume_reply_sql_requires_exact_identifier_context() -> None:
@@ -260,3 +296,25 @@ def test_operator_resume_sql_requires_exact_identifier_context() -> None:
     assert "run_id is not null" in body
     assert "operator_resolution_id is not null" in body
     assert "email_id is null" in body
+
+
+def test_ingest_sql_requires_only_an_event_identifier_while_open() -> None:
+    """Open ingest work cannot smuggle any payroll or message context."""
+    body = " ".join(_create_body(_clean_sql(), "jobs").lower().split())
+
+    assert "ck_jobs_ingest_context" in body
+    expected = (
+        "kind <> 'ingest' or ( run_id is null and email_id is null and "
+        "operator_resolution_id is null and business_id is null and "
+        "(event_id is not null or state in ('done','dead')) )"
+    )
+    assert expected in body
+
+
+def test_http_routes_do_not_produce_ingest_jobs() -> None:
+    """The internal consumer must remain unreachable from request handlers."""
+    route_source = "\n".join(
+        path.read_text()
+        for path in sorted((pathlib.Path("app") / "routes").glob("*.py"))
+    )
+    assert "JobKind.INGEST" not in route_source

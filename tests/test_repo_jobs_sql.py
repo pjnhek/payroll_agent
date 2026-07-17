@@ -9,6 +9,7 @@ actually-reclaimed expired lease, a fenced zombie write) live in
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import re
 import types
 import uuid
@@ -83,6 +84,7 @@ def test_job_claim_contract_is_identifier_only() -> None:
         "run_id",
         "email_id",
         "operator_resolution_id",
+        "event_id",
         "attempts",
         "max_attempts",
         "lease_token",
@@ -93,6 +95,20 @@ def test_job_claim_contract_is_identifier_only() -> None:
         "submitted_name",
         "employee_id",
         "next_status",
+    }
+
+
+def test_enqueue_contract_has_no_business_payload_or_next_status() -> None:
+    from app.db.repo import jobs
+
+    parameters = set(inspect.signature(jobs.enqueue_job).parameters)
+    assert not parameters & {
+        "payload",
+        "overrides",
+        "submitted_name",
+        "employee_id",
+        "next_status",
+        "payroll_status",
     }
 
 
@@ -256,7 +272,7 @@ def test_future_identifier_contracts_accept_complete_identifier_sets(
 
 @pytest.mark.parametrize(
     "kind_value",
-    ["ingest", "unexpected", "received"],
+    ["unexpected", "received"],
 )
 def test_unregistered_kind_values_fail_before_sql(fake_conn, kind_value: str) -> None:
     from app.db.repo import jobs
@@ -267,6 +283,61 @@ def test_unregistered_kind_values_fail_before_sql(fake_conn, kind_value: str) ->
             kind=unknown_kind,
             dedup_key="unknown-kind",
             run_id=uuid.uuid4(),
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
+def test_enqueue_ingest_uses_only_parameterized_event_context(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    event_id = uuid.uuid4()
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    jobs.enqueue_job(
+        kind=JobKind.INGEST,
+        dedup_key=f"ingest:{event_id}",
+        event_id=event_id,
+        conn=fake_conn,
+    )
+    sql, params = fake_conn.last()
+    assert "event_id" in str(sql)
+    assert str(event_id) not in str(sql)
+    assert params["event_id"] == str(event_id)
+    assert params["run_id"] is None
+    assert params["email_id"] is None
+    assert params["operator_resolution_id"] is None
+    assert params["business_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("event_id", "run_id", "email_id", "operator_resolution_id", "business_id"),
+    [
+        (None, None, None, None, None),
+        (uuid.uuid4(), uuid.uuid4(), None, None, None),
+        (uuid.uuid4(), None, uuid.uuid4(), None, None),
+        (uuid.uuid4(), None, None, uuid.uuid4(), None),
+        (uuid.uuid4(), None, None, None, uuid.uuid4()),
+    ],
+)
+def test_enqueue_ingest_rejects_malformed_identifier_context_before_sql(
+    fake_conn,
+    event_id: uuid.UUID | None,
+    run_id: uuid.UUID | None,
+    email_id: uuid.UUID | None,
+    operator_resolution_id: uuid.UUID | None,
+    business_id: uuid.UUID | None,
+) -> None:
+    from app.db.repo import jobs
+
+    with pytest.raises(ValueError, match="ingest"):
+        jobs.enqueue_job(
+            kind=JobKind.INGEST,
+            dedup_key="ingest:invalid",
+            event_id=event_id,
+            run_id=run_id,
+            email_id=email_id,
+            operator_resolution_id=operator_resolution_id,
+            business_id=business_id,
             conn=fake_conn,
         )
     assert fake_conn.executed == []
