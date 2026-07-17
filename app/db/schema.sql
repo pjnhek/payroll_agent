@@ -556,8 +556,8 @@ CREATE INDEX IF NOT EXISTS idx_inbound_events_received_at
 -- hold such a thing.
 CREATE TABLE IF NOT EXISTS jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- Every declared value has a registered late-bound handler; the static
-    -- drift guard requires exact enum, SQL, and handler-set equality.
+    -- Fully wired values have a late-bound handler. A staged value remains
+    -- non-producible until the dispatch guard returns to exact equality.
     kind          TEXT        NOT NULL CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume','send_outbound')),
     dedup_key     TEXT        NOT NULL,
     -- DEVIATION 3: an earlier full design cascades this FK on delete. This

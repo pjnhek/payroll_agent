@@ -29,9 +29,9 @@ class JobKind(enum.StrEnum):
     its executable handler is registered. `INGEST` is the only kind whose work
     begins before a payroll run exists; it points to one persisted transport
     receipt and carries no business payload.
-    `app/queue/dispatch.py`'s CI guard asserts `set(JobKind) == set(HANDLERS)`
-    — set EQUALITY. Any future widening must add the enum member, SQL value,
-    and registered handler atomically so no claimable kind can lack a consumer.
+    The dispatch guard normally asserts exact enum-to-handler equality. During
+    staged wiring, it instead asserts that an unregistered kind fails closed;
+    no application producer may enqueue it until its handler exists.
     """
 
     RUN_PIPELINE = "run_pipeline"
