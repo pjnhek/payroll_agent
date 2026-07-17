@@ -256,17 +256,17 @@ parallel with it.
   3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
-**Plans**: 2/12 plans executed
+**Plans**: 4/12 plans executed
 
 - [x] 20-01-PLAN.md
 - [x] 20-02-PLAN.md
-- [ ] 20-03-PLAN.md
+- [x] 20-03-PLAN.md
 - [ ] 20-04-PLAN.md
 - [ ] 20-05-PLAN.md
 - [ ] 20-06-PLAN.md
 - [ ] 20-07-PLAN.md
 - [ ] 20-08-PLAN.md
-- [ ] 20-09-PLAN.md
+- [x] 20-09-PLAN.md
 - [ ] 20-10-PLAN.md
 - [ ] 20-11-PLAN.md
 - [ ] 20-12-PLAN.md
@@ -326,5 +326,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
-| 20. Exactly-Once Send | v4 | 2/12 | Executing  | 2026-07-17 |
+| 20. Exactly-Once Send | v4 | 4/12 | In Progress|  |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |

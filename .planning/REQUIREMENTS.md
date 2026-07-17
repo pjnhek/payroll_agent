@@ -77,7 +77,7 @@ constraint — and none could supply the failure contract, which is the actual w
 
 ### SEND — At most one confirmation per approved run, per epoch
 
-- [ ] **SEND-01**: A retry **reuses** the reserved `message_id` (read-before-mint), and the upsert stops
+- [x] **SEND-01**: A retry **reuses** the reserved `message_id` (read-before-mint), and the upsert stops
   overwriting it. Today `emails.py:85` does `ON CONFLICT ... DO UPDATE SET message_id = EXCLUDED.message_id`
   while `gateway.py:274` mints a fresh `uuid4` every call — **the write path erases the row the retry must
   read.** Because that synthetic id is the sole reply-routing anchor, a naive retry does not merely double-email;
@@ -85,12 +85,12 @@ constraint — and none could supply the failure contract, which is the actual w
   proof of non-delivery (`gateway.py:341-345` flips to `failed` on *any* Resend exception, including a timeout
   after the mail was accepted).
 
-- [ ] **SEND-02**: A retry **replays the persisted payload** (`subject`/`body_text`/`to_addr`, already on the
+- [x] **SEND-02**: A retry **replays the persisted payload** (`subject`/`body_text`/`to_addr`, already on the
   reserved row) and **never re-derives it** — no re-draft through the LLM (`delivery.py:120`), and deterministic
   PDF bytes (reportlab stamps a fresh `/CreationDate` and `/ID` per document). Resend binds the idempotency key
   to the **payload**, so any drift turns a safe retry into a **409 `invalid_idempotent_request`** hard error.
 
-- [ ] **SEND-03**: Resend's `Idempotency-Key` is passed on send (`resend==2.32.2` supports it —
+- [x] **SEND-03**: Resend's `Idempotency-Key` is passed on send (`resend==2.32.2` supports it —
   `SendOptions.idempotency_key` → the header at `resend/request.py:65-66`), and the retry ladder is **bounded
   below the provider's 24-hour retention window** (verified against Resend's docs). Past that window there is no
   provider dedup at all: a stale reservation **escalates to a human and is never auto-resent**. Pre-flight:
@@ -165,9 +165,9 @@ limitation honestly is itself the differentiator.
 | FAIL-02 | Phase 18 | Complete |
 | FAIL-03 | Phase 18 | Complete |
 | QUEUE-04 | Phase 19 | Complete |
-| SEND-01 | Phase 20 | Pending |
-| SEND-02 | Phase 20 | Pending |
-| SEND-03 | Phase 20 | Pending |
+| SEND-01 | Phase 20 | Complete |
+| SEND-02 | Phase 20 | Complete |
+| SEND-03 | Phase 20 | Complete |
 | PROOF-01 | Phase 21 | Pending |
 | PROOF-02 | Phase 21 | Pending |
 | PROOF-03 | Phase 21 | Pending |

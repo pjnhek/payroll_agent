@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Phase 20 Plan 03 complete
-last_updated: "2026-07-17T18:50:02Z"
+stopped_at: Completed 20-09-PLAN.md
+last_updated: "2026-07-17T19:00:27.163Z"
 last_activity: 2026-07-17
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 53
-  completed_plans: 44
-  percent: 83
+  completed_plans: 45
+  percent: 85
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 — Exactly-Once Send
-Plan: 3/12 plans complete (20-01, 20-02, 20-03)
+Plan: 4/12 plans complete (20-01, 20-02, 20-03, 20-09)
 Status: Executing
 Last activity: 2026-07-17
 
@@ -125,6 +125,7 @@ Last activity: 2026-07-17
 | Phase 20 P01 | 10min | 2 tasks | 6 files |
 | Phase 20 P02 | 13min | 2 tasks | 7 files |
 | Phase 20 P03 | 18min | 2 tasks | 4 files |
+| Phase 20 P09 | 9 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -139,6 +140,8 @@ Last activity: 2026-07-17
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [Phase 20 P09]: Delivery settlement locks the exact leased job, immutable reservation, and expected run state before writing a fixed-category attempt event; generic pipeline retry must not handle delivery because it rewinds approved state.
+- [Phase 20 P09]: The database evaluates the reservation-time replay cutoff while the reservation is locked; expired or terminal confirmation delivery enters needs_operator without creating a replacement key.
 - [Roadmap]: v4 — `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine (INVARIANT J-1, enforced by a CI drift guard analogous to the existing `RunStatus`↔CHECK test).
 - [Roadmap]: v4 — Forced phase order 16→17→18→19 (queue substrate → pump → failure policy → webhook cutover) is non-negotiable; deleting `sweep_stranded_runs` happens in the SAME phase the failure policy lands (Phase 18), not deferred until "the queue is proven."
 - [Roadmap]: v4 — Every durability proof (Phase 21) must ship with a demonstrated red run, per the Phase-10 (v2) precedent of a vacuous concurrency proof that passed while proving nothing.
@@ -322,10 +325,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T18:26:49Z
-Stopped at: Phase 20 Plan 01 complete
-Resume file: .planning/phases/20-exactly-once-send/20-CONTEXT.md
+Last session: 2026-07-17T19:00:27.155Z
+Stopped at: Completed 20-09-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
-- Resume Phase 20 execution with `/gsd-execute-phase 20`; Plan 20-02 can wire the gateway and durable handler to the frozen reservation APIs.
+- Resume Phase 20 execution with `/gsd-execute-phase 20`; remaining handler and producer work can now call the fenced delivery settlement coordinator.
