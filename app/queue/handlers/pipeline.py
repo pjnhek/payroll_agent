@@ -51,12 +51,10 @@ change reaching for them here would defeat correctness this tier depends
 on:**
 
 - It never touches `app/pipeline/orchestrator.py`'s own status write at the
-  start of a run. That line is the ONLY thing that ever moves a plainly
-  ingested (non-retriggered) run out of RECEIVED today, because that path
-  still runs on the framework's own background-task mechanism with no
-  external CAS anywhere. Deleting it here would leave every ordinary run
-  sitting at RECEIVED forever; on the retrigger path it is simply a
-  redundant same-value write.
+  start of a run. The queue handler owns the external RECEIVED -> EXTRACTING
+  claim, while the orchestrator retains its internal write for its existing
+  stage contract. On the durable path that internal write is a redundant
+  same-value transition, not a third queue-tier writer.
 - It never builds a rich, multi-outcome failure-classification contract for
   what the pipeline call below returns. There is nothing real to classify
   with one yet, and inventing a taxonomy ahead of a real design for it is
@@ -81,14 +79,9 @@ RECORD — the module failing to import, or `record_run_error` itself failing. T
 rule: **a failure a human can see completes the job; a failure nobody can see must
 retry, or the run is lost with no trace.**
 
-Do NOT "tidy" this back to `run_pipeline_bg`. That wrapper swallows and returns
-normally — correct for a fire-and-forget BackgroundTask on the inbound webhook,
-which has already returned 200 and has no caller left to raise to, and
-catastrophic here: the handler would return cleanly, `drain_once` would mark the
-job `done`, the durable row would vanish as a SUCCESS, and the run would strand
-mid-flight with nothing left to retry it. A payroll run would be silently lost,
-with a green suite. The two functions differ by one word at the call site and by
-everything in consequence.
+The handler must call the explicit value seam directly. A procedure that swallowed
+the value or an escaping infrastructure failure would return cleanly, causing
+`drain_once` to mark the durable job done and strand the run without retry evidence.
 
 A STAGE failure is different and needs no queue involvement: the pipeline's own
 catch-all persists ERROR on the run before returning, so the run is already
@@ -156,9 +149,7 @@ def handle_run_pipeline(job: Job) -> PipelineResult:
         )
         return PipelineResult(outcome=PipelineOutcome.OK)
 
-    # run_pipeline_now, never run_pipeline_bg: a catastrophic start failure must REACH
-    # drain_once, which routes it into a fenced fail_job write with backoff and retries
-    # the job. The _bg wrapper swallows and returns normally, so drain_once would mark
-    # this job `done`, the durable row would vanish as a success, and the run would strand
-    # mid-flight with nothing left to retry it — a silently lost payroll run.
+    # Keep the PipelineResult and any escaping infrastructure failure explicit so
+    # drain_once can route them through fenced settlement, backoff, and retry. Consuming
+    # either signal here would let the durable job disappear as a false success.
     return normalize_pipeline_result(pipeline_glue.run_pipeline_now(run_id))

@@ -10,7 +10,7 @@ from io import BytesIO
 from typing import Any, TypedDict
 
 import psycopg
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from app.db import repo
@@ -244,7 +244,6 @@ def _safe_run_with_queue_projection(
 @router.post("/runs/{run_id}/approve")
 def approve(
     run_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
 ) -> RedirectResponse:
     """The single human gate: CAS claim (AWAITING_APPROVAL → APPROVED), then deliver.
 
@@ -469,7 +468,7 @@ def _claim_stale_in_flight(run_id: uuid.UUID, conn: psycopg.Connection) -> bool:
         # forward transition is claim_status(RECEIVED -> EXTRACTING) — INVARIANT J-1's
         # one permitted forward writer — and it would find the run already sitting at
         # EXTRACTING and lose its claim, completing the job without ever calling
-        # run_pipeline_bg. A "lost job" for exactly the run this retrigger was meant to
+        # execute the pipeline. A "lost job" for exactly the run this retrigger was meant to
         # revive. So this branch performs NO status write and leaves the run genuinely
         # at RECEIVED, exactly the state the handler's forward claim expects to find.
         # Exclusivity between two concurrent retrigger clicks is provided one layer
@@ -522,14 +521,14 @@ def retrigger(run_id: uuid.UUID) -> RedirectResponse:
     KNOWN LIMITATION — reply-context loss on retrigger (accepted, not a bug): a stranded
     run that originally entered via a clarification REPLY (non-empty clarified_fields or
     a pre_clarify_extracted snapshot), once claimed here — by either the ERROR/APPROVED
-    CAS below or the stale in-flight branch — is dispatched to run_pipeline_bg, NOT
-    resume_pipeline_bg, because retrigger cannot tell that the stranded run was entered
-    via a reply. Runs are never auto-restarted; the operator's retrigger IS the accepted
-    recovery mechanism, and making retrigger reply-aware is new state-machine capability,
-    deliberately out of scope. Consequence: the retriggered run restarts cleanly from the
-    ORIGINAL inbound email, and the in-flight reply context it was processing when it
-    stranded is lost. The operator retains full visibility (the run reaches ERROR and is
-    diagnosable) and can re-send the clarification context as a fresh email if the
+    CAS below or the stale in-flight branch — enqueues an identifier-only RUN_PIPELINE
+    job because retrigger cannot tell that the stranded run was entered via a reply.
+    Runs are never auto-restarted; the operator's retrigger IS the accepted recovery
+    mechanism, and making retrigger reply-aware is new state-machine capability,
+    deliberately out of scope. Consequence: the durable handler restarts cleanly from
+    the ORIGINAL inbound email, and the in-flight reply context it was processing when
+    it stranded is lost. The operator retains full visibility (the run reaches ERROR and
+    is diagnosable) and can re-send the clarification context as a fresh email if the
     retriggered result looks wrong.
 
     NOTE: COMPUTED is the correct post-calculation in-flight status; there is no
@@ -868,8 +867,8 @@ def simulate_reply(
 
     Constructs a synthetic InboundEmail that mirrors the RFC threading a real client
     reply would carry (same In-Reply-To / References as the clarification outbound,
-    same from_addr as the original inbound sender), then routes it through the REAL
-    pipeline_glue.route_reply path — no logic duplication, no guard bypass.
+    same from_addr as the original inbound sender), then persists, authorizes, and
+    enqueues it through the same durable reply classifier as delayed ingest.
 
     The sender spoof guard passes because from_addr is taken from the run's own source
     inbound email (the original business contact email), which is the same address

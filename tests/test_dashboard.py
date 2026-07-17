@@ -964,11 +964,11 @@ def test_run_detail_has_no_meta_refresh():
 # ---------------------------------------------------------------------------
 
 
-def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
+def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch, fake_repo):
     """POST /runs/{id}/simulate-reply on a non-awaiting run → 303, no crash.
 
     When the run is not in awaiting_reply status, the route must return a 303
-    redirect without calling _route_reply or any pipeline code.
+    redirect without persisting or enqueueing reply work.
     """
     from app.db import repo as _repo
 
@@ -988,19 +988,6 @@ def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
     }
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: non_awaiting_run)
 
-    # _route_reply must NOT be called; track any call via a spy.
-    route_reply_calls: list[int] = []
-    import app.routes.pipeline_glue as _main
-
-    def _route_reply_spy(email, cleaned, background_tasks) -> None:
-        route_reply_calls.append(1)
-
-    monkeypatch.setattr(
-        _main,
-        "route_reply",
-        _route_reply_spy,
-    )
-
     response = client.post(
         f"/runs/{run_id}/simulate-reply",
         data={"reply_body": "some reply"},
@@ -1009,10 +996,10 @@ def test_simulate_reply_noop_on_non_awaiting_run(monkeypatch):
     assert response.status_code == 303, (
         f"non-awaiting simulate-reply must 303; got {response.status_code}"
     )
-    assert len(route_reply_calls) == 0, "_route_reply must NOT be called for non-awaiting run"
+    assert fake_repo.jobs == {}
 
 
-def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch):
+def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch, fake_repo):
     """POST /runs/{id}/simulate-reply with no clarification Message-ID → 303 no-op."""
     from app.db import repo as _repo
 
@@ -1038,28 +1025,16 @@ def test_simulate_reply_noop_when_no_clarification_mid(monkeypatch):
         lambda rid, purpose=None, conn=None: None,
     )
 
-    import app.routes.pipeline_glue as _main
-    route_reply_calls: list[int] = []
-
-    def _route_reply_spy(email, cleaned, background_tasks) -> None:
-        route_reply_calls.append(1)
-
-    monkeypatch.setattr(
-        _main,
-        "route_reply",
-        _route_reply_spy,
-    )
-
     response = client.post(
         f"/runs/{run_id}/simulate-reply",
         data={"reply_body": "some reply"},
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert len(route_reply_calls) == 0, "_route_reply must NOT be called when no clarification mid"
+    assert fake_repo.jobs == {}
 
 
-def test_simulate_reply_triggers_route_reply_with_correct_headers(
+def test_simulate_reply_commits_durable_job_with_correct_headers(
     monkeypatch, fake_repo
 ):
     """The demo reply commits linked context plus one job and never runs inline."""
@@ -1067,7 +1042,6 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(
     from app.models.job import JobKind
     from app.models.status import RunStatus
     from app.queue import wake
-    from app.routes import pipeline_glue
 
     clar_mid = "<clar-abc123@payroll-agent.local>"
     client_addr = "payroll@coastalcleaning.example"
@@ -1142,11 +1116,6 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(
     monkeypatch.setattr(_repo, "insert_inbound_email", insert_inbound_email)
     monkeypatch.setattr(_repo, "link_email_to_run", link_email_to_run)
     monkeypatch.setattr(_repo, "enqueue_job", enqueue_job)
-    monkeypatch.setattr(
-        pipeline_glue,
-        "route_reply",
-        lambda *args, **kwargs: pytest.fail("simulate-reply used process memory"),
-    )
     monkeypatch.setattr(
         "app.pipeline.orchestrator.resume_pipeline",
         lambda *args, **kwargs: pytest.fail("simulate-reply orchestrated inline"),

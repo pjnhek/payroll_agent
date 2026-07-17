@@ -124,16 +124,6 @@ def test_request_route_never_fetches_body_or_runs_business_processing(
         "parse_inbound",
         lambda *args: pytest.fail("request route must not fetch provider body"),
     )
-    monkeypatch.setattr(
-        webhook,
-        "pipeline_glue",
-        SimpleNamespace(
-            run_pipeline_bg=lambda *args: pytest.fail("request must not run pipeline"),
-            resume_pipeline_bg=lambda *args: pytest.fail("request must not resume pipeline"),
-        ),
-        raising=False,
-    )
-
     response = client.post(
         "/webhook/inbound", json={"message_id": "<fixture@example.test>"}
     )
