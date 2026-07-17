@@ -14,12 +14,14 @@ Coverage:
 """
 from __future__ import annotations
 
+import subprocess
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from app.models.contracts import PaystubLineItem
-from app.pipeline.pdf import _sum_deductions, generate_paystub_pdf
+from app.pipeline.pdf import PaystubYtdTotals, _sum_deductions, generate_paystub_pdf
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -107,6 +109,21 @@ def _salaried_item() -> PaystubLineItem:
 
 _PAY_PERIOD_START = date(2026, 6, 15)
 _PAY_PERIOD_END = date(2026, 6, 21)
+
+
+def _extracted_pdf_text(pdf_bytes: bytes, tmp_path: Path) -> str:
+    """Extract rendered text without asserting unstable ReportLab document bytes."""
+    pdf_path = tmp_path / "paystub.pdf"
+    text_path = tmp_path / "paystub.txt"
+    pdf_path.write_bytes(pdf_bytes)
+    result = subprocess.run(
+        ["pdftotext", str(pdf_path), str(text_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return text_path.read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +282,62 @@ def test_no_optional_params_unchanged_call_works():
         item, "Test Employee", _PAY_PERIOD_START, _PAY_PERIOD_END
     )
     assert result[:4] == b"%PDF"
+
+
+def test_current_and_ytd_columns_render_complete_honest_totals(tmp_path: Path):
+    """Every supported money category has aligned current and cumulative values."""
+    item = _hourly_item_multi_bucket()
+    ytd = PaystubYtdTotals(
+        gross_pay=Decimal("7250.00"),
+        federal_withholding=Decimal("610.00"),
+        fica_ss=Decimal("449.50"),
+        fica_medicare=Decimal("107.63"),
+        state_withholding=Decimal("156.25"),
+        pretax_401k=Decimal("290.00"),
+        net_pay=Decimal("5636.62"),
+    )
+
+    rendered = _extracted_pdf_text(
+        generate_paystub_pdf(
+            item,
+            "Jane Smith",
+            _PAY_PERIOD_START,
+            _PAY_PERIOD_END,
+            hourly_rate=Decimal("25.00"),
+            ytd=ytd,
+        ),
+        tmp_path,
+    )
+
+    for label in (
+        "Current",
+        "YTD",
+        "TOTAL GROSS",
+        "Federal Income Tax",
+        "Social Security (6.2%)",
+        "Medicare (1.45%)",
+        "State Income Tax",
+        "Pre-tax 401(k)",
+        "NET PAY",
+    ):
+        assert label in rendered
+    for amount in (
+        "$2,250.00",
+        "$7,250.00",
+        "$210.00",
+        "$610.00",
+        "$139.50",
+        "$449.50",
+        "$32.63",
+        "$107.63",
+        "$56.25",
+        "$156.25",
+        "$90.00",
+        "$290.00",
+        "$1,721.62",
+        "$5,636.62",
+    ):
+        assert amount in rendered
 
 
 # ---------------------------------------------------------------------------

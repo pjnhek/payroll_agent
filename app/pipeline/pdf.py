@@ -10,11 +10,14 @@ deployment filesystem is ephemeral, so a file written here would silently vanish
 next restart.
 
 Layout: a QuickBooks-style pay stub — navy header band, employee block, earnings table,
-deductions table, net-pay summary band, footer. NO YTD columns. NO check / MICR line.
+deductions table, net-pay summary band, footer. Current/YTD amounts are supplied by the
+caller before snapshot reservation. NO check / MICR line.
 NO fabricated fields: a paystub only ever shows numbers the calc actually produced.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -103,6 +106,42 @@ _STYLE_FOOTNOTE = ParagraphStyle(
 _FULL_WIDTH = 504.0
 _MARGIN = 54.0  # 0.75 inch margins (slightly tighter than default for a compact stub)
 
+_ZERO = Decimal("0")
+
+
+@dataclass(frozen=True)
+class PaystubYtdTotals:
+    """Complete year-to-date display totals for one employee's current paystub."""
+
+    gross_pay: Decimal = _ZERO
+    federal_withholding: Decimal = _ZERO
+    fica_ss: Decimal = _ZERO
+    fica_medicare: Decimal = _ZERO
+    state_withholding: Decimal = _ZERO
+    pretax_401k: Decimal = _ZERO
+    net_pay: Decimal = _ZERO
+
+    @classmethod
+    def from_prior(
+        cls, prior: Mapping[str, Decimal] | None, item: PaystubLineItem
+    ) -> PaystubYtdTotals:
+        """Combine reconciled prior values with this pay period for display only."""
+        values = prior or {}
+        return cls(
+            gross_pay=values.get("gross_pay", _ZERO) + item.gross_pay,
+            federal_withholding=(
+                values.get("federal_withholding", _ZERO) + item.federal_withholding
+            ),
+            fica_ss=values.get("fica_ss", _ZERO) + item.fica_ss,
+            fica_medicare=values.get("fica_medicare", _ZERO) + item.fica_medicare,
+            state_withholding=(
+                values.get("state_withholding", _ZERO)
+                + (item.state_withholding or _ZERO)
+            ),
+            pretax_401k=values.get("pretax_401k", _ZERO) + (item.pretax_401k or _ZERO),
+            net_pay=values.get("net_pay", _ZERO) + item.net_pay,
+        )
+
 
 def _fmt(val: Decimal) -> str:
     """Format a Decimal or numeric value as $X,XXX.XX."""
@@ -131,6 +170,17 @@ def _sum_deductions(item: PaystubLineItem) -> Decimal:
     if item.pretax_401k:
         total += item.pretax_401k
     return total
+
+
+def _sum_ytd_deductions(ytd: PaystubYtdTotals) -> Decimal:
+    """Return the same deduction categories shown in the YTD column."""
+    return (
+        ytd.federal_withholding
+        + ytd.fica_ss
+        + ytd.fica_medicare
+        + ytd.state_withholding
+        + ytd.pretax_401k
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +250,11 @@ def _build_employee_block(
 
 def _build_earnings_table(
     item: PaystubLineItem,
+    ytd: PaystubYtdTotals,
     full_width: float,
     hourly_rate: Decimal | None = None,
 ) -> Table:
-    """Earnings table: [Earnings | Rate | Hours | Amount].
+    """Earnings table with aligned current and calendar-year total amounts.
 
     Rows for non-zero hour buckets. Per-bucket dollar splits are not available
     on PaystubLineItem (gross_pay is the total only), so the Amount column is
@@ -238,20 +289,24 @@ def _build_earnings_table(
     )
 
     if show_rate:
-        header = [["Earnings", "Rate", "Hours", "Amount"]]
+        header = [["Earnings", "Rate", "Hours", "Current", "YTD"]]
     else:
-        header = [["Earnings", "Hours", "Amount"]]
+        header = [["Earnings", "Hours", "Current", "YTD"]]
 
     all_zero = all(getattr(item, field) == 0 for field, _ in HOUR_BUCKETS)
 
     if all_zero:
         # Salaried: single salary row with gross amount; no rate shown
         if show_rate:
-            body_rows = [["Salary", "", "", _fmt(item.gross_pay)]]
-            total_row = [["TOTAL GROSS", "", "", _fmt(item.gross_pay)]]
+            body_rows = [
+                ["Salary", "", "", _fmt(item.gross_pay), _fmt(ytd.gross_pay)]
+            ]
+            total_row = [
+                ["TOTAL GROSS", "", "", _fmt(item.gross_pay), _fmt(ytd.gross_pay)]
+            ]
         else:
-            body_rows = [["Salary", "", _fmt(item.gross_pay)]]
-            total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay)]]
+            body_rows = [["Salary", "", _fmt(item.gross_pay), _fmt(ytd.gross_pay)]]
+            total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay), _fmt(ytd.gross_pay)]]
     else:
         body_rows = []
         for field, label in HOUR_BUCKETS:
@@ -259,14 +314,16 @@ def _build_earnings_table(
             if val != 0:
                 if show_rate:
                     rate_cell = f"${ot_rate}/hr" if label == "Overtime" else f"${hourly_rate}/hr"
-                    body_rows.append([label, rate_cell, str(val), ""])
+                    body_rows.append([label, rate_cell, str(val), "", ""])
                 else:
-                    body_rows.append([label, str(val), ""])
+                    body_rows.append([label, str(val), "", ""])
         # Total gross row (dollar amount only — individual splits not available)
         if show_rate:
-            total_row = [["TOTAL GROSS", "", "", _fmt(item.gross_pay)]]
+            total_row = [
+                ["TOTAL GROSS", "", "", _fmt(item.gross_pay), _fmt(ytd.gross_pay)]
+            ]
         else:
-            total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay)]]
+            total_row = [["TOTAL GROSS", "", _fmt(item.gross_pay), _fmt(ytd.gross_pay)]]
 
     all_rows = header + body_rows + total_row
     num_rows = len(all_rows)
@@ -275,14 +332,25 @@ def _build_earnings_table(
 
     # Column widths: vary by whether Rate column is present
     if show_rate:
-        # [Earnings | Rate | Hours | Amount]
-        col_widths = [full_width * 0.40, full_width * 0.20, full_width * 0.15, full_width * 0.25]
-        # Right-align Rate, Hours, Amount columns (indices 1, 2, 3)
+        # [Earnings | Rate | Hours | Current | YTD]
+        col_widths = [
+            full_width * 0.31,
+            full_width * 0.17,
+            full_width * 0.12,
+            full_width * 0.20,
+            full_width * 0.20,
+        ]
+        # Right-align Rate, Hours, Current, and YTD columns.
         align_start = 1
     else:
-        # [Earnings | Hours | Amount]
-        col_widths = [full_width * 0.50, full_width * 0.20, full_width * 0.30]
-        # Right-align Hours and Amount columns (indices 1, 2)
+        # [Earnings | Hours | Current | YTD]
+        col_widths = [
+            full_width * 0.38,
+            full_width * 0.16,
+            full_width * 0.23,
+            full_width * 0.23,
+        ]
+        # Right-align Hours, Current, and YTD columns.
         align_start = 1
 
     table = Table(all_rows, colWidths=col_widths)
@@ -313,38 +381,58 @@ def _build_earnings_table(
     return table
 
 
-def _build_deductions_table(item: PaystubLineItem, full_width: float) -> Table:
-    """Deductions table: [Deductions | Amount].
+def _build_deductions_table(
+    item: PaystubLineItem, ytd: PaystubYtdTotals, full_width: float
+) -> Table:
+    """Deductions table with aligned current and calendar-year total amounts.
 
     Rows: Federal Income Tax, Social Security 6.2%, Medicare 1.45%,
     State Income Tax (omit if None/zero, DASH-02), Pre-tax 401(k) (omit if zero).
     TOTAL DEDUCTIONS is computed and must reconcile.
     """
-    header = [["Deductions", "Amount"]]
+    header = [["Deductions", "Current", "YTD"]]
 
     body_rows = [
-        ["Federal Income Tax", _fmt(item.federal_withholding)],
-        ["Social Security (6.2%)", _fmt(item.fica_ss)],
-        ["Medicare (1.45%)", _fmt(item.fica_medicare)],
+        [
+            "Federal Income Tax",
+            _fmt(item.federal_withholding),
+            _fmt(ytd.federal_withholding),
+        ],
+        ["Social Security (6.2%)", _fmt(item.fica_ss), _fmt(ytd.fica_ss)],
+        ["Medicare (1.45%)", _fmt(item.fica_medicare), _fmt(ytd.fica_medicare)],
     ]
 
-    # State Withholding — omit when None or zero (DASH-02)
-    if item.state_withholding:
-        body_rows.append(["State Income Tax", _fmt(item.state_withholding)])
+    # State Withholding — omit only when it is absent from both display periods.
+    if item.state_withholding or ytd.state_withholding:
+        body_rows.append(
+            [
+                "State Income Tax",
+                _fmt(item.state_withholding or _ZERO),
+                _fmt(ytd.state_withholding),
+            ]
+        )
 
-    # Pre-tax 401(k) — omit when zero/None
-    if item.pretax_401k:
-        body_rows.append(["Pre-tax 401(k)", _fmt(item.pretax_401k)])
+    # Pre-tax 401(k) — omit only when it is absent from both display periods.
+    if item.pretax_401k or ytd.pretax_401k:
+        body_rows.append(
+            ["Pre-tax 401(k)", _fmt(item.pretax_401k or _ZERO), _fmt(ytd.pretax_401k)]
+        )
 
     total_deductions = _sum_deductions(item)
-    total_row = [["TOTAL DEDUCTIONS", _fmt(total_deductions)]]
+    total_row = [
+        [
+            "TOTAL DEDUCTIONS",
+            _fmt(total_deductions),
+            _fmt(_sum_ytd_deductions(ytd)),
+        ]
+    ]
 
     all_rows = header + body_rows + total_row
     num_rows = len(all_rows)
     header_row_idx = 0
     total_row_idx = num_rows - 1
 
-    col_widths = [full_width * 0.60, full_width * 0.40]
+    col_widths = [full_width * 0.45, full_width * 0.275, full_width * 0.275]
 
     table = Table(all_rows, colWidths=col_widths)
     table.setStyle(TableStyle([
@@ -368,17 +456,16 @@ def _build_deductions_table(item: PaystubLineItem, full_width: float) -> Table:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        # Right-align Amount column
+        # Right-align Current and YTD columns
         ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
     ]))
     return table
 
 
-def _build_net_pay_band(item: PaystubLineItem, full_width: float) -> Table:
-    """Muted-navy summary band: GROSS / TOTAL DEDUCTIONS / NET PAY.
-
-    Three equal-width columns; NET PAY is emphasized with larger bold text.
-    """
+def _build_net_pay_band(
+    item: PaystubLineItem, ytd: PaystubYtdTotals, full_width: float
+) -> Table:
+    """Muted-navy summary band: current and YTD gross, deductions, and net pay."""
     total_deductions = _sum_deductions(item)
 
     _style_label = ParagraphStyle(
@@ -414,22 +501,33 @@ def _build_net_pay_band(item: PaystubLineItem, full_width: float) -> Table:
         alignment=1,  # CENTER
     )
 
-    gross_cell = [
-        Paragraph("GROSS PAY", _style_label),
-        Paragraph(_fmt(item.gross_pay), _style_value),
+    data = [
+        [
+            Paragraph("", _style_label),
+            Paragraph("GROSS PAY", _style_label),
+            Paragraph("TOTAL DEDUCTIONS", _style_label),
+            Paragraph("NET PAY", _style_net_label),
+        ],
+        [
+            Paragraph("CURRENT", _style_label),
+            Paragraph(_fmt(item.gross_pay), _style_value),
+            Paragraph(_fmt(total_deductions), _style_value),
+            Paragraph(_fmt(item.net_pay), _style_net_value),
+        ],
+        [
+            Paragraph("YTD", _style_label),
+            Paragraph(_fmt(ytd.gross_pay), _style_value),
+            Paragraph(_fmt(_sum_ytd_deductions(ytd)), _style_value),
+            Paragraph(_fmt(ytd.net_pay), _style_net_value),
+        ],
     ]
-    deductions_cell = [
-        Paragraph("TOTAL DEDUCTIONS", _style_label),
-        Paragraph(_fmt(total_deductions), _style_value),
+    col_widths = [
+        full_width * 0.14,
+        full_width * 0.29,
+        full_width * 0.29,
+        full_width * 0.28,
     ]
-    net_cell = [
-        Paragraph("NET PAY", _style_net_label),
-        Paragraph(_fmt(item.net_pay), _style_net_value),
-    ]
-
-    col_w = full_width / 3
-    data = [[gross_cell, deductions_cell, net_cell]]
-    table = Table(data, colWidths=[col_w, col_w, col_w])
+    table = Table(data, colWidths=col_widths)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), _C_NAVY),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -438,7 +536,7 @@ def _build_net_pay_band(item: PaystubLineItem, full_width: float) -> Table:
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
         # Vertical dividers between columns
-        ("LINEAFTER", (0, 0), (1, -1), 0.5, colors.HexColor("#2D5F8F")),
+        ("LINEAFTER", (0, 0), (2, -1), 0.5, colors.HexColor("#2D5F8F")),
     ]))
     return table
 
@@ -457,6 +555,7 @@ def generate_paystub_pdf(
     business_name: str | None = None,
     filing_status: str | None = None,
     hourly_rate: Decimal | None = None,
+    ytd: PaystubYtdTotals | None = None,
 ) -> bytes:
     """Pure: data in -> PDF bytes out. No DB, no filesystem write (the FS is ephemeral).
 
@@ -467,7 +566,8 @@ def generate_paystub_pdf(
       1. Navy company header band — business_name (optional) + PAY STATEMENT label
          + pay-period sub-line.
       2. Employee info block — name + filing_status (optional; omitted if not passed).
-      3. Earnings table — non-zero hour buckets or single Salary row if all-zero.
+      3. Earnings table — non-zero hour buckets or single Salary row if all-zero,
+         with aligned Current and YTD amounts for the supported total.
          When hourly_rate is provided, a Rate column is shown (base rate for Regular
          and most buckets; 1.5× for Overtime). Salaried employees (hourly_rate=None)
          never show a Rate column — a salaried employee has no hourly rate, and inventing
@@ -475,16 +575,16 @@ def generate_paystub_pdf(
          actually used. Nothing on this document is fabricated.
          Per-bucket dollar splits are NOT shown (not available on PaystubLineItem);
          hours are shown per row; dollar total on TOTAL GROSS row = gross_pay.
-      4. Deductions table — Federal, SS, Medicare, State (DASH-02: omit if None/zero),
-         Pre-tax 401(k) (omit if zero). TOTAL DEDUCTIONS is computed and reconciled.
-      5. Net-pay summary band — GROSS / TOTAL DEDUCTIONS / NET PAY (emphasized).
+      4. Deductions table — Federal, SS, Medicare, State, and Pre-tax 401(k), each
+         with Current and YTD values. TOTAL DEDUCTIONS is computed and reconciled.
+      5. Net-pay summary band — Current and YTD GROSS / TOTAL DEDUCTIONS / NET PAY.
       6. Footer footnotes.
 
-    YTD figures are deliberately excluded (deferred to v2).
     No check / MICR / bank / fabricated fields of any kind.
 
     Signature adds optional keyword params `business_name`, `filing_status`, and
-    `hourly_rate` (all default None) — existing callers are unchanged.
+    `hourly_rate` plus the supplied `ytd` display total (all default None) — existing
+    callers remain valid and receive an honest current-period-as-YTD display.
     """
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -497,6 +597,7 @@ def generate_paystub_pdf(
     )
 
     period_lbl = _period_label(pay_period_start, pay_period_end)
+    display_ytd = ytd or PaystubYtdTotals.from_prior(None, item)
 
     story = []
 
@@ -511,16 +612,18 @@ def generate_paystub_pdf(
 
     # 3. Earnings table
     story.append(Paragraph("EARNINGS", _STYLE_SECTION_HEADER))
-    story.append(_build_earnings_table(item, _FULL_WIDTH, hourly_rate=hourly_rate))
+    story.append(
+        _build_earnings_table(item, display_ytd, _FULL_WIDTH, hourly_rate=hourly_rate)
+    )
     story.append(Spacer(1, 10))
 
     # 4. Deductions table
     story.append(Paragraph("DEDUCTIONS", _STYLE_SECTION_HEADER))
-    story.append(_build_deductions_table(item, _FULL_WIDTH))
+    story.append(_build_deductions_table(item, display_ytd, _FULL_WIDTH))
     story.append(Spacer(1, 14))
 
     # 5. Net-pay summary band
-    story.append(_build_net_pay_band(item, _FULL_WIDTH))
+    story.append(_build_net_pay_band(item, display_ytd, _FULL_WIDTH))
     story.append(Spacer(1, 10))
 
     # 6. Footnotes / footer
