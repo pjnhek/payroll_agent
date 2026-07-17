@@ -8,6 +8,8 @@ Task 2 tests: orchestrator record-only branches, landing/compose/bind routes, te
 """
 from __future__ import annotations
 
+import contextlib
+import inspect
 import uuid
 from datetime import UTC
 from typing import Any
@@ -35,6 +37,113 @@ def _record_call(calls: list[Any], value: Any) -> None:
 def _record_and_return(calls: list[Any], value: Any, result: Any) -> Any:
     calls.append(value)
     return result
+
+
+class _AtomicDemoTransaction:
+    """Rollback-capable transaction recorder for the demo producer contract."""
+
+    def __init__(self, store: _AtomicDemoStore) -> None:
+        self.store = store
+        self.snapshot: tuple[list[Any], list[Any], list[Any]] | None = None
+
+    def __enter__(self) -> _AtomicDemoTransaction:
+        self.snapshot = (
+            list(self.store.emails),
+            list(self.store.runs),
+            list(self.store.jobs),
+        )
+        self.store.events.append("transaction:enter")
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb) -> bool:
+        assert self.snapshot is not None
+        if exc_type is None:
+            self.store.events.append("transaction:commit")
+        else:
+            self.store.emails[:], self.store.runs[:], self.store.jobs[:] = self.snapshot
+            self.store.events.append("transaction:rollback")
+        return False
+
+
+class _AtomicDemoConnection:
+    def __init__(self, store: _AtomicDemoStore) -> None:
+        self.store = store
+
+    def transaction(self) -> _AtomicDemoTransaction:
+        return _AtomicDemoTransaction(self.store)
+
+
+class _AtomicDemoStore:
+    """Records the three owed writes and can fail any one of them."""
+
+    def __init__(self, fail_at: str | None = None) -> None:
+        self.fail_at = fail_at
+        self.conn = _AtomicDemoConnection(self)
+        self.emails: list[dict[str, Any]] = []
+        self.runs: list[dict[str, Any]] = []
+        self.jobs: list[dict[str, Any]] = []
+        self.events: list[str] = []
+
+    @contextlib.contextmanager
+    def get_connection(self):
+        yield self.conn
+
+    def insert_inbound_email(self, *, conn=None, **kwargs):
+        assert conn is self.conn
+        if self.fail_at == "email":
+            raise RuntimeError("secret email insert failure <message-id@example>")
+        email_id = uuid.uuid4()
+        self.emails.append({"id": email_id, **kwargs})
+        if self.fail_at == "email_duplicate":
+            return email_id, False
+        return email_id, True
+
+    def create_run(self, *, conn=None, **kwargs):
+        assert conn is self.conn
+        if self.fail_at == "run":
+            raise RuntimeError("secret run insert failure submitted body")
+        run_id = uuid.uuid4()
+        self.runs.append({"id": run_id, **kwargs})
+        return run_id
+
+    def enqueue_job(self, *, conn=None, **kwargs):
+        assert conn is self.conn
+        if self.fail_at == "job":
+            raise RuntimeError("secret enqueue failure job-123")
+        job_id = uuid.uuid4()
+        self.jobs.append({"id": job_id, **kwargs})
+        if self.fail_at == "job_duplicate":
+            return None
+        return job_id
+
+    def wake(self) -> None:
+        self.events.append("wake")
+
+
+def _patch_atomic_demo_store(monkeypatch, store: _AtomicDemoStore) -> None:
+    import app.db.repo as repo_mod
+    from app.queue import wake as wake_mod
+
+    monkeypatch.setattr(repo_mod, "get_connection", store.get_connection)
+    monkeypatch.setattr(repo_mod, "insert_inbound_email", store.insert_inbound_email)
+    monkeypatch.setattr(repo_mod, "create_run", store.create_run)
+    monkeypatch.setattr(repo_mod, "enqueue_job", store.enqueue_job, raising=False)
+    monkeypatch.setattr(repo_mod, "list_businesses", lambda: [])
+    monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *_args: None)
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *_args: MagicMock(employees=[]),
+    )
+    monkeypatch.setattr(wake_mod, "wake", store.wake)
+
+
+def _demo_client():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    return TestClient(app, raise_server_exceptions=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1241,3 +1350,87 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
     assert b"known nickname" not in resp.content, (
         "'known nickname' must NOT appear for source='exact' resolutions"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 19 durable composer producer
+# ---------------------------------------------------------------------------
+
+
+def test_demo_compose_commits_email_run_and_job_before_wake(monkeypatch):
+    from app.models.job import JobKind
+
+    store = _AtomicDemoStore()
+    _patch_atomic_demo_store(monkeypatch, store)
+
+    with _demo_client() as tc:
+        response = tc.post(
+            "/demo/compose",
+            data={
+                "business_name": "Metro Deli Group",
+                "subject": "Payroll submission",
+                "body": "Maria Chen worked 40 hours.",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert len(store.emails) == len(store.runs) == len(store.jobs) == 1
+    run_id = store.runs[0]["id"]
+    assert response.headers["location"] == f"/runs/{run_id}"
+    assert store.runs[0]["record_only"] is True
+    assert store.jobs[0]["kind"] is JobKind.RUN_PIPELINE
+    assert store.jobs[0]["run_id"] == run_id
+    assert store.jobs[0]["business_id"] == store.runs[0]["business_id"]
+    assert store.jobs[0]["dedup_key"] == f"demo_run:{run_id}"
+    assert store.events == ["transaction:enter", "transaction:commit", "wake"]
+
+
+@pytest.mark.parametrize(
+    "fail_at",
+    ["email", "email_duplicate", "run", "job", "job_duplicate"],
+)
+def test_demo_compose_rolls_back_every_write_failure_and_renders_bounded_notice(
+    monkeypatch, fail_at
+):
+    store = _AtomicDemoStore(fail_at)
+    _patch_atomic_demo_store(monkeypatch, store)
+
+    with _demo_client() as tc:
+        response = tc.post(
+            "/demo/compose",
+            data={
+                "business_name": "Coastal Cleaning Co.",
+                "subject": "PII subject",
+                "body": "submitted body Maria Chen <message-id@example>",
+            },
+            follow_redirects=False,
+        )
+        notice = tc.get(response.headers["location"])
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?demo_queue_error=1"
+    assert store.emails == store.runs == store.jobs == []
+    assert store.events[-1] == "transaction:rollback"
+    assert "wake" not in store.events
+    assert notice.status_code == 200
+    assert notice.text.count("We couldn't queue this demo run. Please try again.") == 1
+    for forbidden in (
+        "secret email insert failure",
+        "secret run insert failure",
+        "secret enqueue failure",
+        "job-123",
+        "message-id@example",
+        "submitted body Maria Chen",
+    ):
+        assert forbidden not in notice.text
+
+
+def test_demo_routes_have_no_process_memory_pipeline_handoff():
+    from app.routes import demo
+
+    for route in (demo.demo_compose, demo.demo_send_test):
+        assert "background_tasks" not in inspect.signature(route).parameters
+    source = inspect.getsource(demo)
+    assert "BackgroundTasks" not in source
+    assert ".add_task(" not in source

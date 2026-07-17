@@ -18,11 +18,17 @@ from __future__ import annotations
 
 import json
 import pathlib
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.models.contracts import InboundEmail
+from tests.test_demo_landing import (
+    _AtomicDemoStore,
+    _demo_client,
+    _patch_atomic_demo_store,
+)
 
 _FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "clean_happy_path.json"
 _GATE_BLOCK_FIXTURE = (
@@ -293,3 +299,82 @@ def test_all_three_fixtures_replay_end_to_end(client, fake_repo, mock_llm):
     )
     assert r3.status_code == 200
     assert fake_repo.load_run(r3.json()["run_id"])["status"] == "awaiting_reply"
+
+
+# ---------------------------------------------------------------------------
+# Phase 19 durable curated-fixture producer
+# ---------------------------------------------------------------------------
+
+
+def _patch_fixture_store(monkeypatch, store: _AtomicDemoStore) -> None:
+    import app.db.repo as repo_mod
+
+    _patch_atomic_demo_store(monkeypatch, store)
+
+    def find_business_by_sender(from_addr, conn=None):
+        assert conn is store.conn
+        assert from_addr == "payroll@coastalcleaning.example"
+        return uuid.UUID("b0000001-0000-0000-0000-000000000001")
+
+    monkeypatch.setattr(repo_mod, "find_business_by_sender", find_business_by_sender)
+    monkeypatch.setattr(repo_mod, "load_all_runs", lambda: [])
+
+
+def test_demo_fixture_commits_email_run_and_job_before_wake(monkeypatch):
+    from app.models.job import JobKind
+
+    store = _AtomicDemoStore()
+    _patch_fixture_store(monkeypatch, store)
+
+    with _demo_client() as tc:
+        response = tc.post(
+            "/demo/send-test",
+            data={"fixture_key": "coastal_exact"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert len(store.emails) == len(store.runs) == len(store.jobs) == 1
+    run_id = store.runs[0]["id"]
+    assert response.headers["location"] == f"/runs/{run_id}"
+    assert store.jobs[0]["kind"] is JobKind.RUN_PIPELINE
+    assert store.jobs[0]["run_id"] == run_id
+    assert store.jobs[0]["business_id"] == store.runs[0]["business_id"]
+    assert store.jobs[0]["dedup_key"] == f"demo_run:{run_id}"
+    assert store.events == ["transaction:enter", "transaction:commit", "wake"]
+
+
+@pytest.mark.parametrize(
+    "fail_at",
+    ["email", "email_duplicate", "run", "job", "job_duplicate"],
+)
+def test_demo_fixture_rolls_back_every_write_failure_and_renders_bounded_notice(
+    monkeypatch, fail_at
+):
+    store = _AtomicDemoStore(fail_at)
+    _patch_fixture_store(monkeypatch, store)
+
+    with _demo_client() as tc:
+        response = tc.post(
+            "/demo/send-test",
+            data={"fixture_key": "coastal_exact"},
+            follow_redirects=False,
+        )
+        notice = tc.get(response.headers["location"])
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/runs?demo_queue_error=1"
+    assert store.emails == store.runs == store.jobs == []
+    assert store.events[-1] == "transaction:rollback"
+    assert "wake" not in store.events
+    assert notice.status_code == 200
+    assert notice.text.count("We couldn't queue this demo run. Please try again.") == 1
+    for forbidden in (
+        "secret email insert failure",
+        "secret run insert failure",
+        "secret enqueue failure",
+        "job-123",
+        "message-id@example",
+        "Maria Chen 40 regular hours",
+    ):
+        assert forbidden not in notice.text
