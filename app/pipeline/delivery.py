@@ -9,13 +9,15 @@ from typing import Any
 
 import psycopg
 
+import app.db.repo as repo
 from app.config import get_settings
-from app.db import repo
 from app.models.job import JobKind
 from app.models.status import RunStatus
 from app.pipeline import alias_learning, send_guard
 from app.pipeline.compose_email import compose_confirmation, confirmation_subject
 from app.pipeline.pdf import PaystubYtdTotals, generate_paystub_pdf
+
+__all__ = ["deliver", "repo"]
 
 logger = logging.getLogger("payroll_agent.orchestrator")
 

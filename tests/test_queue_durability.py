@@ -530,16 +530,20 @@ def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
             (str(uuid.uuid4()), str(job_id)),
         )
     with repo.get_connection() as conn:
-        attempts_before = conn.execute(
+        attempts_before_row = conn.execute(
             "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
             (str(snapshot["snapshot_id"]),),
-        ).fetchone()[0]
+        ).fetchone()
+    assert attempts_before_row is not None
+    attempts_before = attempts_before_row[0]
     assert repo.settle_outbound_delivery_job(claimed, retryable) is SettlementOutcome.FENCED
     with repo.get_connection() as conn:
-        attempts_after = conn.execute(
+        attempts_after_row = conn.execute(
             "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
             (str(snapshot["snapshot_id"]),),
-        ).fetchone()[0]
+        ).fetchone()
+    assert attempts_after_row is not None
+    attempts_after = attempts_after_row[0]
     assert attempts_after == attempts_before
 
     cutoff_run = _seed_run_for_queue_proof()

@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,7 @@ from app.db.repo import (
     record_run_error,
 )
 from app.models.status import RunStatus
+from app.pipeline.pdf import PaystubYtdTotals
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -535,7 +537,7 @@ def test_new_confirmation_passes_complete_prior_ytd_to_paystub(fake_repo, monkey
         "pretax_401k": Decimal("30.00"),
         "net_pay": Decimal("1008.20"),
     }
-    captured_ytd: list[object] = []
+    captured_ytd: list[PaystubYtdTotals] = []
 
     monkeypatch.setattr(orch.repo, "load_business_name", lambda *_args, **_kw: "Coastal")
     monkeypatch.setattr(orch.repo, "load_line_items", lambda *_args, **_kw: [item])
@@ -549,7 +551,7 @@ def test_new_confirmation_passes_complete_prior_ytd_to_paystub(fake_repo, monkey
     )
     monkeypatch.setattr(orch, "compose_confirmation", lambda *_args, **_kw: "frozen")
 
-    def _pdf(*_args, **kwargs):
+    def _pdf(*_args: Any, **kwargs: Any) -> bytes:
         captured_ytd.append(kwargs["ytd"])
         return b"frozen pdf"
 
@@ -583,7 +585,7 @@ def test_new_confirmation_uses_current_values_when_history_is_empty(fake_repo, m
     }
     run = fake_repo.load_run(run_id)
     assert run is not None
-    captured_ytd: list[object] = []
+    captured_ytd: list[PaystubYtdTotals] = []
 
     monkeypatch.setattr(orch.repo, "load_business_name", lambda *_args, **_kw: "Coastal")
     monkeypatch.setattr(orch.repo, "load_line_items", lambda *_args, **_kw: [item])
@@ -596,11 +598,11 @@ def test_new_confirmation_uses_current_values_when_history_is_empty(fake_repo, m
         raising=False,
     )
     monkeypatch.setattr(orch, "compose_confirmation", lambda *_args, **_kw: "frozen")
-    monkeypatch.setattr(
-        orch,
-        "generate_paystub_pdf",
-        lambda *_args, **kwargs: captured_ytd.append(kwargs["ytd"]) or b"frozen pdf",
-    )
+    def _pdf(*_args: Any, **kwargs: Any) -> bytes:
+        captured_ytd.append(kwargs["ytd"])
+        return b"frozen pdf"
+
+    monkeypatch.setattr(orch, "generate_paystub_pdf", _pdf)
 
     assert orch.deliver(run_id, run) is True
     ytd = captured_ytd[0]

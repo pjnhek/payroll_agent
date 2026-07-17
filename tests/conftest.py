@@ -485,7 +485,9 @@ class InMemoryRepo:
             created_at=datetime.now(UTC),
         )
 
-    def load_roster_for_business(self, business_id, conn=None):
+    def load_roster_for_business(
+        self, business_id: uuid.UUID, conn: Any = None
+    ) -> Roster:
         return Roster(
             business_id=business_id,
             employees=list(self.business_employees.get(str(business_id), [])),

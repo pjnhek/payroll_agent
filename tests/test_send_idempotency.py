@@ -777,7 +777,9 @@ def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> 
             """,
             (run_id, message_id, anchor, anchor),
         )
-        email_id = cur.fetchone()[0]
+        email_row = cur.fetchone()
+        assert email_row is not None
+        email_id = email_row[0]
         cur.execute(
             """
             INSERT INTO outbound_email_snapshots (
@@ -789,7 +791,9 @@ def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> 
             """,
             (email_id, message_id, anchor, anchor),
         )
-        snapshot_id = cur.fetchone()[0]
+        snapshot_row = cur.fetchone()
+        assert snapshot_row is not None
+        snapshot_id = snapshot_row[0]
         cur.execute(
             """
             INSERT INTO outbound_email_attachments (snapshot_id, ordinal, filename, content)
@@ -804,7 +808,9 @@ def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> 
             """,
             (snapshot_id,),
         )
-        attempt_id = cur.fetchone()[0]
+        attempt_row = cur.fetchone()
+        assert attempt_row is not None
+        attempt_id = attempt_row[0]
 
     mutation_cases = (
         ("UPDATE outbound_email_snapshots SET subject = 'changed' WHERE id = %s", snapshot_id),

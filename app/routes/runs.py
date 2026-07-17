@@ -13,17 +13,19 @@ import psycopg
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
-from app.db import repo
+import app.db.repo as repo
+import app.pipeline.delivery as delivery
+import app.queue.wake as wake
 from app.email import gateway
 from app.email.clean import clean_body
 from app.models.job import JobKind
 from app.models.roster import Employee, Roster
 from app.models.status import RunStatus
-from app.pipeline import delivery
-from app.queue import wake
 from app.routes import pipeline_glue
 from app.routes.demo import DEMO_FIXTURES
 from app.routes.templating import badge_class_filter, badge_label_filter, templates
+
+__all__ = ["router", "delivery", "wake"]
 
 logger = logging.getLogger("payroll_agent.webhook")
 

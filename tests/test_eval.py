@@ -1,9 +1,9 @@
 """Regression boundaries for the offline evaluation chart.
 
-The chart is presentation-only. D-04 and D-13 require changing a committed eval
-artifact to remain incapable of replaying provider snapshots or mutating completed
-outbound audit records, so these tests pin both the visual contract and the import
-boundary without asserting unstable Matplotlib SVG bytes.
+The chart is presentation-only. Changing a committed eval artifact must remain
+incapable of replaying provider snapshots or mutating completed outbound audit
+records, so these tests pin both the visual contract and the import boundary
+without asserting unstable Matplotlib SVG bytes.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def test_committed_chart_is_the_styled_aggregate_artifact() -> None:
 
 
 def test_eval_chart_module_boundary_excludes_delivery_and_mutation_code() -> None:
-    """D-04/D-13: eval chart code cannot import delivery or persistence writers."""
+    """Eval chart code cannot import delivery or persistence writers."""
     tree = ast.parse(_RUN_EVAL_PATH.read_text())
     imported_modules = {
         node.module

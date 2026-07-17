@@ -818,7 +818,7 @@ def test_demo_queue_error_notice_uses_fixed_copy_not_query_text(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _delivery_review_run(fake_repo):
+def _delivery_review_run(fake_repo: Any) -> tuple[uuid.UUID, dict[str, Any]]:
     """Create one confirmation awaiting a human delivery decision."""
     from app.models.job import JobKind
     from app.models.status import RunStatus
