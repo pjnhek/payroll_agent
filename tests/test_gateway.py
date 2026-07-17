@@ -86,99 +86,6 @@ def _install_gateway_event_store(
     return events
 
 
-# ---------------------------------------------------------------------------
-# Gateway — synthetic Message-ID shape + outbound row anchored on email_messages
-# ---------------------------------------------------------------------------
-
-
-def test_send_outbound_generates_rfc_shaped_message_id(fake_conn, monkeypatch):
-    from app.config import get_settings
-
-    get_settings.cache_clear()
-    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
-    monkeypatch.setenv("RESEND_API_KEY", "test-key")
-    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
-    fake_conn.script_fetchone(None)
-    fake_conn.script_fetchone((str(uuid.uuid4()),))
-    monkeypatch.setattr(
-        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
-    )
-    run_id = uuid.uuid4()
-    msg_id = gateway.send_outbound(
-        run_id=run_id,
-        to_addr="client@acme.test",
-        subject="We need a clarification",
-        body="Could you confirm David's hours?",
-        conn=fake_conn,
-    )
-    assert _MSG_ID_RE.match(msg_id), f"Message-ID not RFC-shaped: {msg_id}"
-    get_settings.cache_clear()
-
-
-def test_send_outbound_inserts_outbound_email_messages_row(fake_conn, monkeypatch):
-    from app.config import get_settings
-
-    get_settings.cache_clear()
-    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
-    monkeypatch.setenv("RESEND_API_KEY", "test-key")
-    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
-    fake_conn.script_fetchone(None)
-    fake_conn.script_fetchone((str(uuid.uuid4()),))
-    monkeypatch.setattr(
-        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
-    )
-    run_id = uuid.uuid4()
-    msg_id = gateway.send_outbound(
-        run_id=run_id,
-        to_addr="client@acme.test",
-        subject="Clarify",
-        body="body",
-        conn=fake_conn,
-    )
-    # Find the INSERT into email_messages among all executed SQL
-    insert_found = None
-    for sql, params in fake_conn.executed:
-        if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
-            insert_found = (sql, params)
-            break
-    assert insert_found is not None, "No INSERT into email_messages found"
-    sql, params = insert_found
-    assert "outbound" in str(params)  # direction='outbound'
-    assert str(run_id) in str(params)
-    assert msg_id in str(params)  # the synthetic anchor lives ON the row
-    get_settings.cache_clear()
-
-
-def test_send_outbound_uses_parameterized_sql_no_fstring(fake_conn, monkeypatch):
-    from app.config import get_settings
-
-    get_settings.cache_clear()
-    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
-    monkeypatch.setenv("RESEND_API_KEY", "test-key")
-    # Pre-seed: get_outbound_references_chain → None, insert_email_message → id
-    fake_conn.script_fetchone(None)
-    fake_conn.script_fetchone((str(uuid.uuid4()),))
-    monkeypatch.setattr(
-        resend.Emails, "send", staticmethod(lambda p: {"id": "test-provider-id"})
-    )
-    gateway.send_outbound(
-        run_id=uuid.uuid4(),
-        to_addr="c@acme.test",
-        subject="s",
-        body="b",
-        conn=fake_conn,
-    )
-    # Check the INSERT SQL uses %s placeholders
-    insert_sql = None
-    for sql, _params in fake_conn.executed:
-        if "email_messages" in str(sql) and "INSERT" in str(sql).upper():
-            insert_sql = str(sql)
-            break
-    assert insert_sql is not None, "No INSERT into email_messages found"
-    assert "%s" in insert_sql, "outbound insert must use %s placeholders"
-    get_settings.cache_clear()
-
-
 def test_parse_inbound_validates_canonical_payload():
     raw = {
         "id": str(uuid.uuid4()),
@@ -892,7 +799,7 @@ def test_parse_inbound_parseaddr_display_name(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
+def _legacy_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     """send_outbound must write send_state='reserved' BEFORE calling resend.Emails.send.
 
     Crash-safe ordering: if the process dies between the reserved write and the send
@@ -953,7 +860,7 @@ def test_send_outbound_reserved_before_sent_ordering(fake_conn, monkeypatch):
     )
 
 
-def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
+def _legacy_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
     """send_outbound must update send_state to 'failed' when resend.Emails.send raises.
 
     When the provider call raises (network error, rate limit, etc.), the outbound row
@@ -1010,7 +917,7 @@ def test_send_outbound_failed_on_provider_exception(fake_conn, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
+def _legacy_threading_references_rebuilt_from_db_state(fake_conn, monkeypatch):
     """send_outbound must build the References chain from persisted DB state.
 
     The chain is rebuilt from the PERSISTED outbound row in email_messages, not from
@@ -1227,7 +1134,7 @@ def test_inbound_reply_routes_to_correct_run_integration():
 # ===========================================================================
 
 
-def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
+def _legacy_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
     """send_outbound must set resend.api_key as its FIRST action.
 
     The module-level resend.api_key is process-global state. /demo/send-test calls
@@ -1278,7 +1185,7 @@ def test_send_outbound_configures_resend_api_key(fake_conn, monkeypatch):
     get_settings.cache_clear()
 
 
-def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
+def _legacy_send_outbound_forwards_attachments(fake_conn, monkeypatch):
     """send_outbound must base64-encode and forward PDF bytes as attachments.
 
     Asserts that resend.Emails.send is called with an 'attachments' key containing
@@ -1334,7 +1241,7 @@ def test_send_outbound_forwards_attachments(fake_conn, monkeypatch):
     get_settings.cache_clear()
 
 
-def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch):
+def _legacy_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch):
     """send_outbound includes reply_to in the send dict when resend_reply_to is non-empty.
 
     The reply_to value is the inbound address the webhook is actually connected to. The
@@ -1380,7 +1287,7 @@ def test_send_outbound_includes_reply_to_when_configured(fake_conn, monkeypatch)
     get_settings.cache_clear()
 
 
-def test_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch):
+def _legacy_send_outbound_omits_reply_to_when_not_configured(fake_conn, monkeypatch):
     """send_outbound omits reply_to entirely when resend_reply_to is empty.
 
     Passing an empty string would send a malformed Reply-To header — the key must be
@@ -1681,5 +1588,22 @@ def test_send_reserved_snapshot_returns_bounded_failure_without_db_write(monkeyp
     assert "sensitive" not in repr(result)
 
 
-def test_snapshot_gateway_keeps_legacy_caller_argument_send_available():
-    assert callable(gateway.send_outbound)
+def test_legacy_caller_argument_send_fails_before_any_provider_effect(monkeypatch):
+    """Mutable caller content cannot cross the durable snapshot boundary."""
+    provider_calls: list[object] = []
+
+    def _provider_was_not_called(*args: object, **kwargs: object) -> None:
+        provider_calls.append((args, kwargs))
+        raise AssertionError("legacy send reached Resend")
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_provider_was_not_called))
+
+    with pytest.raises(RuntimeError, match="durable outbound reservation"):
+        gateway.send_outbound(
+            run_id=uuid.uuid4(),
+            to_addr="client@example.test",
+            subject="mutable subject",
+            body="mutable body",
+        )
+
+    assert provider_calls == []
