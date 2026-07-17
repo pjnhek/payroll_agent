@@ -16,6 +16,9 @@ POSTFLIGHT_FIELDS = (
     "winnerless_run_count",
     "multiple_winner_run_count",
     "unclassified_generation_count",
+    "remembering_override_count",
+    "superseded_authority_count",
+    "invalid_supersession_count",
 )
 
 
@@ -162,7 +165,7 @@ def test_sole_generation_migration_sets_winner_and_forces_remember_false(
     module = _load_script()
     conn = FakeConnection()
     conn.script_fetchone((3, 2, 0))
-    conn.script_fetchone((2, 0, 0, 0, 0))
+    conn.script_fetchone((2, 0, 0, 0, 0, 0, 0, 0))
 
     assert module.main(["--migrate-authority"], conn=conn) == 0
     sql = _normalized_sql(conn)
@@ -176,20 +179,25 @@ def test_sole_generation_migration_sets_winner_and_forces_remember_false(
     assert "ORDER BY" not in " ".join(sql)
     assert capsys.readouterr().out.splitlines() == [
         f"{field}={value}"
-        for field, value in zip(POSTFLIGHT_FIELDS, (2, 0, 0, 0, 0), strict=True)
+        for field, value in zip(
+            POSTFLIGHT_FIELDS, (2, 0, 0, 0, 0, 0, 0, 0), strict=True
+        )
     ]
 
 
 @pytest.mark.parametrize(
     "postflight",
     [
-        (2, 0, 1, 0, 1),
-        (2, 0, 0, 1, 0),
-        (2, 1, 0, 0, 0),
+        (2, 0, 1, 0, 1, 0, 0, 0),
+        (2, 0, 0, 1, 0, 0, 0, 0),
+        (2, 1, 0, 0, 0, 0, 0, 0),
+        (2, 0, 0, 0, 0, 1, 0, 0),
+        (2, 0, 0, 0, 0, 0, 1, 0),
+        (2, 0, 0, 0, 0, 0, 0, 1),
     ],
 )
 def test_postflight_fails_closed_without_pii(
-    postflight: tuple[int, int, int, int, int],
+    postflight: tuple[int, ...],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     module = _load_script()
@@ -211,14 +219,59 @@ def test_fresh_or_zero_generation_database_passes_without_writes(
 ) -> None:
     module = _load_script()
     conn = FakeConnection()
-    conn.script_fetchone((0, 0, 0, 0, 0))
+    conn.script_fetchone((0, 0, 0, 0, 0, 0, 0, 0))
 
     assert module.main(["--check"], conn=conn) == 0
     assert len(conn.executed) == 1
     assert not any(
         token in _normalized_sql(conn)[0] for token in ("INSERT ", "UPDATE ", "DELETE ")
     )
-    assert capsys.readouterr().out.endswith("unclassified_generation_count=0\n")
+    assert capsys.readouterr().out.endswith("invalid_supersession_count=0\n")
+
+
+def test_postflight_sql_validates_remember_and_supersession_relationships() -> None:
+    module = _load_script()
+    sql = " ".join(module._POSTFLIGHT_SQL.split()).upper()
+
+    assert "O.REMEMBER IS TRUE" in sql
+    assert "R.AUTHORITATIVE AND R.SUPERSEDED_BY IS NOT NULL" in sql
+    assert "WINNER.ID = LOSER.SUPERSEDED_BY" in sql
+    assert "WINNER.RUN_ID = LOSER.RUN_ID" in sql
+    assert "WINNER.AUTHORITATIVE" in sql
+    assert "NOT LOSER.AUTHORITATIVE" in sql
+    assert "WINNER.ID IS NULL" in sql
+
+
+@pytest.mark.parametrize(
+    "postflight",
+    [
+        (1, 0, 0, 0, 0, 1, 0, 0),
+        (1, 0, 0, 0, 0, 0, 1, 0),
+        (1, 0, 0, 0, 0, 0, 0, 1),
+    ],
+)
+def test_reopen_rejects_invalid_authority_relationships(
+    postflight: tuple[int, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script()
+    conn = FakeConnection()
+    conn.script_fetchone((False, "O", True, True))
+    conn.script_fetchone(postflight)
+    monkeypatch.setattr(
+        module,
+        "diff_against_live",
+        lambda _conn: type("Diff", (), {"is_in_sync": True})(),
+    )
+
+    argv = [
+        "--reopen-writes",
+        "--deployed-revision",
+        "a" * 40,
+        "--schema-verified",
+        "--authority-verified",
+    ]
+    assert module.main(argv, conn=conn) == 2
+    assert not any("WRITES_OPEN = TRUE" in stmt for stmt in _normalized_sql(conn))
 
 
 @pytest.mark.parametrize(
@@ -254,7 +307,7 @@ def test_reopen_rechecks_schema_fence_and_authority_before_open(
     module = _load_script()
     conn = FakeConnection()
     conn.script_fetchone((False, "O", True, True))
-    conn.script_fetchone((2, 0, 0, 0, 0))
+    conn.script_fetchone((2, 0, 0, 0, 0, 0, 0, 0))
     monkeypatch.setattr(
         module,
         "diff_against_live",

@@ -19,6 +19,9 @@ _POSTFLIGHT_FIELDS = (
     "winnerless_run_count",
     "multiple_winner_run_count",
     "unclassified_generation_count",
+    "remembering_override_count",
+    "superseded_authority_count",
+    "invalid_supersession_count",
 )
 
 _INVENTORY_SQL = """
@@ -36,7 +39,12 @@ SELECT COUNT(*)::bigint,
 """
 
 _POSTFLIGHT_SQL = """
-WITH per_run AS (
+WITH unresolved_generations AS (
+    SELECT r.*
+      FROM payroll_runs pr
+      JOIN operator_resume_resolutions r ON r.run_id = pr.id
+     WHERE pr.status = 'needs_operator'
+), per_run AS (
     SELECT pr.id AS run_id,
            COUNT(r.id)::bigint AS generation_count,
            COUNT(r.id) FILTER (WHERE r.authoritative)::bigint AS winner_count,
@@ -49,12 +57,29 @@ WITH per_run AS (
      GROUP BY pr.id
 ), affected AS (
     SELECT * FROM per_run WHERE generation_count > 0
+), invalid_supersession AS (
+    SELECT loser.id
+      FROM unresolved_generations loser
+      LEFT JOIN unresolved_generations winner
+        ON winner.id = loser.superseded_by
+       AND winner.run_id = loser.run_id
+       AND winner.authoritative
+     WHERE NOT loser.authoritative
+       AND winner.id IS NULL
 )
 SELECT COUNT(*)::bigint,
        COUNT(*) FILTER (WHERE generation_count > 1)::bigint,
        COUNT(*) FILTER (WHERE winner_count = 0)::bigint,
        COUNT(*) FILTER (WHERE winner_count > 1)::bigint,
-       COALESCE(SUM(unclassified_count), 0)::bigint
+       COALESCE(SUM(unclassified_count), 0)::bigint,
+       (SELECT COUNT(*)::bigint
+          FROM operator_resume_overrides o
+          JOIN unresolved_generations r ON r.id = o.operator_resolution_id
+         WHERE o.remember IS TRUE),
+       (SELECT COUNT(*)::bigint
+          FROM unresolved_generations r
+         WHERE r.authoritative AND r.superseded_by IS NOT NULL),
+       (SELECT COUNT(*)::bigint FROM invalid_supersession)
   FROM affected
 """
 
