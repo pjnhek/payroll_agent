@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Completed 20-05-PLAN.md
-last_updated: "2026-07-17T19:13:40Z"
+stopped_at: Completed 20-04-PLAN.md
+last_updated: "2026-07-17T19:28:31.197Z"
 last_activity: 2026-07-17
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 53
-  completed_plans: 45
-  percent: 85
+  completed_plans: 48
+  percent: 91
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 — Exactly-Once Send
-Plan: 6/12 plans complete (20-01, 20-02, 20-03, 20-05, 20-09, 20-11)
+Plan: 7/12 plans complete (20-01, 20-02, 20-03, 20-04, 20-05, 20-09, 20-11)
 Status: Executing
 Last activity: 2026-07-17
 
@@ -128,6 +128,7 @@ Last activity: 2026-07-17
 | Phase 20 P09 | 9 | 2 tasks | 4 files |
 | Phase 20 P11 | 11min | 2 tasks | 2 files |
 | Phase 20 P05 | 6min | 2 tasks | 6 files |
+| Phase 20 P04 | 25min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -142,6 +143,7 @@ Last activity: 2026-07-17
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [Phase 20 P04]: Approval atomically claims the run, freezes a confirmation snapshot, and enqueues its identifier-only job; it wakes only after commit, while approved remains the business state until fenced settlement proves delivery.
 - [Phase 20 P09]: Delivery settlement locks the exact leased job, immutable reservation, and expected run state before writing a fixed-category attempt event; generic pipeline retry must not handle delivery because it rewinds approved state.
 - [Phase 20 P09]: The database evaluates the reservation-time replay cutoff while the reservation is locked; expired or terminal confirmation delivery enters needs_operator without creating a replacement key.
 - [Roadmap]: v4 — `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine (INVARIANT J-1, enforced by a CI drift guard analogous to the existing `RunStatus`↔CHECK test).
@@ -329,8 +331,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T19:06:31Z
-Stopped at: Completed 20-11-PLAN.md
+Last session: 2026-07-17T19:28:31.188Z
+Stopped at: Completed 20-04-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
