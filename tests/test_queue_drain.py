@@ -124,6 +124,23 @@ def _claim_seeded_job(fake_repo: Any, run_id: uuid.UUID, *, max_attempts: int = 
     )
 
 
+def _claim_ingest_job(fake_repo: Any, *, max_attempts: int = 5) -> Job:
+    event_id = uuid.uuid4()
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.INGEST,
+        dedup_key=f"ingest:{event_id}",
+        event_id=event_id,
+        max_attempts=max_attempts,
+    )
+    assert job_id is not None
+    claimed = fake_repo.claim_job()
+    assert claimed is not None and claimed.id == job_id
+    assert claimed.kind is JobKind.INGEST
+    assert claimed.run_id is None
+    assert claimed.event_id == event_id
+    return claimed
+
+
 def test_classified_settlement_matrix_is_atomic_in_fake_repo(fake_repo):
     from app.db.repo.job_settlement import SettlementOutcome
 
@@ -172,6 +189,187 @@ def test_classified_settlement_matrix_is_atomic_in_fake_repo(fake_repo):
     ) is SettlementOutcome.DONE
     assert fake_repo.get_job(terminal_job.id)["state"] == "done"
     assert fake_repo.runs[str(terminal_run)]["status"] == RunStatus.ERROR.value
+
+
+@pytest.mark.parametrize(
+    ("result", "max_attempts", "expected_outcome", "expected_state"),
+    [
+        (
+            PipelineResult(outcome=PipelineOutcome.OK),
+            5,
+            "done",
+            "done",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            5,
+            "retried",
+            "pending",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            1,
+            "dead",
+            "dead",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.TERMINAL,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.CLIENT_REQUEST_FAILURE,
+            ),
+            5,
+            "done",
+            "done",
+        ),
+    ],
+)
+def test_null_run_ingest_settlement_is_transport_only_in_fake_repo(
+    fake_repo,
+    result: PipelineResult,
+    max_attempts: int,
+    expected_outcome: str,
+    expected_state: str,
+) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    before_runs = {run_id: dict(row) for run_id, row in fake_repo.runs.items()}
+    claimed = _claim_ingest_job(fake_repo, max_attempts=max_attempts)
+
+    outcome = repo.settle_pipeline_job(
+        claimed,
+        result,
+        backoff_seconds=7.0,
+    )
+
+    assert outcome is SettlementOutcome(expected_outcome)
+    row = fake_repo.get_job(claimed.id)
+    assert row is not None
+    assert row["state"] == expected_state
+    assert row["lease_token"] is None
+    assert fake_repo.runs == before_runs
+    if result.outcome is not PipelineOutcome.OK:
+        assert row["last_error"] == result.diagnostic_code
+    if expected_state == "pending":
+        assert row["available_in_seconds"] == 7.0
+
+
+@pytest.mark.parametrize(
+    ("result", "attempts", "max_attempts", "expected_outcome", "target_state"),
+    [
+        (PipelineResult(outcome=PipelineOutcome.OK), 1, 5, "done", "done"),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            1,
+            5,
+            "retried",
+            "pending",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            1,
+            1,
+            "dead",
+            "dead",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.TERMINAL,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.CLIENT_REQUEST_FAILURE,
+            ),
+            1,
+            5,
+            "done",
+            "done",
+        ),
+    ],
+)
+def test_null_run_ingest_real_coordinator_never_calls_payroll_writers(
+    fake_conn,
+    monkeypatch,
+    result: PipelineResult,
+    attempts: int,
+    max_attempts: int,
+    expected_outcome: str,
+    target_state: str,
+) -> None:
+    from app.db.repo import job_settlement
+
+    claimed = _job(
+        run_id=None,
+        attempts=attempts,
+        max_attempts=max_attempts,
+        kind=JobKind.INGEST,
+    )
+    fake_conn.script_fetchone(
+        (attempts, max_attempts, None, JobKind.INGEST.value)
+    )
+    fake_conn.script_fetchone((claimed.id,))
+
+    def _fail_payroll_writer(*_args, **_kwargs):
+        raise AssertionError("null-run ingest settlement reached a payroll writer")
+
+    monkeypatch.setattr(job_settlement, "_rewind_run", _fail_payroll_writer)
+    monkeypatch.setattr(job_settlement, "_set_run_error", _fail_payroll_writer)
+    monkeypatch.setattr(job_settlement, "_lock_run_status", _fail_payroll_writer)
+
+    outcome = job_settlement.settle_pipeline_job(
+        claimed,
+        result,
+        backoff_seconds=9.0,
+        conn=fake_conn,
+    )
+
+    assert outcome is job_settlement.SettlementOutcome(expected_outcome)
+    assert "payroll_runs" not in fake_conn.all_sql()
+    update_sql, update_params = fake_conn.executed[-1]
+    assert "UPDATE jobs SET state" in str(update_sql)
+    assert target_state in update_params
+    if result.outcome is not PipelineOutcome.OK:
+        assert result.diagnostic_code in update_params
+
+
+def test_null_run_ingest_stale_token_is_fenced_before_any_transport_or_payroll_write(
+    fake_conn,
+    monkeypatch,
+) -> None:
+    from app.db.repo import job_settlement
+
+    stale = _job(run_id=None, kind=JobKind.INGEST)
+    fake_conn.script_fetchone(None)
+
+    def _fail_writer(*_args, **_kwargs):
+        raise AssertionError("stale ingest worker reached a writer")
+
+    monkeypatch.setattr(job_settlement, "_rewind_run", _fail_writer)
+    monkeypatch.setattr(job_settlement, "_set_run_error", _fail_writer)
+    monkeypatch.setattr(job_settlement, "_lock_run_status", _fail_writer)
+
+    assert job_settlement.settle_pipeline_job(
+        stale,
+        PipelineResult(outcome=PipelineOutcome.OK),
+        backoff_seconds=1.0,
+        conn=fake_conn,
+    ) is job_settlement.SettlementOutcome.FENCED
+    assert len(fake_conn.executed) == 1
+    assert "payroll_runs" not in fake_conn.all_sql()
 
 
 def test_operator_retry_uses_committed_resolution_identifier_only(fake_repo):
@@ -707,6 +905,55 @@ def test_final_attempt_reap_ignores_near_miss_rows(
     assert drain.drain_once() == DrainOutcome.EMPTY
     assert fake_repo.get_job(job_id)["state"] == "leased"
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
+
+
+def test_null_run_ingest_expired_final_attempt_is_reaped_without_payroll_write(
+    fake_repo,
+    fake_conn,
+    monkeypatch,
+) -> None:
+    from app.db.repo import job_settlement
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    claimed = _claim_ingest_job(fake_repo, max_attempts=1)
+    row = fake_repo.jobs[str(claimed.id)]
+    row.update(
+        lease_expired=True,
+        leased_until="expired",
+        last_error="ingest:provider_timeout",
+    )
+    before_runs = {run_id: dict(run) for run_id, run in fake_repo.runs.items()}
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    assert row["state"] == "dead"
+    assert row["lease_token"] is None
+    assert row["leased_until"] is None
+    assert row["last_error"] == "ingest:provider_timeout"
+    assert fake_repo.runs == before_runs
+
+    production_job = _job(
+        run_id=None,
+        attempts=1,
+        max_attempts=1,
+        kind=JobKind.INGEST,
+    )
+    fake_conn.script_fetchone(
+        (production_job.id, None, 1, 1, JobKind.INGEST.value)
+    )
+    fake_conn.script_fetchone((production_job.id,))
+
+    def _fail_payroll_writer(*_args, **_kwargs):
+        raise AssertionError("null-run ingest reap reached a payroll writer")
+
+    monkeypatch.setattr(job_settlement, "_lock_run_status", _fail_payroll_writer)
+    monkeypatch.setattr(job_settlement, "_set_run_error", _fail_payroll_writer)
+
+    assert job_settlement.reap_expired_final_attempt(
+        conn=fake_conn
+    ) is SettlementOutcome.REAPED_FINAL_LEASE
+    assert "payroll_runs" not in fake_conn.all_sql()
+    update_sql, update_params = fake_conn.executed[-1]
+    assert "state = 'dead'" in str(update_sql)
+    assert str(production_job.id) in update_params
 
 
 _FINAL_LEASE_ERROR_STATUSES = {

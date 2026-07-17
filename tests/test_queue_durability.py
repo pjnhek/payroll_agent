@@ -108,7 +108,12 @@ import psycopg
 import pytest
 
 from app.models.status import RunStatus
-from app.pipeline.result import PipelineOutcome, PipelineResult
+from app.pipeline.result import (
+    PipelineOutcome,
+    PipelineReason,
+    PipelineResult,
+    PipelineStage,
+)
 from tests.conftest import QUEUE_WORKER_THREAD_PREFIX, live_queue_worker_threads
 
 # EVERY test in this file carries both markers via this module-level list, so a
@@ -466,6 +471,124 @@ def test_settlement_retry_exhaustion_and_terminal_result_are_atomic(seeded_db) -
     assert terminal_run_row is not None
     assert terminal_job_row["state"] == "done"
     assert terminal_run_row["status"] == RunStatus.ERROR.value
+
+
+def _payroll_status_snapshot() -> list[tuple[object, ...]]:
+    from app.db import repo
+
+    with repo.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, status, error_reason, error_detail"
+            " FROM payroll_runs ORDER BY id"
+        ).fetchall()
+    return [tuple(row) for row in rows]
+
+
+def _claim_live_ingest_job(*, max_attempts: int):
+    from app.db import repo
+    from app.models.job import JobKind
+
+    event_id, inserted = repo.insert_or_get_inbound_event(
+        external_event_id=f"queueproof-ingest-settlement:{uuid.uuid4()}",
+        payload={"type": "email.received", "data": {"email_id": "fixture"}},
+    )
+    assert inserted
+    job_id = repo.enqueue_job(
+        kind=JobKind.INGEST,
+        dedup_key=f"ingest:{event_id}",
+        event_id=event_id,
+        max_attempts=max_attempts,
+    )
+    assert job_id is not None
+    claimed = repo.claim_job()
+    assert claimed is not None and claimed.id == job_id
+    assert claimed.run_id is None and claimed.event_id == event_id
+    return claimed
+
+
+@pytest.mark.parametrize(
+    ("result", "max_attempts", "expected_outcome", "expected_state"),
+    [
+        (PipelineResult(outcome=PipelineOutcome.OK), 5, "done", "done"),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            5,
+            "retried",
+            "pending",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.RETRYABLE,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.PROVIDER_TIMEOUT,
+            ),
+            1,
+            "dead",
+            "dead",
+        ),
+        (
+            PipelineResult(
+                outcome=PipelineOutcome.TERMINAL,
+                stage=PipelineStage.LOAD,
+                reason=PipelineReason.CLIENT_REQUEST_FAILURE,
+            ),
+            5,
+            "done",
+            "done",
+        ),
+    ],
+)
+def test_null_run_ingest_settlement_does_not_write_payroll_status(
+    seeded_db,
+    result: PipelineResult,
+    max_attempts: int,
+    expected_outcome: str,
+    expected_state: str,
+) -> None:
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    before = _payroll_status_snapshot()
+    claimed = _claim_live_ingest_job(max_attempts=max_attempts)
+    outcome = repo.settle_pipeline_job(
+        claimed,
+        result,
+        backoff_seconds=5.0,
+    )
+    row = repo.get_job(claimed.id)
+    assert outcome is SettlementOutcome(expected_outcome)
+    assert row is not None and row["state"] == expected_state
+    assert row["lease_token"] is None
+    assert _payroll_status_snapshot() == before
+
+
+def test_null_run_ingest_final_attempt_reap_clears_lease_without_payroll_write(
+    seeded_db,
+) -> None:
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    claimed = _claim_live_ingest_job(max_attempts=1)
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '60 seconds',"
+            " last_error = %s WHERE id = %s",
+            ("ingest:provider_timeout", str(claimed.id)),
+        )
+    before = _payroll_status_snapshot()
+
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.REAPED_FINAL_LEASE
+    row = repo.get_job(claimed.id)
+    assert row is not None
+    assert row["state"] == "dead"
+    assert row["lease_token"] is None
+    assert row["leased_until"] is None
+    assert row["last_error"] == "ingest:provider_timeout"
+    assert _payroll_status_snapshot() == before
 
 
 @pytest.mark.parametrize("status", list(RunStatus))

@@ -41,6 +41,16 @@ _DURABLE_RECOVERY_SYMBOLS = {
 }
 
 
+def _assert_durable_recovery_pairs(repo_mod, store) -> None:
+    assert _DURABLE_RECOVERY_SYMBOLS, "durable recovery inventory must not be empty"
+    for name in sorted(_DURABLE_RECOVERY_SYMBOLS):
+        facade_member = getattr(repo_mod, name, None)
+        assert callable(facade_member), f"durable facade seam is missing: {name}"
+        assert getattr(facade_member, "__self__", None) is store, (
+            f"durable fake seam is not paired through fake_repo: {name}"
+        )
+
+
 def _defined_or_exported_names(source: str) -> set[str]:
     """Return concrete definitions, imports, assignments, and ``__all__`` names."""
     tree = ast.parse(source)
@@ -121,12 +131,19 @@ def test_durable_recovery_facade_and_fake_surfaces_remain_paired(fake_repo) -> N
     """Deletion cannot subtract the persisted-context or settlement replacements."""
     from app.db import repo as repo_mod
 
-    for name in sorted(_DURABLE_RECOVERY_SYMBOLS):
-        facade_member = getattr(repo_mod, name, None)
-        assert callable(facade_member), f"durable facade seam is missing: {name}"
-        assert getattr(facade_member, "__self__", None) is fake_repo, (
-            f"durable fake seam is not paired through fake_repo: {name}"
-        )
+    _assert_durable_recovery_pairs(repo_mod, fake_repo)
+
+
+def test_durable_recovery_pairing_guard_detects_one_unpaired_facade_method(
+    fake_repo,
+    monkeypatch,
+) -> None:
+    """The positive pairing inventory must red if one facade seam escapes the fake."""
+    from app.db import repo as repo_mod
+
+    monkeypatch.setattr(repo_mod, "settle_pipeline_job", lambda *_a, **_kw: None)
+    with pytest.raises(AssertionError, match="settle_pipeline_job"):
+        _assert_durable_recovery_pairs(repo_mod, fake_repo)
 
 
 def test_retired_recovery_fakes_and_patch_names_are_absent(fake_repo) -> None:
