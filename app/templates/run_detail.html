@@ -185,6 +185,17 @@
   </div>
 </section>
 {% endif %}
+{% elif run.status == 'needs_operator' and delivery_review_marker %}
+<section class="delivery-review-card banner-mb" aria-labelledby="delivery-review-unavailable-title">
+  <div class="delivery-review-header">
+    <div>
+      <p class="column-label">Delivery review</p>
+      <h2 id="delivery-review-unavailable-title">Delivery review unavailable</h2>
+    </div>
+    <span class="badge badge-escalate">Action required</span>
+  </div>
+  <p>The frozen delivery evidence is not available for this review. No retry, alias resolution, or generic recovery was started.</p>
+</section>
 {% elif run.status == 'needs_operator' %}
 <div class="banner banner-clarify banner-mb">
   <strong>Needs Operator</strong> — the client did not resolve every name after {{ run.clarification_round if run.clarification_round else 3 }} clarification round(s). Resolve each unresolved name below, or reject this run.

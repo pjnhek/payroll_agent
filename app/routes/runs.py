@@ -350,8 +350,6 @@ def _is_delivery_review_marker(run: dict[str, Any] | None) -> bool:
         run is not None
         and run.get("status") == RunStatus.NEEDS_OPERATOR.value
         and run.get("error_reason") in _DELIVERY_REVIEW_MARKERS
-        and isinstance(run.get("error_detail"), str)
-        and run["error_detail"].startswith("delivery_review:")
     )
 
 
@@ -1176,6 +1174,7 @@ def run_detail(
         except Exception:
             unresolved_suggestions = {}
     delivery_review: dict[str, Any] | None = None
+    delivery_review_marker = _is_delivery_review_marker(run)
     if run.get("status") == RunStatus.NEEDS_OPERATOR.value:
         try:
             review = _load_delivery_review(run_id)
@@ -1199,6 +1198,7 @@ def run_detail(
             "unresolved_suggestions": unresolved_suggestions,
             "resolution_superseded": bool(resolution_superseded),
             "delivery_review": delivery_review,
+            "delivery_review_marker": delivery_review_marker,
         },
     )
 
