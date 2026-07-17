@@ -11,12 +11,11 @@ Invariants this module holds:
   returned and the decision is a parameter. The suggestion call ("did you mean David
   Reyes?") is advisory COPY only — it is never passed to `decide` and can never
   influence `final_action`.
-- **State is written before the email goes out.** Every path persists the run's
-  clarification state and advances status only after the send has already returned, and
-  the "asked" outcomes are recorded before the question is asked — so a fast reply can
-  never arrive against a question the system has no record of asking.
-- **No transaction spans an LLM or provider call.** The drafting and sending calls are
-  always siblings of the transaction blocks, never nested inside them.
+- **Intent is written before the email goes out.** Every path freezes the clarification,
+  records the reply state, and queues the delivery job before a worker can contact the
+  provider, so a fast reply never arrives against an unrecorded question.
+- **No transaction spans an LLM or provider call.** Drafting happens before the
+  reservation transaction, and the worker contacts the provider after it has committed.
 - **The run never strands.** A drafting failure falls back to a deterministic template, a
   suggestion failure degrades to no suggestion, and a run that hits the round cap
   escalates to an operator rather than silently parking with no email out.
@@ -27,15 +26,17 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from app.config import get_settings
 from app.db import repo
-from app.email import gateway
 from app.models.contracts import Decision, Extracted, InboundEmail
+from app.models.job import JobKind
 from app.models.roster import Roster
 from app.models.status import RunStatus
 from app.pipeline import send_guard
 from app.pipeline.compose_email import clarification_subject, compose_clarification
 from app.pipeline.reconcile_names import normalize_name
 from app.pipeline.suggest import suggest_employees
+from app.queue import wake
 
 if TYPE_CHECKING:
     from app.pipeline.orchestrator import _RunStagesResult
@@ -235,13 +236,14 @@ def clarify(
     """Draft a clarification, send it, and pause the run at AWAITING_REPLY.
 
     The cheap drafting tier drafts the body, falling back to a deterministic template on
-    empty content so a draft failure never strands the run. gateway.send_outbound mints a
-    synthetic Message-ID and records it on the linked email_messages(direction='outbound',
-    run_id) row — that row is the SINGLE canonical threading anchor the reply path reads
-    back via the header chain; there is deliberately no Message-ID column on payroll_runs
-    to drift out of sync with it. Status advances via repo.set_status, the sole status
-    writer. The clarification threads off the client's inbound message_id (In-Reply-To +
-    References) so the client's reply resolves back to this run.
+    empty content so a draft failure never strands the run. The producer freezes a
+    synthetic Message-ID on the linked email_messages(direction='outbound', run_id) row
+    before queueing delivery — that row is the SINGLE canonical threading anchor the
+    reply path reads back via the header chain; there is deliberately no Message-ID
+    column on payroll_runs to drift out of sync with it. Status advances via
+    repo.set_status, the sole status writer. The clarification threads off the client's
+    inbound message_id (In-Reply-To + References) so the client's reply resolves back to
+    this run.
 
     extracted: the pre-clarify extraction snapshot. It is passed to
     set_pre_clarify_extracted on every AWAITING_REPLY path, so the snapshot is durably
@@ -291,11 +293,9 @@ def clarify(
         )
         return
 
-    # Idempotency guard, keyed on (purpose, round): check for an existing SENT row at the
-    # CURRENT round BEFORE drafting or sending. A found row means a true duplicate (a
-    # crash-retrigger of the SAME round) → suppress the send and finalize; None means a
-    # genuinely new question → proceed. The purpose kwarg distinguishes this from a
-    # confirmation row and from a field-regression clarification.
+    # Check for a completed clarification at the current slot before composing a new
+    # one. A completed row proves the reply state can be finalized without another
+    # draft or provider request.
     existing_clari = repo.get_outbound_for_round(
         run_id, purpose=purpose, round=current_round
     )
@@ -323,16 +323,36 @@ def clarify(
             repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
         return
 
-    # The guard above answers "was it PROVEN sent?" (skip and finalize); this one
-    # answers "might it have been sent?" (do not send -- escalate instead). The two
-    # checks fail in OPPOSITE directions on purpose and neither can replace the other.
-    # It runs immediately after the proven-sent guard and strictly before any
-    # LLM/suggestion call or send_outbound, so an unconfirmed prior reservation can
-    # never let a second provider call happen.
-    send_guard.assert_no_unconfirmed_send(run_id, purpose=purpose, round=current_round)
+    # A reservation from an interrupted producer is already a complete provider-ready
+    # record. Reuse its identifier-only job before any suggestion or drafting work; the
+    # worker will deliver only the frozen snapshot.
+    policy = send_guard.outbound_replay_policy(
+        run_id, purpose=purpose, round=current_round
+    )
+    if policy.has_existing_snapshot:
+        assert policy.email_id is not None
+        with repo.get_connection() as conn, conn.transaction():
+            snapshot = repo.load_outbound_snapshot(run_id, policy.email_id, conn=conn)
+            if snapshot is None:
+                raise RuntimeError("clarification reservation lost its frozen snapshot")
+            snapshot_round = snapshot.get("round")
+            if isinstance(snapshot_round, bool) or not isinstance(snapshot_round, int):
+                raise RuntimeError("clarification reservation has an invalid round")
+            repo.enqueue_job(
+                kind=JobKind.SEND_OUTBOUND,
+                dedup_key=repo.send_outbound_dedup_key(policy.email_id),
+                run_id=run_id,
+                email_id=policy.email_id,
+                conn=conn,
+            )
+            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
+            repo.set_clarification_round(run_id, snapshot_round + 1, conn=conn)
+            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
+        wake.wake()
+        return
 
     # Capture the alias-learning candidate token. This runs AFTER the idempotency guard
-    # and BEFORE send_outbound, so the original token is always captured in the same
+    # and BEFORE reservation, so the original token is always captured in the same
     # boundary as the clarification intent — a token captured after the send could be lost
     # to a crash while the client already has the question.
     #
@@ -414,7 +434,7 @@ def clarify(
         decision.unresolved_names, roster, **suggest_kwargs
     )
 
-    # Persist the nested {token: {"suggested": id|None, "bound": None}} candidate shape now
+    # Build the nested {token: {"suggested": id|None, "bound": None}} candidate shape now
     # that the suggestion is available. suggest_employees returns
     # {submitted_name: suggested_FULL_NAME} — a NAME, not an id — so the suggested
     # full_name must be mapped to its employee id via the already-loaded roster
@@ -422,8 +442,9 @@ def clarify(
     # match a roster full_name maps to suggested=None, and the bind check simply never
     # fires for that token: there is nothing to confirm against, which is the correct
     # fail-closed behavior. This MUST run AFTER suggest_employees and BEFORE
-    # send_outbound — the same timing guarantee the capture block above relies on, split
+    # reservation — the same timing guarantee the capture block above relies on, split
     # across two now-adjacent statements.
+    candidates: dict[str, dict[str, str | None]] | None = None
     if _captured_token is not None:
         _suggested_full_name = suggestions.get(_captured_token)
         _suggested_id: str | None = None
@@ -433,83 +454,47 @@ def clarify(
                     _suggested_id = str(_emp.id)
                     break
         candidates = {_captured_token: {"suggested": _suggested_id, "bound": None}}
-        repo.set_alias_candidates(run_id, candidates)
-        logger.info(
-            "alias candidate suggestion persisted for run %s: %d suggestion(s) "
-            "mapped to an employee id",
-            run_id,
-            1 if _suggested_id is not None else 0,
-        )
 
     compose_kwargs: dict[str, Any] = {"suggestions": suggestions}
     if llm is not None:
         compose_kwargs["llm"] = llm
     body = compose_clarification(decision, **compose_kwargs)
 
-    # The record-only branch sits HERE: after the alias-candidate capture and the body
-    # composition, and before gateway.send_outbound.
-    #
-    # This ordering is load-bearing. The record_only check MUST come after BOTH the
-    # alias-candidate capture block and the body composition block so those always run
-    # unconditionally. That is what lets an in-app (record_only) run still learn: the alias
-    # is captured during the clarification step, so a follow-up compose resolves the name
-    # without asking a second time — the system visibly stops re-asking. Moving the
-    # record_only check ABOVE the capture would silently break alias learning for every
-    # in-app run.
-    record_only = repo.get_record_only_flag(run_id)
-    if record_only:
-        # In-app record-only delivery: write the outbound row WITHOUT calling the real
-        # provider. uuid is already imported at module level — do NOT re-import it inside
-        # the function body.
-        synthetic_mid = f"<{uuid.uuid4()}@demo.payroll-agent.local>"
-        repo.insert_email_message(
+    # Reserve the exact envelope and queue the worker in one transaction. The worker
+    # handles both record-only and provider-backed delivery from this same snapshot.
+    settings = get_settings()
+    with repo.get_connection() as conn, conn.transaction():
+        snapshot = repo.reserve_outbound_snapshot(
             run_id=run_id,
-            direction="outbound",
-            message_id=synthetic_mid,
+            purpose=purpose,
+            round=current_round,
+            message_id=f"<{uuid.uuid4()}@demo.payroll-agent.local>",
+            from_addr=settings.resend_from_addr,
+            to_addr=email.from_addr,
+            reply_to=settings.resend_reply_to or None,
             in_reply_to=email.message_id,
             references_header=email.message_id,
             subject=clarification_subject(email.subject),
-            from_addr=None,
-            to_addr=email.from_addr,
             body_text=body,
-            purpose=purpose,
-            send_state="sent",
-            round=current_round,
+            attachments=(),
+            conn=conn,
         )
-        # Snapshot BEFORE advancing to AWAITING_REPLY (path 2: record_only). The IS NULL
-        # guard in set_pre_clarify_extracted makes this idempotent.
-        # insert_email_message (the intent-recording write; no real provider call) stays
-        # OUTSIDE this transaction — this block covers only what comes strictly after it,
-        # status advance last.
-        # The round advances to current_round + 1, and that is the round of the row JUST
-        # written above — not a blind counter increment. A crash before this transaction
-        # commits self-heals on re-entry via the (purpose, round) guard above.
-        with repo.get_connection() as conn, conn.transaction():
-            repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-            repo.set_clarification_round(run_id, current_round + 1, conn=conn)
-            repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
-        return
-    # else: live run — fall through to the real email-gateway call
-    gateway.send_outbound(
-        run_id=run_id,
-        to_addr=email.from_addr,
-        subject=clarification_subject(email.subject),
-        body=body,
-        in_reply_to=email.message_id,
-        references_header=email.message_id,
-        purpose=purpose,
-        send_state="sent",
-        round=current_round,
-    )
-    # Snapshot BEFORE advancing to AWAITING_REPLY (path 3: live gateway). The IS NULL
-    # guard in set_pre_clarify_extracted makes this idempotent.
-    # gateway.send_outbound (the provider call) has ALREADY returned above — this
-    # transaction opens strictly AFTER it, so no DB transaction is ever held open across
-    # a network call. It covers only the writes that follow the send, status advance last.
-    # The round advances to current_round + 1: send_outbound just wrote the outbound row
-    # with round=current_round (threaded through above), so this derives from the row that
-    # was actually sent rather than blindly incrementing a counter.
-    with repo.get_connection() as conn, conn.transaction():
+        email_id = snapshot.get("email_id")
+        snapshot_round = snapshot.get("round")
+        if not isinstance(email_id, uuid.UUID):
+            raise RuntimeError("clarification reservation lacks its email id")
+        if isinstance(snapshot_round, bool) or not isinstance(snapshot_round, int):
+            raise RuntimeError("clarification reservation has an invalid round")
+        repo.enqueue_job(
+            kind=JobKind.SEND_OUTBOUND,
+            dedup_key=repo.send_outbound_dedup_key(email_id),
+            run_id=run_id,
+            email_id=email_id,
+            conn=conn,
+        )
+        if candidates is not None:
+            repo.set_alias_candidates(run_id, candidates, conn=conn)
         repo.set_pre_clarify_extracted(run_id, extracted, conn=conn)
-        repo.set_clarification_round(run_id, current_round + 1, conn=conn)
-        repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)  # the machine pause
+        repo.set_clarification_round(run_id, snapshot_round + 1, conn=conn)
+        repo.set_status(run_id, RunStatus.AWAITING_REPLY, conn=conn)
+    wake.wake()

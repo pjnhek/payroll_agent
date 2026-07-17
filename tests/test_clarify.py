@@ -26,7 +26,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from app.models.contracts import Decision, InboundEmail
+from app.models.contracts import Decision, Extracted, InboundEmail
 from app.models.job import Job, JobKind
 from app.models.roster import NameMatchResult
 from app.pipeline.compose_email import compose_clarification
@@ -363,30 +363,18 @@ def _gate_block_script(fake_repo) -> list[str]:
     ]
 
 
-def test_clarify_sends_and_pauses(fake_repo, mock_llm, monkeypatch):
-    """A gated run drafts + sends a clarification, anchors the Message-ID, and pauses.
+def test_clarify_reserves_and_queues_before_pausing(fake_repo, mock_llm, monkeypatch):
+    """A gated run freezes one clarification slot, queues it, then awaits a reply."""
+    from app.queue import wake
 
-    The Message-ID lands on the outbound email_messages row (retrievable via
-    repo.get_outbound_message_id) — that row is the only anchor the reply-threading
-    lookup will have — and the run pauses at awaiting_reply (CLAR-01).
-    """
-    # Capture the outbound send: the stub gateway records the Message-ID on an
-    # outbound email_messages row. The in-memory store mirrors get_outbound_message_id.
-    sent: dict[str, dict[str, str]] = {}
+    def _direct_send_is_forbidden(**_kwargs):
+        raise AssertionError("clarification producer must not call the provider directly")
 
-    def _fake_send_outbound(*, run_id, to_addr, subject, body, **kw):
-        mid = f"<{uuid.uuid4()}@payroll-agent.local>"
-        sent[str(run_id)] = {
-            "message_id": mid,
-            "to_addr": to_addr,
-            "subject": subject,
-            "body": body,
-        }
-        return mid
-
+    wake_calls: list[None] = []
     import app.email.gateway as gateway_mod
 
-    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+    monkeypatch.setattr(gateway_mod, "send_outbound", _direct_send_is_forbidden, raising=True)
+    monkeypatch.setattr(wake, "wake", lambda: wake_calls.append(None))
 
     mock_llm.script = _gate_block_script(fake_repo)
     run_id = _seed_metrodeli_run(fake_repo)
@@ -397,18 +385,68 @@ def test_clarify_sends_and_pauses(fake_repo, mock_llm, monkeypatch):
     assert run["status"] == "awaiting_reply", (
         "a gated run must pause at awaiting_reply (CLAR-01), not needs_clarification"
     )
-    # The clarification was sent back to the client (the inbound from_addr).
-    assert str(run_id) in sent
-    assert sent[str(run_id)]["to_addr"] == "hr@metrodeli.example"
-    # The outbound Message-ID was minted and is anchored on the outbound row.
-    assert sent[str(run_id)]["message_id"].endswith("@payroll-agent.local>")
+    outbound = fake_repo.outbound[str(run_id)]
+    assert len(outbound) == 1
+    assert outbound[0]["send_state"] == "reserved"
+    snapshot = fake_repo.load_outbound_snapshot(run_id, outbound[0]["id"])
+    assert snapshot is not None
+    assert snapshot["to_addr"] == "hr@metrodeli.example"
+    assert snapshot["message_id"].endswith("@demo.payroll-agent.local>")
+    assert snapshot["in_reply_to"] is not None
+    assert snapshot["references_header"] == snapshot["in_reply_to"]
+    jobs = [job for job in fake_repo.jobs.values() if job["kind"] == "send_outbound"]
+    assert len(jobs) == 1
+    assert jobs[0]["email_id"] == snapshot["email_id"]
+    assert wake_calls == [None]
     # Reconciliation is persisted on the GATED branch too, so it is non-NULL on every
     # run and the operator can always see why the gate fired.
     assert run["reconciliation"] is not None
     assert len(run["reconciliation"]) == 1
-    # The suggestion made the sent clarification SPECIFIC: the body names the suggested
-    # employee, so the client can confirm with a single word.
-    assert "David Reyes" in sent[str(run_id)]["body"]
+    # The suggestion made the frozen clarification SPECIFIC: the client can confirm with
+    # a single word when the queued worker delivers this exact snapshot.
+    assert "David Reyes" in snapshot["body_text"]
+
+
+def test_clarify_reentry_reuses_the_frozen_slot_before_drafting(
+    fake_repo, mock_llm, monkeypatch
+):
+    """A stale re-entry schedules the original slot without a second draft or key."""
+    from app.db import repo
+    from app.pipeline.clarification import clarify
+
+    mock_llm.script = _gate_block_script(fake_repo)
+    run_id = _seed_metrodeli_run(fake_repo)
+    run_pipeline(run_id)
+
+    original = fake_repo.outbound[str(run_id)][0]
+    original_snapshot = fake_repo.load_outbound_snapshot(run_id, original["id"])
+    assert original_snapshot is not None
+    fake_repo.runs[str(run_id)]["clarification_round"] = 0
+
+    def _should_not_draft(*_args, **_kwargs):
+        raise AssertionError("a frozen clarification must be read before drafting")
+
+    monkeypatch.setattr("app.pipeline.clarification.suggest_employees", _should_not_draft)
+    monkeypatch.setattr("app.pipeline.clarification.compose_clarification", _should_not_draft)
+
+    run = fake_repo.load_run(run_id)
+    inbound = repo.load_inbound_email(run_id)
+    assert inbound is not None
+    clarify(
+        run_id,
+        inbound,
+        Decision.model_validate(run["decision"]),
+        repo.load_roster_for_business(run["business_id"]),
+        Extracted.model_validate(run["extracted_data"]),
+        llm=mock_llm,
+    )
+
+    replayed = fake_repo.load_outbound_snapshot(run_id, original["id"])
+    assert replayed == original_snapshot
+    assert fake_repo.runs[str(run_id)]["clarification_round"] == 1
+    assert fake_repo.runs[str(run_id)]["status"] == "awaiting_reply"
+    jobs = [job for job in fake_repo.jobs.values() if job["kind"] == "send_outbound"]
+    assert len(jobs) == 1
 
 
 def test_clarify_suggestion_never_reaches_the_decision(fake_repo, mock_llm, monkeypatch):

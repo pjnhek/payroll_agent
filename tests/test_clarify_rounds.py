@@ -42,7 +42,6 @@ import ast
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult, Roster
@@ -103,16 +102,14 @@ def _bare_extracted(run_id: uuid.UUID) -> Extracted:
 # ===========================================================================
 
 
-def test_new_round_question_actually_sends(monkeypatch, fake_repo, mock_llm):
+def test_new_round_question_is_queued(fake_repo, mock_llm):
     """At clarification_round=1 with an existing SENT round-0 row, the round-1 question
-    must actually send (a NEW outbound row at round=1) and finalize the counter to 2.
+    must create one frozen job (a NEW outbound row at round=1) and finalize the counter to 2.
 
     A purpose-only guard would find the round-0 row, treat round 1 as a duplicate, and
     suppress the send — parking the run at AWAITING_REPLY forever, waiting on a reply to
     a question the client never got.
     """
-    import app.email.gateway as gateway_mod
-
     run_id = uuid.uuid4()
     email = _bare_inbound()
     decision = _bare_decision()
@@ -136,27 +133,14 @@ def test_new_round_question_actually_sends(monkeypatch, fake_repo, mock_llm):
         }
     ]
 
-    send_calls: list[dict[str, Any]] = []
-    real_send_outbound = gateway_mod.send_outbound
-
-    def _spy_send_outbound(**kw):
-        send_calls.append(kw)
-        return real_send_outbound(**kw)
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _spy_send_outbound)
-
     _clarify(run_id, email, decision, roster, extracted, llm=None, purpose="clarification")
-
-    assert len(send_calls) == 1, (
-        "a genuinely new round-1 question must actually call gateway.send_outbound — "
-        "a purpose-only guard silently swallows this send and strands the run"
-    )
-    assert send_calls[0]["round"] == 1, "the send must be stamped with the CURRENT round (1)"
 
     rows = fake_repo.outbound[str(run_id)]
     round1_rows = [r for r in rows if r.get("round") == 1 and r.get("purpose") == "clarification"]
     assert round1_rows, "a NEW round-1 outbound row must exist (not an upsert-replace of round 0)"
-    assert round1_rows[0]["send_state"] == "sent"
+    assert round1_rows[0]["send_state"] == "reserved"
+    send_jobs = [job for job in fake_repo.jobs.values() if job["kind"] == "send_outbound"]
+    assert len(send_jobs) == 1 and send_jobs[0]["email_id"] == round1_rows[0]["id"]
 
     assert fake_repo.runs[str(run_id)]["clarification_round"] == 2, (
         "finalize must advance the counter to round + 1 == 2 after the round-1 send"

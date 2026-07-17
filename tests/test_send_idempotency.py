@@ -246,13 +246,13 @@ def test_a_reserved_row_blocks_the_rerun_and_escalates(fake_repo, mock_llm, monk
 
 
 # ---------------------------------------------------------------------------
-# Section A.2 — THE NON-VACUITY TWIN: identical setup, no reserved row, send DOES fire
+# Section A.2 — THE NON-VACUITY TWIN: identical setup, no reserved row, work is queued
 # ---------------------------------------------------------------------------
 
 
-def test_no_reserved_row_means_the_send_DOES_fire(fake_repo, mock_llm, monkeypatch):
+def test_no_reserved_row_means_the_send_is_queued(fake_repo, mock_llm, monkeypatch):
     """Byte-identical setup to the test above except the reserved row is absent.
-    The send MUST actually fire exactly once and the run MUST reach AWAITING_REPLY.
+    One immutable send job MUST be queued and the run MUST reach AWAITING_REPLY.
 
     Without this test, every "no second send" assertion in this file proves nothing
     but "the pipeline stopped somewhere" — this repo has already shipped a
@@ -268,11 +268,11 @@ def test_no_reserved_row_means_the_send_DOES_fire(fake_repo, mock_llm, monkeypat
     result = pipeline_glue.run_pipeline_now(run_id)
     assert result.outcome.value == "ok"
 
-    assert len(send_calls) == 1, (
-        "with no unconfirmed row present, clarify() must actually call "
-        "gateway.send_outbound — a guard that never opens is as dangerous as one "
-        "that never closes"
-    )
+    assert len(send_calls) == 0, "the clarification producer must not call the provider"
+    outbound = fake_repo.outbound[str(run_id)]
+    assert len(outbound) == 1 and outbound[0]["send_state"] == "reserved"
+    jobs = [job for job in fake_repo.jobs.values() if job["kind"] == "send_outbound"]
+    assert len(jobs) == 1 and jobs[0]["email_id"] == outbound[0]["id"]
     run = fake_repo.load_run(run_id)
     assert run["status"] == "awaiting_reply"
     assert run.get("error_reason") is None
