@@ -26,6 +26,7 @@ LLM keys; every send in every test here is spied or stubbed.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -629,3 +630,85 @@ def test_outbound_snapshot_evidence_rejects_direct_mutation(seeded_db: None) -> 
             conn.cursor() as cur,
         ):
             cur.execute(statement, (identifier,))
+
+
+def test_fake_reservation_reuses_the_original_provider_snapshot(fake_repo: Any) -> None:
+    """D-12/D-13: a same-slot retry gets the stored envelope and bytes, not its
+    own caller values.  The fake mirrors the production read-or-reserve contract so
+    offline delivery tests cannot accidentally exercise an obsolete upsert behavior.
+    """
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = {"id": run_id, "reply_epoch": 0}
+
+    original = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<original@payroll-agent.local>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to="reply@payroll-agent.local",
+        in_reply_to="<inbound@example.test>",
+        references_header="<inbound@example.test>",
+        subject="Original payroll confirmation",
+        body_text="Original frozen body",
+        attachments=[("paystub.pdf", b"original-pdf-bytes")],
+    )
+    replay = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<replacement@payroll-agent.local>",
+        from_addr="attacker@example.test",
+        to_addr="replacement@example.test",
+        reply_to=None,
+        in_reply_to="<replacement-inbound@example.test>",
+        references_header="<replacement-inbound@example.test>",
+        subject="Replacement subject",
+        body_text="Replacement body",
+        attachments=[("replacement.pdf", b"replacement-bytes")],
+    )
+
+    assert replay == original
+    assert replay["message_id"] == "<original@payroll-agent.local>"
+    assert replay["to_addr"] == "payroll@example.test"
+    assert replay["subject"] == "Original payroll confirmation"
+    assert [
+        (attachment["ordinal"], attachment["filename"], attachment["content"])
+        for attachment in replay["attachments"]
+    ] == [(0, "paystub.pdf", b"original-pdf-bytes")]
+
+    review = fake_repo.load_delivery_review_snapshot(run_id, original["email_id"])
+    assert review == {
+        "email_id": original["email_id"],
+        "snapshot_id": original["snapshot_id"],
+        "message_id": "<original@payroll-agent.local>",
+        "to_addr": "payroll@example.test",
+        "subject": "Original payroll confirmation",
+        "body_text": "Original frozen body",
+        "reserved_at": original["reserved_at"],
+        "attempt_count": 0,
+        "attachments": [
+            {"id": original["attachments"][0]["id"], "ordinal": 0, "filename": "paystub.pdf"}
+        ],
+    }
+    attachment = fake_repo.load_snapshot_attachment(
+        run_id, original["snapshot_id"], original["attachments"][0]["id"]
+    )
+    assert attachment == {"filename": "paystub.pdf", "content": b"original-pdf-bytes"}
+
+
+def test_reservation_sql_locks_then_never_applies_conflicting_caller_content() -> None:
+    """The real repository must preserve D-12/D-13 independently of fake behavior."""
+    from app.db.repo import emails
+
+    reserve_source = inspect.getsource(emails.reserve_outbound_snapshot)
+    legacy_source = inspect.getsource(emails.insert_email_message)
+
+    assert "FOR UPDATE" in reserve_source
+    assert "INSERT INTO outbound_email_snapshots" in reserve_source
+    assert "INSERT INTO outbound_email_attachments" in reserve_source
+    assert "ON CONFLICT (run_id, purpose, round, epoch) DO NOTHING" in reserve_source
+    assert "SET message_id = EXCLUDED.message_id" not in legacy_source
+    assert "SET subject = EXCLUDED.subject" not in legacy_source
+    assert "SET body_text = EXCLUDED.body_text" not in legacy_source

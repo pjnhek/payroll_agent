@@ -22,11 +22,13 @@ injects a FakeOpenAI over app.llm.client.OpenAI); it is re-exported here as
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import resend  # noqa: F401 — imported so the module is available for monkeypatching
@@ -327,6 +329,10 @@ class InMemoryRepo:
         # Outbound email_messages rows (the Message-ID threading anchor):
         # run_id -> list of rows.
         self.outbound: dict[str, list[dict[str, Any]]] = {}
+        # D-12 frozen provider envelopes keyed by their logical email row.  A
+        # retry returns a defensive copy of this stored record and never applies
+        # replacement caller content.
+        self.outbound_snapshots: dict[str, dict[str, Any]] = {}
         # Durable job queue mirror: job_id -> job row, plus a dedup_key index
         # standing in for the real table's UNIQUE(dedup_key) constraint.
         self.jobs: dict[str, dict[str, Any]] = {}
@@ -614,6 +620,7 @@ class InMemoryRepo:
         # For in-memory tests, return a stable placeholder that is NOT the fallback
         # "Payroll Run" text — this lets regression tests verify real names are used.
         from app.db.seed import seed as _seed
+
         seeded = _seed(dry_run=True)
         for biz in seeded.businesses:
             if biz["id"] == business_id or str(biz["id"]) == str(business_id):
@@ -680,6 +687,7 @@ class InMemoryRepo:
     def load_pre_clarify_extracted(self, run_id, conn=None):
         """Load the pre-clarification snapshot. Returns None if not set."""
         from app.models.contracts import Extracted
+
         run = self.runs.get(str(run_id))
         if run is None or run.get("pre_clarify_extracted") is None:
             return None
@@ -693,6 +701,7 @@ class InMemoryRepo:
         malformed outcome map can never reach the JSONB column.
         """
         from app.models.contracts import ClarifiedFields
+
         ClarifiedFields(outcomes=clarified)  # typed-on-write: reject a bad shape here
         run = self.runs.get(str(run_id))
         if run is not None:
@@ -1226,6 +1235,7 @@ class InMemoryRepo:
         For in-memory tests, returns the seeded businesses list.
         """
         from app.db.seed import seed as _seed
+
         seeded = _seed(dry_run=True)
         return [
             {"id": str(b["id"]), "name": b["name"], "contact_email": b["contact_email"]}
@@ -1261,6 +1271,7 @@ class InMemoryRepo:
         purpose = kw.get("purpose")
         run = self.runs.get(str(run_id)) if run_id is not None else None
         row = {
+            "id": uuid.uuid4(),
             "run_id": run_id,
             "direction": direction,
             "message_id": message_id,
@@ -1282,10 +1293,127 @@ class InMemoryRepo:
                         and existing.get("round") == round
                         and existing.get("epoch", 0) == epoch
                     ):
-                        existing.update(row)
-                        return uuid.uuid4()
+                        return existing["id"]
             rows.append(row)
-        return uuid.uuid4()
+        return row["id"]
+
+    def reserve_outbound_snapshot(
+        self,
+        *,
+        run_id: uuid.UUID,
+        purpose: str,
+        round: int,
+        message_id: str,
+        from_addr: str,
+        to_addr: str,
+        reply_to: str | None,
+        in_reply_to: str | None,
+        references_header: str | None,
+        subject: str,
+        body_text: str,
+        attachments: Sequence[tuple[str, bytes]],
+        conn: Any = None,
+    ) -> dict[str, Any]:
+        """Mirror D-12/D-13 read-or-reserve with byte-identical retry results."""
+        run = self.runs.get(str(run_id))
+        epoch = run.get("reply_epoch", 0) if run is not None else 0
+        key = (str(run_id), purpose, round, epoch)
+        for snapshot in self.outbound_snapshots.values():
+            if snapshot["slot"] == key:
+                return copy.deepcopy(snapshot["payload"])
+
+        email_id = uuid.uuid4()
+        snapshot_id = uuid.uuid4()
+        attachment_rows = [
+            {
+                "id": uuid.uuid4(),
+                "ordinal": ordinal,
+                "filename": filename,
+                "content": bytes(content),
+            }
+            for ordinal, (filename, content) in enumerate(attachments)
+        ]
+        payload = {
+            "snapshot_id": snapshot_id,
+            "email_id": email_id,
+            "run_id": run_id,
+            "purpose": purpose,
+            "round": round,
+            "epoch": epoch,
+            "message_id": message_id,
+            "from_addr": from_addr,
+            "to_addr": to_addr,
+            "reply_to": reply_to,
+            "in_reply_to": in_reply_to,
+            "references_header": references_header,
+            "subject": subject,
+            "body_text": body_text,
+            "reserved_at": datetime.now(UTC),
+            "attachments": attachment_rows,
+        }
+        self.outbound_snapshots[str(email_id)] = {"slot": key, "payload": payload}
+        self.outbound.setdefault(str(run_id), []).append(
+            {
+                "id": email_id,
+                "run_id": run_id,
+                "direction": "outbound",
+                "message_id": message_id,
+                "purpose": purpose,
+                "send_state": "reserved",
+                "round": round,
+                "epoch": epoch,
+                "created_at": payload["reserved_at"],
+            }
+        )
+        return copy.deepcopy(payload)
+
+    def load_outbound_snapshot(
+        self, run_id: uuid.UUID, email_id: uuid.UUID, conn: Any = None
+    ) -> dict[str, Any] | None:
+        stored = self.outbound_snapshots.get(str(email_id))
+        if stored is None or stored["payload"]["run_id"] != run_id:
+            return None
+        return cast(dict[str, Any], copy.deepcopy(stored["payload"]))
+
+    def load_delivery_review_snapshot(
+        self, run_id: uuid.UUID, email_id: uuid.UUID, conn: Any = None
+    ) -> dict[str, Any] | None:
+        snapshot = self.load_outbound_snapshot(run_id, email_id, conn=conn)
+        if snapshot is None:
+            return None
+        return {
+            "email_id": snapshot["email_id"],
+            "snapshot_id": snapshot["snapshot_id"],
+            "message_id": snapshot["message_id"],
+            "to_addr": snapshot["to_addr"],
+            "subject": snapshot["subject"],
+            "body_text": snapshot["body_text"],
+            "reserved_at": snapshot["reserved_at"],
+            "attempt_count": 0,
+            "attachments": [
+                {key: attachment[key] for key in ("id", "ordinal", "filename")}
+                for attachment in snapshot["attachments"]
+            ],
+        }
+
+    def load_snapshot_attachment(
+        self,
+        run_id: uuid.UUID,
+        snapshot_id: uuid.UUID,
+        attachment_id: uuid.UUID,
+        conn: Any = None,
+    ) -> dict[str, Any] | None:
+        for stored in self.outbound_snapshots.values():
+            snapshot = stored["payload"]
+            if snapshot["run_id"] != run_id or snapshot["snapshot_id"] != snapshot_id:
+                continue
+            for attachment in snapshot["attachments"]:
+                if attachment["id"] == attachment_id:
+                    return {
+                        "filename": attachment["filename"],
+                        "content": attachment["content"],
+                    }
+        return None
 
     def get_outbound_message_id(self, run_id, purpose=None, conn=None):
         """Purpose-aware outbound Message-ID lookup (mirrors repo.get_outbound_message_id).
@@ -1742,6 +1870,10 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "set_alias_candidates",
         "update_known_alias",
         "insert_email_message",
+        "reserve_outbound_snapshot",
+        "load_outbound_snapshot",
+        "load_delivery_review_snapshot",
+        "load_snapshot_attachment",
         "get_outbound_message_id",
         "find_awaiting_reply_for_header",
         "find_any_run_for_header",
@@ -1988,6 +2120,7 @@ def mock_resend_verify(monkeypatch):
     Returns None (the real SDK's success return value) so the code under test
     sees a valid signature and proceeds. Use this for the happy-path gateway tests.
     """
+
     def _noop_verify(payload_dict):
         return None  # resend.Webhooks.verify returns None on success
 
@@ -2003,6 +2136,7 @@ def mock_resend_verify_reject(monkeypatch):
     before any pipeline work when verify raises, so an unsigned payload can never
     create a run.
     """
+
     def _reject_verify(payload_dict):
         raise ValueError("bad sig")
 

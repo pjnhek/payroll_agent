@@ -264,18 +264,19 @@ def test_retrigger_claims_from_stale_extracting_state(fake_conn):
 
 
 # ---------------------------------------------------------------------------
-# Upsert interaction — a reserved row advances to sent
+# Conflict interaction — caller content cannot overwrite a reserved row
 # ---------------------------------------------------------------------------
 
 
-def test_send_outbound_over_reserved_row_advances_to_sent(fake_conn):
-    """A pre-existing 'reserved' outbound row must upsert to 'sent', not crash.
+def test_outbound_conflict_does_not_overwrite_reserved_row(fake_conn):
+    """A pre-existing reservation must not apply retry-supplied payload fields.
 
     send_outbound writes send_state='reserved' before calling the provider, so a retry
     of that same send finds its own reserved row already in the table. A plain INSERT
     would hit the uq_email_run_purpose_round_epoch UNIQUE constraint and raise
-    IntegrityError, stranding a run that is otherwise perfectly deliverable. The
-    ON CONFLICT ... DO UPDATE clause turns that collision into an advance to 'sent'.
+    IntegrityError, stranding a run that is otherwise perfectly deliverable. D-12/D-13
+    read-or-reserve owns immutable payload creation; this generic audit helper may
+    return the existing row but must never overwrite it with caller content.
 
     The arbiter is the four-column key (run_id, purpose, round, epoch), matching the
     uq_email_run_purpose_round_epoch constraint. The epoch column is what keeps a retry
@@ -291,11 +292,10 @@ def test_send_outbound_over_reserved_row_advances_to_sent(fake_conn):
     run_id = _run_id()
     msg_id = f"<{uuid.uuid4()}@payroll-agent.local>"
 
-    # Script the FakeConnection to simulate the UPSERT returning the row id.
+    # Script the FakeConnection to simulate the insert branch returning its row id.
     fake_conn.script_fetchone((str(uuid.uuid4()),))
 
-    # Call insert_email_message with purpose='confirmation' and send_state='sent'.
-    # The upsert must succeed (no exception) even if a reserved row already exists.
+    # The legacy helper still returns a row id for a duplicate logical slot.
     result = insert_email_message(
         run_id=run_id,
         direction="outbound",
@@ -306,30 +306,25 @@ def test_send_outbound_over_reserved_row_advances_to_sent(fake_conn):
     )
 
     assert result is not None, (
-        "insert_email_message with purpose='confirmation' must return a row id — no "
-        "IntegrityError when a reserved row for the same send already exists"
+        "insert_email_message with purpose='confirmation' must return a row id"
     )
     sql = fake_conn.all_sql()
-    # The SQL must use ON CONFLICT ... DO UPDATE to handle pre-existing rows.
-    assert "ON CONFLICT" in sql.upper(), (
-        "insert_email_message must use ON CONFLICT (run_id, purpose, round, epoch) "
-        "DO UPDATE to advance reserved/failed rows to sent without IntegrityError"
-    )
+    assert "ON CONFLICT (run_id, purpose, round, epoch) DO NOTHING" in sql
+    assert "EXCLUDED.message_id" not in sql
+    assert "EXCLUDED.subject" not in sql
+    assert "EXCLUDED.body_text" not in sql
 
 
 # ---------------------------------------------------------------------------
-# Upsert interaction — a failed row also advances to sent
+# Conflict interaction — a failed row is equally immutable
 # ---------------------------------------------------------------------------
 
 
-def test_send_outbound_over_failed_row_advances_to_sent(fake_conn):
-    """A pre-existing 'failed' outbound row must also upsert to 'sent', not crash.
+def test_outbound_conflict_does_not_overwrite_failed_row(fake_conn):
+    """A failed logical slot cannot be changed by caller retry content either.
 
-    When the provider call raises, send_outbound leaves the row at 'failed'. A retry
-    must be able to advance that row to 'sent' — otherwise a single transient network
-    error would permanently block the run from ever delivering. The same
-    ON CONFLICT (run_id, purpose, round, epoch) DO UPDATE clause covers both the
-    'reserved' and 'failed' pre-existing cases.
+    The delivery-state transition remains a separate API. This generic email insert
+    must not turn a retry's caller fields into an overwrite of frozen evidence.
     """
     run_id = _run_id()
     msg_id = f"<{uuid.uuid4()}@payroll-agent.local>"
@@ -346,13 +341,11 @@ def test_send_outbound_over_failed_row_advances_to_sent(fake_conn):
     )
 
     assert result is not None, (
-        "insert_email_message must upsert a failed row to sent without crashing"
+        "insert_email_message must return a row id for the failed-slot lookup"
     )
     sql = fake_conn.all_sql()
-    assert "ON CONFLICT" in sql.upper(), (
-        "insert_email_message must use ON CONFLICT (run_id, purpose, round, epoch) "
-        "DO UPDATE for the failed-row retry case"
-    )
+    assert "ON CONFLICT (run_id, purpose, round, epoch) DO NOTHING" in sql
+    assert "EXCLUDED.message_id" not in sql
 
 
 # ---------------------------------------------------------------------------

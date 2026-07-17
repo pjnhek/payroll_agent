@@ -1,8 +1,10 @@
 """DB repo — email_messages append-only audit log, threading/header lookups."""
+
 from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 import psycopg
@@ -46,33 +48,31 @@ def insert_email_message(
       DISTINCT in UNIQUE constraints, so inbound rows never conflict and take
       the plain-INSERT branch.
     - round makes a NEW clarification round a NEW row rather than an
-      upsert-replace of prior-round history. A retry WITHIN a round over a
-      'reserved' (pre-send intent, pre-crash) or 'failed' row instead advances
-      that row's send_state to 'sent' — the crash-safe proof-of-send path —
-      rather than dying on a unique-constraint violation.
+      upsert-replace of prior-round history.  The outbound conflict path does
+      not apply caller content at all: it returns the existing logical row.
+      D-12/D-13's reserve_outbound_snapshot is the only API allowed to create
+      the provider-ready payload for a slot; separate state-transition helpers
+      own send_state after that reservation.
     - epoch is stamped from the run's CURRENT reply_epoch via a correlated
       subquery at write time (read once, never re-read or mutated afterward).
       It is NOT optional: a retrigger resets clarification_round to 0, so the
       retriggered run's fresh round-0 send carries the SAME
       (run_id, purpose, round) tuple as the stale pre-retrigger round-0 row.
-      Arbitrating on the narrower 3-column key would silently UPSERT (mutate)
-      that historical row instead of inserting a new one — corrupting the
-      append-only audit log on every retrigger, and destroying the evidence of
-      what was actually sent to the client. With epoch in the arbiter the two
-      rows are distinct conflict targets: the retriggered send always INSERTs a
-      genuinely new row, while an in-round retry (same epoch) still upserts in
-      place.
+      Arbitrating on the narrower 3-column key would make a post-retrigger
+      send collide with historical evidence. With epoch in the arbiter the two
+      rows are distinct conflict targets, so the retriggered send always
+      INSERTs a genuinely new logical slot while a same-epoch conflict can
+      only return its already-frozen record.
 
     `round` defaults to 0, so a caller that does not track rounds gets the
     round-0 row that the constraint also bakes round=0 into.
     """
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         if purpose is not None:
-            # Outbound path with a purpose: upsert on (run_id, purpose, round, epoch)
-            # so a retry WITHIN a round AND epoch over a reserved/failed row advances
-            # to the new send_state rather than crashing with a unique constraint
-            # violation — while a NEW epoch's same-round send is a genuinely
-            # different conflict target and always inserts a new row.
+            # Outbound rows retain the logical send-slot identity, but must never
+            # overwrite caller-visible payload fields on a conflict.  Providers use
+            # reserve_outbound_snapshot below, which locks and returns the original
+            # frozen envelope; this legacy audit helper merely returns the existing id.
             row = c.execute(
                 """
                     INSERT INTO email_messages (
@@ -81,12 +81,7 @@ def insert_email_message(
                         purpose, send_state, round, epoch
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         (SELECT reply_epoch FROM payroll_runs WHERE id = %s))
-                    ON CONFLICT (run_id, purpose, round, epoch) DO UPDATE
-                        SET send_state = EXCLUDED.send_state,
-                            message_id = EXCLUDED.message_id,
-                            subject = EXCLUDED.subject,
-                            body_text = EXCLUDED.body_text,
-                            created_at = now()
+                    ON CONFLICT (run_id, purpose, round, epoch) DO NOTHING
                     RETURNING id
                     """,
                 (
@@ -132,9 +127,267 @@ def insert_email_message(
                     round,
                 ),
             ).fetchone()
-    # In real Postgres RETURNING always yields a row; the fallback only matters
-    # for the offline FakeConnection path where the caller discards the id.
+        if row is None and purpose is not None:
+            row = c.execute(
+                """
+                SELECT id FROM email_messages
+                WHERE run_id = %s AND purpose = %s AND round = %s
+                  AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
+                """,
+                (str(run_id), purpose, round, str(run_id)),
+            ).fetchone()
+    # In real Postgres RETURNING/SELECT yields a row; the fallback only matters for
+    # the offline FakeConnection path where the caller discards the id.
     return uuid.UUID(str(row[0])) if row else uuid.uuid4()
+
+
+def _load_outbound_snapshot_locked(
+    c: psycopg.Connection,
+    *,
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    lock: bool,
+) -> dict[str, Any] | None:
+    """Load one owned frozen envelope with explicit provider fields only."""
+    lock_sql = " FOR UPDATE OF em, snapshot" if lock else ""
+    with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            """
+            SELECT snapshot.id AS snapshot_id, em.id AS email_id, em.run_id,
+                   em.purpose, em.round, em.epoch, snapshot.message_id,
+                   snapshot.from_addr, snapshot.to_addr, snapshot.reply_to,
+                   snapshot.in_reply_to, snapshot.references_header,
+                   snapshot.subject, snapshot.body_text, snapshot.reserved_at
+              FROM outbound_email_snapshots AS snapshot
+              JOIN email_messages AS em ON em.id = snapshot.email_id
+             WHERE em.id = %s AND em.run_id = %s AND em.direction = 'outbound'
+            """
+            + lock_sql,
+            (str(email_id), str(run_id)),
+        )
+        snapshot = cur.fetchone()
+        if snapshot is None:
+            return None
+        cur.execute(
+            """
+            SELECT id, ordinal, filename, content
+              FROM outbound_email_attachments
+             WHERE snapshot_id = %s
+             ORDER BY ordinal ASC
+            """,
+            (str(snapshot["snapshot_id"]),),
+        )
+        snapshot["attachments"] = cur.fetchall() or []
+    return snapshot
+
+
+def reserve_outbound_snapshot(
+    *,
+    run_id: uuid.UUID,
+    purpose: str,
+    round: int,
+    message_id: str,
+    from_addr: str,
+    to_addr: str,
+    reply_to: str | None,
+    in_reply_to: str | None,
+    references_header: str | None,
+    subject: str,
+    body_text: str,
+    attachments: Sequence[tuple[str, bytes]],
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any]:
+    """Read or atomically reserve the D-12 provider-ready snapshot for one slot.
+
+    D-12 freezes every provider-visible field and byte before a provider call. D-13
+    requires a retry to lock and return this stored record unchanged, never applying
+    its caller arguments.  Supplying ``conn`` keeps the reservation inside the
+    caller-owned transaction with its job enqueue; this function opens a transaction
+    only when it owns the connection.
+    """
+    if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
+        raise ValueError(f"unsupported outbound purpose: {purpose!r}")
+    if round < 0:
+        raise ValueError("round must be non-negative")
+
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        # We cannot know an email_id until the absent branch inserts it, so first lock
+        # by the unique logical send-slot identity.  The conflict re-read below closes
+        # the concurrent absent-branch race without ever writing EXCLUDED content.
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                """
+                SELECT em.id AS email_id
+                  FROM email_messages AS em
+                 WHERE em.run_id = %s AND em.direction = 'outbound'
+                   AND em.purpose = %s AND em.round = %s
+                   AND em.epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
+                 FOR UPDATE
+                """,
+                (str(run_id), purpose, round, str(run_id)),
+            )
+            existing = cur.fetchone()
+
+        if existing is not None:
+            snapshot = _load_outbound_snapshot_locked(
+                c, run_id=run_id, email_id=uuid.UUID(str(existing["email_id"])), lock=True
+            )
+            if snapshot is None:
+                raise RuntimeError("outbound logical slot exists without a frozen snapshot")
+            return snapshot
+
+        row = c.execute(
+            """
+            INSERT INTO email_messages (
+                run_id, direction, message_id, in_reply_to, references_header,
+                subject, from_addr, to_addr, body_text, purpose, send_state, round, epoch
+            ) VALUES (%s, 'outbound', %s, %s, %s, %s, %s, %s, %s, %s, 'reserved', %s,
+                      (SELECT reply_epoch FROM payroll_runs WHERE id = %s))
+            ON CONFLICT (run_id, purpose, round, epoch) DO NOTHING
+            RETURNING id
+            """,
+            (
+                str(run_id),
+                message_id,
+                in_reply_to,
+                references_header,
+                subject,
+                from_addr,
+                to_addr,
+                body_text,
+                purpose,
+                round,
+                str(run_id),
+            ),
+        ).fetchone()
+
+        if row is None:
+            with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT id AS email_id FROM email_messages
+                     WHERE run_id = %s AND direction = 'outbound' AND purpose = %s
+                       AND round = %s
+                       AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
+                     FOR UPDATE
+                    """,
+                    (str(run_id), purpose, round, str(run_id)),
+                )
+                existing = cur.fetchone()
+            if existing is None:
+                raise RuntimeError("outbound logical-slot conflict could not be re-read")
+            snapshot = _load_outbound_snapshot_locked(
+                c, run_id=run_id, email_id=uuid.UUID(str(existing["email_id"])), lock=True
+            )
+            if snapshot is None:
+                raise RuntimeError("outbound logical slot exists without a frozen snapshot")
+            return snapshot
+
+        email_id = uuid.UUID(str(row[0]))
+        snapshot_row = c.execute(
+            """
+            INSERT INTO outbound_email_snapshots (
+                email_id, message_id, from_addr, to_addr, reply_to, in_reply_to,
+                references_header, subject, body_text
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                str(email_id),
+                message_id,
+                from_addr,
+                to_addr,
+                reply_to,
+                in_reply_to,
+                references_header,
+                subject,
+                body_text,
+            ),
+        ).fetchone()
+        if snapshot_row is None:
+            raise RuntimeError("outbound snapshot insert did not return an id")
+        snapshot_id = uuid.UUID(str(snapshot_row[0]))
+        for ordinal, (filename, content) in enumerate(attachments):
+            c.execute(
+                """
+                INSERT INTO outbound_email_attachments (snapshot_id, ordinal, filename, content)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (str(snapshot_id), ordinal, filename, bytes(content)),
+            )
+
+        snapshot = _load_outbound_snapshot_locked(c, run_id=run_id, email_id=email_id, lock=True)
+        if snapshot is None:
+            raise RuntimeError("new outbound snapshot could not be loaded")
+        return snapshot
+
+
+def load_outbound_snapshot(
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any] | None:
+    """Load the one owned, frozen provider payload for a replay handler."""
+    with _conn_ctx(conn) as (c, _owns):
+        return _load_outbound_snapshot_locked(c, run_id=run_id, email_id=email_id, lock=False)
+
+
+def load_delivery_review_snapshot(
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any] | None:
+    """Return bounded D-13 review facts without provider request/response payloads."""
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            """
+            SELECT em.id AS email_id, snapshot.id AS snapshot_id, snapshot.message_id,
+                   snapshot.to_addr, snapshot.subject, snapshot.body_text,
+                   snapshot.reserved_at,
+                   (SELECT count(*) FROM outbound_delivery_attempts AS attempt
+                     WHERE attempt.snapshot_id = snapshot.id) AS attempt_count
+              FROM outbound_email_snapshots AS snapshot
+              JOIN email_messages AS em ON em.id = snapshot.email_id
+             WHERE em.id = %s AND em.run_id = %s AND em.direction = 'outbound'
+            """,
+            (str(email_id), str(run_id)),
+        )
+        review = cur.fetchone()
+        if review is None:
+            return None
+        cur.execute(
+            """
+            SELECT id, ordinal, filename
+              FROM outbound_email_attachments
+             WHERE snapshot_id = %s
+             ORDER BY ordinal ASC
+            """,
+            (str(review["snapshot_id"]),),
+        )
+        review["attachments"] = cur.fetchall() or []
+    return review
+
+
+def load_snapshot_attachment(
+    run_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any] | None:
+    """Read one exact attachment byte record, scoped to its owning run/snapshot."""
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(
+            """
+            SELECT attachment.filename, attachment.content
+              FROM outbound_email_attachments AS attachment
+              JOIN outbound_email_snapshots AS snapshot ON snapshot.id = attachment.snapshot_id
+              JOIN email_messages AS em ON em.id = snapshot.email_id
+             WHERE attachment.id = %s AND attachment.snapshot_id = %s
+               AND em.run_id = %s AND em.direction = 'outbound'
+            """,
+            (str(attachment_id), str(snapshot_id), str(run_id)),
+        )
+        return cur.fetchone()
 
 
 def get_outbound_message_id(
@@ -386,9 +639,7 @@ def get_inbound_email_by_id(
         return cur.fetchone()
 
 
-def update_email_message_sent(
-    message_id: str, conn: psycopg.Connection | None = None
-) -> None:
+def update_email_message_sent(message_id: str, conn: psycopg.Connection | None = None) -> None:
     """Flip send_state to 'sent' for the outbound row keyed on SYNTHETIC message_id.
 
     The WHERE key is the SYNTHETIC message_id minted by send_outbound, NEVER the
@@ -519,8 +770,7 @@ def _pad_references(references_header: str | None) -> str:
 # unanchored substring match.
 # Both placeholders stay NAMED — never string-interpolated (SQL injection).
 _HEADER_MATCH_PREDICATE = (
-    "( em.message_id = %(in_reply_to)s"
-    " OR %(references)s LIKE '%% ' || em.message_id || ' %%' )"
+    "( em.message_id = %(in_reply_to)s OR %(references)s LIKE '%% ' || em.message_id || ' %%' )"
 )
 
 
@@ -540,8 +790,7 @@ def find_awaiting_reply_for_header(
         "SELECT pr.id FROM payroll_runs pr"
         " JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'"
         " WHERE pr.status = 'awaiting_reply'"
-        "   AND " + _HEADER_MATCH_PREDICATE +
-        " LIMIT 1"
+        "   AND " + _HEADER_MATCH_PREDICATE + " LIMIT 1"
     )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -568,8 +817,7 @@ def find_any_run_for_header(
     sql = (
         "SELECT pr.id FROM payroll_runs pr"
         " JOIN email_messages em ON em.run_id = pr.id AND em.direction = 'outbound'"
-        " WHERE " + _HEADER_MATCH_PREDICATE +
-        " LIMIT 1"
+        " WHERE " + _HEADER_MATCH_PREDICATE + " LIMIT 1"
     )
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
