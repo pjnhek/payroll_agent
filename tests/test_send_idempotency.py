@@ -1065,13 +1065,13 @@ def test_fake_reservation_reuses_the_original_provider_snapshot(fake_repo: Any) 
         "message_id": "<original@payroll-agent.local>",
         "to_addr": "payroll@example.test",
         "subject": "Original payroll confirmation",
-        "body_text": "Original frozen body",
         "reserved_at": original["reserved_at"],
         "attempt_count": 0,
         "attachments": [
             {"id": original["attachments"][0]["id"], "ordinal": 0, "filename": "paystub.pdf"}
         ],
     }
+    assert "body_text" not in review
     attachment = fake_repo.load_snapshot_attachment(
         run_id, original["snapshot_id"], original["attachments"][0]["id"]
     )
