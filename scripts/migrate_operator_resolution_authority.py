@@ -289,7 +289,7 @@ def _migrate_authority(conn: Any) -> tuple[int, ...] | None:
 
 
 def _revision_is_exact(value: str | None) -> bool:
-    return value is not None and re.fullmatch(r"[0-9a-f]{7,40}", value) is not None
+    return value is not None and re.fullmatch(r"[0-9a-f]{40}", value) is not None
 
 
 def _reopen_writes(conn: Any, args: argparse.Namespace) -> bool:

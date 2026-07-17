@@ -279,6 +279,10 @@ def test_reopen_rejects_invalid_authority_relationships(
     [
         ["--reopen-writes"],
         ["--reopen-writes", "--deployed-revision", "abc1234"],
+        ["--reopen-writes", "--deployed-revision", "abcdef1234567890"],
+        ["--reopen-writes", "--deployed-revision", "a" * 39],
+        ["--reopen-writes", "--deployed-revision", "a" * 41],
+        ["--reopen-writes", "--deployed-revision", "A" * 40],
         [
             "--reopen-writes",
             "--deployed-revision",
@@ -317,7 +321,7 @@ def test_reopen_rechecks_schema_fence_and_authority_before_open(
     argv = [
         "--reopen-writes",
         "--deployed-revision",
-        "abcdef1234567890",
+        "abcdef1234567890abcdef1234567890abcdef12",
         "--schema-verified",
         "--authority-verified",
     ]
@@ -328,7 +332,7 @@ def test_reopen_rechecks_schema_fence_and_authority_before_open(
     assert lock_index < open_index
     assert capsys.readouterr().out.splitlines() == [
         "writer_fence=open",
-        "deployed_revision=abcdef1234567890",
+        "deployed_revision=abcdef1234567890abcdef1234567890abcdef12",
     ]
 
 
