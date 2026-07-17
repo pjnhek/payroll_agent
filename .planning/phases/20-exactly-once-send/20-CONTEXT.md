@@ -55,8 +55,7 @@ ops view remain out of scope.
 
 ### Human delivery review
 
-- **D-08: Expired or otherwise non-replayable ambiguity enters `needs_operator` as a
-  delivery-review state.** It must not look like an ordinary transient error and must
+- **D-08: Expired or otherwise non-replayable ambiguity enters `needs_operator` as a delivery-review state.** It must not look like an ordinary transient error and must
   never remain silently `approved`.
 - **D-09: Give the operator two explicit outcomes.** `Mark delivered` completes the
   run without another email. `Authorize a new confirmation` creates a clearly distinct,
@@ -72,8 +71,7 @@ ops view remain out of scope.
 
 ### Immutable record
 
-- **D-12: Freeze the full provider-ready envelope atomically with reservation before
-  any provider call.** It includes sender, recipient, reply-to, headers, subject, text,
+- **D-12: Freeze the full provider-ready envelope atomically with reservation before any provider call.** It includes sender, recipient, reply-to, headers, subject, text,
   attachment filenames, and exact attachment bytes.
 - **D-13: Keep the snapshot append-only.** State transitions and PII-safe attempt events
   are separate from snapshot content; a retry never overwrites it. Retain completed and
