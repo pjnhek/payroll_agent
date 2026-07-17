@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Phase 20 context gathered
-last_updated: "2026-07-17T18:11:20.002Z"
+stopped_at: Phase 20 Plan 01 complete
+last_updated: "2026-07-17T18:26:49Z"
 last_activity: 2026-07-17
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 53
-  completed_plans: 41
-  percent: 67
+  completed_plans: 42
+  percent: 68
 ---
 
 # Project State
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 — Exactly-Once Send
-Plan: 12 plans ready
-Status: Ready to execute
+Plan: 1/12 plans complete (20-01)
+Status: Executing
 Last activity: 2026-07-17
 
 ## Performance Metrics
@@ -122,6 +122,7 @@ Last activity: 2026-07-17
 | Phase 19 P11 | 21min | 3 tasks | 12 files |
 | Phase 19 P12 | 14min | 2 tasks | 7 files |
 | Phase 19 P10 | 53min | 3 tasks | 21 files |
+| Phase 20 P01 | 10min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -166,6 +167,7 @@ Recent decisions affecting current work:
 - [Phase ?]: D-12 closed: claim_status is the second sanctioned status writer; all contended gates use CAS not load-then-set
 - [Phase ?]: D-13b: RunStatus.APPROVED removed from _TERMINAL_STATUSES — delivery failure after approval routes to ERROR for retriggering
 - [Phase ?]: D-13c sharpened NEW-1: insert_email_message upserts on (run_id, purpose) for outbound rows — retry-over-reserved advances to sent instead of crashing on uq_email_run_purpose
+- [Phase 20 P01]: D-12/D-13 reservation is now an append-only snapshot keyed to the logical outbound row; ordered bytes and bounded attempt evidence are separate, while a same-slot conflict locks and returns stored content without applying caller fields.
 - [Phase ?]: D-05 OT explicit-zero decision: hours_overtime=0 treated same as absent — never silently underpays a weekly employee
 - [Phase 11 P05]: clear_reply_context is called ONCE at the retrigger route's single 'if claimed:' post-claim convergence point (reached by both the ERROR/APPROVED CAS and the stale in-flight CAS) rather than duplicated inside each branch — satisfies WR-06/D-11-04 clearing ALL reply-round context (clarified_fields, pre_clarify_extracted, clarification_round, alias_candidates) before _run_pipeline is scheduled.
 - [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).
@@ -316,10 +318,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T16:55:12.204Z
-Stopped at: Phase 20 context gathered
+Last session: 2026-07-17T18:26:49Z
+Stopped at: Phase 20 Plan 01 complete
 Resume file: .planning/phases/20-exactly-once-send/20-CONTEXT.md
 
 ## Operator Next Steps
 
-- Discuss Phase 20 with `/gsd-discuss-phase 20` (Exactly-Once Send), then create its executable plans with `/gsd-plan-phase 20`.
+- Resume Phase 20 execution with `/gsd-execute-phase 20`; Plan 20-02 can wire the gateway and durable handler to the frozen reservation APIs.
