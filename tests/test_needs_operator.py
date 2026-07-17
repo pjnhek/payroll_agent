@@ -985,8 +985,8 @@ def _bare_extracted(run_id: uuid.UUID) -> Extracted:
 
 
 def test_below_cap_send_proceeds(monkeypatch, fake_repo, mock_llm):
-    """counter=2 (< MAX_CLARIFICATION_ROUNDS=3): the 3rd send proceeds — gateway
-    IS called, status stays awaiting_reply, NOT needs_operator."""
+    """counter=2 (< MAX_CLARIFICATION_ROUNDS=3): the 3rd send is queued and the
+    run pauses awaiting_reply instead of escalating."""
     assert MAX_CLARIFICATION_ROUNDS == 3
 
     import app.email.gateway as gateway_mod
@@ -1005,18 +1005,20 @@ def test_below_cap_send_proceeds(monkeypatch, fake_repo, mock_llm):
     }
     fake_repo.outbound[str(run_id)] = []
 
-    send_calls: list[dict[str, Any]] = []
-    real_send_outbound = gateway_mod.send_outbound
-
-    def _spy_send_outbound(**kw):
-        send_calls.append(kw)
-        return real_send_outbound(**kw)
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _spy_send_outbound)
+    monkeypatch.setattr(
+        gateway_mod,
+        "send_outbound",
+        lambda **_kwargs: pytest.fail("clarification producer reached the provider"),
+    )
 
     _clarify(run_id, email, decision, roster, extracted, llm=None, purpose="clarification")
 
-    assert len(send_calls) == 1, "the 3rd send (counter=2 -> 3) must proceed, not escalate"
+    send_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == "send_outbound" and job["run_id"] == run_id
+    ]
+    assert len(send_jobs) == 1, "the 3rd send must queue one frozen delivery job"
     assert fake_repo.runs[str(run_id)]["status"] == "awaiting_reply"
     assert fake_repo.runs[str(run_id)]["clarification_round"] == 3
 

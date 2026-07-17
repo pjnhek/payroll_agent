@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import psycopg
 from fastapi import APIRouter, Form, HTTPException, Query, Request
@@ -118,6 +118,17 @@ _QUEUE_BADGE_CLASSES = {
     "Queued": "neutral",
     "Retry queued": "neutral",
 }
+_DELIVERY_REVIEW_CATEGORY_LABELS = {
+    "transport": "Transport uncertainty",
+    "provider_5xx": "Provider service failure",
+    "rate_limited": "Provider rate limit",
+    "payload_mismatch": "Frozen payload mismatch",
+    "authorization": "Provider authorization issue",
+    "validation": "Provider validation issue",
+    "configuration": "Delivery configuration issue",
+    "unknown": "Unknown delivery outcome",
+}
+_NEW_CONFIRMATION_ACKNOWLEDGEMENT = "AUTHORIZE A NEW CONFIRMATION"
 
 
 def _bounded_attempts(attempts: object, max_attempts: object) -> str | None:
@@ -239,6 +250,107 @@ def _safe_run_with_queue_projection(
         logger.debug("queue projection unavailable for run %s", run_id)
         projected["queue_label"] = None
     return _safe_run_for_browser(projected)
+
+
+def _load_delivery_review(
+    run_id: uuid.UUID, *, conn: psycopg.Connection | None = None
+) -> dict[str, Any] | None:
+    """Load a confirmation review only while its owned reservation is actionable."""
+    run = repo.load_run(run_id, conn=conn)
+    if (
+        run is None
+        or run.get("status") != RunStatus.NEEDS_OPERATOR.value
+        or run.get("error_reason") != "DeliveryReview"
+    ):
+        return None
+    detail = run.get("error_detail")
+    if not isinstance(detail, str) or not detail.startswith("delivery_review:"):
+        return None
+    category = detail.removeprefix("delivery_review:")
+    if category not in _DELIVERY_REVIEW_CATEGORY_LABELS:
+        return None
+    pending = repo.get_unconfirmed_outbound(
+        run_id, purpose="confirmation", conn=conn
+    )
+    if pending is None or not isinstance(pending.get("email_id"), uuid.UUID):
+        return None
+    review = repo.load_delivery_review_snapshot(
+        run_id, pending["email_id"], conn=conn
+    )
+    if review is None or review.get("email_id") != pending["email_id"]:
+        return None
+    if not isinstance(review.get("snapshot_id"), uuid.UUID):
+        return None
+    attempts = review.get("attempt_count")
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        return None
+    if not 0 <= attempts <= 100:
+        return None
+    return {"category": category, "review": review}
+
+
+def _safe_delivery_review_projection(
+    run_id: uuid.UUID, delivery_review: dict[str, Any]
+) -> dict[str, Any]:
+    """Expose only the finite review facts and frozen artifact references."""
+    review = delivery_review["review"]
+    attachments: list[dict[str, str]] = []
+    for attachment in review.get("attachments", []):
+        attachment_id = attachment.get("id") if isinstance(attachment, dict) else None
+        filename = attachment.get("filename") if isinstance(attachment, dict) else None
+        if isinstance(attachment_id, uuid.UUID) and isinstance(filename, str):
+            attachments.append(
+                {
+                    "filename": filename,
+                    "url": (
+                        f"/runs/{run_id}/delivery-review/attachments/{attachment_id}"
+                    ),
+                }
+            )
+    return {
+        "recipient": review["to_addr"],
+        "subject": review["subject"],
+        "reserved_at": review["reserved_at"],
+        "attempt_count": review["attempt_count"],
+        "failure_category": _DELIVERY_REVIEW_CATEGORY_LABELS[delivery_review["category"]],
+        "message_id": review["message_id"],
+        "email_url": f"/runs/{run_id}/delivery-review/email",
+        "attachments": attachments,
+    }
+
+
+def _snapshot_clone_fields(
+    snapshot: dict[str, Any],
+) -> tuple[list[tuple[str, bytes]], dict[str, str | None]]:
+    """Validate the stored envelope before cloning its exact provider-visible bytes."""
+    text_fields = (
+        "from_addr",
+        "to_addr",
+        "reply_to",
+        "in_reply_to",
+        "references_header",
+        "subject",
+        "body_text",
+    )
+    envelope: dict[str, str | None] = {}
+    for field in text_fields:
+        value = snapshot.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError("stored confirmation has an invalid frozen envelope")
+        envelope[field] = value
+    required = ("from_addr", "to_addr", "subject", "body_text")
+    if any(not isinstance(envelope[field], str) for field in required):
+        raise ValueError("stored confirmation lacks a frozen envelope field")
+    attachments: list[tuple[str, bytes]] = []
+    for attachment in snapshot.get("attachments", []):
+        if not isinstance(attachment, dict):
+            raise ValueError("stored confirmation has an invalid attachment")
+        filename = attachment.get("filename")
+        content = attachment.get("content")
+        if not isinstance(filename, str) or not isinstance(content, bytes):
+            raise ValueError("stored confirmation has an invalid attachment")
+        attachments.append((filename, bytes(content)))
+    return attachments, envelope
 
 
 @router.post("/runs/{run_id}/approve")
@@ -710,6 +822,166 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
     )
 
 
+@router.get("/runs/{run_id}/delivery-review/email")
+def delivery_review_email(run_id: uuid.UUID) -> Response:
+    """Serve the reviewable frozen email without regenerating delivery content."""
+    delivery_review = _load_delivery_review(run_id)
+    if delivery_review is None:
+        raise HTTPException(status_code=404, detail="Frozen delivery review not found")
+    email_id = delivery_review["review"]["email_id"]
+    snapshot = repo.load_outbound_snapshot(run_id, email_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Frozen delivery review not found")
+    subject = snapshot.get("subject")
+    body = snapshot.get("body_text")
+    message_id = snapshot.get("message_id")
+    in_reply_to = snapshot.get("in_reply_to")
+    references_header = snapshot.get("references_header")
+    if not all(isinstance(value, str) for value in (subject, body, message_id)):
+        raise HTTPException(status_code=404, detail="Frozen delivery review not found")
+    subject_text = cast(str, subject)
+    body_text = cast(str, body)
+    message_id_text = cast(str, message_id)
+    lines = [f"Subject: {subject_text}", f"Message-ID: {message_id_text}"]
+    if isinstance(in_reply_to, str):
+        lines.append(f"In-Reply-To: {in_reply_to}")
+    if isinstance(references_header, str):
+        lines.append(f"References: {references_header}")
+    lines.extend(("", body_text))
+    return Response(
+        content="\n".join(lines),
+        media_type="text/plain",
+        headers={"Content-Disposition": 'attachment; filename="frozen-confirmation.txt"'},
+    )
+
+
+@router.get("/runs/{run_id}/delivery-review/attachments/{attachment_id}")
+def delivery_review_attachment(
+    run_id: uuid.UUID, attachment_id: uuid.UUID
+) -> StreamingResponse:
+    """Stream one owned frozen attachment only while its review remains actionable."""
+    delivery_review = _load_delivery_review(run_id)
+    if delivery_review is None:
+        raise HTTPException(status_code=404, detail="Frozen delivery review not found")
+    attachment = repo.load_snapshot_attachment(
+        run_id,
+        delivery_review["review"]["snapshot_id"],
+        attachment_id,
+    )
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Frozen attachment not found")
+    filename = attachment.get("filename")
+    content = attachment.get("content")
+    if not isinstance(filename, str) or not isinstance(content, bytes):
+        raise HTTPException(status_code=404, detail="Frozen attachment not found")
+    safe_filename = re.sub(r"[^\w.\-]", "_", filename, flags=re.ASCII) or "attachment"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
+@router.post("/runs/{run_id}/delivery-review/retry-now")
+def retry_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
+    """Advance one existing eligible delivery job and wake only after commit."""
+    should_wake = False
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            delivery_review = _load_delivery_review(run_id, conn=conn)
+            if delivery_review is not None:
+                outcome = repo.advance_existing_send_job_due_now(
+                    run_id,
+                    delivery_review["review"]["email_id"],
+                    conn=conn,
+                )
+                should_wake = outcome == repo.AdvanceSendJobOutcome.ADVANCED
+    except Exception:
+        logger.warning("delivery retry-now unavailable for run %s", run_id)
+    if should_wake:
+        wake.wake()
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+@router.post("/runs/{run_id}/delivery-review/mark-delivered")
+def mark_delivery_delivered(run_id: uuid.UUID) -> RedirectResponse:
+    """Resolve delivery uncertainty without another provider request."""
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            if _load_delivery_review(run_id, conn=conn) is not None:
+                repo.claim_status(
+                    run_id,
+                    RunStatus.NEEDS_OPERATOR,
+                    RunStatus.RECONCILED,
+                    conn=conn,
+                )
+    except Exception:
+        logger.warning("mark delivery review unavailable for run %s", run_id)
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
+@router.post("/runs/{run_id}/delivery-review/authorize")
+def authorize_new_confirmation(
+    run_id: uuid.UUID,
+    acknowledgement: str = Form(default=""),
+) -> RedirectResponse:
+    """Create one explicit new confirmation slot from the stored frozen snapshot."""
+    if acknowledgement != _NEW_CONFIRMATION_ACKNOWLEDGEMENT:
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    should_wake = False
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            delivery_review = _load_delivery_review(run_id, conn=conn)
+            if delivery_review is None:
+                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+            if not repo.claim_status(
+                run_id,
+                RunStatus.NEEDS_OPERATOR,
+                RunStatus.APPROVED,
+                conn=conn,
+            ):
+                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+            original = repo.load_outbound_snapshot(
+                run_id, delivery_review["review"]["email_id"], conn=conn
+            )
+            if original is None:
+                raise ValueError("frozen confirmation disappeared during authorization")
+            attachments, envelope = _snapshot_clone_fields(original)
+            repo.clear_reply_context(run_id, conn=conn)
+            replacement = repo.reserve_outbound_snapshot(
+                run_id=run_id,
+                purpose="confirmation",
+                round=0,
+                message_id=f"<{uuid.uuid4()}@payroll-agent.local>",
+                from_addr=cast(str, envelope["from_addr"]),
+                to_addr=cast(str, envelope["to_addr"]),
+                reply_to=envelope["reply_to"],
+                in_reply_to=envelope["in_reply_to"],
+                references_header=envelope["references_header"],
+                subject=cast(str, envelope["subject"]),
+                body_text=cast(str, envelope["body_text"]),
+                attachments=attachments,
+                conn=conn,
+            )
+            email_id = replacement.get("email_id")
+            if not isinstance(email_id, uuid.UUID):
+                raise ValueError("replacement confirmation lacks an email id")
+            repo.enqueue_job(
+                kind=JobKind.SEND_OUTBOUND,
+                dedup_key=repo.send_outbound_dedup_key(email_id),
+                run_id=run_id,
+                email_id=email_id,
+                conn=conn,
+            )
+            should_wake = True
+    except Exception:
+        logger.warning("new confirmation authorization unavailable for run %s", run_id)
+    if should_wake:
+        wake.wake()
+    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+
 @router.get("/runs/{run_id}")
 def run_detail(
     request: Request,
@@ -794,6 +1066,14 @@ def run_detail(
                     unresolved_suggestions[token] = str(suggested)
         except Exception:
             unresolved_suggestions = {}
+    delivery_review: dict[str, Any] | None = None
+    if run.get("status") == RunStatus.NEEDS_OPERATOR.value:
+        try:
+            review = _load_delivery_review(run_id)
+            if review is not None:
+                delivery_review = _safe_delivery_review_projection(run_id, review)
+        except Exception:
+            logger.debug("delivery review unavailable for run %s", run_id)
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -809,6 +1089,7 @@ def run_detail(
             "roster_employees": roster_employees,
             "unresolved_suggestions": unresolved_suggestions,
             "resolution_superseded": bool(resolution_superseded),
+            "delivery_review": delivery_review,
         },
     )
 

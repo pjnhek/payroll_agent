@@ -812,6 +812,188 @@ def test_demo_queue_error_notice_uses_fixed_copy_not_query_text(monkeypatch):
     assert hostile not in response.text
 
 
+# ---------------------------------------------------------------------------
+# Delivery-review controls — frozen evidence and explicit operator outcomes
+# ---------------------------------------------------------------------------
+
+
+def _delivery_review_run(fake_repo):
+    """Create one confirmation awaiting a human delivery decision."""
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.NEEDS_OPERATOR)
+    fake_repo.runs[str(run_id)]["error_reason"] = "DeliveryReview"
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:payload_mismatch"
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<frozen-review@payroll-agent.local>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to="replies@payroll-agent.local",
+        in_reply_to="<source@payroll-agent.local>",
+        references_header="<prior@payroll-agent.local> <source@payroll-agent.local>",
+        subject="Frozen confirmation",
+        body_text="Frozen confirmation body",
+        attachments=[("paystub_Ada.pdf", b"frozen-pdf-bytes")],
+    )
+    fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    for job in fake_repo.jobs.values():
+        job["state"] = "done"
+    return run_id, snapshot
+
+
+def test_delivery_review_serves_only_owned_frozen_email_and_attachment(fake_repo):
+    """Review evidence comes from the stored snapshot, never mutable payroll data."""
+    run_id, snapshot = _delivery_review_run(fake_repo)
+    attachment_id = snapshot["attachments"][0]["id"]
+    fake_repo.runs[str(run_id)]["business_name"] = "Changed after reservation"
+
+    email = client.get(f"/runs/{run_id}/delivery-review/email")
+    attachment = client.get(
+        f"/runs/{run_id}/delivery-review/attachments/{attachment_id}"
+    )
+    outside_owner = client.get(
+        f"/runs/{uuid.uuid4()}/delivery-review/attachments/{attachment_id}"
+    )
+
+    assert email.status_code == 200
+    assert "Frozen confirmation" in email.text
+    assert "Frozen confirmation body" in email.text
+    assert "Changed after reservation" not in email.text
+    assert attachment.status_code == 200
+    assert attachment.content == b"frozen-pdf-bytes"
+    assert attachment.headers["content-disposition"] == (
+        'attachment; filename="paystub_Ada.pdf"'
+    )
+    assert outside_owner.status_code == 404
+
+
+def test_delivery_review_retry_now_advances_only_the_existing_pending_job(
+    fake_repo, monkeypatch
+):
+    """Retry-now is a post-commit wake, never a direct provider call or new job."""
+    import app.routes.runs as runs_mod
+    from app.email import gateway
+
+    run_id, snapshot = _delivery_review_run(fake_repo)
+    job = next(iter(fake_repo.jobs.values()))
+    job["state"] = "pending"
+    job["available_in_seconds"] = 3600.0
+    wake_calls: list[None] = []
+    monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
+    monkeypatch.setattr(
+        gateway,
+        "send_outbound",
+        lambda **_kwargs: pytest.fail("review retry reached the provider"),
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/retry-now", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert job["available_in_seconds"] == 0.0
+    assert len(fake_repo.jobs) == 1
+    assert wake_calls == [None]
+    assert fake_repo.load_run(run_id)["status"] == "needs_operator"
+    job["state"] = "leased"
+    second = client.post(
+        f"/runs/{run_id}/delivery-review/retry-now", follow_redirects=False
+    )
+    assert second.status_code == 303
+    assert wake_calls == [None]
+
+
+def test_delivery_review_mark_delivered_is_a_provider_free_cas(fake_repo, monkeypatch):
+    """Marking delivery complete is the explicit no-resend branch."""
+    import app.routes.runs as runs_mod
+    from app.email import gateway
+
+    run_id, _snapshot = _delivery_review_run(fake_repo)
+    monkeypatch.setattr(
+        gateway,
+        "send_outbound",
+        lambda **_kwargs: pytest.fail("mark delivered reached the provider"),
+    )
+    monkeypatch.setattr(
+        runs_mod.wake,
+        "wake",
+        lambda: pytest.fail("mark delivered woke a sender"),
+    )
+
+    first = client.post(
+        f"/runs/{run_id}/delivery-review/mark-delivered", follow_redirects=False
+    )
+    second = client.post(
+        f"/runs/{run_id}/delivery-review/mark-delivered", follow_redirects=False
+    )
+
+    assert first.status_code == second.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == "reconciled"
+
+
+def test_delivery_review_authorization_clones_frozen_bytes_into_one_new_slot(
+    fake_repo, monkeypatch
+):
+    """A typed acknowledgement is required before a new immutable confirmation slot."""
+    import app.routes.runs as runs_mod
+    from app.email import gateway
+
+    run_id, original = _delivery_review_run(fake_repo)
+    wake_calls: list[None] = []
+    monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
+    monkeypatch.setattr(
+        gateway,
+        "send_outbound",
+        lambda **_kwargs: pytest.fail("authorization reached the provider"),
+    )
+
+    rejected = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "send it"},
+        follow_redirects=False,
+    )
+    accepted = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "AUTHORIZE A NEW CONFIRMATION"},
+        follow_redirects=False,
+    )
+    duplicate = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "AUTHORIZE A NEW CONFIRMATION"},
+        follow_redirects=False,
+    )
+
+    assert rejected.status_code == accepted.status_code == duplicate.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == "approved"
+    assert fake_repo.load_run(run_id)["reply_epoch"] == 1
+    snapshots = list(fake_repo.outbound_snapshots.values())
+    assert len(snapshots) == 2
+    replacement = next(
+        item["payload"]
+        for item in snapshots
+        if item["payload"]["email_id"] != original["email_id"]
+    )
+    assert replacement["epoch"] == 1
+    assert replacement["message_id"] != original["message_id"]
+    assert replacement["to_addr"] == original["to_addr"]
+    assert replacement["subject"] == original["subject"]
+    assert replacement["body_text"] == original["body_text"]
+    assert replacement["attachments"][0]["content"] == original["attachments"][0]["content"]
+    assert len(fake_repo.jobs) == 2
+    assert wake_calls == [None]
+
+
 @pytest.mark.parametrize(
     "bad_name",
     [
