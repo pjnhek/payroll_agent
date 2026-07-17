@@ -347,8 +347,8 @@ def load_delivery_review_snapshot(
     with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
         cur.execute(
             """
-            SELECT em.id AS email_id, snapshot.id AS snapshot_id, snapshot.message_id,
-                   snapshot.to_addr, snapshot.subject,
+            SELECT em.id AS email_id, snapshot.id AS snapshot_id, em.purpose,
+                   snapshot.message_id, snapshot.to_addr, snapshot.subject,
                    snapshot.reserved_at,
                    (SELECT count(*) FROM outbound_delivery_attempts AS attempt
                      WHERE attempt.snapshot_id = snapshot.id) AS attempt_count

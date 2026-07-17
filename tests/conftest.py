@@ -1518,6 +1518,7 @@ class InMemoryRepo:
         return {
             "email_id": snapshot["email_id"],
             "snapshot_id": snapshot["snapshot_id"],
+            "purpose": snapshot["purpose"],
             "message_id": snapshot["message_id"],
             "to_addr": snapshot["to_addr"],
             "subject": snapshot["subject"],

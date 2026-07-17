@@ -1062,6 +1062,7 @@ def test_fake_reservation_reuses_the_original_provider_snapshot(fake_repo: Any) 
     assert review == {
         "email_id": original["email_id"],
         "snapshot_id": original["snapshot_id"],
+        "purpose": "confirmation",
         "message_id": "<original@payroll-agent.local>",
         "to_addr": "payroll@example.test",
         "subject": "Original payroll confirmation",
