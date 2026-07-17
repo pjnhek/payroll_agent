@@ -765,6 +765,7 @@ class InMemoryRepo:
         run_id: uuid.UUID | None = None,
         email_id: uuid.UUID | None = None,
         operator_resolution_id: uuid.UUID | None = None,
+        event_id: uuid.UUID | None = None,
         business_id: uuid.UUID | None = None,
         max_attempts: int | None = None,
         available_in_seconds: float = 0.0,
@@ -781,20 +782,40 @@ class InMemoryRepo:
         if not isinstance(kind, JobKind):
             raise ValueError(f"enqueue_job: unsupported job kind {kind!r}")
         kind_value = kind.value
-        if kind is JobKind.RUN_PIPELINE and run_id is None:
+        if kind is JobKind.INGEST and (
+            event_id is None
+            or dedup_key != f"ingest:{event_id}"
+            or run_id is not None
+            or email_id is not None
+            or operator_resolution_id is not None
+            or business_id is not None
+        ):
+            raise ValueError("enqueue_job: kind='ingest' requires event_id only")
+        if kind is JobKind.RUN_PIPELINE and (
+            run_id is None
+            or email_id is not None
+            or operator_resolution_id is not None
+            or event_id is not None
+        ):
             raise ValueError(
                 f"enqueue_job: kind={kind.value!r} requires a run_id — a "
                 "run_pipeline job with no run would be claimed and marked "
                 "done without processing any payroll."
             )
         if kind is JobKind.RESUME_REPLY and (
-            run_id is None or email_id is None or operator_resolution_id is not None
+            run_id is None
+            or email_id is None
+            or operator_resolution_id is not None
+            or event_id is not None
         ):
             raise ValueError(
                 "enqueue_job: kind='resume_reply' requires run_id and email_id only"
             )
         if kind is JobKind.OPERATOR_RESUME and (
-            run_id is None or operator_resolution_id is None or email_id is not None
+            run_id is None
+            or operator_resolution_id is None
+            or email_id is not None
+            or event_id is not None
         ):
             raise ValueError(
                 "enqueue_job: kind='operator_resume' requires run_id and "
@@ -810,6 +831,7 @@ class InMemoryRepo:
             "run_id": run_id,
             "email_id": email_id,
             "operator_resolution_id": operator_resolution_id,
+            "event_id": event_id,
             "business_id": business_id,
             "state": "pending",
             "attempts": 0,
@@ -839,6 +861,7 @@ class InMemoryRepo:
                     run_id=job["run_id"],
                     email_id=job["email_id"],
                     operator_resolution_id=job["operator_resolution_id"],
+                    event_id=job["event_id"],
                     attempts=job["attempts"],
                     max_attempts=job["max_attempts"],
                     lease_token=job["lease_token"],
@@ -976,6 +999,7 @@ class InMemoryRepo:
     ) -> Any:
         """Mirror the fenced classified settlement matrix atomically."""
         from app.db.repo.job_settlement import SettlementOutcome
+        from app.models.job import JobKind
         from app.pipeline.result import PipelineOutcome
 
         row = self.jobs.get(str(job.id))
@@ -984,8 +1008,30 @@ class InMemoryRepo:
             or row["state"] != "leased"
             or row["lease_token"] != job.lease_token
             or row["run_id"] != job.run_id
-            or job.run_id is None
+            or row["kind"] != job.kind.value
         ):
+            return SettlementOutcome.FENCED
+        if job.kind is JobKind.INGEST:
+            if job.run_id is not None or row["run_id"] is not None:
+                return SettlementOutcome.FENCED
+            if result.outcome is PipelineOutcome.RETRYABLE:
+                row["last_error"] = result.diagnostic_code
+                row["available_in_seconds"] = backoff_seconds
+                if row["attempts"] < row["max_attempts"]:
+                    row["state"] = "pending"
+                    outcome = SettlementOutcome.RETRIED
+                else:
+                    row["state"] = "dead"
+                    outcome = SettlementOutcome.DEAD
+            else:
+                row["state"] = "done"
+                outcome = SettlementOutcome.DONE
+                if result.outcome is PipelineOutcome.TERMINAL:
+                    row["last_error"] = result.diagnostic_code
+            row["lease_token"] = None
+            row["leased_until"] = None
+            return outcome
+        if job.run_id is None:
             return SettlementOutcome.FENCED
         run = self.runs.get(str(job.run_id))
         if run is None:
@@ -1073,6 +1119,7 @@ class InMemoryRepo:
             _FINAL_LEASE_PRESERVE_STATUSES,
             SettlementOutcome,
         )
+        from app.models.job import JobKind
         from app.models.status import RunStatus
 
         candidates = [
@@ -1088,6 +1135,11 @@ class InMemoryRepo:
             )
         )
         for _index, row in candidates:
+            if row["kind"] == JobKind.INGEST.value and row["run_id"] is None:
+                row["state"] = "dead"
+                row["lease_token"] = None
+                row["leased_until"] = None
+                return SettlementOutcome.REAPED_FINAL_LEASE
             run = self.runs.get(str(row["run_id"]))
             if run is None:
                 return SettlementOutcome.FENCED

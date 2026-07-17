@@ -74,9 +74,9 @@ def _bounded_detail(
 def _locked_job(
     conn: psycopg.Connection,
     job: Job,
-) -> tuple[int, int, uuid.UUID | None] | None:
+) -> tuple[int, int, uuid.UUID | None, JobKind] | None:
     row = conn.execute(
-        "SELECT attempts, max_attempts, run_id FROM jobs"
+        "SELECT attempts, max_attempts, run_id, kind FROM jobs"
         " WHERE id = %s AND state = 'leased' AND lease_token = %s"
         " FOR UPDATE",
         (str(job.id), str(job.lease_token)),
@@ -84,7 +84,50 @@ def _locked_job(
     if row is None:
         return None
     run_id = uuid.UUID(str(row[2])) if row[2] is not None else None
-    return int(row[0]), int(row[1]), run_id
+    return int(row[0]), int(row[1]), run_id, JobKind(str(row[3]))
+
+
+def _settle_ingest_job(
+    conn: psycopg.Connection,
+    job: Job,
+    result: PipelineResult,
+    *,
+    attempts: int,
+    max_attempts: int,
+    backoff_seconds: float,
+) -> SettlementOutcome:
+    """Settle one fenced ingest lease without touching payroll business state."""
+    if result.outcome is PipelineOutcome.RETRYABLE and attempts < max_attempts:
+        target_state = "pending"
+        outcome = SettlementOutcome.RETRIED
+    elif result.outcome is PipelineOutcome.RETRYABLE:
+        target_state = "dead"
+        outcome = SettlementOutcome.DEAD
+    else:
+        target_state = "done"
+        outcome = SettlementOutcome.DONE
+
+    row = conn.execute(
+        "UPDATE jobs SET state = %s,"
+        " available_at = CASE WHEN %s = 'pending'"
+        " THEN now() + (%s || ' seconds')::interval ELSE available_at END,"
+        " last_error = CASE WHEN %s = 'ok' THEN last_error ELSE %s END,"
+        " lease_token = NULL, leased_until = NULL, updated_at = now()"
+        " WHERE id = %s AND state = 'leased' AND lease_token = %s"
+        " RETURNING id",
+        (
+            target_state,
+            target_state,
+            backoff_seconds,
+            result.outcome.value,
+            result.diagnostic_code,
+            str(job.id),
+            str(job.lease_token),
+        ),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("locked ingest settlement lost its lease")
+    return outcome
 
 
 def _set_run_error(
@@ -304,7 +347,20 @@ def settle_pipeline_job(
         locked = _locked_job(c, job)
         if locked is None:
             return SettlementOutcome.FENCED
-        attempts, max_attempts, stored_run_id = locked
+        attempts, max_attempts, stored_run_id, stored_kind = locked
+        if stored_kind is not job.kind:
+            return SettlementOutcome.FENCED
+        if stored_kind is JobKind.INGEST:
+            if stored_run_id is not None or job.run_id is not None:
+                return SettlementOutcome.FENCED
+            return _settle_ingest_job(
+                c,
+                job,
+                result,
+                attempts=attempts,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+            )
         if stored_run_id is None or stored_run_id != job.run_id:
             return SettlementOutcome.FENCED
 
@@ -422,7 +478,7 @@ def reap_expired_final_attempt(
     """Atomically dead-letter one exact expired final-attempt lease."""
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
-            "SELECT id, run_id, attempts, max_attempts FROM jobs"
+            "SELECT id, run_id, attempts, max_attempts, kind FROM jobs"
             " WHERE state = 'leased' AND attempts = max_attempts"
             " AND leased_until < now() ORDER BY leased_until"
             " FOR UPDATE SKIP LOCKED LIMIT 1"
@@ -432,19 +488,27 @@ def reap_expired_final_attempt(
         job_id = uuid.UUID(str(row[0]))
         run_id = uuid.UUID(str(row[1])) if row[1] is not None else None
         attempts, max_attempts = int(row[2]), int(row[3])
-        if run_id is None:
-            return SettlementOutcome.FENCED
-        run_status = _lock_run_status(c, run_id)
-        if run_status is None:
-            return SettlementOutcome.FENCED
-        if run_status in _FINAL_LEASE_ERROR_STATUSES and not _set_run_error(
-            c,
-            run_id,
-            reason="FinalAttemptLeaseExpired",
-            detail=f"unknown:final_attempt_lease_expired;attempts={attempts}/{max_attempts}"[:200],
-            expected_status=run_status,
-        ):
-            raise RuntimeError("locked final-attempt reap lost its run status")
+        kind = JobKind(str(row[4]))
+        if kind is JobKind.INGEST:
+            if run_id is not None:
+                return SettlementOutcome.FENCED
+        else:
+            if run_id is None:
+                return SettlementOutcome.FENCED
+            run_status = _lock_run_status(c, run_id)
+            if run_status is None:
+                return SettlementOutcome.FENCED
+            if run_status in _FINAL_LEASE_ERROR_STATUSES and not _set_run_error(
+                c,
+                run_id,
+                reason="FinalAttemptLeaseExpired",
+                detail=(
+                    "unknown:final_attempt_lease_expired;"
+                    f"attempts={attempts}/{max_attempts}"
+                )[:200],
+                expected_status=run_status,
+            ):
+                raise RuntimeError("locked final-attempt reap lost its run status")
         updated = c.execute(
             "UPDATE jobs SET state = 'dead',"
             " lease_token = NULL, leased_until = NULL, updated_at = now()"

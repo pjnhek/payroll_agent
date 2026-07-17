@@ -372,6 +372,30 @@ def test_null_run_ingest_stale_token_is_fenced_before_any_transport_or_payroll_w
     assert "payroll_runs" not in fake_conn.all_sql()
 
 
+def test_null_run_ingest_infrastructure_failure_uses_bounded_transport_retry(
+    fake_repo,
+) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    claimed = _claim_ingest_job(fake_repo)
+    before_runs = {run_id: dict(row) for run_id, row in fake_repo.runs.items()}
+
+    assert repo.settle_infrastructure_failure(
+        claimed,
+        backoff_seconds=11.0,
+        stage=PipelineStage.LOAD,
+        reason=PipelineReason.PROVIDER_CONNECTION_FAILURE,
+    ) is SettlementOutcome.RETRIED
+
+    row = fake_repo.get_job(claimed.id)
+    assert row is not None
+    assert row["state"] == "pending"
+    assert row["last_error"] == "load:provider_connection_failure"
+    assert row["available_in_seconds"] == 11.0
+    assert row["lease_token"] is None
+    assert fake_repo.runs == before_runs
+
+
 def test_operator_retry_uses_committed_resolution_identifier_only(fake_repo):
     from app.db.repo.job_settlement import SettlementOutcome
 
