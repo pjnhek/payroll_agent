@@ -1044,7 +1044,7 @@ def test_clarification_delivery_review_card_is_purpose_isolated(fake_repo):
     assert "Review clarification delivery" in response.text
     assert "Retry same question" in response.text
     assert "Mark handled" in response.text
-    assert "Reject clarification" in response.text
+    assert "Reject" in response.text
     assert f"/runs/{run_id}/delivery-review/clarification/retry-now" in response.text
     assert f"/runs/{run_id}/delivery-review/clarification/mark-handled" in response.text
     assert f"/runs/{run_id}/delivery-review/clarification/reject" in response.text

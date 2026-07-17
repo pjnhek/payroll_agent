@@ -332,6 +332,11 @@ td a:hover {
   padding: var(--space-lg);
 }
 
+.delivery-review-card--clarification {
+  background: #EEF2FF;
+  border-color: #A5B4FC;
+}
+
 .delivery-review-header {
   display: flex;
   align-items: flex-start;
@@ -397,6 +402,16 @@ td a:hover {
 
 .delivery-review-authorize input {
   width: 100%;
+}
+
+.delivery-review-clarification-actions {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.delivery-review-clarification-actions form {
+  display: grid;
+  align-content: start;
+  gap: var(--space-sm);
 }
 
 /* --- Buttons --- */
