@@ -424,8 +424,8 @@ def _make_decision_with_unresolved(names: list[str]) -> Decision:
     )
 
 
-def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkeypatch):
-    """_clarify with record_only=True skips send_outbound, but alias capture STILL runs.
+def test_orchestrator_record_only_clarify_queues_snapshot_and_captures_alias(monkeypatch):
+    """_clarify captures aliases and queues a frozen record-only clarification.
 
     Ordering test: set_alias_candidates must be called BEFORE the record_only branch
     short-circuits the transport. If the capture sat after the branch, the demo path
@@ -465,18 +465,14 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     )
 
     alias_capture_calls: list[Any] = []
-    insert_calls: list[Any] = []
+    snapshot_calls: list[Any] = []
+    enqueue_calls: list[Any] = []
     set_status_calls: list[Any] = []
     send_outbound_calls: list[Any] = []
 
-    monkeypatch.setattr(
-        "app.db.repo.get_outbound_message_id",
-        lambda run_id, purpose, **kw: None,
-    )
-    monkeypatch.setattr(
-        "app.db.repo.get_record_only_flag",
-        lambda run_id, **kw: True,
-    )
+    monkeypatch.setattr("app.db.repo.get_clarification_round", lambda *a, **kw: 0)
+    monkeypatch.setattr("app.db.repo.get_outbound_for_round", lambda *a, **kw: None)
+    monkeypatch.setattr("app.db.repo.get_unconfirmed_outbound", lambda *a, **kw: None)
     monkeypatch.setattr(
         "app.db.repo.set_alias_candidates",
         lambda run_id, candidates, **kw: _record_call(
@@ -484,8 +480,14 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
         ),
     )
     monkeypatch.setattr(
-        "app.db.repo.insert_email_message",
-        lambda **kw: _record_and_return(insert_calls, kw, uuid.uuid4()),
+        "app.db.repo.reserve_outbound_snapshot",
+        lambda **kw: _record_and_return(
+            snapshot_calls, kw, {"email_id": uuid.uuid4(), "round": kw["round"]}
+        ),
+    )
+    monkeypatch.setattr(
+        "app.db.repo.enqueue_job",
+        lambda **kw: _record_and_return(enqueue_calls, kw, uuid.uuid4()),
     )
     monkeypatch.setattr(
         "app.db.repo.set_status",
@@ -526,19 +528,14 @@ def test_orchestrator_record_only_clarify_skips_resend_but_captures_alias(monkey
     )
 
     # The ordering assertions: no transport, but the alias capture still happened.
-    assert len(send_outbound_calls) == 0, (
-        "gateway.send_outbound must NOT be called for record_only run"
-    )
-    assert len(insert_calls) >= 1, "repo.insert_email_message must be called (record-only write)"
+    assert len(send_outbound_calls) == 0, "producers must not call the gateway"
+    assert len(snapshot_calls) == 1, "record-only work must freeze one snapshot"
+    assert len(enqueue_calls) == 1, "record-only work must queue one immutable job"
     assert len(alias_capture_calls) >= 1, (
         "repo.set_alias_candidates must be called BEFORE the record_only branch "
         "short-circuits, or the demo path silently stops capturing alias candidates"
     )
-    # Check the inserted row has the right purpose
-    assert any(
-        kw.get("purpose") == "clarification" and kw.get("send_state") == "sent"
-        for kw in insert_calls
-    ), "insert_email_message must be called with purpose='clarification' and send_state='sent'"
+    assert snapshot_calls[0]["purpose"] == "clarification"
     # set_status should be AWAITING_REPLY
     assert RunStatus.AWAITING_REPLY in set_status_calls, (
         "set_status must advance to AWAITING_REPLY"
@@ -634,8 +631,8 @@ def test_orchestrator_record_only_deliver_skips_resend(monkeypatch):
     assert len(enqueue_calls) == 1, "record-only work must enqueue one delivery job"
 
 
-def test_orchestrator_live_run_still_calls_resend(monkeypatch):
-    """clarify with record_only=False keeps calling gateway.send_outbound (no regression)."""
+def test_orchestrator_live_run_queues_resend_work(monkeypatch):
+    """A live clarification producer queues a snapshot; only the worker sends it."""
     from datetime import datetime
 
     from app.db.seed import seed
@@ -665,12 +662,24 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
     )
 
     send_outbound_calls: list[Any] = []
+    snapshot_calls: list[Any] = []
+    enqueue_calls: list[Any] = []
 
-    monkeypatch.setattr("app.db.repo.get_outbound_message_id", lambda *a, **kw: None)
-    monkeypatch.setattr("app.db.repo.get_record_only_flag", lambda *a, **kw: False)
+    monkeypatch.setattr("app.db.repo.get_clarification_round", lambda *a, **kw: 0)
+    monkeypatch.setattr("app.db.repo.get_outbound_for_round", lambda *a, **kw: None)
+    monkeypatch.setattr("app.db.repo.get_unconfirmed_outbound", lambda *a, **kw: None)
     monkeypatch.setattr("app.db.repo.set_alias_candidates", lambda *a, **kw: None)
     monkeypatch.setattr("app.db.repo.set_status", lambda *a, **kw: None)
-    monkeypatch.setattr("app.db.repo.insert_email_message", lambda **kw: uuid.uuid4())
+    monkeypatch.setattr(
+        "app.db.repo.reserve_outbound_snapshot",
+        lambda **kw: _record_and_return(
+            snapshot_calls, kw, {"email_id": uuid.uuid4(), "round": kw["round"]}
+        ),
+    )
+    monkeypatch.setattr(
+        "app.db.repo.enqueue_job",
+        lambda **kw: _record_and_return(enqueue_calls, kw, uuid.uuid4()),
+    )
     monkeypatch.setattr("app.db.repo.set_pre_clarify_extracted", lambda *a, **kw: True)
     monkeypatch.setattr(
         "app.email.gateway.send_outbound",
@@ -698,9 +707,9 @@ def test_orchestrator_live_run_still_calls_resend(monkeypatch):
         run_id, email, decision, roster, _minimal_extracted_live(run_id), llm=mock_llm
     )
 
-    assert len(send_outbound_calls) == 1, (
-        "gateway.send_outbound MUST be called for a live (record_only=False) run"
-    )
+    assert len(send_outbound_calls) == 0, "only a queued worker may call the gateway"
+    assert len(snapshot_calls) == 1
+    assert len(enqueue_calls) == 1
 
 
 # ---------------------------------------------------------------------------

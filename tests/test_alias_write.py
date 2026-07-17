@@ -34,6 +34,8 @@ from datetime import UTC
 from decimal import Decimal
 from typing import Any, cast
 
+import pytest
+
 # This import provides get_outbound_message_id for idempotency stub tests.
 from app.db.repo import get_outbound_message_id  # noqa: F401 (already exists; used in stubs)
 from app.models.contracts import Decision, Extracted, ExtractedEmployee
@@ -59,6 +61,34 @@ def _minimal_extracted(run_id: uuid.UUID) -> Extracted:
         run_id=run_id,
         employees=[ExtractedEmployee(submitted_name="__stub__", hours_regular=Decimal("0"))],
     )
+
+
+def _install_queued_clarification_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_mod: Any,
+    *,
+    call_log: list[str] | None = None,
+) -> None:
+    """Keep alias tests at the producer boundary without reviving direct sends."""
+    email_id = uuid.uuid4()
+
+    def _record(event: str) -> None:
+        if call_log is not None:
+            call_log.append(event)
+
+    def _reserve(**kwargs: Any) -> dict[str, Any]:
+        _record("reserve_outbound_snapshot")
+        return {"email_id": email_id, "round": kwargs["round"]}
+
+    def _enqueue(**_kwargs: Any) -> uuid.UUID:
+        _record("enqueue_job")
+        return uuid.uuid4()
+
+    monkeypatch.setattr(repo_mod, "get_clarification_round", lambda *a, **kw: 0)
+    monkeypatch.setattr(repo_mod, "get_outbound_for_round", lambda *a, **kw: None)
+    monkeypatch.setattr(repo_mod, "get_unconfirmed_outbound", lambda *a, **kw: None)
+    monkeypatch.setattr(repo_mod, "reserve_outbound_snapshot", _reserve)
+    monkeypatch.setattr(repo_mod, "enqueue_job", _enqueue)
 
 
 # ---------------------------------------------------------------------------
@@ -372,27 +402,18 @@ def test_alias_capture_no_capture_when_multiple_unresolved(monkeypatch):
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
 
-    def _fake_send_outbound(**kw):
-        return f"<{uuid.uuid4()}@payroll-agent.local>"
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+    monkeypatch.setattr(
+        gateway_mod,
+        "send_outbound",
+        lambda **_kw: pytest.fail("clarification producers must only queue snapshots"),
+        raising=True,
+    )
     monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
-    # No existing outbound (so the idempotency guard doesn't fire first)
-    monkeypatch.setattr(
-        repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
-    )
-    # _clarify checks the record_only flag; stub to False (live path)
-    monkeypatch.setattr(
-        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
-    )
-    # set_pre_clarify_extracted is called before AWAITING_REPLY (live path).
+    _install_queued_clarification_stubs(monkeypatch, repo_mod)
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
-    # insert_email_message called in live _clarify path.
-    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
-    # _clarify's AWAITING_REPLY exit paths open their own transaction.
     patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
@@ -485,26 +506,18 @@ def test_alias_capture_unambiguous_single_token_is_captured(monkeypatch):
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
 
-    def _fake_send_outbound(**kw):
-        return f"<{uuid.uuid4()}@payroll-agent.local>"
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+    monkeypatch.setattr(
+        gateway_mod,
+        "send_outbound",
+        lambda **_kw: pytest.fail("clarification producers must only queue snapshots"),
+        raising=True,
+    )
     monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
-    monkeypatch.setattr(
-        repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
-    )
-    # _clarify checks the record_only flag; stub to False (live path)
-    monkeypatch.setattr(
-        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
-    )
-    # set_pre_clarify_extracted is called before AWAITING_REPLY (live path).
+    _install_queued_clarification_stubs(monkeypatch, repo_mod)
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
-    # insert_email_message called in live _clarify path.
-    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
-    # _clarify's AWAITING_REPLY exit paths open their own transaction.
     patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
@@ -578,26 +591,18 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         set_alias_candidates_calls.append({"run_id": run_id, "candidates": candidates})
 
-    def _fake_send_outbound(**kw):
-        return f"<{uuid.uuid4()}@payroll-agent.local>"
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+    monkeypatch.setattr(
+        gateway_mod,
+        "send_outbound",
+        lambda **_kw: pytest.fail("clarification producers must only queue snapshots"),
+        raising=True,
+    )
     monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
-    monkeypatch.setattr(
-        repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
-    )
-    # _clarify checks the record_only flag; stub to False (live path)
-    monkeypatch.setattr(
-        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
-    )
-    # set_pre_clarify_extracted is called before AWAITING_REPLY (live path).
+    _install_queued_clarification_stubs(monkeypatch, repo_mod)
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
-    # insert_email_message called in live _clarify path.
-    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
-    # _clarify's AWAITING_REPLY exit paths open their own transaction.
     patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
@@ -647,12 +652,12 @@ def test_alias_capture_colliding_single_token_not_captured(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_clarify_captures_alias_candidates_before_send(monkeypatch):
-    """set_alias_candidates must be called BEFORE send_outbound.
+def test_clarify_captures_alias_candidates_before_queued_delivery(monkeypatch):
+    """Alias candidates are persisted in the transaction that queues delivery.
 
     When _clarify runs with a single genuinely unresolved token, it must:
-    1. Call set_alias_candidates with {token: None} BEFORE gateway.send_outbound.
-    2. In that order: set_alias_candidates first, then send_outbound.
+    1. Call set_alias_candidates with {token: None} in the producer transaction.
+    2. Queue one immutable identifier-only send job without calling the gateway.
 
     The candidate must be durable before the question goes out, or a crash between
     the two leaves a client reply with nothing to bind it to.
@@ -669,27 +674,18 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     def _fake_set_alias_candidates(run_id, candidates, conn=None):
         call_log.append("set_alias_candidates")
 
-    def _fake_send_outbound(**kw):
-        call_log.append("send_outbound")
-        return f"<{uuid.uuid4()}@payroll-agent.local>"
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _fake_send_outbound, raising=True)
+    monkeypatch.setattr(
+        gateway_mod,
+        "send_outbound",
+        lambda **_kw: pytest.fail("clarification producers must only queue snapshots"),
+        raising=True,
+    )
     monkeypatch.setattr(repo_mod, "set_status", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(
         repo_mod, "set_alias_candidates", _fake_set_alias_candidates, raising=False
     )
-    monkeypatch.setattr(
-        repo_mod, "get_outbound_message_id", lambda *a, **kw: None, raising=False
-    )
-    # _clarify checks the record_only flag; stub to False (live path)
-    monkeypatch.setattr(
-        repo_mod, "get_record_only_flag", lambda *a, **kw: False, raising=False
-    )
-    # set_pre_clarify_extracted is called before AWAITING_REPLY (live path).
+    _install_queued_clarification_stubs(monkeypatch, repo_mod, call_log=call_log)
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", lambda *a, **kw: True, raising=False)
-    # insert_email_message called in live _clarify path.
-    monkeypatch.setattr(repo_mod, "insert_email_message", lambda **kw: uuid.uuid4(), raising=False)
-    # _clarify's AWAITING_REPLY exit paths open their own transaction.
     patch_get_connection(monkeypatch, repo_mod)
 
     run_id = uuid.uuid4()
@@ -729,17 +725,7 @@ def test_clarify_captures_alias_candidates_before_send(monkeypatch):
     assert "set_alias_candidates" in call_log, (
         "set_alias_candidates must be called for a single genuinely unresolved token"
     )
-    assert "send_outbound" in call_log, (
-        "send_outbound must be called after set_alias_candidates"
-    )
-    # Verify ordering: set_alias_candidates before send_outbound
-    sac_index = call_log.index("set_alias_candidates")
-    send_index = call_log.index("send_outbound")
-    assert sac_index < send_index, (
-        "set_alias_candidates must be called BEFORE send_outbound — the alias "
-        "candidate must be durable before the clarification goes out, or a crash "
-        "between the two leaves the client's reply with nothing to bind to"
-    )
+    assert "enqueue_job" in call_log, "the immutable snapshot must be queued"
 
 
 def test_resume_binding_uses_pre_vs_post_diff_not_single_resolved_count(monkeypatch):

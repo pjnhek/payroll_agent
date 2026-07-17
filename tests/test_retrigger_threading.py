@@ -122,11 +122,12 @@ def _crash_after_send_then_retrigger(
 ) -> tuple[uuid.UUID, list[dict[str, Any]], dict[str, Any]]:
     """Drive a real run to a post-send crash, then recover it through the real route.
 
-    Returns the run id, every captured gateway send call, and a snapshot of the
+    Returns the run id, every worker-owned provider call, and a snapshot of the
     outbound row that was already delivered before the crash.
     """
+    import resend
+
     import app.db.repo as repo_mod
-    import app.email.gateway as gateway_mod
     import app.pipeline.clarification as clarification_mod
     from app.routes import pipeline_glue
 
@@ -138,16 +139,15 @@ def _crash_after_send_then_retrigger(
         clarification_mod, "suggest_employees", lambda names, roster, **kw: {}
     )
 
-    # Watch the gateway without replacing it: every call is recorded and then handed
-    # to the real function, so the real threading-header derivation still executes.
+    # Watch the provider seam used by the queued snapshot worker. The legacy gateway
+    # entry point is deliberately fail-closed and must never be called by producers.
     send_calls: list[dict[str, Any]] = []
-    real_send_outbound = gateway_mod.send_outbound
 
-    def _watch_send_outbound(**kwargs: Any) -> str:
-        send_calls.append(kwargs)
-        return real_send_outbound(**kwargs)
+    def _watch_resend(params: Any, options: Any = None) -> dict[str, str]:
+        send_calls.append({"params": params, "options": options})
+        return {"id": "threading-test"}
 
-    monkeypatch.setattr(gateway_mod, "send_outbound", _watch_send_outbound)
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_watch_resend))
 
     # Two passes through the pipeline: the crashed one and the recovered one. Each
     # reads the email once and drafts the clarification once.
@@ -158,23 +158,15 @@ def _crash_after_send_then_retrigger(
         _DRAFT_BODY,
     ]
 
-    real_snapshot_step = repo_mod.set_pre_clarify_extracted
-    fail_once = _FailFirstCallOnly(real_snapshot_step)
-    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", fail_once)
-
-    # The crash pass exercises the explicit value seam directly. The durable drain is
-    # the only PipelineResult consumer; this focused threading test needs only the
-    # bounded terminal value plus the persisted ERROR/thread state it already protects.
+    # The producer commits only frozen intent. The worker is the sole provider caller.
     result = pipeline_glue.run_pipeline_now(run_id)
-    assert result.outcome.value == "terminal"
-    repo_mod.settle_background_terminal(run_id, result)
+    assert result.outcome.value == "ok"
+    assert drain.drain_once() is DrainOutcome.DONE
 
-    monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", real_snapshot_step)
-
-    assert fail_once.fired, (
-        "the injected failure never fired — the pipeline did not reach the "
-        "post-send persistence step, so no crash was actually produced"
-    )
+    # Model a crash after worker settlement, before the operator presses retrigger.
+    # The delivered immutable row stays append-only while the run re-enters recovery.
+    from app.models.status import RunStatus
+    repo_mod.set_status(run_id, RunStatus.ERROR)
     assert fake_repo.runs[str(run_id)]["status"] == "error", (
         "a failure after the clarification was sent must leave the run in error, "
         "which is the state the operator retriggers from"
@@ -203,7 +195,13 @@ def _crash_after_send_then_retrigger(
     assert response.status_code == 303, (
         f"the retrigger route must redirect back to the run; got {response.status_code}"
     )
-    matching = [j for j in fake_repo.jobs.values() if j["run_id"] == run_id]
+    matching = [
+        j
+        for j in fake_repo.jobs.values()
+        if j["run_id"] == run_id
+        and j["kind"] == "run_pipeline"
+        and j["state"] == "pending"
+    ]
     assert len(matching) == 1, (
         f"retrigger must enqueue exactly one run_pipeline job for {run_id}; "
         f"found {len(matching)}"
@@ -212,6 +210,9 @@ def _crash_after_send_then_retrigger(
 
     assert drain.drain_once() == DrainOutcome.DONE, (
         "drain_once must claim and dispatch the job retrigger enqueued"
+    )
+    assert drain.drain_once() == DrainOutcome.DONE, (
+        "the recovered clarification's frozen SEND_OUTBOUND job must be drained"
     )
 
     return run_id, send_calls, pre_crash_row
@@ -238,12 +239,13 @@ def test_retriggered_send_still_anchors_the_clients_original_thread(
         "the retriggered run must send its clarification again — one send before the "
         f"crash and one after recovery; got {len(send_calls)} send(s) in total"
     )
-    recovered_send = send_calls[-1]
-    assert recovered_send["in_reply_to"] == CLIENT_THREAD_ANCHOR, (
+    recovered_send = send_calls[-1]["params"]
+    recovered_headers = recovered_send["headers"]
+    assert recovered_headers["In-Reply-To"] == CLIENT_THREAD_ANCHOR, (
         "the email sent after recovery must reply to the client's original message; "
-        f"it replied to {recovered_send['in_reply_to']!r} instead"
+        f"it replied to {recovered_headers['In-Reply-To']!r} instead"
     )
-    assert CLIENT_THREAD_ANCHOR in (recovered_send["references_header"] or ""), (
+    assert CLIENT_THREAD_ANCHOR in recovered_headers["References"], (
         "the references chain on the recovered send must still contain the client's "
         "original message, or the thread is broken for every mail reader that walks "
         "the chain rather than the single in-reply-to header"
@@ -251,13 +253,14 @@ def test_retriggered_send_still_anchors_the_clients_original_thread(
 
     rows = fake_repo.outbound[str(run_id)]
     recovered_row = rows[-1]
+    recovered_snapshot = fake_repo.outbound_snapshots[str(recovered_row["id"])]["payload"]
     assert recovered_row["send_state"] == "sent"
-    assert recovered_row["in_reply_to"] == CLIENT_THREAD_ANCHOR, (
+    assert recovered_snapshot["in_reply_to"] == CLIENT_THREAD_ANCHOR, (
         "the persisted record of the recovered send must carry the client's original "
         "message as its in-reply-to; the record is what later replies are matched "
         "against, so a wrong value here strands the client's answer"
     )
-    assert CLIENT_THREAD_ANCHOR in (recovered_row["references_header"] or ""), (
+    assert CLIENT_THREAD_ANCHOR in (recovered_snapshot["references_header"] or ""), (
         "the persisted references chain of the recovered send must contain the "
         "client's original message"
     )

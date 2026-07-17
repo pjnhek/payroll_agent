@@ -151,6 +151,13 @@ def _replay_fixture_durably(
     assert len(matching_pipeline_jobs) == 1
 
     assert drain.drain_once() is DrainOutcome.DONE
+    # Clarification delivery is a separate immutable SEND_OUTBOUND job, not a
+    # synchronous side effect of the pipeline job. Clean fixtures have no send job.
+    if any(
+        job["kind"] == JobKind.SEND_OUTBOUND.value and job["run_id"] == run_id
+        for job in fake_repo.jobs.values()
+    ):
+        assert drain.drain_once() is DrainOutcome.DONE
     return run_id
 
 

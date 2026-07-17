@@ -152,6 +152,9 @@ def _drive_to_awaiting_reply(client, fake_repo, mock_llm) -> tuple[str, str]:
     assert len(created) == 1
     run_id = created.pop()
     assert drain.drain_once() is DrainOutcome.DONE
+    # The clarification producer only queues a frozen SEND_OUTBOUND job. Drain that
+    # worker-owned delivery before reading the RFC thread anchor from a sent row.
+    assert drain.drain_once() is DrainOutcome.DONE
     assert fake_repo.load_run(run_id)["status"] == "awaiting_reply"
     msg_id = fake_repo.get_outbound_message_id(run_id)
     assert msg_id is not None

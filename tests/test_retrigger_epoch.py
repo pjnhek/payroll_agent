@@ -37,12 +37,13 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
 from app.pipeline.clarification import clarify as _clarify
 from app.pipeline.orchestrator import resume_pipeline
+from app.queue import drain
+from app.queue.drain import DrainOutcome
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -113,8 +114,6 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
     system. Epoch-scoping the guard makes that stale row belong to a DIFFERENT
     epoch, so the send actually happens.
     """
-    import app.email.gateway as gateway_mod
-
     run_id = uuid.uuid4()
     email = _bare_inbound()
     decision = _bare_decision()
@@ -152,27 +151,23 @@ def test_retrigger_sends_fresh_clarification_despite_stale_round0_sent_row(
         "the whole mechanism that makes pre-retrigger email rows invisible"
     )
 
-    send_calls: list[dict[str, Any]] = []
-    real_send_outbound = gateway_mod.send_outbound
-
-    def _spy_send_outbound(**kw):
-        send_calls.append(kw)
-        return real_send_outbound(**kw)
-
-    monkeypatch.setattr(gateway_mod, "send_outbound", _spy_send_outbound)
-
     # Drive the REAL _clarify seam — current_round is read fresh from the
     # (just-cleared) run, so this call represents the retriggered run's own
     # first clarification attempt post-retrigger.
     _clarify(run_id, email, decision, roster, extracted, llm=None, purpose="clarification")
 
-    assert len(send_calls) == 1, (
-        "the retriggered run's fresh round-0 clarification must actually send "
-        "even though a stale pre-retrigger round-0 'sent' row still exists in "
+    matching_send_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["run_id"] == run_id and job["kind"] == "send_outbound"
+    ]
+    assert len(matching_send_jobs) == 1, (
+        "the retriggered run's fresh round-0 clarification must queue one immutable "
+        "send even though a stale pre-retrigger round-0 'sent' row still exists in "
         "email_messages — the epoch scope must make that stale row invisible to "
         "the idempotency guard"
     )
-    assert send_calls[0]["round"] == 0
+    assert drain.drain_once() is DrainOutcome.DONE
 
     # A SECOND 'sent' row now exists at round 0, distinguished by epoch — the
     # append-only audit log keeps BOTH the stale epoch-0 row and the fresh

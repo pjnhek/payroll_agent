@@ -2074,7 +2074,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
     monkeypatch.setattr(
         resend.Emails,
         "send",
-        staticmethod(lambda params: {"id": "fake-resend-id"}),
+        staticmethod(lambda *args, **kwargs: {"id": "fake-resend-id"}),
         raising=True,
     )
 
