@@ -204,7 +204,7 @@ pump and the failure policy exist would ship a durability regression, not an imp
   3. Killing the process immediately after the webhook returns 200 — before any pipeline work starts — does not lose the email; the accepted event is durably recorded and the run completes once a worker or the pump picks it up.
   4. A clarification reply from an unauthorized sender is still rejected exactly as it is today — moving the ingest transaction into a worker did not weaken the sender-revalidation guard.
 
-**Plans**: 10/12 plans executed
+**Plans**: 11/12 plans executed
 
 **Wave 1** (additive receipt and operator-authority foundation):
 
@@ -236,7 +236,7 @@ pump and the failure policy exist would ship a durability regression, not an imp
 
 **Wave 7** (compatibility deletion gate; blocked on the runs UI projection and all consumer migrations):
 
-- [ ] 19-12-PLAN.md — Delete the migrated compatibility surface and install the complete producer/retired-symbol guard
+- [x] 19-12-PLAN.md — Delete the migrated compatibility surface and install the complete producer/retired-symbol guard
 
 **Wave 8** (phase evidence and deploy checkpoint; blocked on all cutover and deletion plans):
 
@@ -312,6 +312,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
-| 19. Webhook Cutover & Durable Ingest | v4 | 10/12 | In Progress|  |
+| 19. Webhook Cutover & Durable Ingest | v4 | 11/12 | In Progress|  |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |

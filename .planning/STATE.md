@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Completed 19-11-PLAN.md
-last_updated: "2026-07-17T03:39:53.717Z"
+stopped_at: Completed 19-12-PLAN.md; Plan 19-10 remains next
+last_updated: "2026-07-17T04:00:58.360Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 11 completed
+last_activity_desc: Phase 19 Plan 12 completed; Plan 10 remains the next incomplete dependency-ordered plan
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 39
-  percent: 95
+  completed_plans: 40
+  percent: 98
 ---
 
 # Project State
@@ -31,13 +31,13 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
 Plan: 10 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 11 completed; Plan 10 remains the next incomplete dependency-ordered plan
+Last activity: 2026-07-16 — Phase 19 Plan 12 completed; Plan 10 remains the next incomplete dependency-ordered plan
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 102
+- Total plans completed: 103
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -120,6 +120,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 11 completed; Plan 10 remains the ne
 | Phase 19 P06 | 8min | 2 tasks | 4 files |
 | Phase 19 P09 | 19min | 2 tasks | 9 files |
 | Phase 19 P11 | 21min | 3 tasks | 12 files |
+| Phase 19 P12 | 14min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -241,6 +242,9 @@ Recent decisions affecting current work:
 - [Phase 19]: Test transport receipt and business execution as two explicit phases so request tests cannot authorize inline provider or payroll work.
 - [Phase 19]: Preserve terminal error-state assertions by settling explicit PipelineResult values in tests instead of recreating retired background wrappers.
 - [Phase 19]: Keep the RFC Message-ID race behind its real-Postgres guard because commit serialization is the proof boundary.
+- [Phase 19]: Pipeline glue retains only durable reply classification helpers and explicit PipelineResult value seams. — Queue-owned outcomes and escaping failures must reach fenced drain settlement without route-procedure consumption.
+- [Phase 19]: The permanent cutover guard pins eight historical route producers and nine named former consumers. — Six additional full-suite consumers are separately enumerated so exact dependency evidence and discovered stale seams are both preserved.
+- [Phase 19]: Synthetic producer and retired-wrapper mutations use the same AST detector as the real inventory. — Negative architecture checks must be non-vacuous and mutation-proven.
 
 ### Pending Todos
 
@@ -306,8 +310,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T03:39:53.708Z
-Stopped at: Completed 19-11-PLAN.md
+Last session: 2026-07-17T04:00:58.351Z
+Stopped at: Completed 19-12-PLAN.md; Plan 19-10 remains next
 Resume file: None
 
 ## Operator Next Steps
