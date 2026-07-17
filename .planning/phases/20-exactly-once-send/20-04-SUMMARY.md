@@ -136,6 +136,17 @@ status: complete
 
 **Total deviations:** 2 auto-fixed (1 Rule 2 critical behavior, 1 Rule 1 bug). **Impact:** Preserves the durable boundary while restoring the required post-send business effects.
 
+**3. [Rule 1 - Test expectation] Queue-drain success asserted an intermediate state**
+
+- **Found during:** Wave 6 full-suite verification
+- **Issue:** The frozen confirmation queue test still expected `sent`, even though successful worker settlement now safely completes alias learning and transitions the run to `reconciled`.
+- **Fix:** Updated the assertion to pin the final successful-delivery state without changing fixture or production behavior.
+- **Files modified:** `tests/test_queue_drain.py`
+- **Verification:** Targeted queue-drain test, focused Plan 20-04 suite, and provenance guard passed.
+- **Committed in:** This scoped correction commit
+
+**Total deviations:** 3 auto-fixed (1 Rule 2 critical behavior, 2 Rule 1 bugs). **Impact:** The test now verifies the intended complete worker outcome rather than an internal transition.
+
 ## Issues Encountered
 
 - Guarded database tests skipped because `DATABASE_URL` and `ALLOW_DB_RESET=1` are not configured locally; they were not treated as passing evidence.
@@ -159,6 +170,7 @@ None - no external service configuration required.
 - `uv run pytest tests/test_alias_and_run_column_regressions.py::test_deliver_enriches_run_dict_with_business_name tests/test_alias_full_loop.py::test_full_loop_learns_alias_and_stops_asking tests/test_demo_landing.py::test_orchestrator_record_only_deliver_skips_resend tests/test_multi_employee_delivery.py::test_deliver_multi_employee_sends_one_email_with_per_employee_pdfs tests/test_multi_employee_delivery.py::test_deliver_multi_employee_subject_uses_start_only_period tests/test_delivery.py tests/test_hitl.py tests/test_send_idempotency.py tests/test_comment_provenance_guard.py -q` — 52 passed, 3 skipped.
 - `uv run mypy app/db/repo/job_settlement.py app/pipeline/delivery.py app/pipeline/send_guard.py app/routes/runs.py` — passed.
 - `uv run ruff check app/db/repo/job_settlement.py app/pipeline/delivery.py app/pipeline/send_guard.py app/routes/runs.py tests/conftest.py tests/test_alias_and_run_column_regressions.py tests/test_alias_full_loop.py tests/test_demo_landing.py tests/test_multi_employee_delivery.py tests/test_send_idempotency.py` — passed.
+- `uv run pytest tests/test_queue_drain.py::test_send_drain_settles_a_frozen_snapshot_through_the_fake_pair tests/test_delivery.py tests/test_hitl.py tests/test_send_idempotency.py tests/test_comment_provenance_guard.py -q` — 48 passed, 3 skipped.
 
 ## Self-Check: PASSED
 

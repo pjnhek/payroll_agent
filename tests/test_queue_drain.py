@@ -863,7 +863,7 @@ def test_send_drain_settles_a_frozen_snapshot_through_the_fake_pair(
 
     assert drain.drain_once() is DrainOutcome.DONE
     assert fake_repo.get_job(job_id)["state"] == "done"
-    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.SENT.value
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECONCILED.value
 
 
 def test_send_handler_exception_never_reaches_generic_settlement(
