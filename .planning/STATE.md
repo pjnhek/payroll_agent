@@ -4,17 +4,17 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
-status: executing
-stopped_at: Completed 19-12-PLAN.md; Plan 19-10 remains next
-last_updated: "2026-07-17T04:00:58.360Z"
+status: verifying
+stopped_at: Completed 19-10-PLAN.md; Phase 19 plans complete, verification next
+last_updated: "2026-07-17T05:03:45.528Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 12 completed; Plan 10 remains the next incomplete dependency-ordered plan
+last_activity_desc: Phase 19 Plan 10 completed; all 12 plans executed and phase verification is next
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 40
-  percent: 98
+  completed_plans: 41
+  percent: 100
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 
 ## Current Position
 
-Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
-Plan: 10 of 12
-Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 12 completed; Plan 10 remains the next incomplete dependency-ordered plan
+Phase: 19 (webhook-cutover-durable-ingest) — VERIFYING
+Plan: 12 of 12
+Status: All plans executed — ready for phase verification
+Last activity: 2026-07-16 — Phase 19 Plan 10 completed; all 12 plans executed and phase verification is next
 
 ## Performance Metrics
 
@@ -121,6 +121,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 12 completed; Plan 10 remains the ne
 | Phase 19 P09 | 19min | 2 tasks | 9 files |
 | Phase 19 P11 | 21min | 3 tasks | 12 files |
 | Phase 19 P12 | 14min | 2 tasks | 7 files |
+| Phase 19 P10 | 53min | 3 tasks | 21 files |
 
 ## Accumulated Context
 
@@ -245,6 +246,10 @@ Recent decisions affecting current work:
 - [Phase 19]: Pipeline glue retains only durable reply classification helpers and explicit PipelineResult value seams. — Queue-owned outcomes and escaping failures must reach fenced drain settlement without route-procedure consumption.
 - [Phase 19]: The permanent cutover guard pins eight historical route producers and nine named former consumers. — Six additional full-suite consumers are separately enumerated so exact dependency evidence and discovered stale seams are both preserved.
 - [Phase 19]: Synthetic producer and retired-wrapper mutations use the same AST detector as the real inventory. — Negative architecture checks must be non-vacuous and mutation-proven.
+- [Phase 19]: Retention expires inbound payloads by received_at only after ingest work is terminal; open work and job audit remain. — Payload retention must not delete owed work or erase terminal transport history.
+- [Phase 19]: The deployment fence installs its singleton prerequisite under the legacy writer lock before accepted historical inventory. — A live database on the prior schema must be fenced before the full additive bootstrap.
+- [Phase 19]: Wrong-run and unauthorized durable replies are bounded no-ops; valid first delivery owns the AWAITING_REPLY to RECEIVED CAS. — At-least-once delivery must not leak context or redrive an already-owned transition.
+- [Phase 19]: Live operator-resolution writes reopened only for exact proven revision dad22b3 after repeated clean postflight. — The old writer remained disabled until authority, schema, health, deployment identity, and fence evidence all agreed.
 
 ### Pending Todos
 
@@ -310,8 +315,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T04:00:58.351Z
-Stopped at: Completed 19-12-PLAN.md; Plan 19-10 remains next
+Last session: 2026-07-17T05:03:45.519Z
+Stopped at: Completed 19-10-PLAN.md; Phase 19 plans complete, verification next
 Resume file: None
 
 ## Operator Next Steps

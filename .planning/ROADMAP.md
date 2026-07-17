@@ -40,7 +40,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 - [x] **Phase 16: Queue Substrate & Unblocked Webhook** - The webhook stops blocking the event loop and a durable Postgres job queue exists, proven on one already-manual, low-risk producer (operator retrigger) before the money path touches it. (completed 2026-07-14)
 - [x] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present. (completed 2026-07-15)
 - [x] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism. (completed 2026-07-16)
-- [ ] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue.
+- [x] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue. (completed 2026-07-17)
 - [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch.
 - [ ] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact.
 
@@ -204,7 +204,7 @@ pump and the failure policy exist would ship a durability regression, not an imp
   3. Killing the process immediately after the webhook returns 200 — before any pipeline work starts — does not lose the email; the accepted event is durably recorded and the run completes once a worker or the pump picks it up.
   4. A clarification reply from an unauthorized sender is still rejected exactly as it is today — moving the ingest transaction into a worker did not weaken the sender-revalidation guard.
 
-**Plans**: 11/12 plans executed
+**Plans**: 12/12 plans complete
 
 **Wave 1** (additive receipt and operator-authority foundation):
 
@@ -240,7 +240,7 @@ pump and the failure policy exist would ship a durability regression, not an imp
 
 **Wave 8** (phase evidence and deploy checkpoint; blocked on all cutover and deletion plans):
 
-- [ ] 19-10-PLAN.md — Prove retention/restart durability and fence the Phase 18 writer through exact Phase 19 activation before reopening submissions
+- [x] 19-10-PLAN.md — Prove retention/restart durability and fence the Phase 18 writer through exact Phase 19 activation before reopening submissions
 
 ### Phase 20: Exactly-Once Send
 
@@ -312,6 +312,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 16. Queue Substrate & Unblocked Webhook | v4 | 10/10 | Complete    | 2026-07-14 |
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
-| 19. Webhook Cutover & Durable Ingest | v4 | 11/12 | In Progress|  |
+| 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete   | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 0/TBD | Not started | - |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
