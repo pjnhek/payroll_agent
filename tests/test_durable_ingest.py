@@ -1,4 +1,4 @@
-"""Delayed durable-ingest contracts for Phase 19.
+"""Delayed durable-ingest contracts.
 
 The transport receipt and RFC message are deliberately separate idempotency
 layers: an ingest retry may process a different persisted transport event that
