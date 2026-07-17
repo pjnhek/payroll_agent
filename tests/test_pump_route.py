@@ -121,6 +121,40 @@ def test_auth_correct_token_returns_200_with_counts_invariant(
     _assert_accounting_identity(body)
 
 
+def test_pump_runs_retention_after_drain_without_exposing_maintenance_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def _drain() -> DrainOutcome:
+        calls.append("drain")
+        return DrainOutcome.EMPTY
+
+    def _purge(*, older_than_days: int = 30, batch_size: int = 100) -> int:
+        assert (older_than_days, batch_size) == (30, 100)
+        calls.append("purge")
+        return 3
+
+    monkeypatch.setattr(pump_module, "drain_once", _drain)
+    monkeypatch.setattr(repo, "purge_terminal_inbound_events", _purge, raising=False)
+    monkeypatch.setattr(repo, "count_open_jobs", lambda: calls.append("count") or 0)
+
+    client = _client_with_token(monkeypatch, "secret-token")
+    resp = client.get(PUMP_PATH, headers=_auth_header("secret-token"))
+
+    assert resp.status_code == 200
+    assert calls == ["drain", "purge", "count"]
+    assert resp.json() == {
+        "claimed": 0,
+        "done": 0,
+        "retried": 0,
+        "dead": 0,
+        "fenced": 0,
+        "reaped_final_lease": 0,
+        "queue_depth": 0,
+    }
+
+
 @pytest.mark.parametrize(
     ("outcomes", "expected"),
     [

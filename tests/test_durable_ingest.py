@@ -112,6 +112,29 @@ def test_event_repository_insert_and_load_are_bounded(fake_conn) -> None:
     assert "external_event_id" not in fake_conn.executed[-1][0].split("FROM", 1)[0]
 
 
+def test_purge_retention_is_terminal_only_age_bounded_and_batch_bounded(
+    fake_conn,
+) -> None:
+    """Retention may remove old terminal envelopes, never open transport work."""
+    deleted = [uuid.uuid4(), uuid.uuid4()]
+    fake_conn.script_fetchall([(event_id,) for event_id in deleted])
+
+    count = repo.purge_terminal_inbound_events(
+        older_than_days=30,
+        batch_size=2,
+        conn=fake_conn,
+    )
+
+    assert count == 2
+    sql = " ".join(fake_conn.all_sql().split())
+    assert "DELETE FROM inbound_events" in sql
+    assert "j.kind = 'ingest'" in sql
+    assert "j.state IN ('done', 'dead')" in sql
+    assert "open_job.state IN ('pending', 'leased')" in sql
+    assert "LIMIT %(batch_size)s" in sql
+    assert fake_conn.last()[1] == {"older_than_days": 30, "batch_size": 2}
+
+
 def test_delayed_processing_fetches_only_from_persisted_event(
     fake_repo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
