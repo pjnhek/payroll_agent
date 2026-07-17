@@ -928,7 +928,7 @@ def test_simulate_reply_triggers_route_reply_with_correct_headers(
 
 
 @pytest.mark.integration
-def test_send_test_mints_fresh_message_id_each_click():
+def test_send_test_mints_fresh_message_id_each_click(seeded_db):
     """Two consecutive POST /demo/send-test calls must produce DISTINCT runs with
     DISTINCT message_ids and redirect directly to each new run detail.
 
@@ -938,7 +938,9 @@ def test_send_test_mints_fresh_message_id_each_click():
     - Each click creates a distinct payroll_runs row.
 
     Marked @pytest.mark.integration because verifying distinct runs/message_ids
-    requires a live DB (querying via repo after each POST).
+    requires a database.  The shared ``seeded_db`` fixture owns the destructive
+    reset, applies the current committed schema, and requires both DATABASE_URL
+    and ALLOW_DB_RESET=1 before this test can touch a configured database.
     """
     from app.db import repo as _repo
 
@@ -968,11 +970,7 @@ def test_send_test_mints_fresh_message_id_each_click():
     # DASH-05 core contract: two distinct runs were created in the DB.
     # We verify this by loading all runs and checking the two most-recent ones
     # have distinct IDs and distinct message_ids (fresh Message-ID per click).
-    try:
-        all_runs = _repo.load_all_runs()
-    except Exception:
-        # DB unavailable in this test environment — skip the DB-level assertion.
-        pytest.skip("DB unavailable — skipping run/message_id distinctness check")
+    all_runs = _repo.load_all_runs()
 
     assert len(all_runs) >= 2, (
         "Expected at least 2 runs after two /demo/send-test clicks; "
