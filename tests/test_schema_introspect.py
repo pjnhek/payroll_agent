@@ -219,6 +219,7 @@ def _script_in_sync(
     drop_status: str | None = None,
     extra_status: str | None = None,
     extra_purpose: str | None = None,
+    extra_status_constraint: str | None = None,
     drop_column: tuple[str, str] | None = None,
     drop_table: str | None = None,
     drop_uq: bool = False,
@@ -263,7 +264,10 @@ def _script_in_sync(
                 data_type = "text" if data_type != "text" else "uuid"
             rows.append((column, data_type, "YES" if nullable else "NO"))
         conn.script_fetchall(rows)
-    conn.script_fetchall([("status", status_def), ("purpose", purpose_def)])
+    state_constraints = [("status", status_def), ("purpose", purpose_def)]
+    if extra_status_constraint:
+        state_constraints.append(("status", extra_status_constraint))
+    conn.script_fetchall(state_constraints)
     conn.script_fetchall([(name,) for name in uq_present])
 
     index_rows = [
@@ -449,6 +453,28 @@ def test_diff_rejects_extra_state_machine_value(
 
     assert not diff.is_in_sync
     assert diff.as_missing_dict()[diagnostic_key] == [extra]
+
+
+@pytest.mark.parametrize(
+    "extra_constraint",
+    [
+        "CHECK ((status = ANY (ARRAY['received'::text])))",
+        "CHECK ((length(status) > 0))",
+    ],
+    ids=["restrictive", "unparseable"],
+)
+def test_diff_rejects_additional_status_check_constraint(
+    extra_constraint: str,
+):
+    conn = FakeConnection()
+    _script_in_sync(conn, extra_status_constraint=extra_constraint)
+
+    diff = _diff(conn)
+
+    assert not diff.is_in_sync
+    assert diff.as_missing_dict()["invalid_state_constraints"] == [
+        "payroll_runs.status"
+    ]
 
 
 def test_diff_missing_unique_constraint():

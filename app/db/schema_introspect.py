@@ -330,6 +330,7 @@ class SchemaDiff:
     missing_unique_constraints: list[str]
     unexpected_status_values: list[str] = field(default_factory=list)
     unexpected_purpose_values: list[str] = field(default_factory=list)
+    invalid_state_constraints: list[str] = field(default_factory=list)
     missing_required_indexes: list[str] = field(default_factory=list)
     missing_required_constraints: list[str] = field(default_factory=list)
     missing_required_columns: list[str] = field(default_factory=list)
@@ -343,6 +344,7 @@ class SchemaDiff:
             or self.missing_purpose_values
             or self.unexpected_status_values
             or self.unexpected_purpose_values
+            or self.invalid_state_constraints
             or self.missing_unique_constraints
             or self.missing_required_indexes
             or self.missing_required_constraints
@@ -364,6 +366,10 @@ class SchemaDiff:
         if self.unexpected_purpose_values:
             out["unexpected_purpose_values"] = sorted(
                 self.unexpected_purpose_values
+            )
+        if self.invalid_state_constraints:
+            out["invalid_state_constraints"] = sorted(
+                self.invalid_state_constraints
             )
         if self.missing_unique_constraints:
             out["unique_constraints"] = sorted(self.missing_unique_constraints)
@@ -440,17 +446,26 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
         "       WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)) "
         "      IN (ARRAY['status'], ARRAY['purpose'])",
     ).fetchall()
-    live_status: set[str] = set()
-    live_purpose: set[str] = set()
+    status_catalogs: list[set[str]] = []
+    purpose_catalogs: list[set[str]] = []
     for which, cdef in rows:
         if which == "status":
-            live_status |= _parse_any_array_values(cdef)
+            status_catalogs.append(_parse_any_array_values(cdef))
         else:
-            live_purpose |= _parse_any_array_values(cdef)
+            purpose_catalogs.append(_parse_any_array_values(cdef))
+    live_status = set().union(*status_catalogs)
+    live_purpose = set().union(*purpose_catalogs)
     missing_status = sorted(set(exp.status_values) - live_status)
     missing_purpose = sorted(set(exp.purpose_values) - live_purpose)
     unexpected_status = sorted(live_status - set(exp.status_values))
     unexpected_purpose = sorted(live_purpose - set(exp.purpose_values))
+    invalid_state_constraints: list[str] = []
+    if len(status_catalogs) != 1 or status_catalogs[0] != set(exp.status_values):
+        invalid_state_constraints.append("payroll_runs.status")
+    if len(purpose_catalogs) != 1 or purpose_catalogs[0] != set(
+        exp.purpose_values
+    ):
+        invalid_state_constraints.append("email_messages.purpose")
 
     # Q7: required unique constraints present on email_messages.
     rows = conn.execute(
@@ -568,6 +583,7 @@ def diff_against_live(conn: psycopg.Connection) -> SchemaDiff:
         missing_unique_constraints=missing_uq,
         unexpected_status_values=unexpected_status,
         unexpected_purpose_values=unexpected_purpose,
+        invalid_state_constraints=invalid_state_constraints,
         missing_required_indexes=missing_indexes,
         missing_required_constraints=missing_constraints,
         missing_required_columns=missing_required_columns,
