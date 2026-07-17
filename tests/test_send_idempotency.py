@@ -556,6 +556,53 @@ def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
         assert f"CREATE TRIGGER {trigger}" in schema
 
 
+def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
+    fake_conn: Any,
+) -> None:
+    """The delivery coordinator must fence every write before it records an outcome."""
+    from app.db.repo.job_settlement import settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound"))
+    fake_conn.script_fetchone((uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved"))
+    fake_conn.script_fetchone(("approved",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.OK,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.UNCLASSIFIED,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome.value == "done"
+    sql = fake_conn.all_sql()
+    assert "state = 'leased' AND lease_token = %s" in sql
+    assert "FOR UPDATE" in sql
+    assert "INSERT INTO outbound_delivery_attempts" in sql
+    assert "attempt_state" in sql and "failure_category" in sql
+    assert "status = 'approved'" in sql
+    assert "status = 'sent'" in sql
+
+
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 @pytest.mark.queueproof
