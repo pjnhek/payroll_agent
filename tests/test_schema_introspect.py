@@ -490,6 +490,17 @@ def test_schema_reapply_never_reopens_closed_writer_fence():
     assert "UPDATE" not in fence_seed.upper()
 
 
+def test_schema_reapply_backfills_only_current_reply_epoch():
+    schema = pathlib.Path("app/db/schema.sql").read_text()
+    backfill = schema.split("UPDATE payroll_runs pr", 1)[1].split(
+        "-- One-shot alias_candidates", 1
+    )[0]
+
+    assert "SELECT run_id, epoch, count(*) AS sent_count" in backfill
+    assert "GROUP BY run_id, epoch" in backfill
+    assert "pr.reply_epoch = sub.epoch" in backfill
+
+
 def test_phase19_columns_exist_in_fresh_and_additive_paths():
     schema = pathlib.Path("app/db/schema.sql").read_text()
     clean = _strip_line_comments(schema)

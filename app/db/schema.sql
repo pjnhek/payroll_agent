@@ -375,23 +375,23 @@ BEGIN
 END;
 $$;
 
--- One-shot backfill: live payroll_runs rows that already sent clarification(s) predate
--- the clarification_round column entirely and would otherwise read as round 0, letting
--- the round-aware guard re-ask a question already asked. Deterministic and idempotent:
--- re-running recomputes the same count from the immutable sent-row history, since
--- clarification_round is simply the count of this run's SENT outbound
--- clarification-purpose rows.
+-- Backfill current-conversation clarification sends for live payroll_runs rows that
+-- predate clarification_round. Historical email rows remain immutable across a
+-- retrigger, but reply_epoch advances and clarification_round resets to zero; scoping
+-- the aggregate to the run's current epoch prevents a schema re-apply from resurrecting
+-- prior-conversation rounds. Re-running is idempotent within the current epoch.
 UPDATE payroll_runs pr
 SET clarification_round = sub.sent_count
 FROM (
-    SELECT run_id, count(*) AS sent_count
+    SELECT run_id, epoch, count(*) AS sent_count
     FROM email_messages
     WHERE direction = 'outbound'
       AND purpose IN ('clarification', 'clarification_field_regression')
       AND send_state = 'sent'
-    GROUP BY run_id
+    GROUP BY run_id, epoch
 ) sub
 WHERE pr.id = sub.run_id
+  AND pr.reply_epoch = sub.epoch
   AND pr.clarification_round <> sub.sent_count;
 
 -- One-shot alias_candidates shape migration: live rows may carry the old flat shape
