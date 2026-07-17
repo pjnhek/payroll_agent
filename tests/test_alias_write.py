@@ -28,6 +28,7 @@ Groups of tests:
 """
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import UTC
 from decimal import Decimal
@@ -1559,8 +1560,6 @@ def test_repo_set_alias_candidates_sql_uses_jsonb_merge_not_overwrite():
     """Static assertion: the real repo.set_alias_candidates SQL string must use the
     JSONB `||` merge operator, not a bare column overwrite. Pinned as a test (not a
     shell grep) so a regression back to an overwrite fails the suite."""
-    import inspect
-
     from app.db import repo
 
     src = inspect.getsource(repo.set_alias_candidates)
@@ -1569,3 +1568,21 @@ def test_repo_set_alias_candidates_sql_uses_jsonb_merge_not_overwrite():
         "(COALESCE(alias_candidates, '{}'::jsonb) || %s::jsonb), not "
         "overwrite the whole column"
     )
+
+
+def test_clarification_delivery_settlement_never_confirms_an_alias():
+    """Transport settlement cannot reach the human-confirmed alias write seam."""
+    from app.db.repo import job_settlement
+
+    source = inspect.getsource(job_settlement.settle_outbound_delivery_job)
+    for forbidden in (
+        "update_known_alias",
+        "_write_aliases_if_safe",
+        "set_alias_candidates",
+        "alias_candidates",
+        "known_aliases",
+    ):
+        assert forbidden not in source, (
+            "clarification delivery settlement must not persist an alias; "
+            f"unexpected alias write reference: {forbidden}"
+        )

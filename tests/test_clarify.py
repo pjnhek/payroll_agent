@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.models.contracts import Decision, InboundEmail
+from app.models.job import Job, JobKind
 from app.models.roster import NameMatchResult
 from app.pipeline.compose_email import compose_clarification
 from app.pipeline.orchestrator import run_pipeline
@@ -554,10 +555,8 @@ def test_no_clarification_message_id_column_written():
 # ---------------------------------------------------------------------------
 
 
-def _leased_clarification_send_job():
+def _leased_clarification_send_job() -> Job:
     """Return the frozen send-job context used by delivery settlement tests."""
-    from app.models.job import Job, JobKind
-
     return Job(
         id=uuid.uuid4(),
         kind=JobKind.SEND_OUTBOUND,
@@ -656,3 +655,48 @@ def test_fenced_clarification_delivery_loser_preserves_reply_workflow(fake_conn)
     assert "UPDATE email_messages" not in sql
     assert "UPDATE payroll_runs" not in sql
     assert "UPDATE jobs" not in sql
+
+
+def test_terminal_clarification_delivery_uses_reply_safe_escalation(fake_conn):
+    """A non-replayable clarification becomes an operator reply issue, never confirmation review."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    job = _leased_clarification_send_job()
+    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound"))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "clarification", 1, 2, "reserved", True)
+    )
+    fake_conn.script_fetchone(("awaiting_reply",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.TERMINAL,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_CONFIGURATION_FAILURE,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome is SettlementOutcome.DONE
+    sql = fake_conn.all_sql()
+    assert "UPDATE payroll_runs SET status = 'needs_operator'" in sql
+    assert "UPDATE payroll_runs SET status = 'sent'" not in sql
+    assert "UPDATE email_messages" not in sql
+    review_params = [
+        params
+        for statement, params in fake_conn.executed
+        if "needs_operator" in str(statement)
+    ]
+    assert review_params == [
+        (
+            "ClarificationDeliveryReview",
+            "delivery_review:configuration",
+            str(job.run_id),
+            "awaiting_reply",
+        )
+    ]
