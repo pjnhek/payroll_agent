@@ -1,8 +1,8 @@
 ---
 phase: 20
 slug: exactly-once-send
-status: draft
-nyquist_compliant: false
+status: planned
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-17
 ---
@@ -44,6 +44,20 @@ created: 2026-07-17
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
+## Planned Execution Coverage
+
+All 24 planned implementation tasks include an automated verification command. The
+phase plan structure has been checked for task completeness, wave ordering, and
+sampling continuity; these are planning facts, not evidence that the commands have
+already passed.
+
+| Wave | Plans | Feedback contract |
+|------|-------|-------------------|
+| 1–3 | 20-01, 20-02, 20-03 | Snapshot/schema, job vocabulary, and additive gateway checks remain focused and hermetic. |
+| 4–6 | 20-09, 20-05, 20-11, 20-04, 20-10 | Queueproof/fencing and producer migration checks run before either live producer uses the new handler. |
+| 7 | 20-06, 20-12 | Delivery-review regression checks plus the full `uv run pytest -q` no-bypass gate. |
+| 8 | 20-07, 20-08 | YTD and eval polish remain isolated behind snapshot-safety regression checks. |
+
 ---
 
 ## Wave 0 Requirements
@@ -65,11 +79,13 @@ created: 2026-07-17
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verification or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verification
-- [ ] Wave 0 covers all missing SEND-01 through SEND-03 evidence
-- [ ] No watch-mode flags
-- [ ] Feedback latency under 60 seconds for hermetic checks
-- [ ] `nyquist_compliant: true` set in frontmatter after plans define task IDs
+- [x] All tasks have `<automated>` verification or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verification
+- [x] Wave 0/planning coverage identifies the SEND-01 through SEND-03 evidence paths
+- [x] No watch-mode flags
+- [x] Feedback latency under 60 seconds for hermetic checks
+- [x] `nyquist_compliant: true` set in frontmatter after plans define task IDs
+
+`wave_0_complete` remains `false`: none of this planned evidence has been executed yet.
 
 **Approval:** pending

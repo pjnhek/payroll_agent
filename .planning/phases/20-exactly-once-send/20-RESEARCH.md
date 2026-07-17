@@ -348,22 +348,24 @@ The 20-hour application cutoff is deliberately narrower than Resend's documented
 |---|-------|---------|---------------|
 | A1 | None. | — | All external-provider facts used for the delivery contract were checked against current official Resend documentation. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **How should the immutable snapshot be represented physically?**
-   - What we know: `email_messages` already holds the logical send identity and core text
-     fields, but no reply-to/header snapshot or attachment bytes. [VERIFIED: codebase]
-   - Recommendation: keep `email_messages` as the logical audit row, add immutable
-     snapshot fields and a one-to-many `outbound_email_attachments` table keyed by email
-     row UUID; insert both in the reservation transaction. This avoids JSON/base64 byte
-     drift and preserves attachment order. [VERIFIED: codebase]
+1. **Immutable snapshot representation — selected contract.** Keep `email_messages` as
+   the logical send identity and create one immutable provider-ready snapshot parent plus
+   ordered attachment-byte child rows keyed to that email UUID. The snapshot carries
+   sender, recipient, reply-to, RFC threading headers, subject, and text; attachment rows
+   carry ordinal, filename, and exact BYTEA content. Schema-level append-only triggers
+   reject direct UPDATE and DELETE on snapshot, attachment, and attempt evidence; mutable
+   send/review state remains in separate rows. Reservation inserts the parent and all
+   bytes atomically. [VERIFIED: codebase]
 
-2. **What exact repository operation accelerates `retry now`?**
-   - What we know: existing `enqueue_job` limits arbitrary delay to 300 seconds and the
-     normal `fail_job` path owns retries. [VERIFIED: codebase]
-   - Recommendation: add a narrowly scoped, fenced "make this pending send job due now"
-     operation that never creates another job; test it loses harmlessly to a lease owner.
-     [VERIFIED: codebase]
+2. **`retry now` operation — selected contract.** `advance_existing_send_job_due_now`
+   locks the exact run/snapshot reservation and its already-existing pending SEND_OUTBOUND
+   job, verifies the DB reservation timestamp remains inside the 20-hour window, and only
+   moves that job's due time forward. It never INSERTs/enqueues a second job, does not
+   touch a leased job, does not call the provider, and returns an outcome so the route
+   wakes only after the caller transaction commits. Later handler settlement still owns
+   the lease-token fence. [VERIFIED: codebase]
 
 ## Environment Availability
 
