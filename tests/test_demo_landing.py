@@ -12,10 +12,11 @@ import contextlib
 import inspect
 import uuid
 from datetime import UTC
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.models.contracts import Decision, Extracted
 from tests.conftest import FakeConnection, patch_get_connection
@@ -55,7 +56,7 @@ class _AtomicDemoTransaction:
         self.store.events.append("transaction:enter")
         return self
 
-    def __exit__(self, exc_type, _exc, _tb) -> bool:
+    def __exit__(self, exc_type, _exc, _tb) -> Literal[False]:
         assert self.snapshot is not None
         if exc_type is None:
             self.store.events.append("transaction:commit")
@@ -148,9 +149,7 @@ def _patch_demo_queue_dependencies(monkeypatch, repo_mod) -> None:
     monkeypatch.setattr(wake_mod, "wake", lambda: None)
 
 
-def _demo_client():
-    from fastapi.testclient import TestClient
-
+def _demo_client() -> TestClient:
     from app.main import app
 
     return TestClient(app, raise_server_exceptions=False)

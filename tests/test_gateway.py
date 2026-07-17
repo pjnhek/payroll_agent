@@ -58,9 +58,11 @@ def _decision(action="process") -> Decision:
     )
 
 
-def _install_gateway_event_store(monkeypatch):
+def _install_gateway_event_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[uuid.UUID, dict[str, Any]]:
     """Persist receipt payloads for delayed-ingest route tests without a live DB."""
-    events = {}
+    events: dict[uuid.UUID, dict[str, Any]] = {}
 
     def _insert_or_get(*, external_event_id, payload, conn=None):
         for event in events.values():

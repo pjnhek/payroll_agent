@@ -582,7 +582,9 @@ class InMemoryRepo:
             )
         return result
 
-    def get_run_queue_label(self, run_id, conn=None):
+    def get_run_queue_label(
+        self, run_id: uuid.UUID, conn: Any = None
+    ) -> str | None:
         """Mirror the fixed precedence used by the real queue projection."""
         open_jobs = [
             job

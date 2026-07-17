@@ -44,7 +44,7 @@ import pathlib
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -135,7 +135,7 @@ def _claim_ingest_job(fake_repo: Any, *, max_attempts: int = 5) -> Job:
     assert claimed.kind is JobKind.INGEST
     assert claimed.run_id is None
     assert claimed.event_id == event_id
-    return claimed
+    return cast(Job, claimed)
 
 
 def test_classified_settlement_matrix_is_atomic_in_fake_repo(fake_repo):

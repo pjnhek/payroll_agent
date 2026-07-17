@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.queue import wake
 from app.routes import webhook
 
 
@@ -53,7 +54,7 @@ def test_slow_database_receipt_does_not_block_unrelated_event_loop_work(
         _blocked_receipt,
         raising=False,
     )
-    monkeypatch.setattr(webhook.wake, "wake", lambda: None, raising=False)
+    monkeypatch.setattr(wake, "wake", lambda: None)
 
     async def _exercise() -> tuple[bool, int, dict[str, str]]:
         transport = ASGITransport(app=app)

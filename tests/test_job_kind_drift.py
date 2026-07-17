@@ -279,6 +279,7 @@ class TestDispatchTableMatchesJobKind:
     def test_ingest_handler_forwards_only_the_event_identifier(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from app import ingest as ingest_service
         from app.pipeline.result import PipelineOutcome, PipelineResult
         from app.queue.handlers import ingest
 
@@ -290,7 +291,7 @@ class TestDispatchTableMatchesJobKind:
             observed.append(received_event_id)
             return expected
 
-        monkeypatch.setattr(ingest.ingest_service, "process_inbound_event", process)
+        monkeypatch.setattr(ingest_service, "process_inbound_event", process)
         job = Job(
             id=uuid.uuid4(),
             kind=JobKind.INGEST,

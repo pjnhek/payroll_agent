@@ -40,11 +40,12 @@ import threading
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.db.repo.operator_resume_resolutions import OperatorResolutionSubmission
 from app.main import app
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.job import Job, JobKind
@@ -118,9 +119,10 @@ def _operator_resume_job(
 
 
 def _authority_decision(*names: str) -> dict[str, Any]:
-    return _needs_operator_run_row(
-        uuid.uuid4(), COASTAL_BIZ_ID, list(names)
-    )["decision"]
+    return cast(
+        dict[str, Any],
+        _needs_operator_run_row(uuid.uuid4(), COASTAL_BIZ_ID, list(names))["decision"],
+    )
 
 
 def test_operator_resolution_submission_is_pii_bounded_and_dedup_is_generation_specific(
@@ -220,7 +222,7 @@ def test_operator_resolution_generation_exact_replay_is_idempotent_but_conflict_
     run_id = uuid.uuid4()
     resolution_id = uuid.uuid4()
     employee_id = uuid.uuid4()
-    run_row = (
+    run_row: tuple[uuid.UUID, uuid.UUID, str, dict[str, Any], dict[str, Any]] = (
         run_id,
         COASTAL_BIZ_ID,
         RunStatus.RECEIVED.value,
@@ -266,7 +268,7 @@ def test_commit_operator_resolution_rejects_incomplete_and_cross_roster_mapping(
     run_id = uuid.uuid4()
     resolution_id = uuid.uuid4()
     employee_id = uuid.uuid4()
-    run_row = (
+    run_row: tuple[uuid.UUID, uuid.UUID, str, dict[str, Any], dict[str, Any]] = (
         run_id,
         COASTAL_BIZ_ID,
         RunStatus.NEEDS_OPERATOR.value,
@@ -459,7 +461,7 @@ def test_operator_authority_real_threads_commit_order_beats_worker_order(
     loser_id = uuid.uuid4()
     start = threading.Barrier(2, timeout=30)
     winner_locked = threading.Event()
-    submissions: dict[str, object] = {}
+    submissions: dict[str, OperatorResolutionSubmission] = {}
     errors: list[BaseException] = []
     result_lock = threading.Lock()
 
@@ -607,16 +609,19 @@ def test_operator_resume_superseded_generation_is_bounded_ok_before_side_effects
     )
     events: list[str] = []
 
+    def _prepare_superseded(
+        rid: uuid.UUID, oid: uuid.UUID, conn: Any = None
+    ) -> OperatorResolutionSubmission:
+        events.append("prepare")
+        return OperatorResolutionSubmission(
+            resolution_id=oid,
+            authoritative=False,
+            winner_id=winner_id,
+        )
+
     monkeypatch.setattr(
         "app.db.repo.prepare_authoritative_operator_resume",
-        lambda rid, oid, conn=None: (
-            events.append("prepare")
-            or OperatorResolutionSubmission(
-                resolution_id=oid,
-                authoritative=False,
-                winner_id=winner_id,
-            )
-        ),
+        _prepare_superseded,
         raising=False,
     )
     monkeypatch.setattr(
@@ -658,21 +663,28 @@ def test_operator_resume_authoritative_generation_prepares_claims_then_resumes(
     )
     events: list[str] = []
 
+    def _prepare_authoritative(
+        rid: uuid.UUID, oid: uuid.UUID, conn: Any = None
+    ) -> OperatorResolutionSubmission:
+        events.append("prepare")
+        return OperatorResolutionSubmission(
+            resolution_id=oid,
+            authoritative=True,
+            winner_id=oid,
+        )
+
+    def _load_mapping(*args: Any, **kwargs: Any) -> dict[str, str]:
+        events.append("mapping")
+        return {"Jimmy": employee_id}
+
     monkeypatch.setattr(
         "app.db.repo.prepare_authoritative_operator_resume",
-        lambda rid, oid, conn=None: (
-            events.append("prepare")
-            or OperatorResolutionSubmission(
-                resolution_id=oid,
-                authoritative=True,
-                winner_id=oid,
-            )
-        ),
+        _prepare_authoritative,
         raising=False,
     )
     monkeypatch.setattr(
         "app.db.repo.load_operator_resume_resolution",
-        lambda *args, **kwargs: events.append("mapping") or {"Jimmy": employee_id},
+        _load_mapping,
     )
 
     def claim(rid, old, new, conn=None):
@@ -1521,7 +1533,7 @@ def test_resolve_commits_generation_and_job_in_same_transaction(
     import app.db.repo as repo_mod
 
     monkeypatch.setattr(repo_mod, "load_roster_for_business", lambda *a, **k: roster)
-    calls: list[tuple[str, object, object]] = []
+    calls: list[tuple[str, object, tuple[Any, ...]]] = []
 
     def commit(rid, oid, overrides, remember, conn=None):
         calls.append(("commit", conn, (rid, oid, dict(overrides), dict(remember))))
@@ -1608,14 +1620,13 @@ def test_resolve_superseded_generation_keeps_job_and_uses_fixed_notice(
         ),
         raising=False,
     )
-    monkeypatch.setattr(
-        repo_mod,
-        "enqueue_job",
-        lambda *, dedup_key, operator_resolution_id, **kw: jobs.append(
-            (dedup_key, operator_resolution_id)
-        )
-        or uuid.uuid4(),
-    )
+    def _enqueue_superseded(
+        *, dedup_key: str, operator_resolution_id: uuid.UUID, **kw: Any
+    ) -> uuid.UUID:
+        jobs.append((dedup_key, operator_resolution_id))
+        return uuid.uuid4()
+
+    monkeypatch.setattr(repo_mod, "enqueue_job", _enqueue_superseded)
     wakes: list[str] = []
     monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
     response = client.post(

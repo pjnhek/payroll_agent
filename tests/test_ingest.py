@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import pathlib
+import uuid as _uuid_module
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -105,9 +107,11 @@ def _script_clean_run(mock_llm) -> None:
     mock_llm.script = [extraction]
 
 
-def _install_durable_event_store(monkeypatch):
+def _install_durable_event_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[_uuid_module.UUID, dict[str, Any]]:
     """Back the receipt and delayed-ingest seams with one in-memory event store."""
-    events = {}
+    events: dict[_uuid_module.UUID, dict[str, Any]] = {}
 
     def _insert_or_get_event(*, external_event_id, payload, conn=None):
         for event in events.values():
@@ -164,7 +168,6 @@ def test_body_cleaned(client, fake_repo, monkeypatch):
 # ===========================================================================
 
 import os  # noqa: E402 — the dedup tests below were appended after the module's imports
-import uuid as _uuid_module  # noqa: E402 — the dedup tests below were appended after the module's imports
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"

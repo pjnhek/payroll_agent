@@ -136,7 +136,9 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
             event_id=uuid.UUID(str(row[5])),
             attempts=int(row[6]),
             max_attempts=int(row[7]),
-            lease_token=(uuid.UUID(str(row[8])) if row[8] is not None else None),
+            lease_token=(
+                uuid.UUID(str(row[8])) if row[8] is not None else uuid.uuid4()
+            ),
         )
         for row in rows
     ]

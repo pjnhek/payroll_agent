@@ -69,7 +69,7 @@ def client(fake_repo, monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
-    events = {}
+    events: dict[uuid.UUID, dict[str, Any]] = {}
 
     def _insert_or_get(*, external_event_id, payload, conn=None):
         for event in events.values():
