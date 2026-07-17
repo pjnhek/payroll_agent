@@ -37,9 +37,11 @@ import pathlib
 import re
 import uuid
 
+import pytest
+
 from app.db import bootstrap
 from app.db.schema_introspect import _create_body, expected_schema
-from app.models.job import JobKind, JobState
+from app.models.job import Job, JobKind, JobState
 from app.models.status import RunStatus
 
 _SCHEMA_SQL = pathlib.Path(__file__).parent.parent / "app" / "db" / "schema.sql"
@@ -245,16 +247,15 @@ class TestDispatchTableMatchesJobKind:
         assert name == "handle_ingest"
 
     def test_ingest_dispatch_resolves_the_module_attribute_at_call_time(
-        self, monkeypatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from app.models.job import Job
         from app.pipeline.result import PipelineOutcome, PipelineResult
         from app.queue import dispatch
 
         module, name = dispatch.HANDLERS[JobKind.INGEST]
-        observed = []
+        observed: list[uuid.UUID | None] = []
 
-        def replacement(job):
+        def replacement(job: Job) -> PipelineResult:
             observed.append(job.event_id)
             return PipelineResult(outcome=PipelineOutcome.OK)
 
@@ -274,6 +275,54 @@ class TestDispatchTableMatchesJobKind:
 
         assert dispatch.handle(job).outcome is PipelineOutcome.OK
         assert observed == [event_id]
+
+    def test_ingest_handler_forwards_only_the_event_identifier(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.pipeline.result import PipelineOutcome, PipelineResult
+        from app.queue.handlers import ingest
+
+        event_id = uuid.uuid4()
+        expected = PipelineResult(outcome=PipelineOutcome.OK)
+        observed: list[uuid.UUID] = []
+
+        def process(received_event_id: uuid.UUID) -> PipelineResult:
+            observed.append(received_event_id)
+            return expected
+
+        monkeypatch.setattr(ingest.ingest_service, "process_inbound_event", process)
+        job = Job(
+            id=uuid.uuid4(),
+            kind=JobKind.INGEST,
+            run_id=None,
+            email_id=None,
+            operator_resolution_id=None,
+            event_id=event_id,
+            attempts=1,
+            max_attempts=5,
+            lease_token=uuid.uuid4(),
+        )
+
+        assert ingest.handle_ingest(job) is expected
+        assert observed == [event_id]
+
+    def test_ingest_handler_fails_closed_without_an_event_identifier(self) -> None:
+        from app.queue.handlers import ingest
+
+        job = Job(
+            id=uuid.uuid4(),
+            kind=JobKind.INGEST,
+            run_id=None,
+            email_id=None,
+            operator_resolution_id=None,
+            event_id=None,
+            attempts=1,
+            max_attempts=5,
+            lease_token=uuid.uuid4(),
+        )
+
+        with pytest.raises(ValueError, match="event_id"):
+            ingest.handle_ingest(job)
 
 
 def test_resume_reply_sql_requires_exact_identifier_context() -> None:
@@ -300,15 +349,15 @@ def test_operator_resume_sql_requires_exact_identifier_context() -> None:
 
 def test_ingest_sql_requires_only_an_event_identifier_while_open() -> None:
     """Open ingest work cannot smuggle any payroll or message context."""
-    body = " ".join(_create_body(_clean_sql(), "jobs").lower().split())
+    schema = " ".join(_clean_sql().lower().split())
 
-    assert "ck_jobs_ingest_context" in body
     expected = (
-        "kind <> 'ingest' or ( run_id is null and email_id is null and "
+        "constraint ck_jobs_ingest_context check ( kind <> 'ingest' or ( "
+        "run_id is null and email_id is null and "
         "operator_resolution_id is null and business_id is null and "
-        "(event_id is not null or state in ('done','dead')) )"
+        "(event_id is not null or state in ('done','dead')) ) )"
     )
-    assert expected in body
+    assert schema.count(expected) == 2
 
 
 def test_http_routes_do_not_produce_ingest_jobs() -> None:

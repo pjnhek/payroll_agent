@@ -25,21 +25,18 @@ import uuid
 class JobKind(enum.StrEnum):
     """The kind of work a `jobs` row represents — a FUNCTION NAME, never a status.
 
-    `RUN_PIPELINE`, `RESUME_REPLY`, and `OPERATOR_RESUME` ship with real handlers.
-    The full eventual design also names `ingest`, which remains undeclared until
-    its handler and SQL contract land atomically.
+    Every declared kind ships with a real handler. `INGEST` is the only kind
+    whose work begins before a payroll run exists; it points to one persisted
+    transport receipt and carries no business payload.
     `app/queue/dispatch.py`'s CI guard asserts `set(JobKind) == set(HANDLERS)`
-    — set EQUALITY. Pre-declaring the other three kinds now would make that
-    guard permanently unsatisfiable (three kinds with no registered handler),
-    and the only way to "fix" an unsatisfiable `==` guard is to weaken it to
-    `⊇`, which would silently permit exactly the phantom-kind-with-no-handler
-    the guard exists to catch. Widen this enum deliberately in a later build,
-    in the SAME commit that adds the new kind's handler — never ahead of it.
+    — set EQUALITY. Any future widening must add the enum member, SQL value,
+    and registered handler atomically so no claimable kind can lack a consumer.
     """
 
     RUN_PIPELINE = "run_pipeline"
     RESUME_REPLY = "resume_reply"
     OPERATOR_RESUME = "operator_resume"
+    INGEST = "ingest"
 
 
 class JobState(enum.StrEnum):
@@ -67,8 +64,9 @@ class JobState(enum.StrEnum):
 class Job:
     """A transport record — mirrors EXACTLY what the claim SQL's `RETURNING` yields.
 
-    Eight fields, in this order: `id`, `kind`, `run_id`, `email_id`,
-    `operator_resolution_id`, `attempts`, `max_attempts`, `lease_token`.
+    Nine fields, in this order: `id`, `kind`, `run_id`, `email_id`,
+    `operator_resolution_id`, `event_id`, `attempts`, `max_attempts`,
+    `lease_token`.
     The optional UUIDs identify persisted context; they never carry a payload,
     submitted-name mapping, or next business state.
 
@@ -84,6 +82,7 @@ class Job:
     run_id: uuid.UUID | None
     email_id: uuid.UUID | None = None
     operator_resolution_id: uuid.UUID | None = None
+    event_id: uuid.UUID | None = None
     attempts: int
     max_attempts: int
     lease_token: uuid.UUID

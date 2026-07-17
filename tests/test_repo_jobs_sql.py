@@ -45,6 +45,7 @@ def _claim_sql(fake_conn) -> str:
             uuid.uuid4(),
             None,
             None,
+            None,
             1,
             5,
             uuid.uuid4(),
@@ -74,6 +75,34 @@ def test_claim_returning_maps_bijectively_onto_the_job_dataclass(fake_conn) -> N
         f"Job's fields.\n  RETURNING: {returned_cols}\n  Job fields: {job_fields}\n"
         f"  symmetric difference: {set(returned_cols) ^ set(job_fields)}"
     )
+
+
+def test_claim_maps_the_event_identifier_exactly_once(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    event_id = uuid.uuid4()
+    fake_conn.script_fetchone(
+        (
+            uuid.uuid4(),
+            "ingest",
+            None,
+            None,
+            None,
+            event_id,
+            1,
+            5,
+            uuid.uuid4(),
+        )
+    )
+
+    job = jobs.claim_job(conn=fake_conn)
+
+    assert job is not None
+    assert job.kind is JobKind.INGEST
+    assert job.event_id == event_id
+    assert job.run_id is None
+    assert job.email_id is None
+    assert job.operator_resolution_id is None
 
 
 def test_job_claim_contract_is_identifier_only() -> None:
@@ -309,6 +338,19 @@ def test_enqueue_ingest_uses_only_parameterized_event_context(fake_conn) -> None
     assert params["business_id"] is None
 
 
+def test_enqueue_ingest_rejects_a_dedup_key_not_derived_from_the_event(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    with pytest.raises(ValueError, match="ingest"):
+        jobs.enqueue_job(
+            kind=JobKind.INGEST,
+            dedup_key="ingest:different-event",
+            event_id=uuid.uuid4(),
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
 @pytest.mark.parametrize(
     ("event_id", "run_id", "email_id", "operator_resolution_id", "business_id"),
     [
@@ -459,6 +501,7 @@ def test_no_function_builds_sql_with_an_fstring(fake_conn) -> None:
             uuid.uuid4(),
             None,
             None,
+            None,
             1,
             5,
             uuid.uuid4(),
@@ -607,12 +650,12 @@ def test_operator_resume_schema_has_live_migration_and_indexes() -> None:
     )
 
 
-def test_operator_resume_schema_widens_when_handler_lands() -> None:
+def test_job_kind_schema_widens_when_handler_lands() -> None:
     schema = _schema_sql()
     jobs = schema.split("CREATE TABLE IF NOT EXISTS jobs", 1)[1].split(");", 1)[0]
     kind_check = re.search(r"CHECK \(kind IN \(([^)]*)\)\)", jobs)
     assert kind_check is not None
-    assert kind_check.group(1) == "'run_pipeline','resume_reply','operator_resume'"
+    assert kind_check.group(1) == "'ingest','run_pipeline','resume_reply','operator_resume'"
 
 
 def test_jobs_kind_live_migration_casts_catalog_names_to_text() -> None:

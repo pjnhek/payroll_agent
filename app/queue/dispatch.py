@@ -10,8 +10,8 @@ in whatever `handle_run_pipeline` was bound to at import time — a test's
 NAME on the `pipeline` module, not any copy of it a dict might already be
 holding, so a dict-of-functions table would make that seam a silent no-op.
 
-`HANDLERS` has exactly one entry today: `JobKind.RUN_PIPELINE`. A CI guard
-(appended to `tests/test_job_kind_drift.py`) asserts `set(JobKind) ==
+`HANDLERS` has exactly one late-bound entry per declared transport kind. A CI
+guard in `tests/test_job_kind_drift.py` asserts `set(JobKind) ==
 set(HANDLERS)` — set EQUALITY, so a `JobKind` member with no registered
 handler fails the build rather than shipping a job that can be enqueued,
 claimed, and marked done without ever having run.
@@ -24,12 +24,13 @@ from typing import cast
 
 from app.models.job import Job, JobKind
 from app.pipeline.result import PipelineResult, normalize_pipeline_result
-from app.queue.handlers import operator_resume, pipeline, resume_reply
+from app.queue.handlers import ingest, operator_resume, pipeline, resume_reply
 
 HANDLERS: dict[JobKind, tuple[ModuleType, str]] = {
     JobKind.RUN_PIPELINE: (pipeline, "handle_run_pipeline"),
     JobKind.RESUME_REPLY: (resume_reply, "handle_resume_reply"),
     JobKind.OPERATOR_RESUME: (operator_resume, "handle_operator_resume"),
+    JobKind.INGEST: (ingest, "handle_ingest"),
 }
 
 

@@ -479,20 +479,9 @@ CREATE INDEX IF NOT EXISTS idx_inbound_events_received_at
 -- hold such a thing.
 CREATE TABLE IF NOT EXISTS jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- DEVIATION 1: an earlier full design lists four eventual kinds
-    -- ('ingest','run_pipeline','resume_reply','operator_resume'). Only
-    -- All three declared values have real handlers today; the CI drift guard for this
-    -- table asserts set(JobKind) == set(dispatch.HANDLERS) — set EQUALITY.
-    -- Declaring three kinds with no handler makes that guard permanently
-    -- unsatisfiable. Widening this CHECK later (once `jobs` holds live rows)
-    -- must use the idempotent DO-block DROP+RE-ADD idiom already proven twice
-    -- in this file (payroll_runs.status, email_messages.purpose) — NOT a
-    -- second inline edit, because by then a bare CREATE TABLE-time CHECK edit
-    -- would be a no-op against a live table. Today jobs has zero rows, so an
-    -- inline CHECK is correct and deliberately adds NO third conkey-anchored
-    -- DO-block (test_do_block_constraint_drops_are_column_anchored's count of
-    -- 2 stays correct).
-    kind          TEXT        NOT NULL CHECK (kind IN ('run_pipeline','resume_reply','operator_resume')),
+    -- Every declared value has a registered late-bound handler; the static
+    -- drift guard requires exact enum, SQL, and handler-set equality.
+    kind          TEXT        NOT NULL CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume')),
     dedup_key     TEXT        NOT NULL,
     -- DEVIATION 3: an earlier full design cascades this FK on delete. This
     -- table deliberately does NOT cascade, matching the email_messages
@@ -501,10 +490,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- make auditable. Runs are never deleted today, so this is theoretical
     -- either way; choose the direction that cannot lose the audit trail.
     run_id        UUID        REFERENCES payroll_runs(id),
-    -- Reserved for a future durable-ingest / resume-reply kind. Nullable and
-    -- unused today; its FK target (email_messages) already exists, so
-    -- declaring it now is free — CREATE TABLE IF NOT EXISTS is a no-op against
-    -- a live table, so adding it later would cost an explicit ALTER block.
+    -- Resume-reply context points to its persisted inbound message. Other kinds
+    -- must leave this identifier NULL through their kind-specific checks.
     email_id      UUID        REFERENCES email_messages(id),
     -- Added before its FK target is created so kind-specific context CHECKs
     -- can reject accidental payload mixing at the initial CREATE boundary.
@@ -517,9 +504,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     event_id      UUID        CONSTRAINT fk_jobs_inbound_event
                               REFERENCES inbound_events(id) ON DELETE SET NULL,
     --
-    -- Reserved for the same future ingest work. Nullable and unused today; its
-    -- FK target (businesses) already exists, so declaring it now is free for
-    -- the same reason as email_id above.
+    -- Optional tenant routing hint for run-associated work. Ingest cannot know
+    -- the tenant before the delayed body fetch and must leave it NULL.
     business_id   UUID        REFERENCES businesses(id),
     -- Written, never read today — exists so per-tenant fairness stays a later
     -- ORDER BY change rather than a migration. Fairness lanes are out of
@@ -546,9 +532,8 @@ CREATE TABLE IF NOT EXISTS jobs (
         (state <> 'leased' AND lease_token IS NULL     AND leased_until IS NULL)
     ),
     -- DEVIATION 4 — ADDS a constraint an earlier full design does NOT have.
-    -- run_id stays NULLABLE at the column level (a future `ingest` kind
-    -- genuinely has no run yet), but 'run_pipeline' is the ONLY kind that
-    -- exists today, and it is meaningless without a run. Trace what a
+    -- run_id stays NULLABLE at the column level because `ingest` genuinely
+    -- has no run yet, while `run_pipeline` is meaningless without one. Trace what a
     -- null-run run_pipeline job does today: it is claimed, dispatched to
     -- handle_run_pipeline, which calls claim_status(None, ...) — a no-op —
     -- and returns normally, so drain_once() marks it 'done'. A job that
@@ -563,18 +548,28 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- migrate on first deploy), so it deliberately adds NO third
     -- conkey-anchored DO-block — same reasoning as DEVIATION 1.
     CONSTRAINT ck_jobs_run_pipeline_requires_run CHECK (
-        kind <> 'run_pipeline' OR run_id IS NOT NULL
+        kind <> 'run_pipeline' OR (
+            run_id IS NOT NULL AND email_id IS NULL
+            AND operator_resolution_id IS NULL AND event_id IS NULL
+        )
     ),
     CONSTRAINT ck_jobs_resume_reply_context CHECK (
         kind <> 'resume_reply' OR (
             run_id IS NOT NULL AND email_id IS NOT NULL
-            AND operator_resolution_id IS NULL
+            AND operator_resolution_id IS NULL AND event_id IS NULL
         )
     ),
     CONSTRAINT ck_jobs_operator_resume_context CHECK (
         kind <> 'operator_resume' OR (
             run_id IS NOT NULL AND operator_resolution_id IS NOT NULL
-            AND email_id IS NULL
+            AND email_id IS NULL AND event_id IS NULL
+        )
+    ),
+    CONSTRAINT ck_jobs_ingest_context CHECK (
+        kind <> 'ingest' OR (
+            run_id IS NULL AND email_id IS NULL
+            AND operator_resolution_id IS NULL AND business_id IS NULL
+            AND (event_id IS NOT NULL OR state IN ('done','dead'))
         )
     )
 );
@@ -697,13 +692,21 @@ BEGIN
     END LOOP;
 
     ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
-        CHECK (kind IN ('run_pipeline','resume_reply','operator_resume'));
+        CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume'));
+
+    ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_run_pipeline_requires_run;
+    ALTER TABLE jobs ADD CONSTRAINT ck_jobs_run_pipeline_requires_run CHECK (
+        kind <> 'run_pipeline' OR (
+            run_id IS NOT NULL AND email_id IS NULL
+            AND operator_resolution_id IS NULL AND event_id IS NULL
+        )
+    );
 
     ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_resume_reply_context;
     ALTER TABLE jobs ADD CONSTRAINT ck_jobs_resume_reply_context CHECK (
         kind <> 'resume_reply' OR (
             run_id IS NOT NULL AND email_id IS NOT NULL
-            AND operator_resolution_id IS NULL
+            AND operator_resolution_id IS NULL AND event_id IS NULL
         )
     );
 
@@ -711,7 +714,16 @@ BEGIN
     ALTER TABLE jobs ADD CONSTRAINT ck_jobs_operator_resume_context CHECK (
         kind <> 'operator_resume' OR (
             run_id IS NOT NULL AND operator_resolution_id IS NOT NULL
-            AND email_id IS NULL
+            AND email_id IS NULL AND event_id IS NULL
+        )
+    );
+
+    ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_ingest_context;
+    ALTER TABLE jobs ADD CONSTRAINT ck_jobs_ingest_context CHECK (
+        kind <> 'ingest' OR (
+            run_id IS NULL AND email_id IS NULL
+            AND operator_resolution_id IS NULL AND business_id IS NULL
+            AND (event_id IS NOT NULL OR state IN ('done','dead'))
         )
     );
 END;

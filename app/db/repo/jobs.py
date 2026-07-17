@@ -46,7 +46,8 @@ from app.pipeline.result import PipelineReason, PipelineStage
 # Explicit column list for get_job's plain single-row read (no SELECT *),
 # mirroring runs.py's RUN_COLS convention.
 _JOB_COLS = (
-    "id, kind, dedup_key, run_id, email_id, operator_resolution_id, business_id, priority, state,"
+    "id, kind, dedup_key, run_id, email_id, operator_resolution_id, event_id,"
+    " business_id, priority, state,"
     " attempts, max_attempts, available_at, lease_token, leased_until,"
     " last_error, created_at, updated_at"
 )
@@ -59,6 +60,7 @@ def enqueue_job(
     run_id: uuid.UUID | None = None,
     email_id: uuid.UUID | None = None,
     operator_resolution_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
     business_id: uuid.UUID | None = None,
     max_attempts: int | None = None,
     available_in_seconds: float = 0.0,
@@ -77,29 +79,53 @@ def enqueue_job(
     env-driven ceiling is actually live rather than shadowed by the column's
     own DEFAULT.
 
-    `run_id`/`email_id`/`business_id` are all nullable at the column level —
-    a future ingest kind will genuinely have no run yet — but a
-    `run_pipeline` job with no run is unrepresentable, checked BEFORE any SQL
-    is issued.
+    Context identifiers are nullable at the column level because each kind
+    owns a different exact subset. `ingest` owns only `event_id`; every other
+    kind rejects it before SQL is issued.
     """
     kind_value = kind.value
-    if kind_value not in {"run_pipeline", "resume_reply", "operator_resume"}:
+    if kind_value not in {
+        "ingest",
+        "run_pipeline",
+        "resume_reply",
+        "operator_resume",
+    }:
         raise ValueError(f"enqueue_job: unsupported job kind {kind_value!r}")
-    if kind_value == "run_pipeline" and run_id is None:
+    if kind_value == "ingest" and (
+        event_id is None
+        or dedup_key != f"ingest:{event_id}"
+        or run_id is not None
+        or email_id is not None
+        or operator_resolution_id is not None
+        or business_id is not None
+    ):
+        raise ValueError("enqueue_job: kind='ingest' requires event_id only")
+    if kind_value == "run_pipeline" and (
+        run_id is None
+        or email_id is not None
+        or operator_resolution_id is not None
+        or event_id is not None
+    ):
         raise ValueError(
-            f"enqueue_job: kind={kind_value!r} requires a run_id. A "
+            f"enqueue_job: kind={kind_value!r} requires run_id only. A "
             "run_pipeline job with no run would be claimed, dispatched, "
             "no-op through the run-status CAS, and recorded done — a job "
             "that processed no payroll, marked a success."
         )
     if kind_value == "resume_reply" and (
-        run_id is None or email_id is None or operator_resolution_id is not None
+        run_id is None
+        or email_id is None
+        or operator_resolution_id is not None
+        or event_id is not None
     ):
         raise ValueError(
             "enqueue_job: kind='resume_reply' requires run_id and email_id only"
         )
     if kind_value == "operator_resume" and (
-        run_id is None or operator_resolution_id is None or email_id is not None
+        run_id is None
+        or operator_resolution_id is None
+        or email_id is not None
+        or event_id is not None
     ):
         raise ValueError(
             "enqueue_job: kind='operator_resume' requires run_id and "
@@ -129,11 +155,12 @@ def enqueue_job(
             """
                 INSERT INTO jobs (
                     kind, dedup_key, run_id, email_id, operator_resolution_id,
-                    business_id, max_attempts, available_at, last_error
+                    event_id, business_id, max_attempts, available_at, last_error
                 )
                 VALUES (
                     %(kind)s, %(dedup_key)s, %(run_id)s, %(email_id)s,
-                    %(operator_resolution_id)s, %(business_id)s, %(max_attempts)s,
+                    %(operator_resolution_id)s, %(event_id)s, %(business_id)s,
+                    %(max_attempts)s,
                     now() + (%(available_in_seconds)s || ' seconds')::interval,
                     %(safe_last_error)s
                 )
@@ -148,6 +175,7 @@ def enqueue_job(
                 "operator_resolution_id": (
                     str(operator_resolution_id) if operator_resolution_id else None
                 ),
+                "event_id": str(event_id) if event_id else None,
                 "business_id": str(business_id) if business_id else None,
                 "max_attempts": max_attempts,
                 "available_in_seconds": float(available_in_seconds),
@@ -186,7 +214,7 @@ def claim_job(
       letters instead of looping forever. The completion path must never
       also increment.
 
-    `RETURNING` yields EXACTLY the eight columns `Job` declares, in the same
+    `RETURNING` yields EXACTLY the nine columns `Job` declares, in the same
     order. `tests/test_repo_jobs_sql.py`
     machine-checks this bijection so it cannot silently drift.
     """
@@ -215,7 +243,7 @@ def claim_job(
                         LIMIT 1
                  )
                 RETURNING j.id, j.kind, j.run_id, j.email_id, j.operator_resolution_id,
-                          j.attempts, j.max_attempts, j.lease_token
+                          j.event_id, j.attempts, j.max_attempts, j.lease_token
                 """,
             {"lease_seconds": lease_seconds},
         ).fetchone()
@@ -229,9 +257,10 @@ def claim_job(
         operator_resolution_id=(
             uuid.UUID(str(row[4])) if row[4] is not None else None
         ),
-        attempts=int(row[5]),
-        max_attempts=int(row[6]),
-        lease_token=uuid.UUID(str(row[7])),
+        event_id=uuid.UUID(str(row[5])) if row[5] is not None else None,
+        attempts=int(row[6]),
+        max_attempts=int(row[7]),
+        lease_token=uuid.UUID(str(row[8])),
     )
 
 
