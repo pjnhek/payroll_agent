@@ -99,7 +99,7 @@ def purge_terminal_inbound_events(
             WITH candidates AS (
                 SELECT event.id
                   FROM inbound_events AS event
-                 WHERE event.created_at <
+                 WHERE event.received_at <
                        now() - (%(older_than_days)s * interval '1 day')
                    AND EXISTS (
                        SELECT 1
@@ -115,7 +115,7 @@ def purge_terminal_inbound_events(
                           AND open_job.kind = 'ingest'
                           AND open_job.state IN ('pending', 'leased')
                    )
-                 ORDER BY event.created_at, event.id
+                 ORDER BY event.received_at, event.id
                  LIMIT %(batch_size)s
                  FOR UPDATE OF event SKIP LOCKED
             )

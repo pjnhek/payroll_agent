@@ -851,7 +851,7 @@ def test_pump_reaps_expired_final_attempt_once(
     ],
     ids=("same-business-wrong-run", "cross-business"),
 )
-def test_resume_reply_association_rejects_real_wrong_run_before_orchestration(
+def test_resume_reply_association_returns_bounded_noop_for_real_wrong_run(
     seeded_db,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -895,10 +895,10 @@ def test_resume_reply_association_rejects_real_wrong_run_before_orchestration(
         lease_token=uuid.uuid4(),
     )
 
-    terminal = resume_reply.handle_resume_reply(job)
+    result = resume_reply.handle_resume_reply(job)
 
-    assert terminal.outcome is PipelineOutcome.TERMINAL
-    assert terminal.diagnostic_code == "load:invalid_operator_override_context"
+    assert result.outcome is PipelineOutcome.OK
+    assert result.diagnostic_code is None
     job_run = repo.load_run(job_run_id)
     reply_run = repo.load_run(reply_run_id)
     assert job_run is not None and job_run["status"] == RunStatus.RECEIVED.value
@@ -939,6 +939,7 @@ def test_resume_reply_association_accepts_real_same_run_control(
     )
     assert inserted and reply_email_id is not None
     repo.link_email_to_run(reply_email_id, run_id)
+    repo.set_status(run_id, RunStatus.AWAITING_REPLY)
     calls: list[tuple[uuid.UUID, InboundEmail, RunStatus]] = []
 
     def _resume(

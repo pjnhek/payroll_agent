@@ -43,6 +43,17 @@ _COLLISION_FIXTURE = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _lifespan_database_url(monkeypatch: pytest.MonkeyPatch):
+    """Keep imported demo-client tests hermetic when no repo .env is loaded."""
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def client(fake_repo, monkeypatch):
     """TestClient with ALLOW_UNSIGNED_FIXTURES=true so canonical dict POSTs

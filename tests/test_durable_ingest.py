@@ -133,6 +133,8 @@ def test_purge_retention_is_terminal_only_age_bounded_and_batch_bounded(
     assert "j.kind = 'ingest'" in sql
     assert "j.state IN ('done', 'dead')" in sql
     assert "open_job.state IN ('pending', 'leased')" in sql
+    assert "event.received_at" in sql
+    assert "event.created_at" not in sql
     assert "LIMIT %(batch_size)s" in sql
     assert fake_conn.last()[1] == {"older_than_days": 30, "batch_size": 2}
 
