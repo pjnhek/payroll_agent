@@ -547,3 +547,112 @@ def test_no_clarification_message_id_column_written():
     assert not re.search(
         r"payroll_runs[^;]*SET[^;]*clarification_message_id", repo_src, re.IGNORECASE | re.DOTALL
     ), "the Message-ID must never be written to a payroll_runs column"
+
+
+# ---------------------------------------------------------------------------
+# Durable clarification delivery settlement
+# ---------------------------------------------------------------------------
+
+
+def _leased_clarification_send_job():
+    """Return the frozen send-job context used by delivery settlement tests."""
+    from app.models.job import Job, JobKind
+
+    return Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=uuid.uuid4(),
+        email_id=uuid.uuid4(),
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+
+
+def test_clarification_delivery_success_preserves_reply_workflow(fake_conn):
+    """A sent clarification completes only its frozen slot and leaves reply state intact."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    job = _leased_clarification_send_job()
+    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound"))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "clarification", 3, 7, "reserved", True)
+    )
+    fake_conn.script_fetchone(("awaiting_reply",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.OK,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.UNCLASSIFIED,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome is SettlementOutcome.DONE
+    sql = fake_conn.all_sql()
+    assert "message.purpose, message.round, message.epoch" in sql
+    assert "UPDATE email_messages SET send_state = 'sent'" in sql
+    assert "UPDATE payroll_runs SET status = 'sent'" not in sql
+    assert "UPDATE payroll_runs SET status = 'needs_operator'" not in sql
+    assert "clarification_round" not in sql
+    assert "in_reply_to =" not in sql
+    assert "references_header =" not in sql
+
+
+def test_clarification_delivery_retry_reschedules_only_the_original_job(fake_conn):
+    """A transient clarification failure remains a reply wait and keeps its thread facts."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    job = _leased_clarification_send_job()
+    fake_conn.script_fetchone((1, 8, job.run_id, "send_outbound"))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "clarification_field_regression", 2, 4, "reserved", True)
+    )
+    fake_conn.script_fetchone(("awaiting_reply",))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    outcome = settle_outbound_delivery_job(
+        job,
+        PipelineResult(
+            outcome=PipelineOutcome.RETRYABLE,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_TIMEOUT,
+        ),
+        conn=fake_conn,
+    )
+
+    assert outcome is SettlementOutcome.RETRIED
+    sql = fake_conn.all_sql()
+    assert "state = 'pending', available_at = %s" in sql
+    assert "UPDATE email_messages" not in sql
+    assert "UPDATE payroll_runs" not in sql
+    assert "clarification_round" not in sql
+    assert "in_reply_to =" not in sql
+    assert "references_header =" not in sql
+
+
+def test_fenced_clarification_delivery_loser_preserves_reply_workflow(fake_conn):
+    """A reclaimed clarification lease cannot alter the stored reply workflow."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.pipeline.result import PipelineResult
+
+    job = _leased_clarification_send_job()
+    fake_conn.script_fetchone(None)
+
+    assert (
+        settle_outbound_delivery_job(job, PipelineResult(), conn=fake_conn)
+        is SettlementOutcome.FENCED
+    )
+    sql = fake_conn.all_sql()
+    assert "INSERT INTO outbound_delivery_attempts" not in sql
+    assert "UPDATE email_messages" not in sql
+    assert "UPDATE payroll_runs" not in sql
+    assert "UPDATE jobs" not in sql
