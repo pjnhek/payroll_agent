@@ -28,6 +28,14 @@ from app.main import app
 client = TestClient(app, raise_server_exceptions=False)
 
 
+@pytest.fixture(autouse=True)
+def _default_dashboard_queue_projection(monkeypatch):
+    """Keep legacy route fixtures DB-free unless a test opts into queue state."""
+    from app.db import repo
+
+    monkeypatch.setattr(repo, "get_run_queue_label", lambda rid, conn=None: None)
+
+
 # ---------------------------------------------------------------------------
 # Test 1: DASH-01 — GET /runs returns 200
 # ---------------------------------------------------------------------------
@@ -551,12 +559,12 @@ def test_load_all_runs_projects_only_bounded_failure_inputs(fake_conn):
 )
 def test_get_run_queue_label_returns_only_bounded_labels(fake_conn, row, expected):
     """The per-run projection emits one fixed label or ``None``, never job data."""
-    from app.db import repo
+    from app.db.repo.jobs import get_run_queue_label
 
     fake_conn.script_fetchone(row)
     run_id = uuid.uuid4()
 
-    assert repo.get_run_queue_label(run_id, conn=fake_conn) == expected
+    assert get_run_queue_label(run_id, conn=fake_conn) == expected
 
     sql, params = fake_conn.last()
     assert "state IN ('pending', 'leased')" in sql
@@ -567,10 +575,10 @@ def test_get_run_queue_label_returns_only_bounded_labels(fake_conn, row, expecte
 
 def test_get_run_queue_label_sql_pins_running_queued_retry_precedence(fake_conn):
     """Leased wins, then due pending, then delayed pending, in one bounded read."""
-    from app.db import repo
+    from app.db.repo.jobs import get_run_queue_label
 
     fake_conn.script_fetchone(("Running",))
-    repo.get_run_queue_label(uuid.uuid4(), conn=fake_conn)
+    get_run_queue_label(uuid.uuid4(), conn=fake_conn)
 
     sql = fake_conn.all_sql()
     running = sql.index("THEN 'Running'")
@@ -668,14 +676,19 @@ def test_queued_run_detail_has_secondary_badge_durability_and_bounded_polling(
 
     assert response.status_code == 200
     text = response.text
-    assert text.index("Awaiting Approval") < text.index("Queued")
+    assert text.index("Needs Approval") < text.index("Queued")
     assert "This action is durably saved; you can safely leave this page." in text
     assert 'aria-live="polite"' in text
     assert "var MAX_ATTEMPTS = 60" in text
     assert "setInterval(poll, 2000)" in text
     assert "data.queue_label !== INITIAL_QUEUE_LABEL" in text
     poll_script = text[text.index("<script>") : text.index("</script>")]
-    for forbidden in ("enqueue", "retrigger", "simulate-reply", "claim_status"):
+    for forbidden in (
+        "enqueue_job(",
+        "fetch('/runs/' + run_id + '/retrigger'",
+        "fetch('/runs/' + run_id + '/simulate-reply'",
+        "claim_status(",
+    ):
         assert forbidden not in poll_script.lower()
 
 

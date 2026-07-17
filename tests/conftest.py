@@ -577,9 +577,30 @@ class InMemoryRepo:
                     "business_name": biz_name,
                     "summary_gate_reason": summary_gate_reason,
                     "employee_count": employee_count,
+                    "queue_label": self.get_run_queue_label(run["id"]),
                 }
             )
         return result
+
+    def get_run_queue_label(self, run_id, conn=None):
+        """Mirror the fixed precedence used by the real queue projection."""
+        open_jobs = [
+            job
+            for job in self.jobs.values()
+            if str(job.get("run_id")) == str(run_id)
+            and job.get("state") in {"pending", "leased"}
+        ]
+        if any(job.get("state") == "leased" for job in open_jobs):
+            return "Running"
+        if any(
+            job.get("state") == "pending"
+            and float(job.get("available_in_seconds", 0.0)) <= 0.0
+            for job in open_jobs
+        ):
+            return "Queued"
+        if any(job.get("state") == "pending" for job in open_jobs):
+            return "Retry queued"
+        return None
 
     def load_business_name(self, business_id, conn=None):
         """Return business name for the given business_id (mirrors repo).
@@ -1715,6 +1736,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "replace_line_items",
         "load_line_items",
         "load_all_runs",
+        "get_run_queue_label",
         "set_alias_candidates",
         "update_known_alias",
         "insert_email_message",

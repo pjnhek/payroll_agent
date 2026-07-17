@@ -112,6 +112,12 @@ _DIAGNOSTIC_CODE_RE = re.compile(
     r"(?:;attempts=(?P<attempts>[0-9]+)/(?P<max_attempts>[0-9]+))?$"
 )
 _EXHAUSTION_REASONS = frozenset({"RetryExhausted", "FinalAttemptLeaseExpired"})
+_QUEUE_LABELS = frozenset({"Running", "Queued", "Retry queued"})
+_QUEUE_BADGE_CLASSES = {
+    "Running": "running",
+    "Queued": "neutral",
+    "Retry queued": "neutral",
+}
 
 
 def _bounded_attempts(attempts: object, max_attempts: object) -> str | None:
@@ -195,18 +201,44 @@ def _safe_failure_presentation(run: dict[str, Any]) -> FailurePresentation:
 
 
 def _safe_run_for_browser(run: dict[str, Any]) -> dict[str, Any]:
-    """Copy a run and remove every raw diagnostic before template/JSON use."""
+    """Copy a run and reduce diagnostics/queue state to fixed browser vocabulary."""
     safe_run = dict(run)
     safe_run["failure"] = _safe_failure_presentation(run)
-    for field in (
+    queue_label = run.get("queue_label")
+    if queue_label not in _QUEUE_LABELS:
+        queue_label = None
+    safe_run["queue_label"] = queue_label
+    safe_run["queue_badge_class"] = (
+        _QUEUE_BADGE_CLASSES[queue_label] if queue_label is not None else "neutral"
+    )
+    safe_run["has_open_job"] = queue_label is not None
+    raw_fields = {
         "error_reason",
         "error_detail",
         "last_error",
-        "job_attempts",
-        "job_max_attempts",
-    ):
-        safe_run.pop(field, None)
+        "available_at",
+        "attempts",
+        "max_attempts",
+        "payload",
+        "diagnostics",
+    }
+    for field in tuple(safe_run):
+        if field in raw_fields or field.startswith("job_"):
+            safe_run.pop(field, None)
     return safe_run
+
+
+def _safe_run_with_queue_projection(
+    run_id: uuid.UUID, run: dict[str, Any]
+) -> dict[str, Any]:
+    """Attach the authoritative open-job label, degrading to no label on read error."""
+    projected = dict(run)
+    try:
+        projected["queue_label"] = repo.get_run_queue_label(run_id)
+    except Exception:
+        logger.debug("queue projection unavailable for run %s", run_id)
+        projected["queue_label"] = None
+    return _safe_run_for_browser(projected)
 
 
 @router.post("/runs/{run_id}/approve")
@@ -632,7 +664,7 @@ def runs_list(
             "runs": runs,
             "demo_fixtures": DEMO_FIXTURES,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),
-            "demo_queue_error": demo_queue_error == "1",
+            "demo_queue_error": bool(demo_queue_error),
         },
     )
 
@@ -657,7 +689,7 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Run not found") from exc
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    safe_run = _safe_run_for_browser(run)
+    safe_run = _safe_run_with_queue_projection(run_id, run)
     status = safe_run.get("status", "")
     return JSONResponse(
         content={
@@ -665,12 +697,19 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
             "badge_class": badge_class_filter(status),
             "badge_label": badge_label_filter(status),
             "failure": safe_run["failure"],
+            "queue_label": safe_run["queue_label"],
+            "queue_badge_class": safe_run["queue_badge_class"],
+            "has_open_job": safe_run["has_open_job"],
         }
     )
 
 
 @router.get("/runs/{run_id}")
-def run_detail(request: Request, run_id: uuid.UUID) -> Response:
+def run_detail(
+    request: Request,
+    run_id: uuid.UUID,
+    resolution_superseded: str = Query(default=""),
+) -> Response:
     """DASH-02/03: Render the 3-column run detail (raw email | extracted | paystubs)
     with decision banner and operator controls gated by status."""
     try:
@@ -753,7 +792,7 @@ def run_detail(request: Request, run_id: uuid.UUID) -> Response:
         request,
         "run_detail.html",
         {
-            "run": _safe_run_for_browser(run),
+            "run": _safe_run_with_queue_projection(run_id, run),
             "raw_email": raw_email,
             "paystubs": paystubs,
             "outbound_emails": outbound_emails,
@@ -763,6 +802,7 @@ def run_detail(request: Request, run_id: uuid.UUID) -> Response:
             "clarified_fields_by_name": clarified_fields_by_name,
             "roster_employees": roster_employees,
             "unresolved_suggestions": unresolved_suggestions,
+            "resolution_superseded": bool(resolution_superseded),
         },
     )
 

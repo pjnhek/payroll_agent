@@ -1,8 +1,9 @@
 """DB repo — the durable job queue's claim/lease/fencing protocol.
 
-Seven functions, and this is the whole public surface: `enqueue_job`,
+Eight functions, and this is the whole public surface: `enqueue_job`,
 `claim_job`, `complete_job`, `fail_job`, `release_leases`, `get_job`,
-`count_open_jobs`. Every one takes `conn: psycopg.Connection | None = None`
+`count_open_jobs`, `get_run_queue_label`. Every one takes
+`conn: psycopg.Connection | None = None`
 and opens with this package's `_conn_ctx(conn)` / `_nulltx()` convention, so a
 caller that already owns a transaction (the retrigger route enqueuing a job
 as part of a larger commit) can pass its own connection straight through with
@@ -389,3 +390,35 @@ def count_open_jobs(conn: psycopg.Connection | None = None) -> int:
             "SELECT count(*) FROM jobs WHERE state IN ('pending', 'leased')", ()
         ).fetchone()
     return int(row[0]) if row else 0
+
+
+def get_run_queue_label(
+    run_id: uuid.UUID, conn: psycopg.Connection | None = None
+) -> str | None:
+    """Return the fixed browser-safe label for a run's open queue work.
+
+    The aggregate deliberately projects no job identifier, counter, timestamp,
+    payload, or diagnostic.  A leased row wins over all pending rows; otherwise
+    immediately due work wins over delayed work.  ``None`` means no pending or
+    leased job remains.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+                SELECT CASE
+                         WHEN bool_or(state = 'leased')
+                           THEN 'Running'
+                         WHEN bool_or(state = 'pending' AND available_at <= now())
+                           THEN 'Queued'
+                         WHEN bool_or(state = 'pending')
+                           THEN 'Retry queued'
+                       END AS queue_label
+                  FROM jobs
+                 WHERE run_id = %s
+                   AND state IN ('pending', 'leased')
+                """,
+            (str(run_id),),
+        ).fetchone()
+    if row is None or row[0] not in {"Running", "Queued", "Retry queued"}:
+        return None
+    return str(row[0])

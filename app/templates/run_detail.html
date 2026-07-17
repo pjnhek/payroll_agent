@@ -1,16 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Run Detail
-  <span id="run-status-badge" class="badge badge-{{ run.status | badge_class }} badge-inline">{{ run.status | badge_label }}</span>
+  <span class="status-cluster">
+    <span id="run-status-badge" class="badge badge-{{ run.status | badge_class }} badge-inline">{{ run.status | badge_label }}</span>
+    {% if run.has_open_job or run.status in in_flight_statuses %}
+    <span id="run-queue-badge" class="badge badge-{{ run.queue_badge_class }} queue-badge"
+          aria-live="polite" {% if not run.has_open_job %}hidden{% endif %}>{{ run.queue_label or '' }}</span>
+    {% endif %}
+  </span>
 </h1>
+{% if run.has_open_job or run.status in in_flight_statuses %}
+<p id="run-durability-note" class="durability-note" aria-live="polite"
+   {% if not run.has_open_job %}hidden{% endif %}>{% if run.has_open_job %}This action is durably saved; you can safely leave this page.{% endif %}</p>
+{% endif %}
+
+{% if resolution_superseded %}
+<div class="callout callout-info" role="status">
+  <p>An earlier resolution was already accepted. This submission was recorded but not applied.</p>
+</div>
+{% endif %}
 
 {# Vanilla-JS per-run status poll — replaces a blunt meta-refresh, which would reset
    the page (and any in-progress form) on every tick.
-   Polls GET /runs/{id}/status every 2s ONLY while the run is in-flight.
+   Polls GET /runs/{id}/status every 2s while business or queue work is open.
    Swaps the badge in-place; STOPS when the status leaves the in-flight set.
-   Cap: 30 attempts (~60s) so a genuinely stuck run never polls forever.
+   Cap: 60 attempts (120s); timeout performs no recovery action.
    Fetch errors are silently skipped (network blip guard). #}
-{% if run.status in in_flight_statuses %}
+{% if run.status in in_flight_statuses or run.has_open_job %}
 <script>
 (function() {
   var RUN_ID       = {{ run.id | string | tojson }};
@@ -25,7 +41,8 @@
   // "leaves the in-flight set" missed the extracting -> awaiting_reply transition, so
   // the clarification banner never appeared without a manual refresh.
   var INITIAL_STATUS = {{ run.status | string | tojson }};
-  var MAX_ATTEMPTS = 30;
+  var INITIAL_QUEUE_LABEL = {{ run.queue_label | tojson }};
+  var MAX_ATTEMPTS = 60;
   var attempts     = 0;
   var timer        = null;
 
@@ -41,14 +58,27 @@
           badge.className = 'badge badge-' + data.badge_class + ' badge-inline';
           badge.textContent = data.badge_label;
         }
-        if (data.status !== INITIAL_STATUS) {
+        var queueBadge = document.getElementById('run-queue-badge');
+        if (queueBadge) {
+          queueBadge.className = 'badge badge-' + data.queue_badge_class + ' queue-badge';
+          queueBadge.textContent = data.queue_label || '';
+          queueBadge.hidden = !data.has_open_job;
+        }
+        var durabilityNote = document.getElementById('run-durability-note');
+        if (durabilityNote) {
+          durabilityNote.textContent = data.has_open_job
+            ? 'This action is durably saved; you can safely leave this page.'
+            : '';
+          durabilityNote.hidden = !data.has_open_job;
+        }
+        if (data.status !== INITIAL_STATUS || data.queue_label !== INITIAL_QUEUE_LABEL) {
           // The status changed from what this page rendered with → the server-rendered
           // content (banner, forms, columns) is now stale. Do ONE reload to pull the new
           // state. Loop-safe: the reloaded page re-seeds INITIAL_STATUS to the new status,
           // so it won't immediately reload again. Fires once per transition — NOT a thrash.
           clearInterval(timer);
           window.location.reload();
-        } else if (!POLL_WHILE.has(data.status)) {
+        } else if (!POLL_WHILE.has(data.status) && !data.has_open_job) {
           // Same status AND it can no longer change on its own (a settled terminal/gate
           // state we somehow kept polling) → stop. Defensive; normally unreachable since
           // the script only renders when the initial status is in POLL_WHILE.

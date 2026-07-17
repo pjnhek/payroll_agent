@@ -2,14 +2,14 @@
 {% block content %}
 {# Vanilla-JS per-row status poll — replaces a blunt meta-refresh, which would reset
    the demo-business <select> and the scroll position on every tick.
-   Polls GET /runs/{id}/status every 2s for each in-flight row.
+   Polls GET /runs/{id}/status every 2s while business or queue work is open.
    Swaps each badge IN PLACE; STOPS polling that row when it settles.
-   Cap: 30 attempts (~60s) per row. Fetch errors silently skipped.
+   Cap: 60 attempts (120s) per row. Timeout has no recovery side effect.
    The demo-business <select> and scroll position survive — NO full-page reload. #}
 <script>
 (function() {
   var IN_FLIGHT    = new Set({{ in_flight_statuses | tojson }});
-  var MAX_ATTEMPTS = 30;
+  var MAX_ATTEMPTS = 60;
 
   function startPoll(runId) {
     var attempts = 0;
@@ -25,6 +25,12 @@
             badge.className = 'badge badge-' + data.badge_class + ' status-badge';
             badge.textContent = data.badge_label;
           }
+          var queueBadge = document.querySelector('[data-run-id="' + runId + '"] .queue-badge');
+          if (queueBadge) {
+            queueBadge.className = 'badge badge-' + data.queue_badge_class + ' queue-badge';
+            queueBadge.textContent = data.queue_label || '';
+            queueBadge.hidden = !data.has_open_job;
+          }
           var secondary = document.querySelector('[data-run-id="' + runId + '"] .failure-secondary');
           if (secondary) {
             secondary.textContent = data.failure.secondary_label || '';
@@ -36,7 +42,7 @@
             failureSummary.textContent = parts.join(' · ');
             failureSummary.hidden = parts.length === 0;
           }
-          if (!IN_FLIGHT.has(data.status)) {
+          if (!IN_FLIGHT.has(data.status) && !data.has_open_job) {
             clearInterval(timer);
           }
         })
@@ -44,8 +50,10 @@
     }, 2000);
   }
 
-  document.querySelectorAll('tr[data-run-id][data-in-flight="true"]').forEach(function(row) {
-    startPoll(row.getAttribute('data-run-id'));
+  document.querySelectorAll('tr[data-run-id]').forEach(function(row) {
+    if (row.dataset.inFlight === 'true' || row.dataset.hasOpenJob === 'true') {
+      startPoll(row.getAttribute('data-run-id'));
+    }
   });
 })();
 </script>
@@ -64,13 +72,19 @@
   </thead>
   <tbody>
     {% for run in runs %}
-    <tr data-run-id="{{ run.id }}" data-in-flight="{{ 'true' if run.status in in_flight_statuses else 'false' }}">
+    <tr data-run-id="{{ run.id }}"
+        data-in-flight="{{ 'true' if run.status in in_flight_statuses else 'false' }}"
+        data-has-open-job="{{ 'true' if run.has_open_job else 'false' }}">
       <td class="cell-time">
         {{ run.created_at.strftime('%Y-%m-%d %H:%M') if run.created_at else '—' }}
       </td>
       <td>{{ run.business_name }}</td>
       <td>
-        <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
+        <span class="status-cluster">
+          <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
+          <span class="badge badge-{{ run.queue_badge_class }} queue-badge"
+                aria-live="polite" {% if not run.has_open_job %}hidden{% endif %}>{{ run.queue_label or '' }}</span>
+        </span>
         <span class="badge badge-neutral failure-secondary" {% if not run.failure.secondary_label %}hidden{% endif %}>{{ run.failure.secondary_label or '' }}</span>
       </td>
       <td class="text-muted">

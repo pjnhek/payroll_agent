@@ -63,6 +63,7 @@ from app.db.repo.jobs import (
     enqueue_job,
     fail_job,
     get_job,
+    get_run_queue_label,
     release_leases,
 )
 from app.db.repo.operator_resume_resolutions import (
@@ -166,6 +167,7 @@ __all__ = [
     "enqueue_job",
     "fail_job",
     "get_job",
+    "get_run_queue_label",
     "release_leases",
     "SettlementOutcome",
     "enqueue_classified_retry",
