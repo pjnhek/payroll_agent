@@ -614,10 +614,9 @@ def test_catastrophic_start_failure_is_retried_not_marked_done(fake_repo, monkey
     catastrophic start failure PROPAGATE (an import error, the database
     unreachable at the first read). `drain_once` catches it, routes it through
     the fenced `fail_job` write with backoff, and the job returns to `pending`
-    to be retried — dead-lettering only after `max_attempts`. The one-word
-    difference at the call site (`run_pipeline_now` vs `run_pipeline_bg`) is the
-    whole of it: `_bg`'s swallow is right for a fire-and-forget BackgroundTask
-    on a webhook that already returned 200, and fatal for a queued job.
+    to be retried — dead-lettering only after `max_attempts`. The explicit value
+    propagates into fenced infrastructure settlement; a swallowing procedure here
+    would instead make the durable job disappear as a false success.
 
     The forward CAS has already moved the run to EXTRACTING before the pipeline
     is invoked, so the run legitimately sits there while the retry is pending —
