@@ -57,6 +57,12 @@ import resend
 from app.config import get_settings
 from app.db import repo
 from app.models.contracts import InboundEmail
+from app.pipeline.result import (
+    PipelineOutcome,
+    PipelineResult,
+    PipelineStage,
+    classify_pipeline_exception,
+)
 
 # Synthetic outbound Message-ID domain (RFC-shaped, collision-free via uuid4).
 _OUTBOUND_DOMAIN = "payroll-agent.local"
@@ -357,3 +363,77 @@ def send_outbound(
     repo.update_email_message_sent(message_id, conn=conn)
 
     return message_id
+
+
+def send_reserved_outbound_snapshot(snapshot: Mapping[str, Any]) -> PipelineResult:
+    """Send one already-reserved provider payload without changing local delivery state."""
+
+    resend.api_key = get_settings().resend_api_key
+
+    message_id = _snapshot_required_text(snapshot, "message_id")
+    attachments_payload: list[resend.Attachment | resend.RemoteAttachment] = []
+    attachments = snapshot.get("attachments", [])
+    if not isinstance(attachments, list):
+        return PipelineResult(stage=PipelineStage.DELIVERY)
+    for attachment_row in attachments:
+        if not isinstance(attachment_row, Mapping):
+            return PipelineResult(stage=PipelineStage.DELIVERY)
+        filename = _snapshot_required_text(attachment_row, "filename")
+        content = attachment_row.get("content")
+        if not isinstance(content, (bytes, bytearray, memoryview)):
+            return PipelineResult(stage=PipelineStage.DELIVERY)
+        attachment: resend.Attachment = {
+            "filename": filename,
+            "content": base64.b64encode(bytes(content)).decode(),
+        }
+        attachments_payload.append(attachment)
+
+    headers: dict[str, str] = {"Message-ID": message_id}
+    in_reply_to = _snapshot_optional_text(snapshot, "in_reply_to")
+    references_header = _snapshot_optional_text(snapshot, "references_header")
+    if in_reply_to is not None:
+        headers["In-Reply-To"] = in_reply_to
+    if references_header is not None:
+        headers["References"] = references_header
+
+    send_params: resend.Emails.SendParams = {
+        "from": _snapshot_required_text(snapshot, "from_addr"),
+        "to": [_snapshot_required_text(snapshot, "to_addr")],
+        "subject": _snapshot_required_text(snapshot, "subject"),
+        "text": _snapshot_required_text(snapshot, "body_text"),
+        "headers": headers,
+        "attachments": attachments_payload,
+    }
+    reply_to = _snapshot_optional_text(snapshot, "reply_to")
+    if reply_to is not None:
+        send_params["reply_to"] = reply_to
+
+    try:
+        resend.Emails.send(send_params, {"idempotency_key": message_id})
+    except Exception as exc:
+        result = classify_pipeline_exception(PipelineStage.DELIVERY, exc)
+        logger.info(
+            "OUTBOUND_SNAPSHOT_SEND failed email_id=%s category=%s",
+            snapshot.get("email_id"),
+            result.diagnostic_code,
+        )
+        return result
+
+    logger.info("OUTBOUND_SNAPSHOT_SEND sent email_id=%s", snapshot.get("email_id"))
+    return PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
+
+
+def _snapshot_required_text(snapshot: Mapping[str, Any], key: str) -> str:
+    value = snapshot.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"reserved outbound snapshot has no {key}")
+    return value
+
+
+def _snapshot_optional_text(snapshot: Mapping[str, Any], key: str) -> str | None:
+    value = snapshot.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"reserved outbound snapshot has invalid {key}")
+    return value
