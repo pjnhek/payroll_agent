@@ -141,6 +141,34 @@ FIXTURE_DIR = pathlib.Path(__file__).resolve().parent / "fixtures"
 SUMMARY_PATH = pathlib.Path(__file__).resolve().parent / "summary.json"
 CHART_PATH = pathlib.Path(__file__).resolve().parent / "chart.svg"
 
+# Dashboard-aligned SVG styling. These are presentation tokens only: the scorer,
+# fixture interpretation, and aggregate metric shapes remain intentionally separate.
+CHART_PALETTE: dict[str, str] = {
+    "primary": "#1E3A5F",
+    "secondary": "#6B7280",
+    "accent": "#4F46E5",
+    "surface": "#FFFFFF",
+    "background": "#F7F8FA",
+    "border": "#E8EAED",
+    "danger": "#DC2626",
+    "danger_soft": "#FEE2E2",
+}
+
+CHART_STYLE: dict[str, Any] = {
+    "font.family": "sans-serif",
+    "font.sans-serif": ["DejaVu Sans"],
+    "svg.fonttype": "none",
+    "text.color": CHART_PALETTE["secondary"],
+    "axes.labelcolor": CHART_PALETTE["secondary"],
+    "axes.edgecolor": CHART_PALETTE["border"],
+    "axes.titleweight": "semibold",
+    "xtick.color": CHART_PALETTE["secondary"],
+    "ytick.color": CHART_PALETTE["secondary"],
+    "figure.facecolor": CHART_PALETTE["background"],
+    "axes.facecolor": CHART_PALETTE["surface"],
+    "savefig.facecolor": CHART_PALETTE["background"],
+}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -869,11 +897,29 @@ def _write_svg_chart(
     """
     # Local imports only -- never at module level, or the scoring path grows a dependency.
     import matplotlib  # noqa: PLC0415
-    matplotlib.use("Agg")                      # non-interactive backend, safe on CI/server
+    matplotlib.use("Agg")  # non-interactive backend, safe on CI/server
     import matplotlib.pyplot as plt  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
 
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 14))
+    # Keep the style local to chart generation. The scoring/check path never imports
+    # matplotlib, and this explicit update keeps SVG output deterministic and legible.
+    plt.rcParams.update(cast(Any, CHART_STYLE))
+    palette = CHART_PALETTE
+
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3,
+        1,
+        figsize=(10, 12),
+        gridspec_kw={"height_ratios": [1.3, 1.0, 1.0]},
+    )
+
+    for axis in (ax1, ax2):
+        axis.set_axisbelow(True)
+        axis.grid(axis="x", color=palette["border"], linewidth=0.8)
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+        axis.spines["left"].set_color(palette["border"])
+        axis.spines["bottom"].set_color(palette["border"])
 
     # -----------------------------------------------------------------------
     # Subplot 1 -- Extraction: field accuracy + F1 per fixture category (grouped bars)
@@ -885,20 +931,35 @@ def _write_svg_chart(
 
     y = np.arange(len(categories))
     h = 0.38
-    bars_fa = ax1.barh(y - h / 2, field_values, height=h, color="steelblue", label="field accuracy")
-    bars_f1 = ax1.barh(y + h / 2, f1_values, height=h, color="#9ecae1", label="employee-set F1")
+    bars_fa = ax1.barh(
+        y - h / 2,
+        field_values,
+        height=h,
+        color=palette["primary"],
+        label="field accuracy",
+    )
+    bars_f1 = ax1.barh(
+        y + h / 2,
+        f1_values,
+        height=h,
+        color="#A5B4FC",
+        label="employee-set F1",
+    )
 
     ax1.set_yticks(y)
     ax1.set_yticklabels(categories)
-    ax1.set_xlabel("Score")
+    ax1.set_xlabel("Score", fontsize=9)
     ax1.set_xlim(0, 1.05)
     overall_fa = aggregated["extraction_overall_field_accuracy"]
     overall_f1 = aggregated["extraction_overall_f1"]
     ax1.set_title(
         f"Extraction: field accuracy + employee-set F1 per fixture category\n"
-        f"(overall: field_accuracy={overall_fa:.3f}, F1={overall_f1:.3f})"
+        f"(overall: field_accuracy={overall_fa:.3f}, F1={overall_f1:.3f})",
+        loc="left",
+        fontsize=12,
+        color=palette["primary"],
     )
-    ax1.legend(loc="lower right")
+    ax1.legend(loc="lower right", frameon=False, fontsize=8)
 
     # Annotate each field-accuracy bar
     for bar, val in zip(bars_fa, field_values, strict=False):
@@ -909,6 +970,7 @@ def _write_svg_chart(
             va="center",
             ha="left",
             fontsize=8,
+            color=palette["secondary"],
         )
     # Annotate each F1 bar
     for bar, val in zip(bars_f1, f1_values, strict=False):
@@ -919,6 +981,7 @@ def _write_svg_chart(
             va="center",
             ha="left",
             fontsize=8,
+            color=palette["secondary"],
         )
 
     # -----------------------------------------------------------------------
@@ -930,13 +993,16 @@ def _write_svg_chart(
     cat_labels = [f'{r["category"]}\n(n={r["total"]})' for r in rec_data_sorted]
     acc_values = [r["accuracy"] for r in rec_data_sorted]
 
-    bars_rec = ax2.barh(cat_labels, acc_values, color="seagreen")
+    bars_rec = ax2.barh(cat_labels, acc_values, color=palette["accent"])
     # Wording is deliberate: "on fixtures of category X", not "accuracy of category X" --
     # the bar measures resolver accuracy WITHIN a bucket, not accuracy AT bucketing.
-    ax2.set_xlabel("Accuracy on fixtures of category X")
+    ax2.set_xlabel("Accuracy on fixtures of category X", fontsize=9)
     ax2.set_title(
         "Name-reconciliation accuracy by name category\n"
-        "(resolver returns none for all 4 unresolved categories -- these are coverage buckets)"
+        "(resolver returns none for all 4 unresolved categories -- these are coverage buckets)",
+        loc="left",
+        fontsize=12,
+        color=palette["primary"],
     )
     ax2.set_xlim(0, 1.05)
 
@@ -950,6 +1016,7 @@ def _write_svg_chart(
             va="center",
             ha="left",
             fontsize=9,
+            color=palette["secondary"],
         )
 
     # -----------------------------------------------------------------------
@@ -964,23 +1031,38 @@ def _write_svg_chart(
     ]
     table = ax3.table(cellText=matrix_data, loc="center", cellLoc="center")
     table.auto_set_font_size(False)
-    table.set_fontsize(12)
-    table.scale(1, 1.8)
+    table.set_fontsize(11)
+    table.scale(1, 1.7)
+
+    for cell in table.get_celld().values():
+        cell.set_edgecolor(palette["border"])
+        cell.set_linewidth(0.8)
+        cell.set_facecolor(palette["surface"])
+        cell.get_text().set_color(palette["secondary"])
+
+    for col in range(3):
+        header = table[0, col]
+        header.set_facecolor(palette["primary"])
+        header.get_text().set_color(palette["surface"])
+        header.get_text().set_weight("bold")
 
     # Highlight the FALSE-PROCESS cell -- the only dangerous error in the matrix:
     # "Actual: process" row x "Expected: clarify" col = the run paid the wrong person.
     # Indices are load-bearing: row 0 = header; row 1 = "Actual: process";
     # col 2 = "Expected: clarify". Highlighting [2, 2] instead would colour true-clarify,
     # the SAFE cell -- a chart that advertises safety exactly where it should warn.
-    table[1, 2].set_facecolor("#FFCCCC")
+    table[1, 2].set_facecolor(palette["danger_soft"])
+    table[1, 2].get_text().set_color(palette["danger"])
 
     ax3.set_title(
         f"Decision Confusion Matrix\n"
         f"FALSE-PROCESS (pays wrong person): "
         f"{cm['false_process']} of {cm['false_process'] + cm['true_clarify']} "
         f"should-clarify cases  ({cm['false_process_rate']:.1%})",
-        fontsize=13,
+        loc="left",
+        fontsize=12,
         fontweight="bold",
+        color=palette["primary"],
     )
 
     # -----------------------------------------------------------------------
@@ -1000,11 +1082,11 @@ def _write_svg_chart(
         ),
         ha="center",
         fontsize=8,
-        color="gray",
+        color=palette["secondary"],
         wrap=True,
     )
 
-    plt.tight_layout(pad=2.0)
+    plt.tight_layout(pad=1.5)
     plt.savefig(str(CHART_PATH), format="svg", bbox_inches="tight")
     plt.close()
     print(f"eval/chart.svg written ({CHART_PATH.stat().st_size} bytes)")

@@ -15,7 +15,6 @@ from typing import Any, cast
 
 from eval import run_eval
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SUMMARY_PATH = _REPO_ROOT / "eval" / "summary.json"
 _RUN_EVAL_PATH = _REPO_ROOT / "eval" / "run_eval.py"
@@ -28,7 +27,7 @@ def _render_committed_aggregate(tmp_path: Path, monkeypatch: Any) -> str:
 
     run_eval._write_svg_chart(
         cast(list[run_eval.FixtureResult], committed["per_fixture"]),
-        cast(run_eval.AggregateResult, committed["aggregate"]),
+        cast(run_eval.AggregateResult, committed),
     )
     return output_path.read_text()
 
