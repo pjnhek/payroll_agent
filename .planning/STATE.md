@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Completed 19-06-PLAN.md
-last_updated: "2026-07-17T02:28:27.095Z"
+stopped_at: Completed 19-09-PLAN.md
+last_updated: "2026-07-17T02:51:46.962Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 08 completed
+last_activity_desc: Phase 19 Plan 09 completed
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 37
-  percent: 50
+  completed_plans: 38
+  percent: 93
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
-Plan: 9 of 12
+Plan: 10 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 08 completed
+Last activity: 2026-07-16 — Phase 19 Plan 09 completed
 
 ## Performance Metrics
 
@@ -118,6 +118,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 08 completed
 | Phase 19 P07 | 13min | 2 tasks | 9 files |
 | Phase 19 P08 | 23min | 2 tasks | 9 files |
 | Phase 19 P06 | 8min | 2 tasks | 4 files |
+| Phase 19 P09 | 19min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -234,6 +235,8 @@ Recent decisions affecting current work:
 - [Phase 19]: Superseded operator jobs drain before mapping load, state claim, alias projection, or orchestration. — Losing generations stay auditable while remaining incapable of payroll or learning side effects.
 - [Phase 19]: Signed receipts use authenticated Svix IDs; explicitly enabled unsigned fixtures use SHA-256 over exact bounded bytes. — This preserves transport identity in production while keeping fixture retries deterministic without treating a digest as authentication.
 - [Phase 19]: The webhook validates only transport identity and commits event plus ingest job off-loop before wake and response. — Provider fetch and payroll classification belong to durable workers, and synchronous psycopg must not block the event loop.
+- [Phase 19]: Open-job presentation is fixed to Running, Queued, or Retry queued and remains separate from payroll status.
+- [Phase 19]: Queue polling is read-only at 2000 ms for at most 60 attempts; timeout stops silently without recovery.
 
 ### Pending Todos
 
@@ -299,8 +302,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T02:28:27.086Z
-Stopped at: Completed 19-06-PLAN.md
+Last session: 2026-07-17T02:51:46.948Z
+Stopped at: Completed 19-09-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
