@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 19
 current_phase_name: webhook-cutover-durable-ingest
 status: executing
-stopped_at: Completed 19-07-PLAN.md
-last_updated: "2026-07-17T01:28:30.029Z"
+stopped_at: Completed 19-08-PLAN.md
+last_updated: "2026-07-17T01:54:57.263Z"
 last_activity: 2026-07-16
-last_activity_desc: Phase 19 Plan 07 completed
+last_activity_desc: Phase 19 Plan 08 completed
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 41
-  completed_plans: 35
-  percent: 85
+  completed_plans: 36
+  percent: 88
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-13 — Milestone v4 — Durable Execu
 ## Current Position
 
 Phase: 19 (webhook-cutover-durable-ingest) — EXECUTING
-Plan: 7 of 12
+Plan: 8 of 12
 Status: Ready to execute
-Last activity: 2026-07-16 — Phase 19 Plan 07 completed
+Last activity: 2026-07-16 — Phase 19 Plan 08 completed
 
 ## Performance Metrics
 
@@ -116,6 +116,7 @@ Last activity: 2026-07-16 — Phase 19 Plan 07 completed
 | Phase 19 P04 | 13min | 2 tasks | 7 files |
 | Phase 19 P05 | 10min | 2 tasks | 5 files |
 | Phase 19 P07 | 13min | 2 tasks | 9 files |
+| Phase 19 P08 | 23min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -227,6 +228,9 @@ Recent decisions affecting current work:
 - [Phase 19]: Both demo producers treat unexpected inbound or job duplicates as transaction failure because every click owns fresh identities.
 - [Phase 19]: Composer record-only behavior and curated fixture delivery behavior now share one atomic email-run-job contract.
 - [Phase 19]: Demo enqueue failures cross the browser boundary only through demo_queue_error=1 and one fixed retry sentence.
+- [Phase 19]: Reply handlers authorize persisted same-run sender ownership before conversion and use stored status/CAS for work authority. — Durable retries must not weaken the pre-cutover sender guard or trust job attempts as business state.
+- [Phase 19]: Every operator generation commits with a generation-specific job; first commit, never worker order, selects payroll authority. — Queue scheduling order cannot decide a money-moving mapping.
+- [Phase 19]: Superseded operator jobs drain before mapping load, state claim, alias projection, or orchestration. — Losing generations stay auditable while remaining incapable of payroll or learning side effects.
 
 ### Pending Todos
 
@@ -292,8 +296,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T01:28:30.021Z
-Stopped at: Completed 19-07-PLAN.md
+Last session: 2026-07-17T01:54:57.250Z
+Stopped at: Completed 19-08-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
