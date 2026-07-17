@@ -869,6 +869,21 @@ class InMemoryRepo:
                 "enqueue_job: kind='operator_resume' requires run_id and "
                 "operator_resolution_id only"
             )
+        if kind is JobKind.SEND_OUTBOUND and (
+            run_id is None
+            or email_id is None
+            or dedup_key != f"send_outbound:{email_id}"
+            or operator_resolution_id is not None
+            or event_id is not None
+            or business_id is not None
+        ):
+            raise ValueError(
+                "enqueue_job: kind='send_outbound' requires the run and frozen email only"
+            )
+        if kind is JobKind.SEND_OUTBOUND:
+            if max_attempts is not None and max_attempts != 8:
+                raise ValueError("send_outbound uses its fixed replay-attempt ladder")
+            max_attempts = 8
         if dedup_key in self._job_dedup_keys:
             return None
         jid = uuid.uuid4()
