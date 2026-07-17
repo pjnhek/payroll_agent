@@ -10,21 +10,26 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import importlib
 import importlib.util
+import json
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.db import repo
 from app.email import gateway
+from app.main import app
 from app.models.contracts import InboundEmail
 from app.models.job import JobKind
 from app.models.status import RunStatus
 from app.pipeline.result import PipelineOutcome, PipelineResult
+from app.queue import wake
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -350,3 +355,250 @@ def test_downstream_enqueue_failure_rolls_back_domain_rows(
     assert fake_repo.emails == {}
     assert fake_repo.runs == {}
     assert fake_repo.jobs == {}
+
+
+class _ReceiptStore:
+    def __init__(self) -> None:
+        self.events: dict[str, dict[str, Any]] = {}
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.order: list[str] = []
+        self.fail_enqueue = False
+        self.fail_commit = False
+
+
+class _ReceiptConnection:
+    def __init__(self, store: _ReceiptStore) -> None:
+        self.store = store
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[None]:
+        events_before = copy.deepcopy(self.store.events)
+        jobs_before = copy.deepcopy(self.store.jobs)
+        self.store.order.append("transaction_open")
+        try:
+            yield
+            if self.store.fail_commit:
+                raise RuntimeError("commit failed with private diagnostics")
+        except BaseException:
+            self.store.events = events_before
+            self.store.jobs = jobs_before
+            self.store.order.append("rollback")
+            raise
+        self.store.order.append("commit")
+
+
+def _install_receipt_repository(
+    monkeypatch: pytest.MonkeyPatch, store: _ReceiptStore
+) -> None:
+    @contextlib.contextmanager
+    def _connection() -> Iterator[_ReceiptConnection]:
+        yield _ReceiptConnection(store)
+
+    def _insert_or_get(
+        *, external_event_id: str, payload: dict[str, Any], conn: Any = None
+    ) -> tuple[uuid.UUID, bool]:
+        assert isinstance(conn, _ReceiptConnection)
+        existing = store.events.get(external_event_id)
+        if existing is not None:
+            return existing["id"], False
+        event_id = uuid.uuid4()
+        store.events[external_event_id] = {"id": event_id, "payload": payload}
+        store.order.append("event")
+        return event_id, True
+
+    def _enqueue(
+        *,
+        kind: JobKind,
+        dedup_key: str,
+        event_id: uuid.UUID | None = None,
+        conn: Any = None,
+        **identifiers: Any,
+    ) -> uuid.UUID | None:
+        assert isinstance(conn, _ReceiptConnection)
+        assert kind is JobKind.INGEST
+        assert event_id is not None
+        assert dedup_key == f"ingest:{event_id}"
+        assert not any(value is not None for value in identifiers.values())
+        if store.fail_enqueue:
+            raise RuntimeError("enqueue failed with private diagnostics")
+        if dedup_key in store.jobs:
+            return None
+        job_id = uuid.uuid4()
+        store.jobs[dedup_key] = {"id": job_id, "event_id": event_id}
+        store.order.append("job")
+        return job_id
+
+    monkeypatch.setattr(repo, "get_connection", _connection)
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get)
+    monkeypatch.setattr(repo, "enqueue_job", _enqueue)
+
+
+@pytest.fixture
+def receipt_client(monkeypatch: pytest.MonkeyPatch, fake_repo) -> Iterator[TestClient]:
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("ALLOW_UNSIGNED_FIXTURES", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    yield TestClient(app)
+    get_settings.cache_clear()
+
+
+def _receipt_fixture() -> dict[str, Any]:
+    return {
+        "id": str(uuid.uuid4()),
+        "message_id": "<receipt-only@example.test>",
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": COASTAL_EMAIL,
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria Chen worked 40 regular hours.",
+        "created_at": "2026-06-16T09:30:00Z",
+    }
+
+
+def test_acceptance_commits_event_and_identifier_only_job_before_wake_and_response(
+    receipt_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ReceiptStore()
+    _install_receipt_repository(monkeypatch, store)
+    monkeypatch.setattr(
+        gateway,
+        "parse_inbound",
+        lambda raw: pytest.fail("request receipt must not fetch or parse provider body"),
+    )
+    monkeypatch.setattr(wake, "wake", lambda: store.order.append("wake"))
+
+    payload = _receipt_fixture()
+    response = receipt_client.post("/webhook/inbound", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "status": "accepted",
+        "event_id": str(next(iter(store.events.values()))["id"]),
+    }
+    assert "run_id" not in body
+    assert "job_id" not in body
+    assert len(store.events) == 1
+    assert len(store.jobs) == 1
+    assert store.order == ["transaction_open", "event", "job", "commit", "wake"]
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    expected_key = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    assert set(store.events) == {expected_key}
+
+
+def test_duplicate_redelivery_returns_stable_event_receipt_and_creates_no_second_job(
+    receipt_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ReceiptStore()
+    _install_receipt_repository(monkeypatch, store)
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
+    payload = _receipt_fixture()
+
+    first = receipt_client.post("/webhook/inbound", json=payload)
+    second = receipt_client.post("/webhook/inbound", json=payload)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["status"] == "accepted"
+    assert second.json() == {
+        "status": "duplicate",
+        "event_id": first.json()["event_id"],
+    }
+    assert len(store.events) == 1
+    assert len(store.jobs) == 1
+    assert wakes == ["wake"]
+
+
+@pytest.mark.parametrize("failure", ["enqueue", "commit"])
+def test_receipt_transaction_rollback_returns_bounded_503(
+    receipt_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    store = _ReceiptStore()
+    store.fail_enqueue = failure == "enqueue"
+    store.fail_commit = failure == "commit"
+    _install_receipt_repository(monkeypatch, store)
+    monkeypatch.setattr(
+        wake,
+        "wake",
+        lambda: pytest.fail("a rolled-back receipt must never wake the queue"),
+    )
+
+    response = receipt_client.post("/webhook/inbound", json=_receipt_fixture())
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "temporarily unavailable"}
+    assert store.events == {}
+    assert store.jobs == {}
+    assert "private diagnostics" not in response.text
+
+
+def test_signed_receipt_verifies_exact_bytes_before_minimal_envelope_processing(
+    receipt_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ReceiptStore()
+    _install_receipt_repository(monkeypatch, store)
+    monkeypatch.setattr(wake, "wake", lambda: None)
+    raw = b'{"data":{"email_id":"em_transport_123"}}'
+    verified: list[bytes] = []
+    monkeypatch.setattr(
+        gateway,
+        "verify",
+        lambda body, headers, secret: verified.append(body),
+    )
+
+    response = receipt_client.post(
+        "/webhook/inbound",
+        content=raw,
+        headers={
+            "content-type": "application/json",
+            "svix-id": "evt_transport_123",
+            "svix-timestamp": "1784160000",
+            "svix-signature": "v1,test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert verified == [raw]
+    assert set(store.events) == {"evt_transport_123"}
+    assert next(iter(store.events.values()))["payload"] == {
+        "data": {"email_id": "em_transport_123"}
+    }
+
+
+def test_authenticated_malformed_envelope_is_bounded_and_never_persisted(
+    receipt_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ReceiptStore()
+    _install_receipt_repository(monkeypatch, store)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        gateway,
+        "verify",
+        lambda body, headers, secret: calls.append("verified"),
+    )
+
+    response = receipt_client.post(
+        "/webhook/inbound",
+        content=b'{"data":{}}',
+        headers={
+            "content-type": "application/json",
+            "svix-id": "evt_bad",
+            "svix-timestamp": "1784160000",
+            "svix-signature": "v1,test",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid inbound envelope"}
+    assert calls == ["verified"]
+    assert store.events == {}
+    assert store.jobs == {}
