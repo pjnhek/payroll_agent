@@ -282,6 +282,7 @@ Open items surfaced by v4 research, to resolve during phase planning (not blocki
 | 260713-oi6 | Harden clarify-round hours safety: fix drop-detection blind spot for the clarified employee, and surface cross-round hours changes to the operator | 2026-07-14 | 43ed368 | [260713-oi6-harden-clarify-round-hours-safety-fix-dr](./quick/260713-oi6-harden-clarify-round-hours-safety-fix-dr/) |
 | 260709-uvz | Ignore personal system-design audit files and commit Phase 13 governance artifacts | 2026-07-10 | 56afd4f | [260709-uvz-ignore-personal-system-design-audit-file](./quick/260709-uvz-ignore-personal-system-design-audit-file/) |
 | 260710-iw0 | Rewrite README for recruiter-first clarity and correct inaccurate claims | 2026-07-10 | 5b9eda1 | [260710-iw0-rewrite-readme-for-recruiter-first-clari](./quick/260710-iw0-rewrite-readme-for-recruiter-first-clari/) |
+| 260717-anx | Wire the same-Svix real-Postgres deduplication proof into ephemeral CI and verify its exact execution | 2026-07-17 | 130c038 | [260717-anx-wire-the-phase-19-same-svix-real-postgre](./quick/260717-anx-wire-the-phase-19-same-svix-real-postgre/) |
 
 ### Build-time guidance (author review at roadmap lock — pull these forward, do not let them sit in the last phase)
 
