@@ -183,3 +183,122 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
     ]
 
     get_settings.cache_clear()
+
+
+@pytest.mark.integration
+def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
+    monkeypatch,
+):
+    """One authenticated transport identity stays singular across a DB race."""
+    if not os.environ.get("DATABASE_URL"):
+        pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
+
+    from fastapi.testclient import TestClient
+
+    import app.main as app_main
+    from app.config import get_settings
+    from app.db import repo
+    from app.email import gateway
+    from app.models.job import Job, JobKind
+    from app.queue import wake
+    from app.queue.handlers import ingest as ingest_handler
+
+    get_settings.cache_clear()
+    event_key = f"evt_same_svix_{uuid.uuid4()}"
+    message_id = f"<same-svix-{uuid.uuid4()}@acme.test>"
+    payload = {
+        "id": str(uuid.uuid4()),
+        "message_id": message_id,
+        "in_reply_to": None,
+        "references_header": None,
+        "subject": "Payroll hours",
+        "from_addr": "payroll@coastalcleaning.example",
+        "to_addr": "agent@payroll-agent.local",
+        "body_text": "Maria Chen 40 regular hours.",
+        "created_at": "2026-06-15T10:00:00Z",
+    }
+    monkeypatch.setattr(gateway, "verify", lambda body, headers, secret: None)
+    wakes: list[str] = []
+    monkeypatch.setattr(wake, "wake", lambda: wakes.append("wake"))
+    client = TestClient(app_main.app)
+    barrier = threading.Barrier(2, timeout=30)
+    results: list[dict[str, Any]] = []
+    lock = threading.Lock()
+
+    def _post() -> None:
+        barrier.wait()
+        response = client.post(
+            "/webhook/inbound",
+            json=payload,
+            headers={
+                "svix-id": event_key,
+                "svix-timestamp": "1784160000",
+                "svix-signature": "v1,test",
+            },
+        )
+        with lock:
+            results.append({"status_code": response.status_code, **response.json()})
+
+    workers = [threading.Thread(target=_post) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert len(results) == 2
+    assert {result["status_code"] for result in results} == {200}
+    assert {result["status"] for result in results} == {"accepted", "duplicate"}
+    assert len({result["event_id"] for result in results}) == 1
+    assert wakes == ["wake"]
+
+    event_id = uuid.UUID(results[0]["event_id"])
+    with repo.get_connection() as conn:
+        event_count_row = conn.execute(
+            "SELECT count(*) FROM inbound_events WHERE external_event_id = %s",
+            (event_key,),
+        ).fetchone()
+        job_rows = conn.execute(
+            """
+            SELECT id, attempts, max_attempts, lease_token
+              FROM jobs
+             WHERE kind = 'ingest' AND event_id = %s
+            """,
+            (str(event_id),),
+        ).fetchall()
+    assert event_count_row is not None
+    event_count = event_count_row[0]
+    assert event_count == 1
+    assert len(job_rows) == 1
+
+    job_row = job_rows[0]
+    result = ingest_handler.handle_ingest(
+        Job(
+            id=uuid.UUID(str(job_row[0])),
+            kind=JobKind.INGEST,
+            run_id=None,
+            event_id=event_id,
+            attempts=int(job_row[1]),
+            max_attempts=int(job_row[2]),
+            lease_token=(
+                uuid.UUID(str(job_row[3]))
+                if job_row[3] is not None
+                else uuid.uuid4()
+            ),
+        )
+    )
+    assert result.outcome.value == "ok"
+
+    with repo.get_connection() as conn:
+        email_row = conn.execute(
+            "SELECT id, count(*) OVER () FROM email_messages WHERE message_id = %s",
+            (message_id,),
+        ).fetchone()
+        assert email_row is not None and email_row[1] == 1
+        run_count_row = conn.execute(
+            "SELECT count(*) FROM payroll_runs WHERE source_email_id = %s",
+            (email_row[0],),
+        ).fetchone()
+    assert run_count_row is not None
+    run_count = run_count_row[0]
+    assert run_count == 1
+    get_settings.cache_clear()

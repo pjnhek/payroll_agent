@@ -29,7 +29,9 @@ from app.models.contracts import InboundEmail
 from app.models.job import JobKind
 from app.models.status import RunStatus
 from app.pipeline.result import PipelineOutcome, PipelineResult
-from app.queue import wake
+from app.queue import drain, wake
+from app.queue.drain import DrainOutcome
+from app.queue.handlers import pipeline
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
@@ -553,6 +555,82 @@ def test_duplicate_redelivery_returns_stable_event_receipt_and_creates_no_second
     assert len(store.events) == 1
     assert len(store.jobs) == 1
     assert wakes == ["wake"]
+
+
+def test_accepted_receipt_survives_lost_wake_and_later_shared_drain(
+    receipt_client: TestClient,
+    fake_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The committed event/job, not process memory, carries work past HTTP 200."""
+    events: dict[str, dict[str, Any]] = {}
+
+    def _insert_or_get(
+        *, external_event_id: str, payload: dict[str, Any], conn: Any = None
+    ) -> tuple[uuid.UUID, bool]:
+        existing = events.get(external_event_id)
+        if existing is not None:
+            return existing["id"], False
+        event_id = uuid.uuid4()
+        events[external_event_id] = {"id": event_id, "payload": payload}
+        return event_id, True
+
+    monkeypatch.setattr(repo, "insert_or_get_inbound_event", _insert_or_get)
+    monkeypatch.setattr(
+        repo,
+        "load_inbound_event",
+        lambda event_id, conn=None: next(
+            (event for event in events.values() if event["id"] == event_id), None
+        ),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "parse_inbound",
+        lambda raw: pytest.fail("provider fetch must not start before HTTP 200"),
+    )
+    wake.clear()
+
+    response = receipt_client.post("/webhook/inbound", json=_receipt_fixture())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert fake_repo.runs == {}
+    assert len(fake_repo.jobs) == 1
+    ingest_row = next(iter(fake_repo.jobs.values()))
+    assert ingest_row["kind"] == JobKind.INGEST.value
+    assert ingest_row["state"] == "pending"
+    assert wake.wait(0) is True
+
+    # A process boundary loses this optimization. The committed rows remain.
+    wake.clear()
+    assert wake.wait(0) is False
+    monkeypatch.setattr(
+        gateway,
+        "parse_inbound",
+        lambda raw: _email(f"<post-200-{uuid.uuid4()}@example.test>"),
+    )
+
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert ingest_row["state"] == "done"
+    assert len(fake_repo.runs) == 1
+    run = next(iter(fake_repo.runs.values()))
+    assert run["status"] == RunStatus.RECEIVED.value
+    pipeline_row = next(
+        row
+        for row in fake_repo.jobs.values()
+        if row["kind"] == JobKind.RUN_PIPELINE.value
+    )
+    assert pipeline_row["state"] == "pending"
+
+    def _finish_pipeline(job) -> PipelineResult:
+        assert job.run_id == run["id"]
+        fake_repo.set_status(job.run_id, RunStatus.AWAITING_APPROVAL)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(pipeline, "handle_run_pipeline", _finish_pipeline)
+    assert drain.drain_once() is DrainOutcome.DONE
+    assert run["status"] == RunStatus.AWAITING_APPROVAL.value
+    assert all(row["state"] == "done" for row in fake_repo.jobs.values())
 
 
 @pytest.mark.parametrize("failure", ["enqueue", "commit"])
