@@ -120,10 +120,11 @@ jobs:
         # KNOWN, DELIBERATELY-UNFIXED GAP: those 10 modules
         # (test_atomic_persist, test_claim_status, test_dashboard, test_gateway,
         # test_ingest, test_persistence, test_seed_roundtrip, test_stuck_run_recovery,
-        # test_threading, test_webhook_dedup_race) stay exactly as dormant in CI as
-        # they were before this step existed. This is a pre-existing gap, tracked
-        # in the roadmap backlog, and this step does not close it. A comment
-        # implying they run here would be worse than no comment.
+        # test_threading, plus non-queueproof tests in test_webhook_dedup_race)
+        # stay dormant in CI. Phase 19 promotes only the concurrent same-Svix
+        # durability proof in test_webhook_dedup_race to this marker-selected gate;
+        # the rest of that module remains outside the live-DB CI surface. The wider
+        # pre-existing gap remains tracked in the roadmap backlog.
         #
         # Guards, mirroring the step above exactly:
         #   - `[0-9]+ skipped` → red. A skipped durability proof proves nothing —

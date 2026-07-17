@@ -188,6 +188,7 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
 
 
 @pytest.mark.integration
+@pytest.mark.queueproof
 def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     monkeypatch,
 ):
