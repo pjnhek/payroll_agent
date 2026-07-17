@@ -8,14 +8,7 @@ updated: 2026-07-17T14:50:28Z
 
 ## Current Test
 
-number: 1
-name: Concurrent same-Svix real-Postgres deduplication
-expected: |
-  Two concurrent deliveries of the same Svix event ID produce exactly one
-  durable inbound event, one INGEST job, and one payroll run after delayed
-  ingest. The responses are one accepted receipt and one duplicate receipt
-  carrying the same stable event ID.
-awaiting: none — testing complete
+[testing complete]
 
 ## Tests
 

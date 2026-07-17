@@ -1,27 +1,20 @@
 ---
 phase: 19-webhook-cutover-durable-ingest
-verified: 2026-07-17T05:54:36Z
-status: human_needed
-score: 39/40 must-haves verified
-behavior_unverified: 1
+verified: 2026-07-17T14:54:17Z
+status: passed
+score: 40/40 must-haves verified
+behavior_unverified: 0
 overrides_applied: 0
-behavior_unverified_items:
-  - truth: "Same-Svix redelivery yields one event, one ingest job, and one run across a real Postgres boundary when available."
-    test: "Run tests/test_webhook_dedup_race.py::test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run against an isolated seeded Postgres database with DATABASE_URL configured."
-    expected: "Two concurrent deliveries of one Svix ID return accepted plus duplicate with one stable event ID, and the database contains exactly one inbound event, one INGEST job, and one payroll run after delayed ingest."
-    why_human: "The test is present but only integration-marked. The current real-Postgres workflow selects two named integration files plus queueproof-marked tests, so this module is not collected; local verification has no DATABASE_URL and the test skips."
-human_verification:
-  - test: "Execute the existing concurrent same-Svix test against an isolated seeded Postgres database, or wire an isolated equivalent into the real-Postgres CI gate and observe it pass without skips."
-    expected: "Exactly one durable event, one INGEST job, and one run survive the concurrent transport-redelivery race."
-    why_human: "Current green CI does not execute this specific guarded real-Postgres test, and production data must not be used as a destructive test target."
+behavior_unverified_items: []
+human_verification: []
 ---
 
 # Phase 19: Webhook Cutover & Durable Ingest Verification Report
 
 **Phase Goal:** An accepted inbound email is durable the instant the webhook returns 200 — no client email is ever lost to a restart, a crash, or a sleeping instance again.
-**Verified:** 2026-07-17T05:54:36Z
-**Status:** human_needed
-**Re-verification:** No — initial canonical verification
+**Verified:** 2026-07-17T14:54:17Z
+**Status:** passed
+**Re-verification:** Yes — UAT closed the sole initial human-needed item
 
 ## Goal Achievement
 
@@ -64,7 +57,7 @@ The four ROADMAP success criteria are preserved verbatim at the top of this merg
 | 31 | Polling runs every 2 seconds for at most 120 seconds and never performs recovery. | ✓ VERIFIED | `MAX_ATTEMPTS=60`, 2000 ms interval, read-only status fetch, and no enqueue/retrigger mutation path. |
 | 32 | Superseded/demo notices are fixed, bounded, PII-safe, and subordinate. | ✓ VERIFIED | Query values become booleans; templates select fixed copy rather than rendering query text. |
 | 33 | Pump enforces bounded 30-day terminal-only inbound-event retention. | ✓ VERIFIED | `purge_terminal_inbound_events` requires age ≥30 and batch ≤100, excludes open work, preserves job audit through `SET NULL`; named retention and pump tests passed. |
-| 34 | Same-Svix redelivery yields one event, one ingest job, and one run across real Postgres when available. | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | The exact guarded test exists but is not collected by current DB-backed CI; local environment lacks DATABASE_URL and the named test skips. Code and hermetic behavior are present, but this specific real-Postgres race has no observed passing execution. |
+| 34 | Same-Svix redelivery yields one event, one ingest job, and one run across real Postgres when available. | ✓ VERIFIED | GitHub concurrency-proof run `29589513220` executed the exact node against ephemeral Postgres: `test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run PASSED`; queueproof finished 44 passed, 1060 deselected. |
 | 35 | Writer fence remains closed through schema, authority migration, activation, and final postflight. | ✓ VERIFIED | Migration/reopen tests passed; cutover checkpoint recorded closed fence through exact activation and verified reopen. |
 | 36 | Live activation requires unambiguous inventory, sole-winner migration, exact revision, and schema/authority/fence assertions. | ✓ VERIFIED | Reopen CLI validates canonical 40-character SHA and fail-closed schema/authority catalogs. Current exact revision `93a643615bf5705474c36ae50b110cf52a3c5ebe` has green CI, concurrency-proof, eval, and deploy-migrate; orchestrator confirmed matching Render deployment and all three health endpoints. |
 | 37 | Nine stale wrapper consumers use durable handler/job/value seams. | ✓ VERIFIED | Permanent exact consumer inventory passes; retired names are absent from those consumers. |
@@ -72,7 +65,7 @@ The four ROADMAP success criteria are preserved verbatim at the top of this merg
 | 39 | Compatibility wrappers were deleted after consumers migrated. | ✓ VERIFIED | Retired definitions/references are absent; the cutover inventory checks all prerequisite consumers. |
 | 40 | A non-vacuous architecture guard rejects reintroduced producer or wrapper symbols. | ✓ VERIFIED | Both synthetic mutation tests and exact real inventory pass. |
 
-**Score:** 39/40 truths verified (1 present, behavior-unverified)
+**Score:** 40/40 truths verified
 
 ## Required Artifacts
 
@@ -84,7 +77,7 @@ The four ROADMAP success criteria are preserved verbatim at the top of this merg
 | `app/routes/webhook.py`, `demo.py`, `runs.py`, `pipeline_glue.py`, `pump.py` | All producers durable, sender guard preserved, retention invoked | ✓ VERIFIED | Direct call/transaction traces and named behavioral tests pass. |
 | `app/templates/index.html`, `runs_list.html`, `run_detail.html`, `style.css` | Bounded demo/queue notices and polling | ✓ VERIFIED | Plan 19-07 named nonexistent `dashboard.html`; execution correctly substituted the actual composer owner `index.html`, documented in 19-07-SUMMARY, with route/template tests. |
 | Migration/inventory scripts | Fail-closed legacy cutover and reopen | ✓ VERIFIED | Exact bounded outputs, lock/recheck protocol, and full-SHA reopen checks are present and tested. |
-| Phase test surface | Behavioral, architecture, and real-DB proofs | ⚠️ PARTIAL | Hermetic and queueproof coverage is strong; concurrent same-Svix real-DB test is present but not currently executed by DB-backed CI. |
+| Phase test surface | Behavioral, architecture, and real-DB proofs | ✓ VERIFIED | Hermetic coverage is green and the exact concurrent same-Svix real-DB test is now marker-selected by the ephemeral-Postgres CI gate. |
 
 ## Key Link Verification
 
@@ -120,10 +113,10 @@ The automated key-link query reported four syntax-only false negatives: multilin
 | Unauthorized sender no enqueue/orchestration | named durable-ingest test: `1 passed` | ✓ PASS |
 | Operator lock/supersession/winner-only remember | three named tests: `3 passed` | ✓ PASS |
 | Null-run reaper, both demos, queue UI, retention, fence/schema | eight named tests: `7 passed, 1 skipped`; only guarded real-thread operator test skipped locally | ✓ PASS for seven runnable checks |
-| Concurrent same-Svix real Postgres | exact named test skipped locally; not collected by current DB-backed CI | ? HUMAN REQUIRED |
+| Concurrent same-Svix real Postgres | GitHub concurrency-proof `29589513220`: exact named node passed; 44 passed, 1060 deselected | ✓ PASS |
 | Current exact GitHub revision | CI `29557925404`, concurrency-proof `29557925347`, eval `29557925408`, deploy-migrate `29557925445`: all success on `93a6436...` | ✓ PASS |
 
-Current CI reports `1028 passed, 76 skipped`; current real-Postgres concurrency workflow reports `5 passed` plus `43 passed` with skip-fail guards. Inspection of workflow selection confirms those green runs do not collect `test_webhook_dedup_race.py`.
+At exact revision `130c038`, CI run `29589513261`, concurrency-proof `29589513220`, eval `29589513190`, and deploy-migrate `29589513283` all passed. The concurrency log explicitly names the same-Svix test node and reports it passed without a skip.
 
 ## Probe Execution
 
@@ -150,25 +143,23 @@ No additional Phase 19 requirement is orphaned in `REQUIREMENTS.md`.
 2. **Misleading passing test sought:** green `concurrency-proof` cannot be used as evidence for `test_webhook_dedup_race.py`, because its workflow selects two named integration files and then only `queueproof` tests; the target is only `integration`-marked.
 3. **Uncovered error path sought:** receipt enqueue/commit rollback, malformed envelope, sender mismatch, null-run final lease, migration ambiguity, malformed authority postflight, and multiple schema CHECK catalogs all have explicit tests. No additional uncovered goal-blocking error path was found.
 
-## Human Verification Required
+## Completed UAT Evidence
 
-### 1. Concurrent same-Svix race on isolated Postgres
+### 1. Concurrent same-Svix race on isolated Postgres — passed
 
-**Test:** Run `tests/test_webhook_dedup_race.py::test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run` against an isolated, seeded Postgres database, or wire an isolated equivalent into the real-Postgres CI gate.
+**Test:** GitHub concurrency-proof run `29589513220` ran `tests/test_webhook_dedup_race.py::test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run` against its isolated, seeded Postgres service.
 
 **Expected:** Two barrier-released deliveries of the same Svix event produce one accepted and one duplicate response with the same event UUID, exactly one event row, exactly one INGEST job, and exactly one run after delayed ingest.
 
-**Why human:** Local verification has no database/reset authority. Current CI and concurrency-proof runs are green but do not collect this module, so they cannot certify this race.
+**Observed:** The exact node passed. The gate reported 44 passed and 1060 deselected, proving that this result came from the selected DB-backed queueproof surface rather than a skipped local test.
 
 ## Gaps Summary
 
-No implementation blocker was found. The phase goal and all four ROADMAP success criteria have passing hermetic behavioral evidence, all key links are wired, current exact-revision CI/deploy health is green, and the complete process-memory producer surface is structurally absent.
-
-One plan-specific stronger proof remains behavior-unverified: concurrent same-Svix dedup across real Postgres. Per the canonical verifier decision tree, that nonempty human-verification item makes the overall status `human_needed`, not `passed` and not `gaps_found`.
+No implementation or verification blocker remains. The phase goal and all four ROADMAP success criteria have passing behavioral evidence, all key links are wired, exact-revision CI/deploy health is green, the same-Svix race is observed across isolated Postgres, and the complete process-memory producer surface is structurally absent.
 
 Later Phase 20/21 items do not cover or erase this item: Phase 20 owns exactly-once outbound send, and Phase 21 owns proof packaging/ops visibility. No current implementation gap was deferred to those phases.
 
 ---
 
-_Verified: 2026-07-17T05:54:36Z_
+_Verified: 2026-07-17T14:54:17Z_
 _Verifier: the agent (gsd-verifier)_
