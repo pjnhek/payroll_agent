@@ -221,18 +221,29 @@ class TestDispatchTableMatchesJobKind:
     def test_job_kind_equals_dispatch_table(self) -> None:
         from app.queue import dispatch
 
-        assert {m.value for m in JobKind} == set(dispatch.HANDLERS.keys())
+        assert JobKind.SEND_OUTBOUND not in dispatch.HANDLERS
+        assert {m for m in JobKind if m is not JobKind.SEND_OUTBOUND} == set(
+            dispatch.HANDLERS.keys()
+        )
 
     def test_all_job_kinds_sql_and_handlers_land_atomically(self) -> None:
         """Every declared transport operation has one SQL value and handler."""
         from app.queue import dispatch
 
-        expected = {"ingest", "run_pipeline", "resume_reply", "operator_resume"}
+        expected = {
+            "ingest",
+            "run_pipeline",
+            "resume_reply",
+            "operator_resume",
+            "send_outbound",
+        }
         sql_values = _inline_check_values(_clean_sql(), "jobs", "kind")
 
         assert {member.value for member in JobKind} == expected
         assert sql_values == expected
-        assert {member.value for member in dispatch.HANDLERS} == expected
+        assert {member.value for member in dispatch.HANDLERS} == expected - {
+            "send_outbound"
+        }
 
         module, name = dispatch.HANDLERS[JobKind.RESUME_REPLY]
         assert module.__name__ == "app.queue.handlers.resume_reply"
@@ -335,6 +346,18 @@ def test_resume_reply_sql_requires_exact_identifier_context() -> None:
     assert "run_id is not null" in body
     assert "email_id is not null" in body
     assert "operator_resolution_id is null" in body
+
+
+def test_send_outbound_sql_requires_exact_identifier_context() -> None:
+    """A frozen-email send cannot carry another queue context identifier."""
+    body = _create_body(_clean_sql(), "jobs").lower()
+
+    assert "ck_jobs_send_outbound_context" in body
+    assert "kind <> 'send_outbound'" in body
+    assert "run_id is not null" in body
+    assert "email_id is not null" in body
+    assert "operator_resolution_id is null" in body
+    assert "event_id is null" in body
 
 
 def test_operator_resume_sql_requires_exact_identifier_context() -> None:

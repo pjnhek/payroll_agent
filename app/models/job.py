@@ -25,9 +25,10 @@ import uuid
 class JobKind(enum.StrEnum):
     """The kind of work a `jobs` row represents — a FUNCTION NAME, never a status.
 
-    Every declared kind ships with a real handler. `INGEST` is the only kind
-    whose work begins before a payroll run exists; it points to one persisted
-    transport receipt and carries no business payload.
+    A newly declared kind is not claimable from an application producer until
+    its executable handler is registered. `INGEST` is the only kind whose work
+    begins before a payroll run exists; it points to one persisted transport
+    receipt and carries no business payload.
     `app/queue/dispatch.py`'s CI guard asserts `set(JobKind) == set(HANDLERS)`
     — set EQUALITY. Any future widening must add the enum member, SQL value,
     and registered handler atomically so no claimable kind can lack a consumer.
@@ -37,6 +38,7 @@ class JobKind(enum.StrEnum):
     RESUME_REPLY = "resume_reply"
     OPERATOR_RESUME = "operator_resume"
     INGEST = "ingest"
+    SEND_OUTBOUND = "send_outbound"
 
 
 class JobState(enum.StrEnum):

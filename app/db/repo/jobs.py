@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 import uuid
 from collections.abc import Sequence
+from enum import StrEnum
 from typing import Any
 
 import psycopg
@@ -52,6 +53,22 @@ _JOB_COLS = (
     " attempts, max_attempts, available_at, lease_token, leased_until,"
     " last_error, created_at, updated_at"
 )
+
+_SEND_OUTBOUND_MAX_ATTEMPTS = 8
+
+
+class AdvanceSendJobOutcome(StrEnum):
+    """The caller-visible result of advancing an existing delivery job."""
+
+    ADVANCED = "advanced"
+    MISSING = "missing"
+    EXPIRED = "expired"
+    NOT_PENDING = "not_pending"
+
+
+def send_outbound_dedup_key(email_id: uuid.UUID) -> str:
+    """Return the one durable identity for a frozen outbound email slot."""
+    return f"send_outbound:{email_id}"
 
 
 def enqueue_job(
@@ -90,6 +107,7 @@ def enqueue_job(
         "run_pipeline",
         "resume_reply",
         "operator_resume",
+        "send_outbound",
     }:
         raise ValueError(f"enqueue_job: unsupported job kind {kind_value!r}")
     if kind_value == "ingest" and (
@@ -132,6 +150,17 @@ def enqueue_job(
             "enqueue_job: kind='operator_resume' requires run_id and "
             "operator_resolution_id only"
         )
+    if kind_value == "send_outbound" and (
+        run_id is None
+        or email_id is None
+        or dedup_key != send_outbound_dedup_key(email_id)
+        or operator_resolution_id is not None
+        or event_id is not None
+        or business_id is not None
+    ):
+        raise ValueError(
+            "enqueue_job: kind='send_outbound' requires the run and frozen email only"
+        )
     if (
         isinstance(available_in_seconds, bool)
         or not isinstance(available_in_seconds, (int, float))
@@ -148,9 +177,14 @@ def enqueue_job(
             raise ValueError(
                 "safe_last_error must be one bounded '<stage>:<reason>' diagnostic code"
             ) from exc
-    max_attempts = (
-        max_attempts if max_attempts is not None else get_settings().max_attempts
-    )
+    if kind_value == "send_outbound":
+        if max_attempts is not None and max_attempts != _SEND_OUTBOUND_MAX_ATTEMPTS:
+            raise ValueError("send_outbound uses its fixed replay-attempt ladder")
+        max_attempts = _SEND_OUTBOUND_MAX_ATTEMPTS
+    else:
+        max_attempts = (
+            max_attempts if max_attempts is not None else get_settings().max_attempts
+        )
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
             """
@@ -186,6 +220,70 @@ def enqueue_job(
     if row is None:
         return None
     return uuid.UUID(str(row[0]))
+
+
+def advance_existing_send_job_due_now(
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    *,
+    conn: psycopg.Connection | None = None,
+) -> AdvanceSendJobOutcome:
+    """Advance one eligible pending delivery job within the caller transaction.
+
+    This operation only moves an existing job's due time.  The caller decides
+    whether to wake a worker after committing when the returned outcome is
+    ``ADVANCED``.
+    """
+    if conn is None:
+        raise ValueError("advance_existing_send_job_due_now requires a caller-owned transaction")
+
+    reservation = conn.execute(
+        """
+        SELECT snapshot.reserved_at + interval '20 hours' > now()
+          FROM outbound_email_snapshots AS snapshot
+          JOIN email_messages AS message ON message.id = snapshot.email_id
+         WHERE message.id = %s
+           AND message.run_id = %s
+           AND message.direction = 'outbound'
+         FOR UPDATE OF snapshot, message
+        """,
+        (str(email_id), str(run_id)),
+    ).fetchone()
+    if reservation is None:
+        return AdvanceSendJobOutcome.MISSING
+    if not bool(reservation[0]):
+        return AdvanceSendJobOutcome.EXPIRED
+
+    job = conn.execute(
+        """
+        SELECT id, state
+          FROM jobs
+         WHERE kind = 'send_outbound'
+           AND run_id = %s
+           AND email_id = %s
+         FOR UPDATE
+        """,
+        (str(run_id), str(email_id)),
+    ).fetchone()
+    if job is None:
+        return AdvanceSendJobOutcome.MISSING
+    if job[1] != JobState.PENDING:
+        return AdvanceSendJobOutcome.NOT_PENDING
+
+    updated = conn.execute(
+        """
+        UPDATE jobs
+           SET available_at = now(), updated_at = now()
+         WHERE id = %s AND state = 'pending'
+        RETURNING id
+        """,
+        (str(job[0]),),
+    ).fetchone()
+    return (
+        AdvanceSendJobOutcome.ADVANCED
+        if updated is not None
+        else AdvanceSendJobOutcome.NOT_PENDING
+    )
 
 
 def claim_job(

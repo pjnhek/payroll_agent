@@ -141,6 +141,125 @@ def test_enqueue_contract_has_no_business_payload_or_next_status() -> None:
     }
 
 
+def test_enqueue_send_outbound_requires_its_immutable_slot_identifiers(
+    fake_conn,
+) -> None:
+    """A delivery job carries only the run and frozen-email identities."""
+    from app.db.repo import jobs
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    jobs.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=jobs.send_outbound_dedup_key(email_id),
+        run_id=run_id,
+        email_id=email_id,
+        conn=fake_conn,
+    )
+
+    _sql, params = fake_conn.last()
+    assert params["kind"] == "send_outbound"
+    assert params["run_id"] == str(run_id)
+    assert params["email_id"] == str(email_id)
+    assert params["operator_resolution_id"] is None
+    assert params["event_id"] is None
+    assert params["business_id"] is None
+    assert params["max_attempts"] == 8
+
+
+@pytest.mark.parametrize(
+    ("dedup_key", "run_id", "email_id", "operator_resolution_id", "event_id", "business_id"),
+    [
+        ("send_outbound:wrong", uuid.uuid4(), uuid.uuid4(), None, None, None),
+        ("send_outbound:missing-run", None, uuid.uuid4(), None, None, None),
+        ("send_outbound:missing-email", uuid.uuid4(), None, None, None, None),
+        ("send_outbound:mixed-resolution", uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), None, None),
+        ("send_outbound:mixed-event", uuid.uuid4(), uuid.uuid4(), None, uuid.uuid4(), None),
+        ("send_outbound:mixed-business", uuid.uuid4(), uuid.uuid4(), None, None, uuid.uuid4()),
+    ],
+)
+def test_enqueue_send_outbound_rejects_every_non_identifier_context_before_sql(
+    fake_conn,
+    dedup_key: str,
+    run_id: uuid.UUID | None,
+    email_id: uuid.UUID | None,
+    operator_resolution_id: uuid.UUID | None,
+    event_id: uuid.UUID | None,
+    business_id: uuid.UUID | None,
+) -> None:
+    from app.db.repo import jobs
+
+    with pytest.raises(ValueError, match="send_outbound"):
+        jobs.enqueue_job(
+            kind=JobKind.SEND_OUTBOUND,
+            dedup_key=dedup_key,
+            run_id=run_id,
+            email_id=email_id,
+            operator_resolution_id=operator_resolution_id,
+            event_id=event_id,
+            business_id=business_id,
+            conn=fake_conn,
+        )
+    assert fake_conn.executed == []
+
+
+def test_advance_existing_send_job_due_now_locks_then_updates_only_pending_work(
+    fake_conn,
+) -> None:
+    from app.db.repo import jobs
+
+    run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((True,))
+    fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((job_id,))
+
+    outcome = jobs.advance_existing_send_job_due_now(
+        run_id, email_id, conn=fake_conn
+    )
+
+    assert outcome is jobs.AdvanceSendJobOutcome.ADVANCED
+    statements = fake_conn.all_sql()
+    assert "outbound_email_snapshots" in statements
+    assert "FOR UPDATE" in statements
+    assert "kind = 'send_outbound'" in statements
+    assert "state = 'pending'" in statements
+    assert "INSERT INTO jobs" not in statements
+
+
+def test_advance_existing_send_job_due_now_never_advances_ineligible_or_leased_work(
+    fake_conn,
+) -> None:
+    from app.db.repo import jobs
+
+    run_id, email_id = uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((False,))
+    assert (
+        jobs.advance_existing_send_job_due_now(run_id, email_id, conn=fake_conn)
+        is jobs.AdvanceSendJobOutcome.EXPIRED
+    )
+    assert len(fake_conn.executed) == 1
+
+    fake_conn.script_fetchone((True,))
+    fake_conn.script_fetchone((uuid.uuid4(), "leased"))
+    assert (
+        jobs.advance_existing_send_job_due_now(run_id, email_id, conn=fake_conn)
+        is jobs.AdvanceSendJobOutcome.NOT_PENDING
+    )
+    assert len(fake_conn.executed) == 3
+
+
+def test_advance_existing_send_job_due_now_requires_a_caller_transaction(
+    fake_conn,
+) -> None:
+    from app.db.repo import jobs
+
+    with pytest.raises(ValueError, match="caller-owned transaction"):
+        jobs.advance_existing_send_job_due_now(uuid.uuid4(), uuid.uuid4())
+    assert fake_conn.executed == []
+
+
 def test_claim_sql_shape(fake_conn) -> None:
     """claim_job's SQL contains the three load-bearing properties: the
     expired-lease reclaim clause, the attempts-at-claim increment, and
@@ -655,7 +774,7 @@ def test_job_kind_schema_widens_when_handler_lands() -> None:
     jobs = schema.split("CREATE TABLE IF NOT EXISTS jobs", 1)[1].split(");", 1)[0]
     kind_check = re.search(r"CHECK \(kind IN \(([^)]*)\)\)", jobs)
     assert kind_check is not None
-    assert kind_check.group(1) == "'ingest','run_pipeline','resume_reply','operator_resume'"
+    assert kind_check.group(1) == "'ingest','run_pipeline','resume_reply','operator_resume','send_outbound'"
 
 
 def test_jobs_kind_live_migration_casts_catalog_names_to_text() -> None:

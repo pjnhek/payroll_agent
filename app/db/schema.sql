@@ -558,7 +558,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     -- Every declared value has a registered late-bound handler; the static
     -- drift guard requires exact enum, SQL, and handler-set equality.
-    kind          TEXT        NOT NULL CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume')),
+    kind          TEXT        NOT NULL CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume','send_outbound')),
     dedup_key     TEXT        NOT NULL,
     -- DEVIATION 3: an earlier full design cascades this FK on delete. This
     -- table deliberately does NOT cascade, matching the email_messages
@@ -640,6 +640,13 @@ CREATE TABLE IF NOT EXISTS jobs (
         kind <> 'operator_resume' OR (
             run_id IS NOT NULL AND operator_resolution_id IS NOT NULL
             AND email_id IS NULL AND event_id IS NULL
+        )
+    ),
+    CONSTRAINT ck_jobs_send_outbound_context CHECK (
+        kind <> 'send_outbound' OR (
+            run_id IS NOT NULL AND email_id IS NOT NULL
+            AND operator_resolution_id IS NULL AND event_id IS NULL
+            AND business_id IS NULL
         )
     ),
     CONSTRAINT ck_jobs_ingest_context CHECK (
@@ -769,7 +776,7 @@ BEGIN
     END LOOP;
 
     ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check
-        CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume'));
+        CHECK (kind IN ('ingest','run_pipeline','resume_reply','operator_resume','send_outbound'));
 
     ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_run_pipeline_requires_run;
     ALTER TABLE jobs ADD CONSTRAINT ck_jobs_run_pipeline_requires_run CHECK (
@@ -792,6 +799,15 @@ BEGIN
         kind <> 'operator_resume' OR (
             run_id IS NOT NULL AND operator_resolution_id IS NOT NULL
             AND email_id IS NULL AND event_id IS NULL
+        )
+    );
+
+    ALTER TABLE jobs DROP CONSTRAINT IF EXISTS ck_jobs_send_outbound_context;
+    ALTER TABLE jobs ADD CONSTRAINT ck_jobs_send_outbound_context CHECK (
+        kind <> 'send_outbound' OR (
+            run_id IS NOT NULL AND email_id IS NOT NULL
+            AND operator_resolution_id IS NULL AND event_id IS NULL
+            AND business_id IS NULL
         )
     );
 

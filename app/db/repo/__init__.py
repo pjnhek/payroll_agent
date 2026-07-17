@@ -62,6 +62,8 @@ from app.db.repo.job_settlement import (
     settle_pipeline_job,
 )
 from app.db.repo.jobs import (
+    AdvanceSendJobOutcome,
+    advance_existing_send_job_due_now,
     claim_job,
     complete_job,
     count_open_jobs,
@@ -70,6 +72,7 @@ from app.db.repo.jobs import (
     get_job,
     get_run_queue_label,
     release_leases,
+    send_outbound_dedup_key,
 )
 from app.db.repo.operator_resume_resolutions import (
     OperatorResolutionSubmission,
@@ -170,6 +173,8 @@ __all__ = [
     "set_pre_clarify_extracted",
     "update_known_alias",
     "rewind_for_reclaim",
+    "AdvanceSendJobOutcome",
+    "advance_existing_send_job_due_now",
     "claim_job",
     "complete_job",
     "count_open_jobs",
@@ -178,6 +183,7 @@ __all__ = [
     "get_job",
     "get_run_queue_label",
     "release_leases",
+    "send_outbound_dedup_key",
     "SettlementOutcome",
     "enqueue_classified_retry",
     "enqueue_operator_resume_retry",
