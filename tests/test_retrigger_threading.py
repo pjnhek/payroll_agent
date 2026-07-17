@@ -162,10 +162,12 @@ def _crash_after_send_then_retrigger(
     fail_once = _FailFirstCallOnly(real_snapshot_step)
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", fail_once)
 
-    # The crash pass — real background consumer, producer, clarify, and gateway. The
-    # producer returns a bounded terminal result; the consumer owns the ERROR settlement
-    # and does not re-raise, so this returns just like the first-ingest webhook path.
-    pipeline_glue.run_pipeline_bg(run_id)
+    # The crash pass exercises the explicit value seam directly. The durable drain is
+    # the only PipelineResult consumer; this focused threading test needs only the
+    # bounded terminal value plus the persisted ERROR/thread state it already protects.
+    result = pipeline_glue.run_pipeline_now(run_id)
+    assert result.outcome.value == "terminal"
+    repo_mod.settle_background_terminal(run_id, result)
 
     monkeypatch.setattr(repo_mod, "set_pre_clarify_extracted", real_snapshot_step)
 

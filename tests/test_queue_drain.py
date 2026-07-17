@@ -40,18 +40,15 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import inspect
 import pathlib
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from app.db import repo
-from app.models.contracts import InboundEmail
 from app.models.job import Job, JobKind
 from app.models.status import RunStatus
 from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
@@ -452,120 +449,6 @@ def test_settlement_lost_fences_leave_both_aggregates_unchanged(fake_repo):
     ) is SettlementOutcome.FENCED
     assert fake_repo.get_job(claimed.id) == before_job
     assert fake_repo.runs[str(run_id)]["status"] == RunStatus.EXTRACTING.value
-
-
-def _reply_inbound() -> InboundEmail:
-    return InboundEmail(
-        id=uuid.uuid4(),
-        message_id=f"<{uuid.uuid4()}@test.example>",
-        in_reply_to="<asked@test.example>",
-        references_header="<asked@test.example>",
-        subject="Re: payroll question",
-        from_addr="payroll@coastalcleaning.example",
-        to_addr="agent@payroll-agent.local",
-        body_text="The exact persisted reply body.",
-        created_at=datetime.now(UTC),
-    )
-
-
-def test_initial_background_retry_enqueues_once_and_wakes_after_commit(
-    fake_repo, monkeypatch
-):
-    from app.queue import wake
-
-    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
-    retryable = PipelineResult(
-        outcome=PipelineOutcome.RETRYABLE,
-        stage=PipelineStage.EXTRACT,
-        reason=PipelineReason.PROVIDER_TIMEOUT,
-    )
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: retryable)
-    observed: list[tuple[str, int]] = []
-
-    def _wake_after_commit() -> None:
-        observed.append((fake_repo.runs[str(run_id)]["status"], len(fake_repo.jobs)))
-
-    monkeypatch.setattr(wake, "wake", _wake_after_commit)
-    pipeline_glue.run_pipeline_bg(run_id)
-
-    assert observed == [(RunStatus.RECEIVED.value, 1)]
-    job = next(iter(fake_repo.jobs.values()))
-    assert job["kind"] == JobKind.RUN_PIPELINE.value
-    assert job["email_id"] is None
-    assert job["last_error"] == retryable.diagnostic_code
-
-
-def test_background_ok_and_terminal_create_no_retry_job(fake_repo, monkeypatch):
-    ok_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
-    monkeypatch.setattr(
-        pipeline_glue,
-        "run_pipeline_now",
-        lambda rid: PipelineResult(outcome=PipelineOutcome.OK),
-    )
-    pipeline_glue.run_pipeline_bg(ok_run)
-    assert fake_repo.jobs == {}
-    assert fake_repo.runs[str(ok_run)]["status"] == RunStatus.EXTRACTING.value
-
-    terminal_run = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
-    terminal = PipelineResult(
-        outcome=PipelineOutcome.TERMINAL,
-        stage=PipelineStage.COMPUTE,
-        reason=PipelineReason.UNCLASSIFIED,
-    )
-    monkeypatch.setattr(pipeline_glue, "run_pipeline_now", lambda rid: terminal)
-    pipeline_glue.run_pipeline_bg(terminal_run)
-    assert fake_repo.jobs == {}
-    assert fake_repo.runs[str(terminal_run)]["status"] == RunStatus.ERROR.value
-    assert fake_repo.runs[str(terminal_run)]["error_reason"] == terminal.reason.value
-
-
-def test_reply_background_retry_preserves_exact_email_and_body(fake_repo, monkeypatch):
-    from app.queue import wake
-
-    run_id = _seed_run(fake_repo, status=RunStatus.EXTRACTING)
-    inbound = _reply_inbound()
-    seen: list[tuple[uuid.UUID, InboundEmail]] = []
-    retryable = PipelineResult(
-        outcome=PipelineOutcome.RETRYABLE,
-        stage=PipelineStage.EXTRACT,
-        reason=PipelineReason.PROVIDER_RATE_LIMIT,
-    )
-
-    def _resume_now(rid: uuid.UUID, reply: InboundEmail):
-        seen.append((rid, reply))
-        return retryable
-
-    monkeypatch.setattr(pipeline_glue, "resume_pipeline_now", _resume_now, raising=False)
-    wake_calls: list[bool] = []
-    monkeypatch.setattr(wake, "wake", lambda: wake_calls.append(True))
-    pipeline_glue.resume_pipeline_bg(run_id, inbound)
-
-    assert seen == [(run_id, inbound)]
-    assert seen[0][1].body_text == "The exact persisted reply body."
-    job = next(iter(fake_repo.jobs.values()))
-    assert job["kind"] == JobKind.RESUME_REPLY.value
-    assert job["email_id"] == inbound.id
-    assert job["operator_resolution_id"] is None
-    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.RECEIVED.value
-    assert wake_calls == [True]
-
-
-def test_background_bridges_do_not_retry_in_memory_or_schedule_recursively():
-    for function in (pipeline_glue.run_pipeline_bg, pipeline_glue.resume_pipeline_bg):
-        tree = ast.parse(inspect.getsource(function))
-        assert not any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(tree))
-        called_names = {
-            node.func.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        called_attrs = {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        assert not ({"sleep", "add_task"} & (called_names | called_attrs))
-        assert function.__name__ not in called_names
 
 
 # ── handle_run_pipeline: the five behaviors ─────────────────────────────
@@ -1619,7 +1502,7 @@ def test_queue_tier_status_writers_are_cas_only() -> None:
     LIMITATION, stated so nobody trusts this guard further than it goes: it
     covers ONLY direct repo access from `app/queue/`. It does not, and
     cannot, see a status write performed by code the queue calls INTO —
-    `pipeline_glue.run_pipeline_bg` -> `orchestrator.run_pipeline`, whose own
+    `pipeline_glue.run_pipeline_now` -> `orchestrator.run_pipeline`, whose own
     unconditional status write at the start of a run is explicitly permitted
     and untouched by this phase. This tier's invariant constrains the
     transport layer, not the pipeline it invokes; this guard is not, and
@@ -1687,12 +1570,6 @@ _RESULT_PRODUCER_FUNCTIONS: dict[pathlib.Path, set[str]] = {
     REPO_ROOT / "app/queue/dispatch.py": {"handle"},
 }
 _RESULT_CONSUMER_FUNCTIONS: dict[pathlib.Path, set[str]] = {
-    REPO_ROOT / "app/routes/pipeline_glue.py": {
-        "_consume_background_result",
-        "run_pipeline_bg",
-        "resume_pipeline_bg",
-        "operator_resume_bg",
-    },
     REPO_ROOT / "app/queue/drain.py": {"drain_once"},
 }
 _RESULT_CALL_NAMES = {
@@ -1827,7 +1704,6 @@ def test_pipeline_result_call_graph_is_exact_non_vacuous_and_has_no_sinks() -> N
         "run_pipeline",
         "resume_pipeline",
         "run_pipeline_now",
-        "resume_pipeline_now",
         "handler",
         "handle",
     }, f"result call inventory was vacuous or incomplete: {sorted(observed_calls)}"
@@ -1969,11 +1845,7 @@ def test_run_pipeline_now_actually_runs_the_orchestrator_and_propagates(monkeypa
     Two properties, both load-bearing:
       1. `run_pipeline_now` genuinely invokes `orchestrator.run_pipeline`.
       2. It does NOT swallow — the exception reaches the caller, which is the entire
-         reason the queue calls this instead of `run_pipeline_bg`.
-
-    The companion assertion on `run_pipeline_bg` pins the other half of the contract: it
-    MUST still swallow, because the inbound webhook schedules it as a fire-and-forget
-    BackgroundTask after already returning 200 and has no caller left to raise to.
+         reason the queue can route infrastructure failure through fenced settlement.
     """
     import app.pipeline.orchestrator as orchestrator_mod
 
@@ -1992,12 +1864,6 @@ def test_run_pipeline_now_actually_runs_the_orchestrator_and_propagates(monkeypa
         "run_pipeline_now must actually invoke the orchestrator — a body that just "
         "returns would mark every queued payroll done without running it"
     )
-
-    # The other half: _bg still swallows, so the webhook's BackgroundTask cannot crash.
-    calls.clear()
-    pipeline_glue.run_pipeline_bg(run_id)  # must NOT raise
-    assert calls == [run_id], "run_pipeline_bg must still invoke the orchestrator too"
-
 
 def test_a_failed_infrastructure_settlement_keeps_the_lease_recorded(monkeypatch):
     """When infrastructure settlement itself raises, the token stays recorded.

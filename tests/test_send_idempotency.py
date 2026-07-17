@@ -33,6 +33,7 @@ from typing import Any
 
 import pytest
 
+from app.db import repo
 from app.models.contracts import InboundEmail
 from app.pipeline.send_guard import UnconfirmedSendError
 from app.routes import pipeline_glue
@@ -228,7 +229,9 @@ def test_a_reserved_row_blocks_the_rerun_and_escalates(fake_repo, mock_llm, monk
     run_id = _seed_metrodeli_run(fake_repo)
     _seed_unconfirmed_row(fake_repo, run_id, send_state="reserved")
 
-    pipeline_glue.run_pipeline_bg(run_id)
+    result = pipeline_glue.run_pipeline_now(run_id)
+    assert result.outcome.value == "terminal"
+    repo.settle_background_terminal(run_id, result)
 
     assert len(send_calls) == 0, (
         "the provider must never be called when an unconfirmed row exists for this "
@@ -262,7 +265,8 @@ def test_no_reserved_row_means_the_send_DOES_fire(fake_repo, mock_llm, monkeypat
     # Deliberately NOT seeding an unconfirmed row — this is the only difference from
     # test_a_reserved_row_blocks_the_rerun_and_escalates.
 
-    pipeline_glue.run_pipeline_bg(run_id)
+    result = pipeline_glue.run_pipeline_now(run_id)
+    assert result.outcome.value == "ok"
 
     assert len(send_calls) == 1, (
         "with no unconfirmed row present, clarify() must actually call "
@@ -289,7 +293,9 @@ def test_a_failed_row_blocks_the_rerun_too(fake_repo, mock_llm, monkeypatch):
     run_id = _seed_metrodeli_run(fake_repo)
     _seed_unconfirmed_row(fake_repo, run_id, send_state="failed")
 
-    pipeline_glue.run_pipeline_bg(run_id)
+    result = pipeline_glue.run_pipeline_now(run_id)
+    assert result.outcome.value == "terminal"
+    repo.settle_background_terminal(run_id, result)
 
     assert len(send_calls) == 0
     run = fake_repo.load_run(run_id)
@@ -317,7 +323,8 @@ def test_a_sent_row_takes_the_EXISTING_guard_not_this_one(fake_repo, mock_llm, m
     run_id = _seed_metrodeli_run(fake_repo)
     _seed_unconfirmed_row(fake_repo, run_id, send_state="sent")
 
-    pipeline_glue.run_pipeline_bg(run_id)
+    result = pipeline_glue.run_pipeline_now(run_id)
+    assert result.outcome.value == "ok"
 
     assert len(send_calls) == 0
     run = fake_repo.load_run(run_id)
