@@ -32,8 +32,11 @@ DB holds something else entirely.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import json
+import os
+import threading
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -112,6 +115,334 @@ def _operator_resume_job(
         max_attempts=5,
         lease_token=uuid.uuid4(),
     )
+
+
+def _authority_decision(*names: str) -> dict[str, Any]:
+    return _needs_operator_run_row(
+        uuid.uuid4(), COASTAL_BIZ_ID, list(names)
+    )["decision"]
+
+
+def test_operator_resolution_submission_is_pii_bounded_and_dedup_is_generation_specific(
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        OperatorResolutionSubmission,
+        operator_resume_dedup_key,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    winner_id = uuid.uuid4()
+    result = OperatorResolutionSubmission(
+        resolution_id=resolution_id,
+        authoritative=False,
+        winner_id=winner_id,
+    )
+
+    assert [field.name for field in dataclasses.fields(result)] == [
+        "resolution_id",
+        "authoritative",
+        "winner_id",
+    ]
+    assert dataclasses.asdict(result) == {
+        "resolution_id": resolution_id,
+        "authoritative": False,
+        "winner_id": winner_id,
+    }
+    assert operator_resume_dedup_key(run_id, resolution_id) == (
+        f"operator_resume:{run_id}:{resolution_id}"
+    )
+    assert "submitted" not in repr(result).lower()
+    assert "mapping" not in repr(result).lower()
+
+
+def test_commit_operator_resolution_locks_before_selecting_first_authority(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        commit_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employee_a = uuid.uuid4()
+    employee_b = uuid.uuid4()
+    fake_conn.script_fetchone(
+        (
+            run_id,
+            COASTAL_BIZ_ID,
+            RunStatus.NEEDS_OPERATOR.value,
+            _authority_decision("PRIVATE A", "PRIVATE B"),
+            {},
+        )
+    )
+    fake_conn.script_fetchall([])
+    fake_conn.script_fetchall([(employee_a,), (employee_b,)])
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((resolution_id,))
+
+    result = commit_operator_resume_resolution(
+        run_id,
+        resolution_id,
+        {"PRIVATE A": employee_a, "PRIVATE B": employee_b},
+        {"PRIVATE A": True, "PRIVATE B": False},
+        conn=fake_conn,
+    )
+
+    assert result.authoritative is True
+    assert result.resolution_id == result.winner_id == resolution_id
+    statements = [str(sql) for sql, _params in fake_conn.executed]
+    lock_index = next(
+        index for index, sql in enumerate(statements) if "FOR UPDATE" in sql
+    )
+    insert_index = next(
+        index
+        for index, sql in enumerate(statements)
+        if "INSERT INTO operator_resume_resolutions" in sql
+    )
+    assert lock_index < insert_index
+    assert any("authoritative" in sql and "superseded_by" in sql for sql in statements)
+    override_writes = [
+        params
+        for sql, params in fake_conn.executed
+        if "INSERT INTO operator_resume_overrides" in str(sql)
+    ]
+    assert {params[-1] for params in override_writes} == {True, False}
+
+
+def test_commit_operator_resolution_exact_replay_is_idempotent_but_conflict_fails(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        commit_operator_resume_resolution,
+    )
+
+    run_id = uuid.uuid4()
+    resolution_id = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    run_row = (
+        run_id,
+        COASTAL_BIZ_ID,
+        RunStatus.RECEIVED.value,
+        _authority_decision("PRIVATE A"),
+        {},
+    )
+    stored = [(run_id, True, None, "PRIVATE A", employee_id, True)]
+    fake_conn.script_fetchone(run_row)
+    fake_conn.script_fetchall(stored)
+
+    result = commit_operator_resume_resolution(
+        run_id,
+        resolution_id,
+        {"PRIVATE A": employee_id},
+        {"PRIVATE A": True},
+        conn=fake_conn,
+    )
+    assert result.authoritative is True
+    assert result.winner_id == resolution_id
+    assert "INSERT INTO operator_resume_resolutions" not in fake_conn.all_sql()
+
+    conflicting = type(fake_conn)()
+    conflicting.script_fetchone(run_row)
+    conflicting.script_fetchall(stored)
+    with pytest.raises(ValueError, match="conflicting"):
+        commit_operator_resume_resolution(
+            run_id,
+            resolution_id,
+            {"PRIVATE A": employee_id},
+            {"PRIVATE A": False},
+            conn=conflicting,
+        )
+    assert "INSERT INTO operator_resume_resolutions" not in conflicting.all_sql()
+
+
+def test_prepare_operator_resolution_keeps_loser_noop_and_projects_only_winner_remember(
+    fake_conn,
+) -> None:
+    from app.db.repo.operator_resume_resolutions import (
+        prepare_authoritative_operator_resume,
+    )
+
+    run_id = uuid.uuid4()
+    winner_id = uuid.uuid4()
+    loser_id = uuid.uuid4()
+    employee_a = uuid.uuid4()
+    employee_b = uuid.uuid4()
+    decision = _authority_decision("PRIVATE A", "PRIVATE B")
+    run_row = (
+        run_id,
+        COASTAL_BIZ_ID,
+        RunStatus.NEEDS_OPERATOR.value,
+        decision,
+        {"existing": {"suggested": str(employee_a)}},
+    )
+
+    fake_conn.script_fetchone(run_row)
+    fake_conn.script_fetchall(
+        [
+            (run_id, False, winner_id, "PRIVATE A", employee_a, True),
+            (run_id, False, winner_id, "PRIVATE B", employee_b, False),
+        ]
+    )
+    fake_conn.script_fetchall([(employee_a,), (employee_b,)])
+    loser = prepare_authoritative_operator_resume(
+        run_id, loser_id, conn=fake_conn
+    )
+    assert loser.authoritative is False
+    assert loser.winner_id == winner_id
+    assert not any("UPDATE payroll_runs" in str(sql) for sql, _ in fake_conn.executed)
+
+    winner_conn = type(fake_conn)()
+    winner_conn.script_fetchone(run_row)
+    winner_conn.script_fetchall(
+        [
+            (run_id, True, None, "PRIVATE A", employee_a, True),
+            (run_id, True, None, "PRIVATE B", employee_b, False),
+        ]
+    )
+    winner_conn.script_fetchall([(employee_a,), (employee_b,)])
+    winner = prepare_authoritative_operator_resume(
+        run_id, winner_id, conn=winner_conn
+    )
+    assert winner.authoritative is True
+    update = next(
+        (sql, params)
+        for sql, params in winner_conn.executed
+        if "UPDATE payroll_runs" in str(sql)
+    )
+    assert "alias_candidates" in str(update[0])
+    projected = update[1][0]
+    assert projected == {
+        "existing": {"suggested": str(employee_a)},
+        "PRIVATE A": {
+            "suggested": str(employee_a),
+            "bound": str(employee_a),
+        },
+    }
+    assert "PRIVATE B" not in projected
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not (os.environ.get("DATABASE_URL") and os.environ.get("ALLOW_DB_RESET") == "1"),
+    reason=(
+        "operator authority concurrency evidence unavailable: DATABASE_URL and "
+        "ALLOW_DB_RESET=1 are both required"
+    ),
+)
+def test_operator_authority_real_threads_commit_order_beats_worker_order(
+    seeded_db,
+) -> None:
+    from app.db import repo
+    from app.db.repo.operator_resume_resolutions import (
+        commit_operator_resume_resolution,
+        prepare_authoritative_operator_resume,
+    )
+
+    employee_a = uuid.UUID("e0000001-0000-0000-0000-000000000001")
+    employee_b = uuid.UUID("e0000002-0000-0000-0000-000000000002")
+    email_id, inserted = repo.insert_inbound_email(
+        message_id=f"<{uuid.uuid4()}@authority.test>",
+        in_reply_to=None,
+        references_header=None,
+        subject="authority race",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="PRIVATE A and PRIVATE B",
+    )
+    assert inserted and email_id is not None
+    run_id = repo.create_run(
+        business_id=COASTAL_BIZ_ID,
+        source_email_id=email_id,
+    )
+    decision = _authority_decision("PRIVATE A", "PRIVATE B")
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE payroll_runs SET status = %s, decision = %s, "
+            "alias_candidates = '{}'::jsonb WHERE id = %s",
+            (RunStatus.NEEDS_OPERATOR.value, json.dumps(decision), str(run_id)),
+        )
+
+    winner_id = uuid.uuid4()
+    loser_id = uuid.uuid4()
+    start = threading.Barrier(2, timeout=30)
+    winner_locked = threading.Event()
+    submissions: dict[str, object] = {}
+    errors: list[BaseException] = []
+    result_lock = threading.Lock()
+
+    def submit_winner() -> None:
+        try:
+            with repo.get_connection() as conn, conn.transaction():
+                start.wait()
+                conn.execute(
+                    "SELECT id FROM payroll_runs WHERE id = %s FOR UPDATE",
+                    (str(run_id),),
+                )
+                winner_locked.set()
+                result = commit_operator_resume_resolution(
+                    run_id,
+                    winner_id,
+                    {"PRIVATE A": employee_a, "PRIVATE B": employee_b},
+                    {"PRIVATE A": True, "PRIVATE B": False},
+                    conn=conn,
+                )
+            with result_lock:
+                submissions["winner"] = result
+        except BaseException as exc:  # noqa: BLE001 - thread relay to assertion
+            with result_lock:
+                errors.append(exc)
+
+    def submit_loser() -> None:
+        try:
+            start.wait()
+            assert winner_locked.wait(timeout=30)
+            result = commit_operator_resume_resolution(
+                run_id,
+                loser_id,
+                {"PRIVATE A": employee_b, "PRIVATE B": employee_a},
+                {"PRIVATE A": False, "PRIVATE B": True},
+            )
+            with result_lock:
+                submissions["loser"] = result
+        except BaseException as exc:  # noqa: BLE001 - thread relay to assertion
+            with result_lock:
+                errors.append(exc)
+
+    threads = [
+        threading.Thread(target=submit_winner),
+        threading.Thread(target=submit_loser),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    winner_submission = submissions["winner"]
+    loser_submission = submissions["loser"]
+    assert winner_submission.authoritative is True
+    assert loser_submission.authoritative is False
+    assert loser_submission.winner_id == winner_id
+
+    # Execute the losing worker first. It must remain a successful bounded no-op;
+    # worker scheduling cannot overturn the earlier committed authority.
+    loser_preparation = prepare_authoritative_operator_resume(run_id, loser_id)
+    assert loser_preparation.authoritative is False
+    before_winner = repo.load_run(run_id)
+    assert before_winner is not None
+    assert before_winner.get("alias_candidates") in ({}, None)
+
+    winner_preparation = prepare_authoritative_operator_resume(run_id, winner_id)
+    assert winner_preparation.authoritative is True
+    after_winner = repo.load_run(run_id)
+    assert after_winner is not None
+    assert after_winner["alias_candidates"] == {
+        "PRIVATE A": {
+            "suggested": str(employee_a),
+            "bound": str(employee_a),
+        }
+    }
 
 
 def test_operator_resume_uses_complete_durable_mapping_not_alias_candidates(
