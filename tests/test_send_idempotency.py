@@ -390,6 +390,13 @@ def test_delivery_confirmation_uses_current_epoch_sent_proof(fake_repo, monkeypa
 
     monkeypatch.setattr(delivery.repo, "get_outbound_message_id", _proof)
     monkeypatch.setattr(
+        delivery.repo,
+        "get_outbound_for_round",
+        lambda *_args, **_kwargs: pytest.fail(
+            "confirmation delivery must use the current-epoch proof seam directly"
+        ),
+    )
+    monkeypatch.setattr(
         delivery.send_guard,
         "outbound_replay_policy",
         lambda *_args, **_kwargs: SimpleNamespace(
