@@ -62,6 +62,23 @@ def _delivery_result(reason: PipelineReason, outcome: PipelineOutcome) -> Pipeli
     return PipelineResult(outcome=outcome, stage=PipelineStage.DELIVERY, reason=reason)
 
 
+def _reserve_current_epoch_snapshot(fake_repo, run_id: uuid.UUID, *, purpose: str):
+    return fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose=purpose,
+        round=0,
+        message_id=f"<current-{purpose}-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Current frozen delivery",
+        body_text="Current frozen body",
+        attachments=[("frozen.pdf", b"frozen-bytes")],
+    )
+
+
 def _failure_category(reason: PipelineReason) -> str:
     if reason in {
         PipelineReason.DELIVERY_TIMEOUT,
@@ -296,6 +313,92 @@ def test_fake_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review
         "attempt_state": "needs_operator",
         "failure_category": "final_attempt_lease_expired",
     }
+
+
+def test_fake_stale_epoch_send_settlement_rejects_without_mutation(fake_repo) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
+    assert fake_repo.clear_reply_context(run_id) == 1
+    current_snapshot = _reserve_current_epoch_snapshot(
+        fake_repo, run_id, purpose="confirmation"
+    )
+    before_run = dict(fake_repo.load_run(run_id))
+    before_attempts = list(fake_repo.delivery_attempts)
+    old_job = dict(fake_repo.get_job(claimed.id))
+
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            claimed, PipelineResult(outcome=PipelineOutcome.OK)
+        )
+        is SettlementOutcome.FENCED
+    )
+
+    assert fake_repo.delivery_attempts == before_attempts
+    assert fake_repo.load_run(run_id) == before_run
+    assert fake_repo.get_job(claimed.id) == old_job
+    assert fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])["message_id"] == old_snapshot["message_id"]
+    assert fake_repo.load_outbound_snapshot(run_id, current_snapshot["email_id"])["message_id"] == current_snapshot["message_id"]
+    assert all(
+        message["send_state"] == "reserved"
+        for message in fake_repo.outbound[str(run_id)]
+    )
+
+
+def test_fake_stale_epoch_final_lease_rejects_without_mutation(fake_repo) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
+    assert fake_repo.clear_reply_context(run_id) == 1
+    current_snapshot = _reserve_current_epoch_snapshot(
+        fake_repo, run_id, purpose="confirmation"
+    )
+    fake_repo.jobs[str(claimed.id)].update(
+        attempts=claimed.max_attempts,
+        lease_expired=True,
+    )
+    before_run = dict(fake_repo.load_run(run_id))
+    before_attempts = list(fake_repo.delivery_attempts)
+    old_job = dict(fake_repo.get_job(claimed.id))
+
+    assert fake_repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
+
+    assert fake_repo.delivery_attempts == before_attempts
+    assert fake_repo.load_run(run_id) == before_run
+    assert fake_repo.get_job(claimed.id) == old_job
+    assert fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])["message_id"] == old_snapshot["message_id"]
+    assert fake_repo.load_outbound_snapshot(run_id, current_snapshot["email_id"])["message_id"] == current_snapshot["message_id"]
+    assert all(
+        message["send_state"] == "reserved"
+        for message in fake_repo.outbound[str(run_id)]
+    )
+
+
+def test_fake_stale_epoch_handler_is_provider_free(fake_repo, monkeypatch) -> None:
+    from app.queue.handlers import send_outbound
+
+    run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
+    assert fake_repo.clear_reply_context(run_id) == 1
+    current_snapshot = _reserve_current_epoch_snapshot(
+        fake_repo, run_id, purpose="confirmation"
+    )
+    provider_calls = []
+
+    def provider_spy(snapshot):
+        provider_calls.append(snapshot)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(
+        send_outbound.gateway,
+        "send_reserved_outbound_snapshot",
+        provider_spy,
+    )
+
+    assert send_outbound.handle_send_outbound(claimed).outcome is PipelineOutcome.OK
+    assert provider_calls == []
+    assert fake_repo.load_outbound_snapshot(
+        run_id, current_snapshot["email_id"]
+    )["message_id"] == current_snapshot["message_id"]
 
 
 def test_fake_clarification_review_retry_advances_the_same_row_only(fake_repo) -> None:
