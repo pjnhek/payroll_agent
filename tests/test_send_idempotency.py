@@ -661,6 +661,164 @@ def test_provider_handoff_schema_repairs_deployed_database_with_bounded_vocabula
     assert "reserved_at + interval '20 hours'" in schema
 
 
+def test_provider_handoff_authorization_locks_exact_authority_order(fake_conn: Any) -> None:
+    """Provider authority is acquired only after job, snapshot, run, then handoff locks."""
+    from app.db.repo.outbound_handoffs import (
+        ProviderHandoffAuthorization,
+        authorize_outbound_provider_handoff,
+    )
+    from app.models.job import Job, JobKind
+
+    run_id, email_id, snapshot_id, handoff_id = (uuid.uuid4() for _ in range(4))
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+    leased_until = datetime.now(UTC) + timedelta(minutes=5)
+    authorized_at = datetime.now(UTC)
+    not_after = authorized_at + timedelta(hours=19)
+    fake_conn.script_fetchone(("send_outbound", run_id, email_id, leased_until))
+    fake_conn.script_fetchone(
+        {
+            "snapshot_id": snapshot_id,
+            "email_id": email_id,
+            "run_id": run_id,
+            "purpose": "confirmation",
+            "epoch": 0,
+            "send_state": "reserved",
+            "message_id": "<frozen@example.test>",
+            "from_addr": "agent@example.test",
+            "to_addr": "client@example.test",
+            "reply_to": None,
+            "in_reply_to": None,
+            "references_header": None,
+            "subject": "Confirmation",
+            "body_text": "Frozen",
+            "reserved_at": authorized_at - timedelta(hours=1),
+            "not_after": not_after,
+            "replay_window_open": True,
+        }
+    )
+    fake_conn.script_fetchall([])
+    fake_conn.script_fetchone(("approved", 0, False))
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((handoff_id, authorized_at, not_after))
+
+    outcome = authorize_outbound_provider_handoff(job, conn=fake_conn)
+
+    assert isinstance(outcome, ProviderHandoffAuthorization)
+    assert outcome.handoff_id == handoff_id
+    assert outcome.not_after == not_after
+    assert outcome.snapshot["snapshot_id"] == snapshot_id
+    statements = fake_conn.all_sql()
+    job_lock = statements.index("FROM jobs")
+    snapshot_lock = statements.index("FROM outbound_email_snapshots")
+    run_lock = statements.index("FROM payroll_runs")
+    handoff_lock = statements.index("FROM outbound_provider_handoffs")
+    assert job_lock < snapshot_lock < run_lock < handoff_lock
+    assert "state = 'leased'" in statements
+    assert "lease_token = %s" in statements
+    assert "record_only" in statements
+    assert "reserved_at + interval '20 hours'" in statements
+    assert "FOR UPDATE" in statements
+
+
+def test_clear_reply_context_checks_active_provider_handoff_before_epoch_bump() -> None:
+    from app.db.repo import pipeline_state
+
+    source = inspect.getsource(pipeline_state.clear_reply_context)
+    assert "assert_no_active_outbound_provider_handoff" in source
+    assert "SELECT id FROM payroll_runs WHERE id = %s FOR UPDATE" in source
+    assert source.index("assert_no_active_outbound_provider_handoff") < source.index(
+        "reply_epoch = reply_epoch + 1"
+    )
+
+
+def test_provider_handoff_record_only_is_distinct_and_creates_no_fence(fake_conn: Any) -> None:
+    from app.db.repo.outbound_handoffs import (
+        ProviderHandoffRecordOnly,
+        authorize_outbound_provider_handoff,
+    )
+    from app.models.job import Job, JobKind
+
+    run_id, email_id, snapshot_id = (uuid.uuid4() for _ in range(3))
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+    now = datetime.now(UTC)
+    fake_conn.script_fetchone(("send_outbound", run_id, email_id, now + timedelta(minutes=5)))
+    fake_conn.script_fetchone(
+        {
+            "snapshot_id": snapshot_id,
+            "email_id": email_id,
+            "run_id": run_id,
+            "purpose": "confirmation",
+            "epoch": 0,
+            "send_state": "reserved",
+            "reserved_at": now,
+            "not_after": now + timedelta(hours=20),
+            "replay_window_open": True,
+        }
+    )
+    fake_conn.script_fetchall([])
+    fake_conn.script_fetchone(("approved", 0, True))
+
+    outcome = authorize_outbound_provider_handoff(job, conn=fake_conn)
+
+    assert outcome == ProviderHandoffRecordOnly(run_id)
+    assert "outbound_provider_handoffs" not in fake_conn.all_sql()
+
+
+def test_provider_handoff_release_is_exact_owner_and_active_fence_is_queryable(
+    fake_conn: Any,
+) -> None:
+    from app.db.repo.outbound_handoffs import (
+        ActiveOutboundProviderHandoffError,
+        ProviderHandoffAuthorization,
+        assert_no_active_outbound_provider_handoff,
+        release_outbound_provider_handoff_for_retry,
+    )
+
+    now = datetime.now(UTC)
+    authorization = ProviderHandoffAuthorization(
+        handoff_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        email_id=uuid.uuid4(),
+        snapshot_id=uuid.uuid4(),
+        job_id=uuid.uuid4(),
+        lease_token=uuid.uuid4(),
+        epoch=7,
+        snapshot={},
+        not_after=now + timedelta(hours=1),
+    )
+    fake_conn.script_fetchone((authorization.handoff_id,))
+
+    assert release_outbound_provider_handoff_for_retry(authorization, conn=fake_conn)
+    release_sql, release_params = fake_conn.last()
+    assert "release_reason = %s" in release_sql
+    assert "lease_token = %s" in release_sql
+    assert "snapshot_id = %s" in release_sql
+    assert "released_at IS NULL" in release_sql
+    assert release_params[0] == "retry_scheduled"
+    assert release_params[-1] == str(authorization.lease_token)
+
+    fake_conn.script_fetchone((authorization.handoff_id,))
+    with pytest.raises(ActiveOutboundProviderHandoffError):
+        assert_no_active_outbound_provider_handoff(authorization.run_id, conn=fake_conn)
+    assert "released_at IS NULL" in fake_conn.last()[0]
+
+
 def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
     """Provider-ready sends need durable bytes before a provider request, with database
     enforcement rather than a repository convention that a future caller could skip.

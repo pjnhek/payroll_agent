@@ -400,7 +400,19 @@ def clear_reply_context(
     separate round trip. Raises RuntimeError if the run does not exist (the
     UPDATE matched no row).
     """
+    # Keep the retrigger's lock order deliberately narrower than the worker's
+    # job -> snapshot/email -> run -> handoff order: this path owns the run first
+    # and reads only the handoff fence, never jobs or snapshots.  That lets an
+    # already-authorized external send block an epoch bump without a lock cycle.
+    from app.db.repo.outbound_handoffs import assert_no_active_outbound_provider_handoff
+
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        locked_run = c.execute(
+            "SELECT id FROM payroll_runs WHERE id = %s FOR UPDATE", (str(run_id),)
+        ).fetchone()
+        if locked_run is None:
+            raise RuntimeError(f"clear_reply_context: run {run_id} not found")
+        assert_no_active_outbound_provider_handoff(run_id, conn=c)
         row = c.execute(
             "UPDATE payroll_runs SET "
             + _REPLY_CONTEXT_CLEAR_COLUMNS
