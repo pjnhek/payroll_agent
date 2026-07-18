@@ -401,12 +401,14 @@ def get_outbound_message_id(
     purpose: str,
     conn: psycopg.Connection | None = None,
 ) -> str | None:
-    """Purpose-aware, send_state-filtered outbound Message-ID lookup.
+    """Purpose-aware, current-epoch, send_state-filtered Message-ID lookup.
 
-    Only a row with purpose=X AND send_state='sent' counts as proof-of-delivery.
-    A reserved (pre-send intent, pre-crash) or failed row does NOT match — otherwise
-    the delivery guard would read a crashed send as a completed one and skip a
-    required email.
+    Only a row with purpose=X AND send_state='sent' in the run's current reply epoch
+    counts as proof-of-delivery. A reserved (pre-send intent, pre-crash) or failed
+    row does NOT match — otherwise the delivery guard would read a crashed send as a
+    completed one and skip a required email. Historical sent rows remain in the
+    append-only audit, but a human retriggered epoch must not treat one as proof for
+    the newly authorized confirmation.
 
     Raises ValueError on an unrecognised purpose value: the guard exists so a caller
     cannot accidentally make a purpose-blind lookup and match the wrong email.
@@ -422,10 +424,11 @@ def get_outbound_message_id(
             SELECT message_id FROM email_messages
             WHERE run_id = %s AND direction = 'outbound'
               AND purpose = %s AND send_state = 'sent'
+              AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (str(run_id), purpose),
+            (str(run_id), purpose, str(run_id)),
         ).fetchone()
     return row[0] if row else None
 
