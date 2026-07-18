@@ -153,7 +153,7 @@ def _lock_outbound_reservation(
     *,
     run_id: uuid.UUID,
     email_id: uuid.UUID,
-) -> tuple[uuid.UUID, datetime, str, str, bool] | None:
+) -> tuple[uuid.UUID, datetime, str, int, str, bool] | None:
     """Lock one immutable outbound slot and return its delivery-safe facts."""
     row = conn.execute(
         "SELECT snapshot.id, snapshot.reserved_at, message.purpose, message.round, "
@@ -174,6 +174,7 @@ def _lock_outbound_reservation(
         uuid.UUID(str(row[0])),
         reserved_at,
         str(row[2]),
+        int(row[4]),
         str(row[5]),
         bool(row[6]),
     )
@@ -237,7 +238,14 @@ def settle_outbound_delivery_job(
         )
         if reservation is None:
             return SettlementOutcome.FENCED
-        snapshot_id, reserved_at, purpose, send_state, replay_window_open = reservation
+        (
+            snapshot_id,
+            reserved_at,
+            purpose,
+            message_epoch,
+            send_state,
+            replay_window_open,
+        ) = reservation
         if purpose not in {
             "confirmation",
             "clarification",
@@ -245,7 +253,12 @@ def settle_outbound_delivery_job(
         } or send_state != "reserved":
             return SettlementOutcome.FENCED
 
-        run_status = _lock_run_status(c, stored_run_id)
+        run_generation = _lock_run_status(c, stored_run_id)
+        if run_generation is None:
+            return SettlementOutcome.FENCED
+        run_status, run_epoch = run_generation
+        if run_epoch is not None and message_epoch != run_epoch:
+            return SettlementOutcome.FENCED
         expected_status = (
             RunStatus.APPROVED
             if purpose == "confirmation"
@@ -418,12 +431,17 @@ def _set_run_error(
 
 def _lock_run_status(
     conn: psycopg.Connection, run_id: uuid.UUID
-) -> RunStatus | None:
+) -> tuple[RunStatus, int | None] | None:
     row = conn.execute(
-        "SELECT status FROM payroll_runs WHERE id = %s FOR UPDATE",
+        "SELECT status, reply_epoch FROM payroll_runs WHERE id = %s FOR UPDATE",
         (str(run_id),),
     ).fetchone()
-    return RunStatus(str(row[0])) if row is not None else None
+    if row is None:
+        return None
+    # The one-column fallback keeps old FakeConnection contract tests useful; a
+    # real payroll_runs row always returns the locked reply_epoch column.
+    run_epoch = int(row[1]) if len(row) > 1 and row[1] is not None else None
+    return RunStatus(str(row[0])), run_epoch
 
 
 def _rewind_run(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
@@ -764,14 +782,26 @@ def reap_expired_final_attempt(
             )
             if reservation is None:
                 return SettlementOutcome.FENCED
-            snapshot_id, _reserved_at, purpose, send_state, _replay_window_open = reservation
+            (
+                snapshot_id,
+                _reserved_at,
+                purpose,
+                message_epoch,
+                send_state,
+                _replay_window_open,
+            ) = reservation
             if purpose not in {
                 "confirmation",
                 "clarification",
                 "clarification_field_regression",
             } or send_state != "reserved":
                 return SettlementOutcome.FENCED
-            run_status = _lock_run_status(c, run_id)
+            run_generation = _lock_run_status(c, run_id)
+            if run_generation is None:
+                return SettlementOutcome.FENCED
+            run_status, run_epoch = run_generation
+            if run_epoch is not None and message_epoch != run_epoch:
+                return SettlementOutcome.FENCED
             expected_status = (
                 RunStatus.APPROVED
                 if purpose == "confirmation"
@@ -806,9 +836,10 @@ def reap_expired_final_attempt(
         else:
             if run_id is None:
                 return SettlementOutcome.FENCED
-            run_status = _lock_run_status(c, run_id)
-            if run_status is None:
+            run_generation = _lock_run_status(c, run_id)
+            if run_generation is None:
                 return SettlementOutcome.FENCED
+            run_status, _run_epoch = run_generation
             if run_status in _FINAL_LEASE_ERROR_STATUSES and not _set_run_error(
                 c,
                 run_id,

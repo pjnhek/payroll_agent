@@ -70,6 +70,13 @@ def handle_send_outbound(job: Job) -> PipelineResult:
     run = repo.load_run(run_id)
     if run is None or run.get("status") != _authorized_status(snapshot).value:
         return _bounded_noop()
+    run_epoch = run.get("reply_epoch")
+    if (
+        isinstance(run_epoch, bool)
+        or not isinstance(run_epoch, int)
+        or snapshot["epoch"] != run_epoch
+    ):
+        return _bounded_noop()
     if repo.get_record_only_flag(run_id):
         return PipelineResult(outcome=PipelineOutcome.OK)
 

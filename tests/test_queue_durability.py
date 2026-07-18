@@ -632,14 +632,14 @@ def test_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review(
         dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
         run_id=run_id,
         email_id=snapshot["email_id"],
-        max_attempts=1,
     )
     assert job_id is not None
     claimed = repo.claim_job()
     assert claimed is not None and claimed.id == job_id
     with repo.get_connection() as conn, conn.transaction():
         conn.execute(
-            "UPDATE jobs SET leased_until = now() - interval '60 seconds' "
+            "UPDATE jobs SET attempts = max_attempts, "
+            "leased_until = now() - interval '60 seconds' "
             "WHERE id = %s",
             (str(job_id),),
         )
@@ -853,7 +853,6 @@ def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
         dedup_key=repo.send_outbound_dedup_key(old_snapshot["email_id"]),
         run_id=run_id,
         email_id=old_snapshot["email_id"],
-        max_attempts=1,
     )
     assert old_job_id is not None
     old_job = repo.claim_job()
@@ -876,7 +875,8 @@ def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
     )
     with repo.get_connection() as conn, conn.transaction():
         conn.execute(
-            "UPDATE jobs SET leased_until = now() - interval '60 seconds' "
+            "UPDATE jobs SET attempts = max_attempts, "
+            "leased_until = now() - interval '60 seconds' "
             "WHERE id = %s",
             (str(old_job.id),),
         )
@@ -895,8 +895,8 @@ def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
             (str(current_snapshot["email_id"]),),
         ).fetchone()
         attempts = conn.execute(
-            "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id IN (%s, %s)"
-            % ("%s", "%s"),
+            "SELECT count(*) FROM outbound_delivery_attempts "
+            "WHERE snapshot_id = %s OR snapshot_id = %s",
             (str(old_snapshot["snapshot_id"]), str(current_snapshot["snapshot_id"])),
         ).fetchone()
     after = repo.load_run(run_id)
