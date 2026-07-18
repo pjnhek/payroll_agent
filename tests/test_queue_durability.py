@@ -107,6 +107,7 @@ from typing import Any
 
 import psycopg
 import pytest
+import resend
 
 from app.models.job import Job
 from app.models.status import RunStatus
@@ -1808,7 +1809,6 @@ def test_pre_provider_authorization_expired_enters_delivery_review(
     """A stale reservation records review evidence before any provider boundary."""
     from app.db import repo
     from app.db.repo.job_settlement import SettlementOutcome
-    from app.email import gateway
     from app.queue.handlers import send_outbound
 
     run_id, snapshot, job = _seed_claimed_delivery(
@@ -1825,7 +1825,7 @@ def test_pre_provider_authorization_expired_enters_delivery_review(
 
     provider_calls: list[object] = []
     monkeypatch.setattr(
-        gateway.resend.Emails,
+        resend.Emails,
         "send",
         lambda *_args, **_kwargs: provider_calls.append(object()),
     )
@@ -1883,7 +1883,6 @@ def test_provider_handoff_authorization_expired_at_gateway_boundary_enters_revie
     from app.db import repo
     from app.db.repo.job_settlement import SettlementOutcome
     from app.db.repo.outbound_handoffs import ProviderHandoffAuthorization
-    from app.email import gateway
     from app.pipeline.result import DELIVERY_SEND_BUDGET
     from app.queue.handlers import send_outbound
 
@@ -1897,7 +1896,7 @@ def test_provider_handoff_authorization_expired_at_gateway_boundary_enters_revie
 
     provider_calls: list[object] = []
     monkeypatch.setattr(
-        gateway.resend.Emails,
+        resend.Emails,
         "send",
         lambda *_args, **_kwargs: provider_calls.append(object()),
     )
