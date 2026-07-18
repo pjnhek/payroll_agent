@@ -107,95 +107,10 @@
   </div>
   {% endif %}
 </div>
-{% elif delivery_review %}
-{% if delivery_review.review_kind == 'clarification' %}
-<section class="delivery-review-card delivery-review-card--clarification banner-mb" aria-labelledby="delivery-review-title">
-  <div class="delivery-review-header">
-    <div>
-      <p class="column-label">Clarification delivery review</p>
-      <h2 id="delivery-review-title">Review clarification delivery</h2>
-    </div>
-    <span class="badge badge-escalate">Action required</span>
-  </div>
-  <p>The client may not have received this clarification question. Choose a purpose-specific outcome; this review does not resolve names or create aliases.</p>
-  <dl class="delivery-review-facts">
-    <div><dt>Recipient</dt><dd>{{ delivery_review.recipient }}</dd></div>
-    <div><dt>Frozen question</dt><dd>{{ delivery_review.subject }}</dd></div>
-    <div><dt>Reserved</dt><dd>{% if delivery_review.reserved_at is string %}{{ delivery_review.reserved_at[:16] }}{% else %}{{ delivery_review.reserved_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</dd></div>
-    <div><dt>Attempts</dt><dd>{{ delivery_review.attempt_count }}</dd></div>
-    <div><dt>Safe failure category</dt><dd>{{ delivery_review.failure_category }}</dd></div>
-    <div><dt>Message-ID / replay key</dt><dd class="delivery-review-key">{{ delivery_review.message_id }}</dd></div>
-  </dl>
-  <div class="delivery-review-evidence">
-    <a href="{{ delivery_review.email_url }}">View frozen question</a>
-    {% for attachment in delivery_review.attachments %}
-    <a href="{{ attachment.url }}">View frozen attachment: {{ attachment.filename }}</a>
-    {% endfor %}
-  </div>
-  <div class="delivery-review-actions delivery-review-clarification-actions">
-    <form method="post" action="/runs/{{ run.id }}/delivery-review/clarification/retry-now">
-      <button type="submit" class="btn-approve">Retry same question</button>
-      <p class="form-help">Reuses the existing frozen question, Message-ID, provider key, and durable job while still eligible. It does not draft new content.</p>
-    </form>
-    <form method="post" action="/runs/{{ run.id }}/delivery-review/clarification/mark-handled">
-      <button type="submit" class="btn-approve">Mark handled</button>
-      <p class="form-help">Return to waiting for the client without another provider request.</p>
-    </form>
-    <form method="post" action="/runs/{{ run.id }}/delivery-review/clarification/reject">
-      <button type="submit" class="btn-reject">Reject</button>
-      <p class="form-help">Reject this run without sending again or writing an alias.</p>
-    </form>
-  </div>
-</section>
-{% else %}
-<section class="delivery-review-card banner-mb" aria-labelledby="delivery-review-title">
-  <div class="delivery-review-header">
-    <div>
-      <p class="column-label">Delivery review</p>
-      <h2 id="delivery-review-title">Review confirmation delivery</h2>
-    </div>
-    <span class="badge badge-escalate">Action required</span>
-  </div>
-  <p>A provider result could not prove whether this confirmation was delivered. Review the frozen evidence before choosing an outcome.</p>
-  <dl class="delivery-review-facts">
-    <div><dt>Recipient</dt><dd>{{ delivery_review.recipient }}</dd></div>
-    <div><dt>Subject</dt><dd>{{ delivery_review.subject }}</dd></div>
-    <div><dt>Reserved</dt><dd>{% if delivery_review.reserved_at is string %}{{ delivery_review.reserved_at[:16] }}{% else %}{{ delivery_review.reserved_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</dd></div>
-    <div><dt>Attempts</dt><dd>{{ delivery_review.attempt_count }}</dd></div>
-    <div><dt>Safe failure category</dt><dd>{{ delivery_review.failure_category }}</dd></div>
-    <div><dt>Message-ID / replay key</dt><dd class="delivery-review-key">{{ delivery_review.message_id }}</dd></div>
-  </dl>
-  <div class="delivery-review-evidence">
-    <a href="{{ delivery_review.email_url }}">View frozen email</a>
-    {% for attachment in delivery_review.attachments %}
-    <a href="{{ attachment.url }}">View frozen attachment: {{ attachment.filename }}</a>
-    {% endfor %}
-  </div>
-  <div class="delivery-review-actions">
-    <form method="post" action="/runs/{{ run.id }}/delivery-review/mark-delivered">
-      <button type="submit" class="btn-approve">Mark delivered</button>
-      <p class="form-help">Use only when you have confirmed the client received this frozen confirmation. No new email is sent.</p>
-    </form>
-    <form method="post" action="/runs/{{ run.id }}/delivery-review/authorize" class="delivery-review-authorize">
-      <label for="new-confirmation-ack">To send another copy, type <code>AUTHORIZE A NEW CONFIRMATION</code>.</label>
-      <input id="new-confirmation-ack" name="acknowledgement" type="text" autocomplete="off" required>
-      <button type="submit" class="btn-reject">Authorize a new confirmation</button>
-      <p class="form-help">This creates a distinct delivery slot and may send the client a second email.</p>
-    </form>
-  </div>
-</section>
-{% endif %}
-{% elif run.status == 'needs_operator' and delivery_review_marker %}
-<section class="delivery-review-card banner-mb" aria-labelledby="delivery-review-unavailable-title">
-  <div class="delivery-review-header">
-    <div>
-      <p class="column-label">Delivery review</p>
-      <h2 id="delivery-review-unavailable-title">Delivery review unavailable</h2>
-    </div>
-    <span class="badge badge-escalate">Action required</span>
-  </div>
-  <p>The frozen delivery evidence is not available for this review. No retry, alias resolution, or generic recovery was started.</p>
-</section>
+{% elif delivery_review or (run.status == 'needs_operator' and delivery_review_marker) %}
+<div class="banner banner-awaiting banner-mb">
+  <strong>Delivery review required</strong> — Read the email conversation below before reviewing the frozen delivery evidence.
+</div>
 {% elif run.status == 'needs_operator' %}
 <div class="banner banner-clarify banner-mb">
   <strong>Needs Operator</strong> — the client did not resolve every name after {{ run.clarification_round if run.clarification_round else 3 }} clarification round(s). Resolve each unresolved name below, or reject this run.
@@ -232,16 +147,7 @@
 {% elif run.status == 'awaiting_reply' %}
 <div class="banner banner-awaiting banner-mb">
   <strong>Awaiting client reply</strong> — A clarification email has been sent. Waiting for the client to respond.
-  <div class="banner-divider">
-    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply <span style="font-weight: 400; text-transform: none; letter-spacing: 0;">(demo only — production uses the real inbound webhook)</span></p>
-    <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer">
-      <textarea name="reply_body" rows="3" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
-      <div class="form-inline" style="margin-bottom: 0;">
-        <button type="submit" class="btn-approve">Simulate client reply</button>
-        <span class="form-help">Edit the textarea above with the corrected name, then click to send.</span>
-      </div>
-    </form>
-  </div>
+  <p class="form-help">The demo reply composer is at the end of this conversation.</p>
 </div>
 {% elif run.decision and run.decision.final_action == 'process' %}
 <div class="banner banner-process banner-mb">
@@ -292,192 +198,95 @@
 </div>
 {% endif %}
 
-{# --- 3-column CSS grid --- #}
-<div class="run-detail-grid">
-  {# Column 1: Raw email #}
-  <div>
-    <p class="column-label">Raw Email (as received)</p>
-    {% if raw_email %}
-    <pre class="raw-email">{{ raw_email.body_text }}</pre>
-    {% else %}
-    <p class="text-muted">No source email available.</p>
-    {% endif %}
-  </div>
-
-  {# Column 2: Extracted data #}
-  <div>
-    <p class="column-label">Extracted Data</p>
-    {% if run.extracted_data and run.extracted_data.employees %}
-      {% for emp in run.extracted_data.employees %}
-      <table class="subtable">
-        <thead>
-          <tr>
-            <th colspan="2">
-              {{ emp.submitted_name }}
-              {% if run.reconciliation %}
-                {% for match in run.reconciliation %}
-                  {% if match.submitted_name == emp.submitted_name %}
-                    {% if match.source == 'exact' %}
-                      <span class="badge badge-good" style="margin-left: 8px;">exact</span>
-                    {% elif match.source == 'alias' %}
-                      <span class="badge badge-good" style="margin-left: 8px;">stored-alias</span>
-                    {% else %}
-                      <span class="badge badge-bad" style="margin-left: 8px;">unresolved</span>
-                    {% endif %}
-                  {% endif %}
-                {% endfor %}
-              {% endif %}
-            </th>
-          </tr>
-        </thead>
-        {# Provenance badge macro for clarification-round field outcomes (4 outcomes). #}
-        {# clarified_fields_by_name[emp.submitted_name][field] → outcome string. #}
-        {# Outcomes: carried-forward (silence), confirmed_dropped (client removed), #}
-        {# client_supplied (positive replacement), asked (awaiting reply). #}
-        {%- macro provenance_badge(submitted_name, field) %}
-          {%- set emp_fields = clarified_fields_by_name.get(submitted_name, {}) if clarified_fields_by_name is defined else {} %}
-          {%- set outcome = emp_fields.get(field) %}
-          {%- if outcome == 'carried_forward' %}
-            <span class="badge badge-pending" style="margin-left: 6px; font-size: 11px;">carried-forward</span>
-          {%- elif outcome == 'confirmed_dropped' %}
-            <span class="badge badge-neutral" style="margin-left: 6px; font-size: 11px;">client removed</span>
-          {%- elif outcome == 'client_supplied' %}
-            <span class="badge badge-good" style="margin-left: 6px; font-size: 11px;">client supplied</span>
-          {%- elif outcome == 'asked' %}
-            <span class="badge badge-bad" style="margin-left: 6px; font-size: 11px;">awaiting reply</span>
-          {%- endif %}
-        {%- endmacro %}
-        <tbody>
-          <tr><td class="cell-label">Regular Hours</td><td>{{ emp.hours_regular if emp.hours_regular is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_regular') }}</td></tr>
-          <tr><td class="cell-label">OT Hours</td><td>{{ emp.hours_overtime if emp.hours_overtime is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_overtime') }}</td></tr>
-          <tr><td class="cell-label">Vacation</td><td>{{ emp.hours_vacation if emp.hours_vacation is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_vacation') }}</td></tr>
-          <tr><td class="cell-label">Sick</td><td>{{ emp.hours_sick if emp.hours_sick is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_sick') }}</td></tr>
-          <tr><td class="cell-label">Holiday</td><td>{{ emp.hours_holiday if emp.hours_holiday is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_holiday') }}</td></tr>
-          {% if emp.contribution_401k_override is not none %}
-          <tr><td class="cell-label">401k Override</td><td>{{ emp.contribution_401k_override }}</td></tr>
-          {% endif %}
-        </tbody>
-      </table>
-      {% endfor %}
-    {% else %}
-    <p class="text-muted">Extraction in progress...</p>
-    {% endif %}
-  </div>
-
-  {# Column 3: Computed paystubs #}
-  <div>
-    <p class="column-label">Computed Paystubs</p>
-    {% if paystubs %}
-      {% for item in paystubs %}
-      <table class="subtable">
-        <thead>
-          <tr>
-            <th colspan="2">{{ item.submitted_name }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td class="cell-label">Gross Pay</td><td class="num">${{ "%.2f" | format(item.gross_pay | float) }}</td></tr>
-          {% if item.pretax_401k %}
-          <tr><td class="cell-label">Pre-tax 401k</td><td class="num">${{ "%.2f" | format(item.pretax_401k | float) }}</td></tr>
-          {% endif %}
-          <tr><td class="cell-label">Social Security (6.2%)</td><td class="num">${{ "%.2f" | format(item.fica_ss | float) }}</td></tr>
-          <tr><td class="cell-label">Medicare (1.45%)</td><td class="num">${{ "%.2f" | format(item.fica_medicare | float) }}</td></tr>
-          <tr><td class="cell-label">Federal Withholding</td><td class="num">${{ "%.2f" | format(item.federal_withholding | float) }}</td></tr>
-          {% if item.state_withholding %}
-          <tr><td class="cell-label">State Withholding</td><td class="num">${{ "%.2f" | format(item.state_withholding | float) }}</td></tr>
-          {% endif %}
-          <tr><td class="cell-label"><strong>Net Pay</strong></td><td class="num"><strong>${{ "%.2f" | format(item.net_pay | float) }}</strong></td></tr>
-        </tbody>
-      </table>
-      {% if item.additional_medicare_not_modeled %}
-      <p class="form-help">Additional Medicare (0.9% over $200k) not modeled.</p>
-      {% endif %}
-      <p><a href="/runs/{{ run.id }}/pdf/{{ item.employee_id }}">Download PDF</a></p>
-      {% endfor %}
-    {% else %}
-    <p class="text-muted">Calculation in progress...</p>
-    {% endif %}
-  </div>
-</div>
-
-{# --- Sent emails section --- #}
-{% if outbound_emails %}
-<div class="mt-xl">
-  <p class="column-label">Sent Emails</p>
-  {% for msg in outbound_emails %}
-  <div class="sent-email-card">
-    <div class="sent-email-header">
-      {% if msg.purpose == 'confirmation' %}
-      <span class="badge badge-good">confirmation</span>
-      {% elif msg.purpose == 'clarification' %}
-      <span class="badge badge-pending">clarification</span>
-      {% elif msg.purpose == 'clarification_field_regression' %}
-      <span class="badge badge-pending">field-regression-clarification</span>
-      {% else %}
-      <span class="badge badge-neutral">{{ msg.purpose or 'outbound' }}</span>
-      {% endif %}
-      <span class="sent-email-subject">{{ msg.subject or '(no subject)' }}</span>
-      <span class="sent-email-time">
-        {{ msg.created_at.strftime('%Y-%m-%d %H:%M') if msg.created_at else '' }}
-      </span>
+<section class="conversation mt-xl" aria-labelledby="conversation-title">
+  <div class="conversation-heading">
+    <div>
+      <p class="column-label">Email conversation</p>
+      <h2 id="conversation-title">Conversation</h2>
     </div>
-    <pre class="sent-email-body">{{ msg.body_text or '' }}</pre>
+    <p class="text-muted">Read the client exchange from top to bottom.</p>
   </div>
-  {% endfor %}
-</div>
-{% endif %}
 
-{# --- 06-08: Alias-rationale notes (PRESENTATION ONLY; decide.py untouched) --- #}
-{% if alias_rationale_notes %}
-<div class="callout callout-info mt-lg" style="max-width: none;">
-  <p class="column-label" style="margin-bottom: 8px;">Name resolutions</p>
-  {% for note in alias_rationale_notes %}
-  <p style="margin: 4px 0; font-size: 13px;">{{ note }}</p>
-  {% endfor %}
-</div>
-{% endif %}
-
-{# --- 06-08: Conversation thread (includes source inbound via OR subquery on source_email_id) --- #}
-{% if thread_messages %}
-<div class="mt-xl">
-  <p class="column-label">Conversation thread</p>
-  {% for msg in thread_messages %}
-  <div class="sent-email-card" style="margin-bottom: 12px;">
-    <div class="sent-email-header">
-      {% if msg.direction == 'inbound' %}
-      <span class="badge badge-neutral badge-uppercase">INBOUND</span>
-      {% else %}
-      <span class="badge badge-neutral badge-uppercase">OUTBOUND</span>
-      {% endif %}
-      {% if msg.purpose %}
-      <span class="badge badge-{% if msg.purpose == 'confirmation' %}good{% elif msg.purpose == 'clarification' %}pending{% else %}neutral{% endif %}" style="margin-left: 6px;">{{ msg.purpose }}</span>
-      {% endif %}
-      <span class="sent-email-subject" style="margin-left: 8px;">{{ msg.subject or '(no subject)' }}</span>
-      <span class="sent-email-time">
-        {% if msg.created_at %}
-          {% if msg.created_at is string %}
-            {{ msg.created_at[:16] }}
-          {% else %}
-            {{ msg.created_at.strftime('%Y-%m-%d %H:%M') }}
-          {% endif %}
+  {% if thread_messages %}
+    {% for msg in thread_messages %}
+    <article class="conversation-message conversation-message--{{ msg.direction }}">
+      <div class="conversation-message__meta">
+        <span class="badge badge-{% if msg.direction == 'inbound' %}neutral{% else %}pending{% endif %} badge-uppercase">{{ msg.direction }}</span>
+        {% if msg.purpose %}
+        <span class="badge badge-{% if msg.purpose == 'confirmation' %}good{% elif msg.purpose in ['clarification', 'clarification_field_regression'] %}pending{% else %}neutral{% endif %}">{{ msg.purpose | replace('_', ' ') }}</span>
         {% endif %}
-      </span>
-    </div>
-    <pre class="sent-email-body">{{ (msg.body_text or '')[:300] }}{% if msg.body_text and msg.body_text | length > 300 %}…{% endif %}</pre>
-  </div>
-  {% endfor %}
-  {# Secondary simulate-reply affordance (bottom of thread) — same action as top banner #}
-  {% if run.status == 'awaiting_reply' %}
-  <div class="reply-box">
-    <p class="column-label" style="margin-bottom: 6px;">Simulate client reply (from thread view)</p>
-    <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer" style="max-width: 480px;">
-      <textarea name="reply_body" rows="2" class="sim-reply-textarea">I meant &lt;correct full name here&gt;. Please process. Thanks!</textarea>
-      <button type="submit" class="btn-approve" style="align-self: flex-start;">Send reply</button>
-    </form>
-  </div>
+        <span class="conversation-message__time">
+          {% if msg.created_at %}{% if msg.created_at is string %}{{ msg.created_at[:16] }}{% else %}{{ msg.created_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}{% endif %}
+        </span>
+      </div>
+      <h3>{{ msg.subject or '(no subject)' }}</h3>
+      <dl class="conversation-message__addresses">
+        <div><dt>From</dt><dd>{{ msg.from_addr or '—' }}</dd></div>
+        <div><dt>To</dt><dd>{{ msg.to_addr or '—' }}</dd></div>
+      </dl>
+      <pre class="conversation-message__body">{{ msg.body_text or '' }}</pre>
+    </article>
+    {% endfor %}
+  {% elif raw_email %}
+  <article class="conversation-message conversation-message--inbound">
+    <div class="conversation-message__meta"><span class="badge badge-neutral badge-uppercase">inbound</span></div>
+    <h3>{{ raw_email.subject or '(no subject)' }}</h3>
+    <dl class="conversation-message__addresses">
+      <div><dt>From</dt><dd>{{ raw_email.from_addr or '—' }}</dd></div>
+      <div><dt>To</dt><dd>{{ raw_email.to_addr or '—' }}</dd></div>
+    </dl>
+    <pre class="conversation-message__body">{{ raw_email.body_text or '' }}</pre>
+  </article>
+  {% else %}
+  <p class="text-muted">No email messages are available yet.</p>
   {% endif %}
-</div>
+</section>
+
+{% if delivery_review %}
+{% if delivery_review.review_kind == 'clarification' %}
+<section class="delivery-review-card delivery-review-card--clarification mt-xl" aria-labelledby="delivery-review-title">
+  <div class="delivery-review-header"><div><p class="column-label">Clarification delivery review</p><h2 id="delivery-review-title">Review clarification delivery</h2></div><span class="badge badge-escalate">Action required</span></div>
+  <p>The client may not have received this clarification question. Choose a purpose-specific outcome; this review does not resolve names or create aliases.</p>
+  <dl class="delivery-review-facts"><div><dt>Recipient</dt><dd>{{ delivery_review.recipient }}</dd></div><div><dt>Frozen question</dt><dd>{{ delivery_review.subject }}</dd></div><div><dt>Reserved</dt><dd>{% if delivery_review.reserved_at is string %}{{ delivery_review.reserved_at[:16] }}{% else %}{{ delivery_review.reserved_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</dd></div><div><dt>Attempts</dt><dd>{{ delivery_review.attempt_count }}</dd></div><div><dt>Safe failure category</dt><dd>{{ delivery_review.failure_category }}</dd></div><div><dt>Message-ID / replay key</dt><dd class="delivery-review-key">{{ delivery_review.message_id }}</dd></div></dl>
+  <div class="delivery-review-evidence"><a href="{{ delivery_review.email_url }}">View frozen question</a>{% for attachment in delivery_review.attachments %}<a href="{{ attachment.url }}">View frozen attachment: {{ attachment.filename }}</a>{% endfor %}</div>
+  <div class="delivery-review-actions delivery-review-clarification-actions"><form method="post" action="/runs/{{ run.id }}/delivery-review/clarification/retry-now"><button type="submit" class="btn-approve">Retry same question</button><p class="form-help">Reuses the existing frozen question, Message-ID, provider key, and durable job while still eligible. It does not draft new content.</p></form><form method="post" action="/runs/{{ run.id }}/delivery-review/clarification/mark-handled"><button type="submit" class="btn-approve">Mark handled</button><p class="form-help">Return to waiting for the client without another provider request.</p></form><form method="post" action="/runs/{{ run.id }}/delivery-review/clarification/reject"><button type="submit" class="btn-reject">Reject</button><p class="form-help">Reject this run without sending again or writing an alias.</p></form></div>
+</section>
+{% else %}
+<section class="delivery-review-card mt-xl" aria-labelledby="delivery-review-title">
+  <div class="delivery-review-header"><div><p class="column-label">Delivery review</p><h2 id="delivery-review-title">Review confirmation delivery</h2></div><span class="badge badge-escalate">Action required</span></div>
+  <p>A provider result could not prove whether this confirmation was delivered. Review the frozen evidence before choosing an outcome.</p>
+  <dl class="delivery-review-facts"><div><dt>Recipient</dt><dd>{{ delivery_review.recipient }}</dd></div><div><dt>Subject</dt><dd>{{ delivery_review.subject }}</dd></div><div><dt>Reserved</dt><dd>{% if delivery_review.reserved_at is string %}{{ delivery_review.reserved_at[:16] }}{% else %}{{ delivery_review.reserved_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</dd></div><div><dt>Attempts</dt><dd>{{ delivery_review.attempt_count }}</dd></div><div><dt>Safe failure category</dt><dd>{{ delivery_review.failure_category }}</dd></div><div><dt>Message-ID / replay key</dt><dd class="delivery-review-key">{{ delivery_review.message_id }}</dd></div></dl>
+  <div class="delivery-review-evidence"><a href="{{ delivery_review.email_url }}">View frozen email</a>{% for attachment in delivery_review.attachments %}<a href="{{ attachment.url }}">View frozen attachment: {{ attachment.filename }}</a>{% endfor %}</div>
+  <div class="delivery-review-actions"><form method="post" action="/runs/{{ run.id }}/delivery-review/mark-delivered"><button type="submit" class="btn-approve">Mark delivered</button><p class="form-help">Use only when you have confirmed the client received this frozen confirmation. No new email is sent.</p></form><form method="post" action="/runs/{{ run.id }}/delivery-review/authorize" class="delivery-review-authorize"><label for="new-confirmation-ack">To send another copy, type <code>AUTHORIZE A NEW CONFIRMATION</code>.</label><input id="new-confirmation-ack" name="acknowledgement" type="text" autocomplete="off" required><button type="submit" class="btn-reject">Authorize a new confirmation</button><p class="form-help">This creates a distinct delivery slot and may send the client a second email.</p></form></div>
+</section>
 {% endif %}
+{% elif run.status == 'needs_operator' and delivery_review_marker %}
+<section class="delivery-review-card mt-xl" aria-labelledby="delivery-review-unavailable-title"><div class="delivery-review-header"><div><p class="column-label">Delivery review</p><h2 id="delivery-review-unavailable-title">Delivery review unavailable</h2></div><span class="badge badge-escalate">Action required</span></div><p>The frozen delivery evidence is not available for this review. No retry, alias resolution, or generic recovery was started.</p></section>
+{% endif %}
+
+<details class="payroll-details mt-xl">
+  <summary><span><span class="column-label">Supporting payroll evidence</span><strong>Payroll details</strong></span><span class="text-muted">Extraction, reconciliation, and paystubs</span></summary>
+  <div class="payroll-details__content">
+    {% if alias_rationale_notes %}
+    <div class="callout callout-info"><p class="column-label">Name resolutions</p>{% for note in alias_rationale_notes %}<p>{{ note }}</p>{% endfor %}</div>
+    {% endif %}
+    <section><p class="column-label">Extracted data and reconciliation</p>
+      {% if run.extracted_data and run.extracted_data.employees %}
+        {% for emp in run.extracted_data.employees %}
+        <table class="subtable"><thead><tr><th colspan="2">{{ emp.submitted_name }}{% if run.reconciliation %}{% for match in run.reconciliation %}{% if match.submitted_name == emp.submitted_name %}{% if match.source == 'exact' %}<span class="badge badge-good">exact</span>{% elif match.source == 'alias' %}<span class="badge badge-good">stored-alias</span>{% else %}<span class="badge badge-bad">unresolved</span>{% endif %}{% endif %}{% endfor %}{% endif %}</th></tr></thead>
+        {%- macro provenance_badge(submitted_name, field) %}{%- set outcome = clarified_fields_by_name.get(submitted_name, {}).get(field) %}{%- if outcome == 'carried_forward' %}<span class="badge badge-pending">carried-forward</span>{%- elif outcome == 'confirmed_dropped' %}<span class="badge badge-neutral">client removed</span>{%- elif outcome == 'client_supplied' %}<span class="badge badge-good">client supplied</span>{%- elif outcome == 'asked' %}<span class="badge badge-bad">awaiting reply</span>{%- endif %}{%- endmacro %}
+        <tbody><tr><td class="cell-label">Regular Hours</td><td>{{ emp.hours_regular if emp.hours_regular is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_regular') }}</td></tr><tr><td class="cell-label">OT Hours</td><td>{{ emp.hours_overtime if emp.hours_overtime is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_overtime') }}</td></tr><tr><td class="cell-label">Vacation</td><td>{{ emp.hours_vacation if emp.hours_vacation is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_vacation') }}</td></tr><tr><td class="cell-label">Sick</td><td>{{ emp.hours_sick if emp.hours_sick is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_sick') }}</td></tr><tr><td class="cell-label">Holiday</td><td>{{ emp.hours_holiday if emp.hours_holiday is not none else '—' }}{{ provenance_badge(emp.submitted_name, 'hours_holiday') }}</td></tr>{% if emp.contribution_401k_override is not none %}<tr><td class="cell-label">401k Override</td><td>{{ emp.contribution_401k_override }}</td></tr>{% endif %}</tbody></table>
+        {% endfor %}
+      {% else %}<p class="text-muted">Extraction in progress...</p>{% endif %}
+    </section>
+    <section><p class="column-label">Computed paystubs</p>
+      {% if paystubs %}{% for item in paystubs %}
+      <table class="subtable"><thead><tr><th colspan="2">{{ item.submitted_name }}</th></tr></thead><tbody><tr><td class="cell-label">Gross Pay</td><td class="num">${{ "%.2f" | format(item.gross_pay | float) }}</td></tr>{% if item.pretax_401k %}<tr><td class="cell-label">Pre-tax 401k</td><td class="num">${{ "%.2f" | format(item.pretax_401k | float) }}</td></tr>{% endif %}<tr><td class="cell-label">Social Security (6.2%)</td><td class="num">${{ "%.2f" | format(item.fica_ss | float) }}</td></tr><tr><td class="cell-label">Medicare (1.45%)</td><td class="num">${{ "%.2f" | format(item.fica_medicare | float) }}</td></tr><tr><td class="cell-label">Federal Withholding</td><td class="num">${{ "%.2f" | format(item.federal_withholding | float) }}</td></tr>{% if item.state_withholding %}<tr><td class="cell-label">State Withholding</td><td class="num">${{ "%.2f" | format(item.state_withholding | float) }}</td></tr>{% endif %}<tr><td class="cell-label"><strong>Net Pay</strong></td><td class="num"><strong>${{ "%.2f" | format(item.net_pay | float) }}</strong></td></tr></tbody></table>
+      {% if item.additional_medicare_not_modeled %}<p class="form-help">Additional Medicare (0.9% over $200k) not modeled.</p>{% endif %}<p><a href="/runs/{{ run.id }}/pdf/{{ item.employee_id }}">Download PDF</a></p>
+      {% endfor %}{% else %}<p class="text-muted">Calculation in progress...</p>{% endif %}
+    </section>
+  </div>
+</details>
 
 {# --- Operator controls --- #}
 {% if run.status == 'awaiting_approval' %}
@@ -499,5 +308,20 @@
     <button type="submit" class="btn-retrigger">Re-trigger from Start</button>
   </form>
 </div>
+{% endif %}
+
+{% if run.status == 'awaiting_reply' %}
+<section class="reply-composer mt-xl" aria-labelledby="reply-composer-title">
+  <p class="column-label">Demo reply</p>
+  <h2 id="reply-composer-title">Reply to client</h2>
+  <p class="text-muted">Production receives replies through the inbound email gateway. Use this composer to continue the demo conversation.</p>
+  <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer">
+    <textarea name="reply_body" rows="4" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
+    <div class="form-inline" style="margin-bottom: 0;">
+      <button type="submit" class="btn-approve">Simulate client reply</button>
+      <span class="form-help">Edit the message, then add it to this thread.</span>
+    </div>
+  </form>
+</section>
 {% endif %}
 {% endblock %}

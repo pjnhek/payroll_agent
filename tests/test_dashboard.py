@@ -762,6 +762,88 @@ def test_queue_feedback_hidden_when_no_open_work(monkeypatch):
     assert "MAX_ATTEMPTS" not in text
 
 
+def test_run_detail_is_one_ordered_conversation_with_final_reply_composer(monkeypatch):
+    """The run detail makes the email exchange primary and keeps evidence available."""
+    from datetime import datetime, timedelta
+
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    employee_id = uuid.uuid4()
+    started_at = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+    long_suffix = "FULL MESSAGE CONTENT AFTER THREE HUNDRED CHARACTERS"
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "awaiting_reply",
+        "extracted_data": {"employees": [{
+            "submitted_name": "Maria Chen", "hours_regular": 40,
+            "hours_overtime": 0, "hours_vacation": 0, "hours_sick": 0,
+            "hours_holiday": 0, "contribution_401k_override": None,
+        }]},
+        "decision": None,
+        "reconciliation": [{
+            "submitted_name": "Maria Chen", "matched_employee_id": str(employee_id),
+            "source": "exact",
+        }],
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    thread = [
+        {"direction": "inbound", "purpose": None, "subject": "Initial payroll request",
+         "body_text": "First message", "from_addr": "payroll@example.test",
+         "to_addr": "agent@example.test", "created_at": started_at},
+        {"direction": "outbound", "purpose": "clarification", "subject": "Clarification needed",
+         "body_text": "Second message", "from_addr": "agent@example.test",
+         "to_addr": "payroll@example.test", "created_at": started_at + timedelta(minutes=1)},
+        {"direction": "inbound", "purpose": None, "subject": "Client correction",
+         "body_text": "x" * 301 + long_suffix, "from_addr": "payroll@example.test",
+         "to_addr": "agent@example.test", "created_at": started_at + timedelta(minutes=2)},
+    ]
+    paystubs = [{
+        "submitted_name": "Maria Chen", "employee_id": employee_id, "gross_pay": 800,
+        "pretax_401k": 0, "fica_ss": 49.6, "fica_medicare": 11.6,
+        "federal_withholding": 90, "state_withholding": 0, "net_pay": 648.8,
+        "additional_medicare_not_modeled": False,
+    }]
+    monkeypatch.setattr(_repo, "load_run", lambda *args, **kwargs: dict(run))
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(_repo, "load_line_items", lambda *args, **kwargs: paystubs)
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda *args, **kwargs: thread)
+    monkeypatch.setattr(
+        _repo, "load_outbound_emails",
+        lambda *args, **kwargs: pytest.fail("run detail must use thread_messages only"),
+    )
+    monkeypatch.setattr(
+        _repo, "load_clarified_fields",
+        lambda *args, **kwargs: {str(employee_id): {"hours_regular": "client_supplied"}},
+    )
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    text = response.text
+    assert text.count(">Conversation<") == 1
+    assert (
+        text.index("Initial payroll request")
+        < text.index("Clarification needed")
+        < text.index("Client correction")
+    )
+    assert text.count(">inbound<") == 2 and ">outbound<" in text
+    assert "payroll@example.test" in text and "agent@example.test" in text
+    assert long_suffix in text
+    assert "Sent Emails" not in text and "Conversation thread" not in text
+    assert "Raw Email (as received)" not in text and "run-detail-grid" not in text
+    assert '<details class="payroll-details mt-xl">' in text
+    assert "exact" in text and "client supplied" in text
+    assert f"/runs/{run_id}/pdf/{employee_id}" in text
+    assert text.count(f'action="/runs/{run_id}/simulate-reply"') == 1
+    assert text.index("Payroll details") < text.index("Reply to client")
+
+
 def test_resolution_superseded_notice_uses_fixed_copy_not_query_text(monkeypatch):
     """Browser-controlled query values select fixed copy and are never echoed."""
     from app.db import repo as _repo
@@ -1012,6 +1094,9 @@ def test_delivery_review_card_uses_only_the_safe_projection(fake_repo):
     assert "Authorize a new confirmation" in response.text
     assert "AUTHORIZE A NEW CONFIRMATION" in response.text
     assert "Resolve unresolved names" not in response.text
+    assert response.text.index(">Conversation<") < response.text.index(
+        "Review confirmation delivery"
+    )
     for unsafe_name in (
         "error_detail",
         "last_error",
@@ -1056,6 +1141,9 @@ def test_clarification_delivery_review_card_is_purpose_isolated(fake_repo):
     assert "AUTHORIZE A NEW CONFIRMATION" not in response.text
     assert "Resolve &amp; Resume" not in response.text
     assert "remember this alias" not in response.text
+    assert response.text.index(">Conversation<") < response.text.index(
+        "Review clarification delivery"
+    )
     for unsafe_name in ("provider_response", "provider_request", "last_error", "queue_id"):
         assert unsafe_name not in response.text
 

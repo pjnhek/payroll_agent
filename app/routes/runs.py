@@ -1121,8 +1121,7 @@ def run_detail(
     run_id: uuid.UUID,
     resolution_superseded: str = Query(default=""),
 ) -> Response:
-    """DASH-02/03: Render the 3-column run detail (raw email | extracted | paystubs)
-    with decision banner and operator controls gated by status."""
+    """DASH-02/03: Render the chronological email conversation and gated controls."""
     try:
         run = repo.load_run(run_id)
     except Exception as exc:
@@ -1137,13 +1136,9 @@ def run_detail(
         logger.debug("load_inbound_email/load_line_items unavailable for run %s", run_id)
         raw_email = None
         paystubs = []
-    # Load outbound emails (confirmation / clarification) sent for this run.
-    try:
-        outbound_emails = repo.load_outbound_emails(run_id)
-    except Exception:
-        logger.debug("load_outbound_emails unavailable for run %s", run_id)
-        outbound_emails = []
     # Load the full thread (inbound source row via OR subquery + all outbound rows).
+    # It is the sole normal message-display source; raw_email is only a fallback when
+    # this best-effort read cannot return the source message.
     try:
         thread_messages = repo.load_thread_messages(run_id)
     except Exception:
@@ -1217,7 +1212,6 @@ def run_detail(
             "run": _safe_run_with_queue_projection(run_id, run),
             "raw_email": raw_email,
             "paystubs": paystubs,
-            "outbound_emails": outbound_emails,
             "thread_messages": thread_messages,
             "alias_rationale_notes": alias_rationale_notes,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),

@@ -758,15 +758,28 @@ td a:hover {
   margin: 0;
 }
 
-/* --- 3-column run detail grid --- */
-.run-detail-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  column-gap: var(--space-xl);
+/* --- Run-detail email conversation --- */
+.conversation {
+  max-width: 820px;
 }
 
-/* --- Sent / thread email cards --- */
-.sent-email-card {
+.conversation-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.conversation-heading h2 {
+  margin-bottom: 0;
+}
+
+.conversation-heading .text-muted {
+  margin: 0;
+}
+
+.conversation-message {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -775,29 +788,62 @@ td a:hover {
   overflow: hidden;
 }
 
-.sent-email-header {
+.conversation-message--inbound {
+  border-left: 4px solid #94A3B8;
+}
+
+.conversation-message--outbound {
+  border-left: 4px solid var(--accent);
+}
+
+.conversation-message__meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   border-bottom: 1px solid var(--border);
   background: var(--surface-subtle);
 }
 
-.sent-email-subject {
-  font-size: 14px;
+.conversation-message h3 {
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
+  margin: var(--space-md) var(--space-md) var(--space-sm);
 }
 
-.sent-email-time {
+.conversation-message__time {
   font-size: 12px;
   color: var(--text-muted);
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
 
-.sent-email-body {
+.conversation-message__addresses {
+  display: grid;
+  gap: 2px;
+  margin: 0 var(--space-md) var(--space-md);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.conversation-message__addresses div {
+  display: flex;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.conversation-message__addresses dt {
+  font-weight: 600;
+}
+
+.conversation-message__addresses dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.conversation-message__body {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
@@ -807,8 +853,7 @@ td a:hover {
   padding: var(--space-md);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 300px;
-  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 
 /* --- Simulate-reply textarea (legacy hook kept; maps to .textarea look) --- */
@@ -832,13 +877,77 @@ td a:hover {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
-/* Reply affordance box at the bottom of the thread */
-.reply-box {
-  margin-top: var(--space-md);
-  padding: 12px var(--space-md);
+.payroll-details {
+  max-width: 960px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.payroll-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  cursor: pointer;
+  padding: var(--space-md);
+  list-style: none;
+}
+
+.payroll-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.payroll-details summary::after {
+  content: "+";
+  color: var(--accent);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.payroll-details[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.payroll-details[open] summary::after {
+  content: "–";
+}
+
+.payroll-details summary strong {
+  display: block;
+  font-size: 16px;
+}
+
+.payroll-details summary .column-label {
+  margin-bottom: 2px;
+}
+
+.payroll-details__content {
+  display: grid;
+  gap: var(--space-xl);
+  padding: var(--space-lg);
+}
+
+.payroll-details .callout {
+  max-width: none;
+  margin-bottom: 0;
+}
+
+.reply-composer {
+  max-width: 680px;
+  padding: var(--space-lg);
   border: 1px solid #FDE68A;
   background: #FFFBEB;
   border-radius: var(--radius-md);
+}
+
+.reply-composer h2 {
+  margin-bottom: var(--space-sm);
+}
+
+.reply-composer .text-muted {
+  margin-top: 0;
 }
 
 /* --- Fixture raw input (eval drill-in) --- */
@@ -960,4 +1069,17 @@ td a:hover {
   display: inline-flex;
   gap: var(--space-sm);
   margin-top: var(--space-md);
+}
+
+@media (max-width: 700px) {
+  .conversation-heading,
+  .payroll-details summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .conversation-message__time {
+    margin-left: 0;
+    width: 100%;
+  }
 }
