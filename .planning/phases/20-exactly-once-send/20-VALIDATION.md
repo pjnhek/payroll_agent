@@ -46,7 +46,7 @@ created: 2026-07-17
 
 ## Planned Execution Coverage
 
-All 24 planned implementation tasks include an automated verification command. The
+All 40 planned implementation tasks include an automated verification command. The
 phase plan structure has been checked for task completeness, wave ordering, and
 sampling continuity; these are planning facts, not evidence that the commands have
 already passed.
@@ -57,6 +57,35 @@ already passed.
 | 4–6 | 20-09, 20-05, 20-11, 20-04, 20-10 | Queueproof/fencing and producer migration checks run before either live producer uses the new handler. |
 | 7 | 20-06, 20-12 | Delivery-review regression checks plus the full `uv run pytest -q` no-bypass gate. |
 | 8 | 20-07, 20-08 | YTD and eval polish remain isolated behind snapshot-safety regression checks. |
+| 9 | 20-15 | Fake parity, repository SQL, and no-bypass regressions; guarded queueproof skips remain unavailable evidence. |
+| 10 | 20-16 | Clarification review isolation, frozen evidence, typed actions, and browser-ready review contracts. |
+| 11 | 20-17 | SEND-01 current-epoch sent-proof SQL and guarded epoch regression. |
+| 12 | 20-18 | Epoch fencing before provider work and locked settlement/reaper no-write regressions; durable outcome mapping is deferred to 20-19. |
+| 13 | 20-19 | Sole owner of LOST_LEASE/INVALID_CONTEXT, exact-token stale-epoch retirement, and drain token bookkeeping. |
+| 14 | 20-20 | Confirmation-only route/repository/fake checks plus final ruff, bare mypy, bare full-suite, and guarded integration/queueproof evidence. |
+
+---
+
+## Closure Plan Verification Commands
+
+The closure plans 20-17 through 20-20 retain task-level verification and add the
+following final evidence. A guarded database result with missing configuration is
+reported as unavailable evidence, never as a passing queueproof.
+
+| Plan | Task | Automated verification |
+|------|------|------------------------|
+| 20-17 | 1 | `uv run pytest -q tests/test_send_idempotency.py` |
+| 20-17 | 2 | `uv run pytest -q tests/test_send_idempotency.py tests/test_delivery.py` |
+| 20-18 | 1 | `uv run pytest -q tests/test_queue_durability.py tests/test_send_idempotency.py` |
+| 20-18 | 2 | `uv run pytest -q tests/test_phase20_fake_parity.py tests/test_send_idempotency.py tests/test_clarify.py` |
+| 20-19 | 1 | `uv run pytest -q tests/test_queue_durability.py tests/test_queue_drain.py` |
+| 20-19 | 2 | `uv run pytest -q tests/test_queue_drain.py tests/test_queue_durability.py` |
+| 20-20 | 1 | `uv run pytest -q tests/test_phase20_clarification_review.py tests/test_repo_jobs_sql.py tests/test_dashboard.py` |
+| 20-20 | 2 | `uv run pytest -q tests/test_phase20_clarification_review.py tests/test_phase20_fake_parity.py tests/test_repo_jobs_sql.py tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_queue_drain.py`; `uv run ruff check app/routes/runs.py app/db/repo/jobs.py app/db/repo/job_settlement.py app/db/repo/emails.py app/queue/handlers/send_outbound.py app/queue/drain.py tests/conftest.py tests/test_phase20_clarification_review.py tests/test_phase20_fake_parity.py tests/test_repo_jobs_sql.py tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_queue_drain.py`; `uv run mypy`; `uv run pytest -q`; `uv run pytest -q -m 'integration and queueproof' tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_queue_drain.py tests/test_threading.py`. |
+
+Final quality commands required by Plan 20 are the bare `uv run mypy`, bare
+`uv run pytest -q`, the listed `uv run ruff check`, and the guarded
+`integration and queueproof` command.
 
 ---
 
