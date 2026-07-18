@@ -1,20 +1,24 @@
 ---
 phase: 20-exactly-once-send
-reviewed: 2026-07-18T01:33:07Z
+reviewed: 2026-07-18T00:00:00Z
 depth: standard
-files_reviewed: 45
+files_reviewed: 49
 files_reviewed_list:
   - app/db/repo/__init__.py
   - app/db/repo/demo.py
   - app/db/repo/emails.py
   - app/db/repo/job_settlement.py
   - app/db/repo/jobs.py
+  - app/db/repo/outbound_handoffs.py
+  - app/db/repo/pipeline_state.py
   - app/db/repo/runs.py
   - app/db/schema.sql
+  - app/email/gateway.py
   - app/models/job.py
   - app/pipeline/clarification.py
   - app/pipeline/delivery.py
   - app/pipeline/pdf.py
+  - app/pipeline/result.py
   - app/pipeline/send_guard.py
   - app/queue/dispatch.py
   - app/queue/drain.py
@@ -34,6 +38,7 @@ files_reviewed_list:
   - tests/test_demo_fixtures.py
   - tests/test_demo_landing.py
   - tests/test_eval.py
+  - tests/test_gateway.py
   - tests/test_hitl.py
   - tests/test_job_kind_drift.py
   - tests/test_needs_operator.py
@@ -56,13 +61,28 @@ findings:
 status: issues_found
 ---
 
-Phase 20 correctly freezes the provider envelope, reuses its idempotency key, fences settlement/reaping with the current epoch, and isolates confirmation review actions from clarification reviews. The focused Phase 20 suite also passed: 269 passed, 52 skipped. One race remains in the provider preflight, so the phase's current-epoch send guarantee is not complete.
+# Phase 20: Code Review Report
 
-## Narrative Findings (AI reviewer)
+**Reviewed:** 2026-07-18T00:00:00Z
+**Depth:** standard
+**Files Reviewed:** 49
+**Status:** issues_found
 
-### BLOCKER — The provider call is not fenced against a retrigger that lands after the epoch read
+## Summary
 
-- Location: `app/queue/handlers/send_outbound.py:66-89`
-- Evidence: `handle_send_outbound()` loads the frozen snapshot, then separately reads the run and compares `snapshot["epoch"]` with `run["reply_epoch"]` at lines 70-79. Neither read takes or retains a run-row lock, and the provider request at line 89 occurs later, outside a transaction. A concurrent operator retrigger can therefore commit `clear_reply_context()` (which increments `reply_epoch`) after line 79 and before `gateway.send_reserved_outbound_snapshot()`. The stale epoch's confirmation/clarification is then sent. Settlement subsequently detects the epoch mismatch and retires the old job, but that is after the irreversible provider side effect. The existing stale-epoch tests only bump the epoch before entering the handler and do not exercise this interleaving.
-- Impact: This violates the explicitly required current-reply-epoch fence before the provider call. In particular, a human retrigger can intentionally open a fresh epoch while a stale worker still delivers the old payload, defeating the per-epoch authorization boundary even though Resend deduplicates duplicate requests for that old Message-ID.
-- Remediation: Add a durable pre-send authorization/fence that serializes against `clear_reply_context` and remains valid through the provider handoff (for example, lock the run plus exact leased job/snapshot in one transaction and introduce a fenced, provider-attempt state that retrigger must reject or wait on). Recheck the exact lease token, snapshot epoch, run epoch, purpose-appropriate status, and replay window in that boundary; only then invoke the provider. Add a concurrent regression that pauses immediately after the preflight, performs a real epoch bump in a second connection, then proves the stale worker cannot call the gateway.
+Reviewed the immutable snapshot, fenced provider handoff, settlement, delivery-review, retrigger, and fake-parity paths. The provider-handoff fence correctly blocks an epoch bump after authorization, but an already-expired reservation takes a no-provider path that is retired as invalid context. This silently leaves a live confirmation run approved rather than escalating its ambiguous delivery state for operator review.
+
+## Critical Issues
+
+### CR-01: Expired reservation is dropped without delivery review
+
+**File:** `app/queue/handlers/send_outbound.py:55-58`; `app/db/repo/outbound_handoffs.py:275-276`; `app/db/repo/job_settlement.py:401-413`
+**Issue:** When a claimed `SEND_OUTBOUND` job is first handled after its reservation’s 20-hour window has expired, `authorize_outbound_provider_handoff()` returns `ProviderHandoffActive("replay_window_closed")` without creating a handoff. The handler collapses that outcome into a successful no-op. Settlement then cannot lock a handoff, retires the exact job as `invalid_context`, and returns without changing the run from `approved`/`awaiting_reply` to purpose-specific `needs_operator`. Thus a delayed initial send or delayed retry can disappear silently instead of entering the required delivery-review state; the fake repository reproduces the same behavior at `tests/conftest.py:1353-1358`.
+
+**Fix:** Preserve the authorization outcome’s reason at the handler/settlement boundary. For `replay_window_closed`, settle the leased reservation directly into the existing purpose-aware delivery-review transition (append a bounded `authorization_expired` attempt, complete the job, and set the run to the appropriate `needs_operator` marker) without requiring a provider handoff. Add production and fake-parity tests that claim a snapshot with `reserved_at <= now() - interval '20 hours'` and assert zero provider calls, a completed job, and the delivery-review status.
+
+---
+
+_Reviewed: 2026-07-18T00:00:00Z_
+_Reviewer: the agent (gsd-code-reviewer)_
+_Depth: standard_
