@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: exactly-once-send
 status: executing
-stopped_at: Phase 20 verification gaps after 25/25 plans
-last_updated: "2026-07-18T02:53:59.319Z"
+stopped_at: Phase 20 gap-closure execution pending after 25/27 plans
+last_updated: "2026-07-18T04:46:03Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 verification found delivery-safety gaps; closure planning required
+last_activity_desc: Phase 20 gap-closure plans 20-26 and 20-27 registered; execution required
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 66
-  completed_plans: 61
+  total_plans: 68
+  completed_plans: 66
   percent: 67
 ---
 
@@ -21,7 +21,7 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 complete)
+See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation complete; gap closure remains)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
 **Current focus:** Phase 20 — exactly-once-send (gap closure required)
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 complete)
 ## Current Position
 
 Phase: 20 (exactly-once-send) — GAPS FOUND
-Plan: 25 of 25 executed; gap closure pending
-Status: Verification found delivery-safety gaps
-Last activity: 2026-07-18 — verification found two delivery-safety blockers; plan gap closure required
+Plan: 25 of 27 executed; Plans 20-26 (Wave 20) and 20-27 (Wave 21) remain
+Status: Gap-closure execution pending; Phase 20 is not complete
+Last activity: 2026-07-18 — registered two gap-closure plans for CR-01 and the guarded live-Postgres evidence gate
 
 ## Performance Metrics
 
@@ -64,7 +64,7 @@ Last activity: 2026-07-18 — verification found two delivery-safety blockers; p
 | 17 | 5 | - | - |
 | 18 | 14 | - | - |
 | 19 | 12 | - | - |
-| 20 | 20 | - | - |
+| 20 | 25 | - | - |
 
 **Recent Trend:**
 
@@ -345,10 +345,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-18T01:08:17Z
-Stopped at: Completed 20-18-PLAN.md
+Last session: 2026-07-18T04:46:03Z
+Stopped at: Gap-closure planning registered Plans 20-26 and 20-27; execution has not begun
 Resume file: None
 
 ## Operator Next Steps
 
-- Resume Phase 20 execution with `/gsd-execute-phase 20`; Plan 20-19 can now retire stale-epoch leases from the fenced no-write boundary.
+- Resume Phase 20 execution with `/gsd-execute-phase 20`; execute Plan 20-26 in Wave 20, then Plan 20-27's blocking guarded live-Postgres evidence gate in Wave 21. Missing disposable credentials, missing `ALLOW_DB_RESET=1`, or selected-test skips are unavailable evidence, not a successful phase close.

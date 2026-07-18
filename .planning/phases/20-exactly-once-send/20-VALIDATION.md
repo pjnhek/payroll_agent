@@ -46,7 +46,10 @@ created: 2026-07-17
 
 ## Planned Execution Coverage
 
-All 47 planned implementation tasks include an automated verification command. The
+All 51 planned implementation tasks include an automated verification command. Plan
+20-27 also contains one blocking human-verify task for guarded live-Postgres evidence.
+The implementation-task count includes Plans 20-26 and 20-27; the blocking checkpoint
+is not implementation work and cannot be inferred from a skipped test. The
 phase plan structure has been checked for task completeness, wave ordering, and
 sampling continuity; these are planning facts, not evidence that the commands have
 already passed.
@@ -68,6 +71,8 @@ already passed.
 | 17 | 20-24 | Production and InMemoryRepo parity verify that timeout/5xx settlement exact-owner-releases the active handoff into retry history before rescheduling, then a due new lease reauthorizes and replays one original frozen snapshot/Message-ID under its reservation-derived deadline while the former token cannot settle or release; record-only, expired-authorization, and crash-after-authorization adoption remain covered. |
 | 18 | 20-25 | Generic retrigger rollback and the D-09/D-11 review-only paths verify epoch changes cannot cross an active handoff. |
 | 19 | 20-23 | The barrier-driven real-Postgres queueproof verifies protected and deliberately unsafe provider/epoch interleavings. |
+| 20 | 20-26 | The bounded pre-provider replay-window-expired result is preserved and settled through exact, purpose-aware delivery review without provider I/O; production/fake parity remains hermetic evidence only. |
+| 21 | 20-27 | Fresh/deployed schema-category parity, legacy-CHECK repair, and both expiry boundaries are proved on guarded Postgres; the blocking task also requires zero-skip execution of the protected/control provider-handoff proof. |
 
 ---
 
@@ -94,13 +99,22 @@ reported as unavailable evidence, never as a passing queueproof.
 | 20-25 | 1 | `uv run pytest -q tests/test_retrigger_epoch.py tests/test_phase20_clarification_review.py tests/test_delivery.py`; `uv run ruff check app/db/repo/pipeline_state.py app/routes/runs.py tests/test_retrigger_epoch.py tests/test_phase20_clarification_review.py`; `uv run mypy` |
 | 20-23 | 1 | `uv run pytest tests/ -m queueproof --collect-only -q | rg 'test_provider_handoff_(blocks_epoch_bump_before_gateway|race_control_observes_stale_gateway_when_fence_is_released)'` |
 | 20-23 | 2 | `DATABASE_URL="$DATABASE_URL" ALLOW_DB_RESET=1 uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k provider_handoff -rs` |
+| 20-26 | 1 | `uv run pytest -q tests/test_gateway.py -k 'replay_window_closed or authorization_expired or send_handler'` |
+| 20-26 | 2 | `uv run pytest -q tests/test_phase20_fake_parity.py tests/test_send_idempotency.py tests/test_gateway.py` |
+| 20-27 | 1 | `uv run pytest -q tests/test_send_idempotency.py -k 'outbound_snapshot_schema or authorization_expired or delivery_settlement'` |
+| 20-27 | 2 | `DATABASE_URL="$DATABASE_URL" ALLOW_DB_RESET=1 uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k 'authorization_expired or deployed_schema_repair or provider_handoff' -rs` |
+| 20-27 | 3 (blocking) | On a disposable/resettable PostgreSQL target only, set a nonempty `DATABASE_URL` and `ALLOW_DB_RESET=1`, then run `DATABASE_URL="$DATABASE_URL" ALLOW_DB_RESET=1 uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k 'authorization_expired or deployed_schema_repair or provider_handoff' -rs`; every selected test must pass with zero skips. |
 
 Final quality commands required by Plan 20 are the bare `uv run mypy`, bare
 `uv run pytest -q`, the listed `uv run ruff check`, and the guarded
-`integration and queueproof` command. Plan 20-23 is a real-Postgres closure gate:
-when `DATABASE_URL` or `ALLOW_DB_RESET=1` is absent, selected-test skips are unavailable
-evidence and cannot close the phase; when both are supplied, the command must have zero
-skipped selected tests and the deliberately unsafe control must pass.
+`integration and queueproof` commands. Plan 20-27 is the blocking fresh/deployed
+schema-repair and live-Postgres closure gate:
+`DATABASE_URL="$DATABASE_URL" ALLOW_DB_RESET=1 uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k 'authorization_expired or deployed_schema_repair or provider_handoff' -rs`.
+Run it only against a disposable/resettable database. A missing or empty
+`DATABASE_URL`, an `ALLOW_DB_RESET` value other than `1`, any selected-test skip, or any
+failure is unavailable or failed evidence—not a pass—and leaves the checkpoint and
+Phase 20 behavior-unverified item open. With the guarded environment present, every
+selected test must pass with zero skips, including the deliberately unsafe control.
 
 ---
 

@@ -41,7 +41,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 - [x] **Phase 17: The Pump** - An authenticated, cron-driven pump endpoint turns durable storage into durable execution — a job scheduled for later actually fires with no human present. (completed 2026-07-15)
 - [x] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism. (completed 2026-07-16)
 - [x] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue. (completed 2026-07-17)
-- [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch. (gap closure in progress)
+- [ ] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch. (gap-closure execution pending)
 - [ ] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact.
 
 ## Phase Details
@@ -256,7 +256,7 @@ parallel with it.
   3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
-**Plans**: 20/25 plans executed
+**Plans**: 25/27 plans executed; gap-closure execution remains required
 **Wave 1**
 
 - [x] 20-01-PLAN.md
@@ -321,23 +321,31 @@ parallel with it.
 
 **Wave 15** *(gap closure; blocked on Wave 14 completion)*
 
-- [ ] 20-21-PLAN.md — Create durable exact provider-handoff authority and its immutable deadline
+- [x] 20-21-PLAN.md — Create durable exact provider-handoff authority and its immutable deadline
 
 **Wave 16** *(gap closure; blocked on Wave 15 completion)*
 
-- [ ] 20-22-PLAN.md — Enforce the immutable deadline at the fixed-timeout Resend boundary
+- [x] 20-22-PLAN.md — Enforce the immutable deadline at the fixed-timeout Resend boundary
 
 **Wave 17** *(gap closure; blocked on Wave 16 completion)*
 
-- [ ] 20-24-PLAN.md — Settle and reap exact provider handoffs with production/fake parity
+- [x] 20-24-PLAN.md — Settle and reap exact provider handoffs with production/fake parity
 
 **Wave 18** *(gap closure; blocked on Wave 17 completion)*
 
-- [ ] 20-25-PLAN.md — Fence generic epoch changes behind the active provider handoff
+- [x] 20-25-PLAN.md — Fence generic epoch changes behind the active provider handoff
 
 **Wave 19** *(gap closure; blocked on Wave 18 completion)*
 
-- [ ] 20-23-PLAN.md — Prove the provider-handoff fence with a non-vacuous real-Postgres race
+- [x] 20-23-PLAN.md — Prove the provider-handoff fence with a non-vacuous real-Postgres race
+
+**Wave 20** *(gap closure; blocked on Wave 19 completion)*
+
+- [ ] 20-26-PLAN.md — Preserve replay-window expiry through fenced, purpose-aware delivery review without provider I/O.
+
+**Wave 21** *(gap closure; blocked on Wave 20 completion)*
+
+- [ ] 20-27-PLAN.md — Repair fresh/deployed attempt-category parity and complete the blocking guarded live-Postgres schema/expiry/provider-handoff evidence gate; unavailable credentials or any skip do not close the phase.
 
 ### Phase 21: Durability Proofs & Ops View
 
@@ -394,5 +402,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
-| 20. Exactly-Once Send | v4 | 20/25 | In Progress |  |
+| 20. Exactly-Once Send | v4 | 25/27 | Gap-closure execution pending |  |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
