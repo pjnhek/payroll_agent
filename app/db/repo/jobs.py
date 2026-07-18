@@ -261,6 +261,8 @@ def advance_existing_send_job_due_now(
          WHERE message.id = %s
            AND message.run_id = %s
            AND message.direction = 'outbound'
+           AND message.purpose = 'confirmation'
+           AND message.send_state = 'reserved'
          FOR UPDATE OF snapshot, message
         """,
         (str(email_id), str(run_id)),
@@ -269,6 +271,20 @@ def advance_existing_send_job_due_now(
         return AdvanceSendJobOutcome.MISSING
     if not bool(reservation[0]):
         return AdvanceSendJobOutcome.EXPIRED
+
+    review = conn.execute(
+        """
+        SELECT id
+          FROM payroll_runs
+         WHERE id = %s
+           AND status = 'needs_operator'
+           AND error_reason = 'DeliveryReview'
+         FOR UPDATE
+        """,
+        (str(run_id),),
+    ).fetchone()
+    if review is None:
+        return AdvanceSendJobOutcome.MISSING
 
     updated = conn.execute(
         """

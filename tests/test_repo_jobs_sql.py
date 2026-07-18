@@ -214,6 +214,7 @@ def test_advance_existing_send_job_due_now_locks_then_updates_only_pending_work(
     run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     fake_conn.script_fetchone((job_id, "pending"))
     fake_conn.script_fetchone((True,))
+    fake_conn.script_fetchone((run_id,))
     fake_conn.script_fetchone((job_id,))
 
     outcome = jobs.advance_existing_send_job_due_now(
@@ -227,6 +228,32 @@ def test_advance_existing_send_job_due_now_locks_then_updates_only_pending_work(
     assert "kind = 'send_outbound'" in statements
     assert "state = 'pending'" in statements
     assert "INSERT INTO jobs" not in statements
+
+
+def test_advance_existing_send_job_due_now_requires_confirmation_review_ownership(
+    fake_conn,
+) -> None:
+    """The generic retry is confirmation-only before it may advance a job."""
+    from app.db.repo import jobs
+
+    run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    fake_conn.script_fetchone((job_id, "pending"))
+    fake_conn.script_fetchone((True,))
+    fake_conn.script_fetchone((run_id,))
+    fake_conn.script_fetchone((job_id,))
+
+    assert (
+        jobs.advance_existing_send_job_due_now(run_id, email_id, conn=fake_conn)
+        is jobs.AdvanceSendJobOutcome.ADVANCED
+    )
+
+    statements = fake_conn.all_sql()
+    assert "message.purpose = 'confirmation'" in statements
+    assert "message.send_state = 'reserved'" in statements
+    assert "status = 'needs_operator'" in statements
+    assert "error_reason = 'DeliveryReview'" in statements
+    assert "FOR UPDATE OF snapshot, message" in statements
+    assert "FOR UPDATE" in statements
 
 
 def test_advance_existing_send_job_due_now_never_advances_ineligible_or_leased_work(

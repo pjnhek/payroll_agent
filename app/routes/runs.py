@@ -25,7 +25,7 @@ from app.routes import pipeline_glue
 from app.routes.demo import DEMO_FIXTURES
 from app.routes.templating import badge_class_filter, badge_label_filter, templates
 
-__all__ = ["router", "delivery", "wake"]
+__all__ = ["router", "repo", "delivery", "wake"]
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -938,7 +938,9 @@ def retry_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
-            if delivery_review is not None:
+            if delivery_review is not None and delivery_review["review_kind"] == (
+                "confirmation"
+            ):
                 outcome = repo.advance_existing_send_job_due_now(
                     run_id,
                     delivery_review["review"]["email_id"],
@@ -1013,7 +1015,10 @@ def mark_delivery_delivered(run_id: uuid.UUID) -> RedirectResponse:
     """Resolve delivery uncertainty without another provider request."""
     try:
         with repo.get_connection() as conn, conn.transaction():
-            if _load_delivery_review(run_id, conn=conn) is not None:
+            delivery_review = _load_delivery_review(run_id, conn=conn)
+            if delivery_review is not None and delivery_review["review_kind"] == (
+                "confirmation"
+            ):
                 repo.claim_status(
                     run_id,
                     RunStatus.NEEDS_OPERATOR,
@@ -1038,7 +1043,7 @@ def authorize_new_confirmation(
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
-            if delivery_review is None:
+            if delivery_review is None or delivery_review["review_kind"] != "confirmation":
                 return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
             if not repo.claim_status(
                 run_id,
