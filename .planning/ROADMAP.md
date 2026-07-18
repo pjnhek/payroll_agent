@@ -256,7 +256,7 @@ parallel with it.
   3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
-**Plans**: 12/12 plans complete
+**Plans**: 20 plans total (16 complete, 4 closure plans pending)
 **Wave 1**
 
 - [x] 20-01-PLAN.md
@@ -292,16 +292,32 @@ parallel with it.
 
 - [x] 20-07-PLAN.md
 - [x] 20-08-PLAN.md
-- [ ] 20-13-PLAN.md
-- [ ] 20-14-PLAN.md
+- [x] 20-13-PLAN.md
+- [x] 20-14-PLAN.md
 
 **Wave 9** *(blocked on Wave 8 completion)*
 
-- [ ] 20-15-PLAN.md
+- [x] 20-15-PLAN.md
 
 **Wave 10** *(blocked on Wave 9 completion)*
 
-- [ ] 20-16-PLAN.md
+- [x] 20-16-PLAN.md
+
+**Wave 11** *(gap closure; blocked on Wave 10 completion)*
+
+- [ ] 20-17-PLAN.md — Scope sent-proof lookup to the run's current epoch
+
+**Wave 12** *(gap closure; blocked on Wave 11 completion)*
+
+- [ ] 20-18-PLAN.md — Fence stale-epoch send jobs before provider and settlement work
+
+**Wave 13** *(gap closure; blocked on Wave 12 completion)*
+
+- [ ] 20-19-PLAN.md — Retire invalid-context leases before drain discards tokens
+
+**Wave 14** *(gap closure; blocked on Wave 13 completion)*
+
+- [ ] 20-20-PLAN.md — Enforce confirmation-only review actions and finish quality gates
 
 ### Phase 21: Durability Proofs & Ops View
 
