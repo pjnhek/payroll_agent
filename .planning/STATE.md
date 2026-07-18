@@ -2,42 +2,42 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 20
-current_phase_name: Exactly-Once Send
-status: executing
-stopped_at: Completed 20-19-PLAN.md
-last_updated: "2026-07-18T01:17:22Z"
+current_phase: 21
+current_phase_name: Durability Proofs & Ops View
+status: ready
+stopped_at: Completed 20-20-PLAN.md
+last_updated: "2026-07-18T01:28:59Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 Plan 19 complete; ready for Plan 20
+last_activity_desc: Phase 20 Plan 20 complete; ready for Phase 21
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 61
-  completed_plans: 60
-  percent: 68
+  completed_plans: 61
+  percent: 83
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
+See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 complete)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 20 — Exactly-Once Send
+**Current focus:** Phase 21 — Durability Proofs & Ops View
 
 ## Current Position
 
-Phase: 20 (Exactly-Once Send) — EXECUTING
-Plan: 20 of 20
-Status: Executing Phase 20
-Last activity: 2026-07-18 — Phase 20 Plan 19 complete; ready for Plan 20
+Phase: 21 (Durability Proofs & Ops View) — READY
+Plan: not started
+Status: Ready to plan Phase 21
+Last activity: 2026-07-18 — Phase 20 Plan 20 complete; ready for Phase 21
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 115
+- Total plans completed: 116
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -64,6 +64,7 @@ Last activity: 2026-07-18 — Phase 20 Plan 19 complete; ready for Plan 20
 | 17 | 5 | - | - |
 | 18 | 14 | - | - |
 | 19 | 12 | - | - |
+| 20 | 20 | - | - |
 
 **Recent Trend:**
 
@@ -134,6 +135,7 @@ Last activity: 2026-07-18 — Phase 20 Plan 19 complete; ready for Plan 20
 | Phase 20 P17 | 2 | 2 tasks | 2 files |
 | Phase 20 P18 | ~8min | 2 tasks | 6 files |
 | Phase 20 P19 | ~15min | 2 tasks | 6 files |
+| Phase 20 P20 | ~30min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -187,6 +189,7 @@ Recent decisions affecting current work:
 - [Phase 20 P11]: Clarification delivery settlement preserves the frozen reply workflow under the exact lease: success and retry do not mutate awaiting-reply state, round, or RFC thread facts; terminal delivery uses clarification-safe operator escalation; alias confirmation remains outside transport settlement.
 - [Phase 20 P05]: The shared drain routes SEND_OUTBOUND results and unexpected handler failures to delivery-specific fenced settlement after the handler verifies immutable snapshot ownership, expected business state, and the reservation-time replay window before provider work.
 - [Phase 20 P19]: SEND_OUTBOUND now separates a no-write LOST_LEASE from an owned INVALID_CONTEXT; only the latter retires the exact held row, and the drain discards its token only after that durable result. Generic pipeline FENCED remains compatible.
+- [Phase 20 P20]: Generic confirmation actions require confirmation review kind before any mutation; the repository and fake also require confirmation/reserved email state plus needs_operator/DeliveryReview ownership, while clarification remains on its dedicated retry seam.
 - [Phase ?]: D-05 OT explicit-zero decision: hours_overtime=0 treated same as absent — never silently underpays a weekly employee
 - [Phase 11 P05]: clear_reply_context is called ONCE at the retrigger route's single 'if claimed:' post-claim convergence point (reached by both the ERROR/APPROVED CAS and the stale in-flight CAS) rather than duplicated inside each branch — satisfies WR-06/D-11-04 clearing ALL reply-round context (clarified_fields, pre_clarify_extracted, clarification_round, alias_candidates) before _run_pipeline is scheduled.
 - [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).

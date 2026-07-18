@@ -256,7 +256,7 @@ parallel with it.
   3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
-**Plans**: 18/20 plans executed
+**Plans**: 20/20 plans executed
 **Wave 1**
 
 - [x] 20-01-PLAN.md
@@ -317,7 +317,7 @@ parallel with it.
 
 **Wave 14** *(gap closure; blocked on Wave 13 completion)*
 
-- [ ] 20-20-PLAN.md — Enforce confirmation-only review actions and finish quality gates
+- [x] 20-20-PLAN.md — Enforce confirmation-only review actions and finish quality gates
 
 ### Phase 21: Durability Proofs & Ops View
 
