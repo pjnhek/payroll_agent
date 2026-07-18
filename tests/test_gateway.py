@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -21,9 +22,17 @@ import pytest
 from app.db import repo
 from app.email import gateway
 from app.models.contracts import Decision
+from app.models.job import Job, JobKind
 from app.models.roster import NameMatchResult
 from app.models.status import RunStatus
-from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+from app.pipeline.result import (
+    DELIVERY_SEND_BUDGET,
+    DeliverySendBudget,
+    PipelineOutcome,
+    PipelineReason,
+    PipelineResult,
+    PipelineStage,
+)
 
 _HAS_DB = bool(os.environ.get("DATABASE_URL"))
 _HAS_RESET = os.environ.get("ALLOW_DB_RESET") == "1"
@@ -1512,6 +1521,22 @@ def _reserved_snapshot() -> dict[str, Any]:
     }
 
 
+def _not_after() -> datetime:
+    return datetime.now(UTC) + timedelta(hours=1)
+
+
+def _send_job(*, run_id: uuid.UUID | None = None, email_id: uuid.UUID | None = None) -> Job:
+    return Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id or uuid.uuid4(),
+        email_id=email_id or uuid.uuid4(),
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+
+
 def test_send_reserved_snapshot_replays_fixed_payload_and_idempotency_key(monkeypatch):
     from app.config import get_settings
 
@@ -1527,8 +1552,18 @@ def test_send_reserved_snapshot_replays_fixed_payload_and_idempotency_key(monkey
     monkeypatch.setattr(resend.Emails, "send", staticmethod(_capture_send))
     snapshot = _reserved_snapshot()
 
-    first = gateway.send_reserved_outbound_snapshot(snapshot)
-    second = gateway.send_reserved_outbound_snapshot(snapshot)
+    first = gateway.send_reserved_outbound_snapshot(
+        snapshot,
+        not_after=_not_after(),
+        clock=lambda: datetime.now(UTC),
+        budget=DELIVERY_SEND_BUDGET,
+    )
+    second = gateway.send_reserved_outbound_snapshot(
+        snapshot,
+        not_after=_not_after(),
+        clock=lambda: datetime.now(UTC),
+        budget=DELIVERY_SEND_BUDGET,
+    )
 
     assert first == PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
     assert second == first
@@ -1578,7 +1613,12 @@ def test_send_reserved_snapshot_returns_bounded_failure_without_db_write(monkeyp
         lambda *_args, **_kwargs: pytest.fail("snapshot gateway must not write delivery state"),
     )
 
-    result = gateway.send_reserved_outbound_snapshot(_reserved_snapshot())
+    result = gateway.send_reserved_outbound_snapshot(
+        _reserved_snapshot(),
+        not_after=_not_after(),
+        clock=lambda: datetime.now(UTC),
+        budget=DELIVERY_SEND_BUDGET,
+    )
 
     assert result == PipelineResult(
         outcome=PipelineOutcome.TERMINAL,
@@ -1586,6 +1626,195 @@ def test_send_reserved_snapshot_returns_bounded_failure_without_db_write(monkeyp
         reason=PipelineReason.DELIVERY_IDEMPOTENCY_PAYLOAD_MISMATCH,
     )
     assert "sensitive" not in repr(result)
+
+
+def test_reserved_snapshot_installs_one_fixed_sync_resend_timeout(monkeypatch):
+    client = resend.default_http_client
+    assert isinstance(client, resend.RequestsClient)
+    assert client._timeout == 10
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda *_: {"id": "sent"}))
+    snapshot = _reserved_snapshot()
+    now = datetime.now(UTC)
+    gateway.send_reserved_outbound_snapshot(
+        snapshot,
+        not_after=now + timedelta(minutes=1),
+        clock=lambda: now,
+        budget=DELIVERY_SEND_BUDGET,
+    )
+    assert resend.default_http_client is client
+
+
+def test_reserved_snapshot_rejects_expired_authorization_before_resend(monkeypatch):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        resend.Emails,
+        "send",
+        staticmethod(lambda *_: calls.append("send")),
+    )
+    not_after = datetime.now(UTC) + timedelta(minutes=1)
+
+    result = gateway.send_reserved_outbound_snapshot(
+        _reserved_snapshot(),
+        not_after=not_after,
+        clock=lambda: not_after - timedelta(seconds=15),
+        budget=DELIVERY_SEND_BUDGET,
+    )
+
+    assert result == PipelineResult(
+        stage=PipelineStage.DELIVERY,
+        reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+    )
+    assert calls == []
+
+
+def test_reserved_snapshot_accepts_only_time_strictly_before_deadline(monkeypatch):
+    calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        resend.Emails,
+        "send",
+        staticmethod(lambda params, options: calls.append((params, options))),
+    )
+    snapshot = _reserved_snapshot()
+    not_after = datetime.now(UTC) + timedelta(minutes=1)
+
+    accepted = gateway.send_reserved_outbound_snapshot(
+        snapshot,
+        not_after=not_after,
+        clock=lambda: not_after - timedelta(seconds=16),
+        budget=DELIVERY_SEND_BUDGET,
+    )
+
+    assert accepted.outcome is PipelineOutcome.OK
+    assert len(calls) == 1
+    assert calls[0][1] == {"idempotency_key": snapshot["message_id"]}
+    assert calls[0][0]["headers"]["Message-ID"] == snapshot["message_id"]
+
+
+def test_reserved_snapshot_rejects_mismatched_transport_budget():
+    with pytest.raises(ValueError, match="fixed Resend transport timeout"):
+        gateway.send_reserved_outbound_snapshot(
+            _reserved_snapshot(),
+            not_after=_not_after(),
+            clock=lambda: datetime.now(UTC),
+            budget=DeliverySendBudget(timeout_seconds=9, safety_margin=timedelta(seconds=5)),
+        )
+
+
+def test_send_handler_record_only_authority_never_reaches_gateway(monkeypatch):
+    from app.db.repo.outbound_handoffs import ProviderHandoffRecordOnly
+    from app.queue.handlers import send_outbound
+
+    run_id = uuid.uuid4()
+    job = _send_job(run_id=run_id)
+
+    def _record_only(_job: Job) -> ProviderHandoffRecordOnly:
+        return ProviderHandoffRecordOnly(run_id)
+
+    monkeypatch.setattr(
+        repo, "authorize_outbound_provider_handoff", _record_only
+    )
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("record-only authorization reached gateway"),
+    )
+
+    assert send_outbound.handle_send_outbound(job) == PipelineResult(
+        outcome=PipelineOutcome.OK,
+        stage=PipelineStage.DELIVERY,
+        reason=PipelineReason.DELIVERY_RECORD_ONLY,
+    )
+
+
+def test_send_handler_rechecks_authorization_after_authority_is_granted(monkeypatch):
+    from app.db.repo.outbound_handoffs import ProviderHandoffAuthorization
+    from app.queue.handlers import send_outbound
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = _send_job(run_id=run_id, email_id=email_id)
+    snapshot = _reserved_snapshot()
+    snapshot["run_id"] = run_id
+    snapshot["email_id"] = email_id
+    snapshot["snapshot_id"] = uuid.uuid4()
+    not_after = datetime.now(UTC) + timedelta(minutes=1)
+    authorization = ProviderHandoffAuthorization(
+        handoff_id=uuid.uuid4(),
+        run_id=run_id,
+        email_id=email_id,
+        snapshot_id=snapshot["snapshot_id"],
+        job_id=job.id,
+        lease_token=job.lease_token,
+        epoch=0,
+        snapshot=snapshot,
+        not_after=not_after,
+    )
+    authorized: list[Job] = []
+    provider_calls: list[object] = []
+
+    def _authorize(received: Job) -> ProviderHandoffAuthorization:
+        authorized.append(received)
+        return authorization
+
+    monkeypatch.setattr(repo, "authorize_outbound_provider_handoff", _authorize)
+    monkeypatch.setattr(
+        resend.Emails,
+        "send",
+        staticmethod(lambda *_: provider_calls.append("send")),
+    )
+
+    result = send_outbound.handle_send_outbound(
+        job,
+        clock=lambda: not_after - timedelta(seconds=15),
+    )
+
+    assert authorized == [job]
+    assert result.reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED
+    assert provider_calls == []
+
+
+def test_send_handler_forwards_reclaimed_authorization_unchanged(monkeypatch):
+    from app.db.repo.outbound_handoffs import ProviderHandoffActive, ProviderHandoffAuthorization
+    from app.queue.handlers import send_outbound
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = _send_job(run_id=run_id, email_id=email_id)
+    snapshot = _reserved_snapshot()
+    not_after = _not_after()
+    authorization = ProviderHandoffAuthorization(
+        handoff_id=uuid.uuid4(),
+        run_id=run_id,
+        email_id=email_id,
+        snapshot_id=uuid.uuid4(),
+        job_id=job.id,
+        lease_token=job.lease_token,
+        epoch=0,
+        snapshot=snapshot,
+        not_after=not_after,
+    )
+    forwarded: list[tuple[object, object, object, object]] = []
+
+    def clock() -> datetime:
+        return datetime.now(UTC)
+
+    monkeypatch.setattr(repo, "authorize_outbound_provider_handoff", lambda _job: authorization)
+    def _forwarded(stored, *, not_after, clock, budget) -> PipelineResult:
+        forwarded.append((stored, not_after, clock, budget))
+        return PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
+
+    monkeypatch.setattr(gateway, "send_reserved_outbound_snapshot", _forwarded)
+    assert send_outbound.handle_send_outbound(job, clock=clock).outcome is PipelineOutcome.OK
+    assert forwarded == [(snapshot, not_after, clock, DELIVERY_SEND_BUDGET)]
+
+    monkeypatch.setattr(
+        repo,
+        "authorize_outbound_provider_handoff",
+        lambda _job: ProviderHandoffActive("active_handoff_unexpired"),
+    )
+    assert send_outbound.handle_send_outbound(job).outcome is PipelineOutcome.OK
+    assert len(forwarded) == 1
 
 
 def test_legacy_caller_argument_send_fails_before_any_provider_effect(monkeypatch):

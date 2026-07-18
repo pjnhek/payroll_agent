@@ -59,6 +59,22 @@ class PipelineReason(enum.StrEnum):
     DELIVERY_AUTHORIZATION_FAILURE = "delivery_authorization_failure"
     DELIVERY_CONFIGURATION_FAILURE = "delivery_configuration_failure"
     DELIVERY_PROVIDER_FAILURE = "delivery_provider_failure"
+    DELIVERY_RECORD_ONLY = "delivery_record_only"
+    DELIVERY_AUTHORIZATION_EXPIRED = "delivery_authorization_expired"
+
+
+@dataclasses.dataclass(frozen=True)
+class DeliverySendBudget:
+    """The immutable provider-I/O budget reserved inside a handoff deadline."""
+
+    timeout_seconds: int
+    safety_margin: timedelta
+
+
+DELIVERY_SEND_BUDGET = DeliverySendBudget(
+    timeout_seconds=10,
+    safety_margin=timedelta(seconds=5),
+)
 
 
 @dataclasses.dataclass(frozen=True)

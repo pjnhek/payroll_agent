@@ -5,8 +5,8 @@ import base64
 import json
 import logging
 import uuid
-from collections.abc import Mapping
-from datetime import UTC, datetime
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from typing import Any, Protocol, cast
 
@@ -15,13 +15,25 @@ import resend
 from app.config import get_settings
 from app.models.contracts import InboundEmail
 from app.pipeline.result import (
+    DeliverySendBudget,
     PipelineOutcome,
+    PipelineReason,
     PipelineResult,
     PipelineStage,
     classify_pipeline_exception,
 )
 
 logger = logging.getLogger(__name__)
+
+_RESEND_TIMEOUT_SECONDS = 10
+# Resend reads this process-global synchronous client at request time. Install it
+# exactly once at module initialization; workers never replace it per request.
+resend.default_http_client = resend.RequestsClient(timeout=_RESEND_TIMEOUT_SECONDS)
+
+
+def _utc_now() -> datetime:
+    """Return the UTC wall clock through a named, injectable seam."""
+    return datetime.now(UTC)
 
 
 class _ReceivedEmailLike(Protocol):
@@ -89,8 +101,19 @@ def send_outbound(*args: object, **kwargs: object) -> None:
     )
 
 
-def send_reserved_outbound_snapshot(snapshot: Mapping[str, Any]) -> PipelineResult:
+def send_reserved_outbound_snapshot(
+    snapshot: Mapping[str, Any],
+    *,
+    not_after: datetime,
+    clock: Callable[[], datetime] = _utc_now,
+    budget: DeliverySendBudget,
+) -> PipelineResult:
     """Send one already-reserved provider payload without changing local delivery state."""
+    if budget.timeout_seconds != _RESEND_TIMEOUT_SECONDS:
+        raise ValueError("send budget must match the fixed Resend transport timeout")
+    if not isinstance(not_after, datetime) or not_after.tzinfo is None:
+        raise ValueError("outbound authorization deadline must be a UTC datetime")
+
     resend.api_key = get_settings().resend_api_key
 
     message_id = _snapshot_required_text(snapshot, "message_id")
@@ -131,6 +154,14 @@ def send_reserved_outbound_snapshot(snapshot: Mapping[str, Any]) -> PipelineResu
     reply_to = _snapshot_optional_text(snapshot, "reply_to")
     if reply_to is not None:
         send_params["reply_to"] = reply_to
+
+    # This is intentionally the final statement before external I/O. Encoding frozen
+    # attachments above can consume the remaining safety margin, and equality is unsafe.
+    if clock() + timedelta(seconds=budget.timeout_seconds) + budget.safety_margin >= not_after:
+        return PipelineResult(
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+        )
 
     try:
         resend.Emails.send(send_params, {"idempotency_key": message_id})
