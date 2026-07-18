@@ -698,6 +698,45 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claimable
     ON jobs (priority, available_at)
     WHERE state IN ('pending','leased');
 
+-- ── 8.1 Outbound provider-handoff fence ────────────────────────────────────
+-- This is deliberately NOT another snapshot or provider-attempt ledger. The
+-- append-only snapshot tables own all envelope/PDF bytes and
+-- outbound_delivery_attempts owns bounded delivery facts. A handoff is only the
+-- mutable authority fence held between the short database preflight and provider I/O.
+-- `CREATE TABLE IF NOT EXISTS` is both the fresh definition and the deployed-schema
+-- repair path for this additive table. `owner_leased_until` records a predecessor's
+-- expiry for exact-job adoption; it is never the provider replay deadline.
+CREATE TABLE IF NOT EXISTS outbound_provider_handoffs (
+    id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id             UUID        NOT NULL REFERENCES payroll_runs(id),
+    email_id           UUID        NOT NULL REFERENCES email_messages(id),
+    snapshot_id        UUID        NOT NULL REFERENCES outbound_email_snapshots(id),
+    job_id             UUID        NOT NULL REFERENCES jobs(id),
+    lease_token        UUID        NOT NULL,
+    owner_leased_until TIMESTAMPTZ NOT NULL,
+    epoch              INT         NOT NULL CHECK (epoch >= 0),
+    authorized_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Selected only from the locked snapshot's reserved_at + interval '20 hours'.
+    not_after          TIMESTAMPTZ NOT NULL,
+    released_at        TIMESTAMPTZ,
+    -- NULL means active; released rows retain only a fixed PII-safe reason.
+    release_reason     TEXT,
+    CONSTRAINT ck_outbound_provider_handoffs_not_after
+        CHECK (not_after > authorized_at),
+    CONSTRAINT ck_outbound_provider_handoffs_release_vocabulary CHECK (
+        (released_at IS NULL AND release_reason IS NULL)
+        OR (
+            released_at IS NOT NULL
+            AND release_reason IN ('retry_scheduled', 'finalized', 'delivery_review')
+        )
+    )
+);
+
+-- One current authorization per run, with released history retained for audit.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_outbound_provider_handoffs_active_run
+    ON outbound_provider_handoffs (run_id)
+    WHERE released_at IS NULL;
+
 -- ── 9. operator resume context ───────────────────────────────────────────────
 -- Each operator submission gets a caller-generated immutable UUID generation.
 -- The complete validated submitted-name mapping lives in typed child rows, not

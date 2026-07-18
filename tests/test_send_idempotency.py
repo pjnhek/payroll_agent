@@ -610,6 +610,57 @@ def test_a_human_epoch_bump_clears_the_guard(seeded_db: None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_provider_handoff_schema_is_identifier_only_and_has_one_active_run_fence() -> None:
+    """The provider fence may identify a frozen snapshot, never duplicate its PII.
+
+    This is deliberately a schema-shape tripwire.  A fake repository cannot prove
+    that a future migration kept the one-active-handoff fence or resisted adding a
+    provider payload/diagnostic blob to this mutable authorization row.
+    """
+    schema = pathlib.Path("app/db/schema.sql").read_text()
+    handoffs = schema.split("CREATE TABLE IF NOT EXISTS outbound_provider_handoffs", 1)[1].split(
+        ");", 1
+    )[0]
+
+    for column in (
+        "run_id",
+        "email_id",
+        "snapshot_id",
+        "job_id",
+        "lease_token",
+        "owner_leased_until",
+        "epoch",
+        "authorized_at",
+        "not_after",
+        "released_at",
+        "release_reason",
+    ):
+        assert column in handoffs
+    assert "REFERENCES payroll_runs(id)" in handoffs
+    assert "REFERENCES email_messages(id)" in handoffs
+    assert "REFERENCES outbound_email_snapshots(id)" in handoffs
+    assert "REFERENCES jobs(id)" in handoffs
+    assert "retry_scheduled" in handoffs
+    assert "delivery_review" in handoffs
+    assert "provider_request" not in handoffs
+    assert "provider_response" not in handoffs
+    assert "exception" not in handoffs
+    assert "BYTEA" not in handoffs
+
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_outbound_provider_handoffs_active_run" in schema
+    assert "ON outbound_provider_handoffs (run_id)" in schema
+    assert "WHERE released_at IS NULL" in schema
+
+
+def test_provider_handoff_schema_repairs_deployed_database_with_bounded_vocabulary() -> None:
+    schema = pathlib.Path("app/db/schema.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS outbound_provider_handoffs" in schema
+    assert "not_after > authorized_at" in schema
+    assert "release_reason IN ('retry_scheduled', 'finalized', 'delivery_review')" in schema
+    assert "reserved_at + interval '20 hours'" in schema
+
+
 def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
     """Provider-ready sends need durable bytes before a provider request, with database
     enforcement rather than a repository convention that a future caller could skip.
