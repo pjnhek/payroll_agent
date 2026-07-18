@@ -1686,7 +1686,7 @@ def _seed_claimed_delivery(
         references_header=None,
         subject="Frozen delivery review",
         body_text="Frozen delivery review body",
-        attachments=(),
+        attachments=(("expiry-proof.pdf", b"frozen-expiry-proof-bytes"),),
     )
     job_id = repo.enqueue_job(
         kind=JobKind.SEND_OUTBOUND,
@@ -1842,6 +1842,7 @@ def test_pre_provider_authorization_expired_enters_delivery_review(
     assert settled_job is not None
     assert after["message_id"] == before["message_id"]
     assert after["body_text"] == before["body_text"]
+    assert after["attachments"] == before["attachments"]
     assert run["status"] == RunStatus.NEEDS_OPERATOR.value
     assert run["error_reason"] == review_reason
     assert settled_job["state"] == "done"
@@ -1916,6 +1917,7 @@ def test_provider_handoff_authorization_expired_at_gateway_boundary_enters_revie
     assert settled_job is not None
     assert after["message_id"] == before["message_id"]
     assert after["body_text"] == before["body_text"]
+    assert after["attachments"] == before["attachments"]
     assert run["status"] == RunStatus.NEEDS_OPERATOR.value
     assert run["error_reason"] == review_reason
     assert settled_job["state"] == "done"
