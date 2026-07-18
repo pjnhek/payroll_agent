@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: exactly-once-send
 status: executing
-stopped_at: Phase 20 gap-closure execution pending after 25/27 plans
-last_updated: "2026-07-18T04:46:03Z"
+stopped_at: Completed 20-26-PLAN.md
+last_updated: "2026-07-18T15:59:10.083Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 gap-closure plans 20-26 and 20-27 registered; execution required
+last_activity_desc: Phase 20 Plan 26 completed; Plan 27 remains
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 68
-  completed_plans: 66
+  completed_plans: 67
   percent: 67
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation complete; gap closure remains)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 20 — exactly-once-send (gap closure required)
+**Current focus:** Phase 20 — exactly-once-send
 
 ## Current Position
 
-Phase: 20 (exactly-once-send) — GAPS FOUND
-Plan: 25 of 27 executed; Plans 20-26 (Wave 20) and 20-27 (Wave 21) remain
-Status: Gap-closure execution pending; Phase 20 is not complete
-Last activity: 2026-07-18 — registered two gap-closure plans for CR-01 and the guarded live-Postgres evidence gate
+Phase: 20 (exactly-once-send) — EXECUTING
+Plan: 26 of 27 executed; Plan 20-27 remains
+Status: Ready to execute Plan 20-27
+Last activity: 2026-07-18 — completed Plan 20-26 pre-provider expiry settlement
 
 ## Performance Metrics
 
@@ -136,6 +136,7 @@ Last activity: 2026-07-18 — registered two gap-closure plans for CR-01 and the
 | Phase 20 P18 | ~8min | 2 tasks | 6 files |
 | Phase 20 P19 | ~15min | 2 tasks | 6 files |
 | Phase 20 P20 | ~30min | 2 tasks | 10 files |
+| Phase 20 P26 | 32 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -345,8 +346,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-18T04:46:03Z
-Stopped at: Gap-closure planning registered Plans 20-26 and 20-27; execution has not begun
+Last session: 2026-07-18T15:59:10.073Z
+Stopped at: Completed 20-26-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

@@ -256,7 +256,7 @@ parallel with it.
   3. Resend's `Idempotency-Key` header is present on every send call, keyed on the reserved `message_id`, and the retry ladder is bounded below Resend's confirmed idempotency retention window.
   4. A send that may have already reached Resend before failing (timeout, 5xx) is never blindly auto-resent past the provider's dedup window — it escalates to a human instead of risking a second email.
 
-**Plans**: 25/27 plans executed; gap-closure execution remains required
+**Plans**: 26/27 plans executed
 **Wave 1**
 
 - [x] 20-01-PLAN.md
@@ -341,7 +341,7 @@ parallel with it.
 
 **Wave 20** *(gap closure; blocked on Wave 19 completion)*
 
-- [ ] 20-26-PLAN.md — Preserve replay-window expiry through fenced, purpose-aware delivery review without provider I/O.
+- [x] 20-26-PLAN.md — Preserve replay-window expiry through fenced, purpose-aware delivery review without provider I/O.
 
 **Wave 21** *(gap closure; blocked on Wave 20 completion)*
 
@@ -402,5 +402,5 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 17. The Pump | v4 | 5/5 | Complete    | 2026-07-15 |
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
-| 20. Exactly-Once Send | v4 | 25/27 | Gap-closure execution pending |  |
+| 20. Exactly-Once Send | v4 | 26/27 | In Progress|  |
 | 21. Durability Proofs & Ops View | v4 | 0/TBD | Not started | - |
