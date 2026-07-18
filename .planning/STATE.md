@@ -5,15 +5,15 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Completed 20-17-PLAN.md
-last_updated: "2026-07-18T00:40:42.405Z"
+stopped_at: Completed 20-18-PLAN.md
+last_updated: "2026-07-18T01:08:17Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 execution started
+last_activity_desc: Phase 20 Plan 18 complete; ready for Plan 19
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 58
+  completed_plans: 59
   percent: 67
 ---
 
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 (Exactly-Once Send) — EXECUTING
-Plan: 18 of 20
+Plan: 19 of 20
 Status: Executing Phase 20
-Last activity: 2026-07-18 — Phase 20 execution started
+Last activity: 2026-07-18 — Phase 20 Plan 18 complete; ready for Plan 19
 
 ## Performance Metrics
 
@@ -132,6 +132,7 @@ Last activity: 2026-07-18 — Phase 20 execution started
 | Phase 20 P04 | 25min | 2 tasks | 8 files |
 | Phase 20 P08 | 4 min | 2 tasks | 3 files |
 | Phase 20 P17 | 2 | 2 tasks | 2 files |
+| Phase 20 P18 | ~8min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -272,6 +273,7 @@ Recent decisions affecting current work:
 - [Phase 20]: Render the committed SVG from aggregate scoring output only and forbid delivery, queue, gateway, snapshot, and persistence-writer imports. — D-04 and D-13 require eval artifact changes to remain incapable of replaying provider snapshots or mutating outbound audit records.
 - [Phase 20]: Sent proof queries correlate email_messages.epoch with the current payroll_runs.reply_epoch.
 - [Phase 20]: Confirmation delivery remains purpose-aware and consumes the current-epoch proof seam without rebuilding frozen content.
+- [Phase 20 P18]: Stale outbound jobs compare immutable message epoch with locked/current reply_epoch before provider, settlement, or final-lease review work; invalid leases are fenced without mutating the active epoch slot.
 
 ### Pending Todos
 
@@ -338,10 +340,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-18T00:40:42.396Z
-Stopped at: Completed 20-17-PLAN.md
+Last session: 2026-07-18T01:08:17Z
+Stopped at: Completed 20-18-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
 
-- Resume Phase 20 execution with `/gsd-execute-phase 20`; producer migration can now rely on the executable snapshot-only, lease-fenced send consumer.
+- Resume Phase 20 execution with `/gsd-execute-phase 20`; Plan 20-19 can now retire stale-epoch leases from the fenced no-write boundary.
