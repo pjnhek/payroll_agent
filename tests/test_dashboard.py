@@ -844,6 +844,46 @@ def test_run_detail_is_one_ordered_conversation_with_final_reply_composer(monkey
     assert text.index("Payroll details") < text.index("Reply to client")
 
 
+def test_run_detail_fallback_inbound_message_keeps_created_at_metadata(monkeypatch):
+    """A source-email fallback still reads like a timestamped inbox message."""
+    from datetime import datetime
+
+    from app.db import repo as _repo
+
+    run_id = uuid.uuid4()
+    created_at = datetime(2026, 7, 18, 12, 34, tzinfo=UTC)
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "source_email_id": uuid.uuid4(),
+        "status": "received",
+        "extracted_data": None,
+        "decision": None,
+        "reconciliation": None,
+        "error_reason": None,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "updated_at": None,
+    }
+    raw_email = {
+        "subject": "Fallback payroll request",
+        "body_text": "Maria Chen worked 40 hours.",
+        "from_addr": "payroll@example.test",
+        "to_addr": "agent@example.test",
+        "created_at": created_at,
+    }
+    monkeypatch.setattr(_repo, "load_run", lambda *args, **kwargs: dict(run))
+    monkeypatch.setattr(_repo, "load_inbound_email", lambda *args, **kwargs: raw_email)
+    monkeypatch.setattr(_repo, "load_line_items", lambda *args, **kwargs: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda *args, **kwargs: [])
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert "Fallback payroll request" in response.text
+    assert "2026-07-18 12:34" in response.text
+
+
 def test_resolution_superseded_notice_uses_fixed_copy_not_query_text(monkeypatch):
     """Browser-controlled query values select fixed copy and are never echoed."""
     from app.db import repo as _repo

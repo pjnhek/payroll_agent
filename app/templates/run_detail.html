@@ -229,7 +229,12 @@
     {% endfor %}
   {% elif raw_email %}
   <article class="conversation-message conversation-message--inbound">
-    <div class="conversation-message__meta"><span class="badge badge-neutral badge-uppercase">inbound</span></div>
+    <div class="conversation-message__meta">
+      <span class="badge badge-neutral badge-uppercase">inbound</span>
+      <span class="conversation-message__time">
+        {% if raw_email.created_at %}{% if raw_email.created_at is string %}{{ raw_email.created_at[:16] }}{% else %}{{ raw_email.created_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}{% endif %}
+      </span>
+    </div>
     <h3>{{ raw_email.subject or '(no subject)' }}</h3>
     <dl class="conversation-message__addresses">
       <div><dt>From</dt><dd>{{ raw_email.from_addr or '—' }}</dd></div>
