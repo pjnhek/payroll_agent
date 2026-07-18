@@ -212,6 +212,21 @@ def test_get_unconfirmed_outbound_sql_shape(fake_conn):
     )
 
 
+def test_get_outbound_message_id_sql_shape_requires_current_epoch(fake_conn):
+    """A sent proof must be correlated to the run's current reply epoch."""
+    run_id = uuid.uuid4()
+    fake_conn.script_fetchone(None)
+
+    repo.get_outbound_message_id(run_id, purpose="confirmation", conn=fake_conn)
+
+    sql_text, params = fake_conn.last()
+    assert "direction = 'outbound'" in sql_text
+    assert "purpose = %s" in sql_text
+    assert "send_state = 'sent'" in sql_text
+    assert "epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)" in sql_text
+    assert params == (str(run_id), "confirmation", str(run_id))
+
+
 # ---------------------------------------------------------------------------
 # Section A.1 — the guard bites: a reserved row blocks the rerun and escalates
 # ---------------------------------------------------------------------------
@@ -333,6 +348,71 @@ def test_a_sent_row_takes_the_EXISTING_guard_not_this_one(fake_repo, mock_llm, m
         "a proven-sent duplicate must finalize normally, not escalate to ERROR"
     )
     assert run.get("error_reason") is None
+
+
+def test_delivery_confirmation_uses_current_epoch_sent_proof(fake_repo, monkeypatch):
+    """D-04/D-07: delivery consumes only the proof for the current epoch.
+
+    A stale sent row must leave the epoch-1 slot eligible; the current epoch's
+    sent proof must take the already-delivered branch. This exercises the same
+    purpose-aware repository seam used by delivery, without redrafting,
+    regenerating a PDF, minting a key, or changing the immutable snapshot.
+    """
+    from types import SimpleNamespace
+
+    from app.pipeline import delivery
+
+    run_id = uuid.uuid4()
+    run = {
+        "id": run_id,
+        "business_id": uuid.uuid4(),
+        "status": "approved",
+        "reply_epoch": 1,
+    }
+    stale_mid = "<epoch-0@payroll-agent.local>"
+    current_mid = "<epoch-1@payroll-agent.local>"
+    rows = [{"epoch": 0, "send_state": "sent", "message_id": stale_mid}]
+    proof_calls: list[tuple[uuid.UUID, str]] = []
+    enqueued: list[uuid.UUID] = []
+    completed: list[uuid.UUID] = []
+
+    def _proof(rid, *, purpose, conn=None):
+        proof_calls.append((rid, purpose))
+        current_epoch = run["reply_epoch"]
+        matching = [
+            row
+            for row in rows
+            if row["epoch"] == current_epoch
+            and row["send_state"] == "sent"
+            and purpose == "confirmation"
+        ]
+        return matching[-1]["message_id"] if matching else None
+
+    monkeypatch.setattr(delivery.repo, "get_outbound_message_id", _proof)
+    monkeypatch.setattr(
+        delivery.send_guard,
+        "outbound_replay_policy",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            has_existing_snapshot=True, email_id=uuid.uuid4()
+        ),
+    )
+    monkeypatch.setattr(
+        delivery, "_enqueue_confirmation", lambda rid, email_id, *, conn: enqueued.append(rid)
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_complete_sent_confirmation",
+        lambda rid, _run, *, conn: completed.append(rid),
+    )
+
+    assert delivery.deliver(run_id, run) is True
+    assert enqueued == [run_id]
+    assert completed == []
+
+    rows.append({"epoch": 1, "send_state": "sent", "message_id": current_mid})
+    assert delivery.deliver(run_id, run) is False
+    assert completed == [run_id]
+    assert proof_calls == [(run_id, "confirmation"), (run_id, "confirmation")]
 
 
 # ---------------------------------------------------------------------------
