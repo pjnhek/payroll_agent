@@ -479,7 +479,7 @@ CREATE TABLE IF NOT EXISTS outbound_delivery_attempts (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     snapshot_id      UUID        NOT NULL REFERENCES outbound_email_snapshots(id),
     attempt_state    TEXT        NOT NULL CHECK (attempt_state IN ('attempting', 'retry_scheduled', 'sent', 'needs_operator')),
-    failure_category TEXT        NOT NULL CHECK (failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', 'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown', 'final_attempt_lease_expired')),
+    failure_category TEXT        NOT NULL CHECK (failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', 'payload_mismatch', 'authorization', 'validation', 'configuration', 'authorization_expired', 'unknown', 'final_attempt_lease_expired')),
     occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -509,7 +509,7 @@ BEGIN
         CHECK (failure_category IN (
             'none', 'transport', 'provider_5xx', 'rate_limited',
             'payload_mismatch', 'authorization', 'validation', 'configuration',
-            'unknown', 'final_attempt_lease_expired'
+            'authorization_expired', 'unknown', 'final_attempt_lease_expired'
         ));
 END;
 $$;
