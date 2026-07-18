@@ -672,6 +672,242 @@ def test_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review(
     assert open_jobs == (0,)
 
 
+def test_send_handler_noops_before_gateway_for_stale_epoch(
+    seeded_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-retrigger send job cannot call the provider for the new epoch."""
+    from app.db import repo
+    from app.models.job import JobKind
+    from app.queue.handlers import send_outbound
+
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.APPROVED)
+    old_snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<stale-handler-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Old confirmation",
+        body_text="Old frozen body",
+        attachments=(),
+    )
+    old_job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(old_snapshot["email_id"]),
+        run_id=run_id,
+        email_id=old_snapshot["email_id"],
+    )
+    assert old_job_id is not None
+    old_job = repo.claim_job()
+    assert old_job is not None and old_job.id == old_job_id
+
+    assert repo.clear_reply_context(run_id) == 1
+    current_snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<current-handler-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Current confirmation",
+        body_text="Current frozen body",
+        attachments=(),
+    )
+
+    provider_calls: list[dict[str, object]] = []
+
+    def provider_spy(snapshot: dict[str, object]) -> PipelineResult:
+        provider_calls.append(snapshot)
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    monkeypatch.setattr(
+        send_outbound.gateway,
+        "send_reserved_outbound_snapshot",
+        provider_spy,
+    )
+
+    result = send_outbound.handle_send_outbound(old_job)
+
+    assert result.outcome is PipelineOutcome.OK
+    assert provider_calls == [], "stale work must stop before the provider call"
+    assert current_snapshot["message_id"] != old_snapshot["message_id"]
+
+
+def test_delivery_settlement_rejects_stale_epoch_without_current_reservation_mutation(
+    seeded_db,
+) -> None:
+    """Settlement fences an old lease before any delivery or payroll write."""
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.APPROVED)
+    old_snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<stale-settlement-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Old confirmation",
+        body_text="Old frozen body",
+        attachments=(),
+    )
+    old_job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(old_snapshot["email_id"]),
+        run_id=run_id,
+        email_id=old_snapshot["email_id"],
+    )
+    assert old_job_id is not None
+    old_job = repo.claim_job()
+    assert old_job is not None and old_job.id == old_job_id
+
+    assert repo.clear_reply_context(run_id) == 1
+    current_snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<current-settlement-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Current confirmation",
+        body_text="Current frozen body",
+        attachments=(),
+    )
+
+    before = repo.load_run(run_id)
+    assert before is not None
+    assert repo.settle_outbound_delivery_job(
+        old_job, PipelineResult(outcome=PipelineOutcome.OK)
+    ) is SettlementOutcome.FENCED
+
+    with repo.get_connection() as conn:
+        old_state = conn.execute(
+            "SELECT send_state FROM email_messages WHERE id = %s",
+            (str(old_snapshot["email_id"]),),
+        ).fetchone()
+        current_state = conn.execute(
+            "SELECT send_state FROM email_messages WHERE id = %s",
+            (str(current_snapshot["email_id"]),),
+        ).fetchone()
+        old_attempts = conn.execute(
+            "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
+            (str(old_snapshot["snapshot_id"]),),
+        ).fetchone()
+        current_attempts = conn.execute(
+            "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
+            (str(current_snapshot["snapshot_id"]),),
+        ).fetchone()
+    after = repo.load_run(run_id)
+
+    assert old_state == ("reserved",)
+    assert current_state == ("reserved",)
+    assert old_attempts == (0,)
+    assert current_attempts == (0,)
+    assert after == before
+    assert repo.get_job(old_job.id)["state"] == "leased"
+
+
+def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
+    seeded_db,
+) -> None:
+    """The final-lease reaper cannot review an old epoch as current delivery."""
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.models.job import JobKind
+
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.APPROVED)
+    old_snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<stale-reaper-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Old confirmation",
+        body_text="Old frozen body",
+        attachments=(),
+    )
+    old_job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(old_snapshot["email_id"]),
+        run_id=run_id,
+        email_id=old_snapshot["email_id"],
+        max_attempts=1,
+    )
+    assert old_job_id is not None
+    old_job = repo.claim_job()
+    assert old_job is not None and old_job.id == old_job_id
+
+    assert repo.clear_reply_context(run_id) == 1
+    current_snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<current-reaper-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Current confirmation",
+        body_text="Current frozen body",
+        attachments=(),
+    )
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '60 seconds' "
+            "WHERE id = %s",
+            (str(old_job.id),),
+        )
+
+    before = repo.load_run(run_id)
+    assert before is not None
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
+
+    with repo.get_connection() as conn:
+        old_state = conn.execute(
+            "SELECT send_state FROM email_messages WHERE id = %s",
+            (str(old_snapshot["email_id"]),),
+        ).fetchone()
+        current_state = conn.execute(
+            "SELECT send_state FROM email_messages WHERE id = %s",
+            (str(current_snapshot["email_id"]),),
+        ).fetchone()
+        attempts = conn.execute(
+            "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id IN (%s, %s)"
+            % ("%s", "%s"),
+            (str(old_snapshot["snapshot_id"]), str(current_snapshot["snapshot_id"])),
+        ).fetchone()
+    after = repo.load_run(run_id)
+
+    assert old_state == ("reserved",)
+    assert current_state == ("reserved",)
+    assert attempts == (0,)
+    assert after == before
+    assert repo.get_job(old_job.id)["state"] == "leased"
+
+
 def _payroll_status_snapshot() -> list[tuple[object, ...]]:
     from app.db import repo
 
