@@ -698,39 +698,45 @@ def retrigger(run_id: uuid.UUID) -> RedirectResponse:
     set_status(SENT) and set_status(RECONCILED)) can be re-run from the start without
     the client receiving a second confirmation email.
     """
-    with repo.get_connection() as conn, conn.transaction():
-        # A possible provider acceptance must be resolved through its purpose-aware
-        # delivery review. Guard before any status CAS, context clear, or job enqueue.
-        if _is_delivery_review_marker(repo.load_run(run_id, conn=conn)):
-            return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
-        # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
-        # prevents a duplicate confirmation email even if the run already sent one.
-        claimed = (
-            repo.claim_status(run_id, RunStatus.ERROR, RunStatus.RECEIVED, conn=conn)
-            or repo.claim_status(
-                run_id, RunStatus.APPROVED, RunStatus.RECEIVED, conn=conn
+    claimed = False
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            # A possible provider acceptance must be resolved through its purpose-aware
+            # delivery review. Guard before any status CAS, context clear, or job enqueue.
+            if _is_delivery_review_marker(repo.load_run(run_id, conn=conn)):
+                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+            # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
+            # prevents a duplicate confirmation email even if the run already sent one.
+            claimed = (
+                repo.claim_status(run_id, RunStatus.ERROR, RunStatus.RECEIVED, conn=conn)
+                or repo.claim_status(
+                    run_id, RunStatus.APPROVED, RunStatus.RECEIVED, conn=conn
+                )
+                or _claim_stale_in_flight(run_id, conn=conn)
             )
-            or _claim_stale_in_flight(run_id, conn=conn)
-        )
-        if claimed:
-            # Context lost means ALL of it. Clear clarified_fields + pre_clarify_extracted
-            # + the round counter + suggestion/candidate state AFTER the winning claim
-            # (every branch above converges here) and BEFORE the pipeline re-run is
-            # enqueued. The retriggered run re-extracts from the ORIGINAL email, so any
-            # surviving reply context would be stale: is_round_2 = bool(clarified) would
-            # misread a fresh run as a round-2 resume, and a provenance badge would
-            # outlive the data that produced it — pointing at values the run no longer
-            # holds. clear_reply_context ALSO bumps reply_epoch and returns the new
-            # value — the discriminator the dedup_key below keys on, so a SECOND
-            # legitimate retrigger is never swallowed by ON CONFLICT against the FIRST
-            # retrigger's now-done job row.
-            epoch = repo.clear_reply_context(run_id, conn=conn)
-            repo.enqueue_job(
-                kind=JobKind.RUN_PIPELINE,
-                run_id=run_id,
-                dedup_key=f"run_pipeline:{run_id}:{epoch}",
-                conn=conn,
-            )
+            if claimed:
+                # Context lost means ALL of it. Clear clarified_fields + pre_clarify_extracted
+                # + the round counter + suggestion/candidate state AFTER the winning claim
+                # (every branch above converges here) and BEFORE the pipeline re-run is
+                # enqueued. The retriggered run re-extracts from the ORIGINAL email, so any
+                # surviving reply context would be stale: is_round_2 = bool(clarified) would
+                # misread a fresh run as a round-2 resume, and a provenance badge would
+                # outlive the data that produced it — pointing at values the run no longer
+                # holds. clear_reply_context ALSO bumps reply_epoch and returns the new
+                # value — the discriminator the dedup_key below keys on, so a SECOND
+                # legitimate retrigger is never swallowed by ON CONFLICT against the FIRST
+                # retrigger's now-done job row.  Its active-handoff exception deliberately
+                # escapes this block so the earlier status CAS rolls back too.
+                epoch = repo.clear_reply_context(run_id, conn=conn)
+                repo.enqueue_job(
+                    kind=JobKind.RUN_PIPELINE,
+                    run_id=run_id,
+                    dedup_key=f"run_pipeline:{run_id}:{epoch}",
+                    conn=conn,
+                )
+    except repo.ActiveOutboundProviderHandoffError:
+        logger.info("retrigger blocked by active provider handoff for run %s", run_id)
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
     # ── Transaction committed. Everything below is post-commit. ────────────────────
     if claimed:
         logger.info("run_id=%s reply context cleared on retrigger", run_id)
@@ -1019,12 +1025,21 @@ def mark_delivery_delivered(run_id: uuid.UUID) -> RedirectResponse:
             if delivery_review is not None and delivery_review["review_kind"] == (
                 "confirmation"
             ):
-                repo.claim_status(
+                if not repo.claim_status(
                     run_id,
                     RunStatus.NEEDS_OPERATOR,
                     RunStatus.RECONCILED,
                     conn=conn,
-                )
+                ):
+                    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+                if not repo.resolve_outbound_provider_handoff_for_delivery_review(
+                    run_id,
+                    delivery_review["review"]["email_id"],
+                    delivery_review["review"]["snapshot_id"],
+                    resolution="finalized",
+                    conn=conn,
+                ):
+                    raise ValueError("delivery review no longer owns active handoff")
     except Exception:
         logger.warning("mark delivery review unavailable for run %s", run_id)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
@@ -1052,6 +1067,14 @@ def authorize_new_confirmation(
                 conn=conn,
             ):
                 return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+            if not repo.resolve_outbound_provider_handoff_for_delivery_review(
+                run_id,
+                delivery_review["review"]["email_id"],
+                delivery_review["review"]["snapshot_id"],
+                resolution="delivery_review",
+                conn=conn,
+            ):
+                raise ValueError("delivery review no longer owns active handoff")
             original = repo.load_outbound_snapshot(
                 run_id, delivery_review["review"]["email_id"], conn=conn
             )

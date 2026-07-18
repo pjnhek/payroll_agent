@@ -1431,6 +1431,37 @@ class InMemoryRepo:
     ) -> bool:
         return self._release_outbound_provider_handoff(authorization, reason="delivery_review")
 
+    def resolve_outbound_provider_handoff_for_delivery_review(
+        self,
+        run_id: uuid.UUID,
+        email_id: uuid.UUID,
+        snapshot_id: uuid.UUID,
+        *,
+        resolution: str,
+        conn: Any = None,
+    ) -> bool:
+        """Mirror the narrow D-09/D-11 review override, not a generic release."""
+        if resolution not in {"finalized", "delivery_review"}:
+            raise ValueError("unsupported delivery-review handoff resolution")
+        active = next(
+            (
+                handoff
+                for handoff in self.outbound_provider_handoffs.values()
+                if handoff["run_id"] == run_id and handoff.get("released_at") is None
+            ),
+            None,
+        )
+        if active is None:
+            return True
+        if (
+            active.get("email_id") != email_id
+            or active.get("snapshot_id") != snapshot_id
+        ):
+            return False
+        active["released_at"] = datetime.now(UTC)
+        active["release_reason"] = resolution
+        return True
+
     def assert_no_active_outbound_provider_handoff(
         self, run_id: uuid.UUID, *, conn: Any = None
     ) -> None:
@@ -2573,6 +2604,7 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "finalize_outbound_provider_handoff",
         "release_outbound_provider_handoff_for_retry",
         "release_outbound_provider_handoff_to_delivery_review",
+        "resolve_outbound_provider_handoff_for_delivery_review",
         "assert_no_active_outbound_provider_handoff",
         "claim_job",
         "complete_job",

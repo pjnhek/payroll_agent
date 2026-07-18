@@ -47,6 +47,49 @@ def _clarification_review_run(fake_repo: Any) -> tuple[uuid.UUID, dict[str, Any]
     return run_id, snapshot
 
 
+def _confirmation_review_run(fake_repo: Any) -> tuple[uuid.UUID, dict[str, Any]]:
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.APPROVED)
+    fake_repo.runs[str(run_id)]["error_reason"] = "DeliveryReview"
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:transport"
+    fake_repo.set_status(run_id, RunStatus.NEEDS_OPERATOR)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<frozen-confirmation@payroll-agent.local>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to="replies@payroll-agent.local",
+        in_reply_to="<source@payroll-agent.local>",
+        references_header="<prior@payroll-agent.local> <source@payroll-agent.local>",
+        subject="Payroll confirmation",
+        body_text="Frozen confirmation body",
+        attachments=[("frozen-confirmation.pdf", b"frozen-confirmation-bytes")],
+    )
+    fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    return run_id, snapshot
+
+
+def _attach_active_handoff(fake_repo: Any, run_id: uuid.UUID, snapshot: dict[str, Any]):
+    handoff = {
+        "id": uuid.uuid4(),
+        "run_id": run_id,
+        "email_id": snapshot["email_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+        "released_at": None,
+        "release_reason": None,
+    }
+    fake_repo.outbound_provider_handoffs[str(handoff["id"])] = handoff
+    return handoff
+
+
 def test_clarification_review_loads_frozen_question_and_not_confirmation(fake_repo):
     import app.routes.runs as runs_mod
 
@@ -337,3 +380,86 @@ def test_delivery_review_marker_blocks_retrigger_before_context_clear_or_enqueue
     response = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
     assert response.status_code == 303
     assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_mark_delivered_releases_only_its_active_confirmation_handoff(
+    fake_repo, monkeypatch
+):
+    """D-09 is an explicit no-send resolution: it may settle the matching
+    ambiguous handoff but cannot queue or wake another confirmation."""
+    import app.routes.runs as runs_mod
+
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    handoff = _attach_active_handoff(fake_repo, run_id, snapshot)
+    wake_calls: list[None] = []
+    monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/mark-delivered", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.RECONCILED.value
+    assert handoff["released_at"] is not None
+    assert handoff["release_reason"] == "finalized"
+    assert len(fake_repo.jobs) == 1
+    assert wake_calls == []
+
+
+def test_typed_confirmation_authorization_releases_handoff_and_clones_frozen_bytes(
+    fake_repo, monkeypatch
+):
+    """D-11 alone can supersede an ambiguous handoff, and its replacement is a
+    new slot containing the original immutable envelope and attachment bytes."""
+    import app.routes.runs as runs_mod
+
+    run_id, original = _confirmation_review_run(fake_repo)
+    handoff = _attach_active_handoff(fake_repo, run_id, original)
+    wake_calls: list[None] = []
+    monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
+
+    rejected = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "send it"},
+        follow_redirects=False,
+    )
+    assert rejected.status_code == 303
+    assert handoff["released_at"] is None
+    assert len(fake_repo.outbound_snapshots) == 1
+
+    accepted = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "AUTHORIZE A NEW CONFIRMATION"},
+        follow_redirects=False,
+    )
+
+    assert accepted.status_code == 303
+    assert handoff["released_at"] is not None
+    assert handoff["release_reason"] == "delivery_review"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.APPROVED.value
+    replacements = [
+        stored["payload"]
+        for stored in fake_repo.outbound_snapshots.values()
+        if stored["payload"]["email_id"] != original["email_id"]
+    ]
+    assert len(replacements) == 1
+    replacement = replacements[0]
+    assert replacement["epoch"] == 1
+    for field in (
+        "from_addr",
+        "to_addr",
+        "reply_to",
+        "in_reply_to",
+        "references_header",
+        "subject",
+        "body_text",
+    ):
+        assert replacement[field] == original[field]
+    assert [
+        (attachment["ordinal"], attachment["filename"], attachment["content"])
+        for attachment in replacement["attachments"]
+    ] == [
+        (attachment["ordinal"], attachment["filename"], attachment["content"])
+        for attachment in original["attachments"]
+    ]
+    assert wake_calls == [None]

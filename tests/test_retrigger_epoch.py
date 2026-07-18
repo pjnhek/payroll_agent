@@ -34,12 +34,14 @@ meant to prove cannot catch a mispay.
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.models.contracts import Decision, Extracted, ExtractedEmployee, InboundEmail
 from app.models.roster import NameMatchResult
+from app.models.status import RunStatus
 from app.pipeline.clarification import clarify as _clarify
 from app.pipeline.orchestrator import resume_pipeline
 from app.queue import drain
@@ -47,6 +49,86 @@ from app.queue.drain import DrainOutcome
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
+
+
+def test_generic_retrigger_rolls_back_when_provider_handoff_is_active(
+    fake_repo, monkeypatch
+):
+    """The active provider fence must undo the earlier status CAS, not merely
+    suppress the later epoch bump.  A browser retry cannot manufacture a fresh
+    pipeline job while an old provider request is still ambiguous.
+    """
+    import app.routes.runs as runs_mod
+
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+    fake_repo.outbound_provider_handoffs[str(uuid.uuid4())] = {
+        "id": uuid.uuid4(),
+        "run_id": run_id,
+        "released_at": None,
+    }
+    before_run = copy.deepcopy(fake_repo.runs)
+    before_jobs = copy.deepcopy(fake_repo.jobs)
+
+    class _RollbackTransaction:
+        def __enter__(self):
+            self.runs = copy.deepcopy(fake_repo.runs)
+            self.jobs = copy.deepcopy(fake_repo.jobs)
+            self.dedup = copy.deepcopy(fake_repo._job_dedup_keys)
+            return self
+
+        def __exit__(self, exc_type, _exc, _traceback):
+            if exc_type is not None:
+                fake_repo.runs = self.runs
+                fake_repo.jobs = self.jobs
+                fake_repo._job_dedup_keys = self.dedup
+            return False
+
+    class _Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def transaction(self):
+            return _RollbackTransaction()
+
+    monkeypatch.setattr(runs_mod.repo, "get_connection", lambda: _Connection())
+    wake_calls: list[None] = []
+    monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
+
+    response = runs_mod.retrigger(run_id)
+
+    assert response.status_code == 303
+    assert fake_repo.runs == before_run
+    assert fake_repo.jobs == before_jobs
+    assert wake_calls == []
+
+
+def test_released_provider_handoff_allows_ordinary_retrigger(fake_repo, monkeypatch):
+    """Once the exact handoff is settled, the ordinary epoch/job wake path stays
+    available; the active-fence no-op is not a permanent denial of recovery.
+    """
+    import app.routes.runs as runs_mod
+
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+    fake_repo.outbound_provider_handoffs[str(uuid.uuid4())] = {
+        "id": uuid.uuid4(),
+        "run_id": run_id,
+        "released_at": datetime.now(UTC),
+    }
+    wake_calls: list[None] = []
+    monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
+
+    response = runs_mod.retrigger(run_id)
+
+    assert response.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.RECEIVED.value
+    assert fake_repo.load_run(run_id)["reply_epoch"] == 1
+    assert len(fake_repo.jobs) == 1
+    assert wake_calls == [None]
 
 
 def _bare_roster(business_id: uuid.UUID = COASTAL_BIZ_ID):

@@ -825,6 +825,44 @@ def test_provider_handoff_release_is_exact_owner_and_active_fence_is_queryable(
     assert "released_at IS NULL" in fake_conn.last()[0]
 
 
+def test_delivery_review_can_release_only_its_matching_active_handoff(
+    fake_conn: Any,
+) -> None:
+    """D-09/D-11 do not have a worker lease, but their explicit review must
+    still be exact to the frozen email/snapshot it displays."""
+    from app.db.repo.outbound_handoffs import (
+        resolve_outbound_provider_handoff_for_delivery_review,
+    )
+
+    run_id, email_id, snapshot_id, handoff_id = (uuid.uuid4() for _ in range(4))
+    fake_conn.script_fetchone((handoff_id, email_id, snapshot_id))
+    fake_conn.script_fetchone((handoff_id,))
+
+    assert resolve_outbound_provider_handoff_for_delivery_review(
+        run_id,
+        email_id,
+        snapshot_id,
+        resolution="finalized",
+        conn=fake_conn,
+    )
+    release_sql, params = fake_conn.last()
+    assert "email_id = %s" in release_sql
+    assert "snapshot_id = %s" in release_sql
+    assert "released_at IS NULL" in release_sql
+    assert params[0] == "finalized"
+
+    foreign_email_id = uuid.uuid4()
+    fake_conn.script_fetchone((handoff_id, foreign_email_id, snapshot_id))
+    assert not resolve_outbound_provider_handoff_for_delivery_review(
+        run_id,
+        email_id,
+        snapshot_id,
+        resolution="delivery_review",
+        conn=fake_conn,
+    )
+    assert len(fake_conn.executed) == 3, "foreign handoff must not be released"
+
+
 def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
     """Provider-ready sends need durable bytes before a provider request, with database
     enforcement rather than a repository convention that a future caller could skip.

@@ -97,6 +97,7 @@ from app.db.repo.outbound_handoffs import (
     finalize_outbound_provider_handoff,
     release_outbound_provider_handoff_for_retry,
     release_outbound_provider_handoff_to_delivery_review,
+    resolve_outbound_provider_handoff_for_delivery_review,
 )
 from app.db.repo.pipeline_state import (
     clear_reply_context,
@@ -221,6 +222,7 @@ __all__ = [
     "finalize_outbound_provider_handoff",
     "release_outbound_provider_handoff_for_retry",
     "release_outbound_provider_handoff_to_delivery_review",
+    "resolve_outbound_provider_handoff_for_delivery_review",
     "insert_or_get_inbound_event",
     "load_inbound_event",
     "purge_terminal_inbound_events",

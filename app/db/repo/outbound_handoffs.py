@@ -429,6 +429,61 @@ def release_outbound_provider_handoff_to_delivery_review(
         return _release_exact_handoff(authorization, reason="delivery_review", conn=c)
 
 
+def resolve_outbound_provider_handoff_for_delivery_review(
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    *,
+    resolution: Literal["finalized", "delivery_review"],
+    conn: psycopg.Connection | None = None,
+) -> bool:
+    """Release only the active handoff owned by one explicit delivery review.
+
+    D-09 and D-11 are deliberate human overrides of uncertain provider delivery;
+    unlike worker settlement they do not possess a leased-job authorization.  They
+    still cannot release an arbitrary active row: the review's frozen email and
+    snapshot must match the sole active handoff for the locked run.  No active row
+    is also safe -- settlement may already have released it before the operator
+    acts -- but a different active generation fails closed.
+    """
+    if resolution not in {"finalized", "delivery_review"}:
+        raise ValueError("unsupported delivery-review handoff resolution")
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        active = c.execute(
+            """
+            SELECT id, email_id, snapshot_id FROM outbound_provider_handoffs
+             WHERE run_id = %s AND released_at IS NULL
+             FOR UPDATE
+            """,
+            (str(run_id),),
+        ).fetchone()
+        if active is None:
+            return True
+        active_id, active_email_id, active_snapshot_id = active
+        if (
+            _as_uuid(active_email_id) != email_id
+            or _as_uuid(active_snapshot_id) != snapshot_id
+        ):
+            return False
+        released = c.execute(
+            """
+            UPDATE outbound_provider_handoffs
+               SET released_at = now(), release_reason = %s
+             WHERE id = %s AND run_id = %s AND email_id = %s AND snapshot_id = %s
+               AND released_at IS NULL
+            RETURNING id
+            """,
+            (
+                resolution,
+                str(active_id),
+                str(run_id),
+                str(email_id),
+                str(snapshot_id),
+            ),
+        ).fetchone()
+        return released is not None
+
+
 def assert_no_active_outbound_provider_handoff(
     run_id: uuid.UUID, *, conn: psycopg.Connection | None = None
 ) -> None:
