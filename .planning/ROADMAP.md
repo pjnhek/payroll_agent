@@ -313,7 +313,7 @@ parallel with it.
 
 **Wave 13** *(gap closure; blocked on Wave 12 completion)*
 
-- [ ] 20-19-PLAN.md — Retire invalid-context leases before drain discards tokens
+- [x] 20-19-PLAN.md — Retire invalid-context leases before drain discards tokens
 
 **Wave 14** *(gap closure; blocked on Wave 13 completion)*
 

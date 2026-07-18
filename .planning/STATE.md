@@ -5,16 +5,16 @@ milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
 status: executing
-stopped_at: Completed 20-18-PLAN.md
-last_updated: "2026-07-18T01:08:17Z"
+stopped_at: Completed 20-19-PLAN.md
+last_updated: "2026-07-18T01:17:22Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 Plan 18 complete; ready for Plan 19
+last_activity_desc: Phase 20 Plan 19 complete; ready for Plan 20
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 61
-  completed_plans: 59
-  percent: 67
+  completed_plans: 60
+  percent: 68
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 ## Current Position
 
 Phase: 20 (Exactly-Once Send) — EXECUTING
-Plan: 19 of 20
+Plan: 20 of 20
 Status: Executing Phase 20
-Last activity: 2026-07-18 — Phase 20 Plan 18 complete; ready for Plan 19
+Last activity: 2026-07-18 — Phase 20 Plan 19 complete; ready for Plan 20
 
 ## Performance Metrics
 
@@ -133,6 +133,7 @@ Last activity: 2026-07-18 — Phase 20 Plan 18 complete; ready for Plan 19
 | Phase 20 P08 | 4 min | 2 tasks | 3 files |
 | Phase 20 P17 | 2 | 2 tasks | 2 files |
 | Phase 20 P18 | ~8min | 2 tasks | 6 files |
+| Phase 20 P19 | ~15min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -185,6 +186,7 @@ Recent decisions affecting current work:
 - [Phase 20 P03]: Resend replay is snapshot-only under the stored Message-ID-derived key; only bounded transport, 5xx, and rate-limit failures can replay within the reservation-time schedule, while payload mismatch and quota require review.
 - [Phase 20 P11]: Clarification delivery settlement preserves the frozen reply workflow under the exact lease: success and retry do not mutate awaiting-reply state, round, or RFC thread facts; terminal delivery uses clarification-safe operator escalation; alias confirmation remains outside transport settlement.
 - [Phase 20 P05]: The shared drain routes SEND_OUTBOUND results and unexpected handler failures to delivery-specific fenced settlement after the handler verifies immutable snapshot ownership, expected business state, and the reservation-time replay window before provider work.
+- [Phase 20 P19]: SEND_OUTBOUND now separates a no-write LOST_LEASE from an owned INVALID_CONTEXT; only the latter retires the exact held row, and the drain discards its token only after that durable result. Generic pipeline FENCED remains compatible.
 - [Phase ?]: D-05 OT explicit-zero decision: hours_overtime=0 treated same as absent — never silently underpays a weekly employee
 - [Phase 11 P05]: clear_reply_context is called ONCE at the retrigger route's single 'if claimed:' post-claim convergence point (reached by both the ERROR/APPROVED CAS and the stale in-flight CAS) rather than duplicated inside each branch — satisfies WR-06/D-11-04 clearing ALL reply-round context (clarified_fields, pre_clarify_extracted, clarification_round, alias_candidates) before _run_pipeline is scheduled.
 - [Phase 11 P05]: _row_to_inbound is a pure app.main helper (not repo.py) building an InboundEmail from a persisted email_messages row, reused by both the WR-04 redelivery re-schedule and the D-11-05 stranded auto-resume — never re-cleans a redelivered request body (Pitfall #11a).
