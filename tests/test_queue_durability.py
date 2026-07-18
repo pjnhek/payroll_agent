@@ -178,6 +178,10 @@ def _delete_all_jobs() -> None:
     from app.db import repo
 
     with repo.get_connection() as conn, conn.transaction():
+        # Provider handoffs retain their mutable authorization-fence history and
+        # reference the exact job they fenced. Clear test-only handoffs first so
+        # the job delete is FK-safe and cannot leak an active fence between tests.
+        conn.execute("DELETE FROM outbound_provider_handoffs")
         conn.execute("DELETE FROM jobs")
 
 
@@ -190,11 +194,12 @@ def _isolated_jobs(seeded_db):
     file already holds five-plus live-DB proofs and later plans append more —
     autouse means every one of them gets isolation for free and cannot opt out
     by omission (a fixture you have to remember to request is a fixture a later
-    plan forgets). `DELETE`, not `TRUNCATE`: nothing references `jobs`, and
-    `TRUNCATE` takes an ACCESS EXCLUSIVE lock, which is a gratuitous hazard in a
-    file whose entire purpose is running concurrent claimants. Clearing BEFORE
-    the yield protects a test from its predecessors; clearing AFTER protects the
-    next test from a crashed one.
+    plan forgets). `DELETE`, not `TRUNCATE`: provider handoffs are first removed
+    because they reference jobs, then jobs can be cleared without an ACCESS
+    EXCLUSIVE lock. That lock would be a gratuitous hazard in a file whose entire
+    purpose is running concurrent claimants. Clearing BEFORE the yield protects a
+    test from its predecessors; clearing AFTER protects the next test from a
+    crashed one.
 
     The gate call before EACH delete is what keeps this fixture from being the
     exact mechanism that makes a proof lie: see the module docstring's teardown-
@@ -1666,7 +1671,7 @@ def _seed_claimed_confirmation_send() -> tuple[uuid.UUID, dict[str, Any], Job]:
 
 
 def _seed_claimed_delivery(
-    *, purpose: str, run_status: RunStatus
+    *, purpose: str, run_status: RunStatus, reserved_at: datetime | None = None
 ) -> tuple[uuid.UUID, dict[str, Any], Job]:
     """Seed one current-generation frozen delivery and claim its exact job."""
     from app.db import repo
@@ -1674,20 +1679,65 @@ def _seed_claimed_delivery(
 
     run_id = _seed_run_for_queue_proof()
     repo.set_status(run_id, run_status)
-    snapshot = repo.reserve_outbound_snapshot(
-        run_id=run_id,
-        purpose=purpose,
-        round=0,
-        message_id=f"<expiry-{purpose}-{uuid.uuid4()}@test.example>",
-        from_addr="agent@payroll-agent.local",
-        to_addr="payroll@coastalcleaning.example",
-        reply_to=None,
-        in_reply_to=None,
-        references_header=None,
-        subject="Frozen delivery review",
-        body_text="Frozen delivery review body",
-        attachments=(("expiry-proof.pdf", b"frozen-expiry-proof-bytes"),),
-    )
+    message_id = f"<expiry-{purpose}-{uuid.uuid4()}@test.example>"
+    attachments = (("expiry-proof.pdf", b"frozen-expiry-proof-bytes"),)
+    if reserved_at is None:
+        snapshot = repo.reserve_outbound_snapshot(
+            run_id=run_id,
+            purpose=purpose,
+            round=0,
+            message_id=message_id,
+            from_addr="agent@payroll-agent.local",
+            to_addr="payroll@coastalcleaning.example",
+            reply_to=None,
+            in_reply_to=None,
+            references_header=None,
+            subject="Frozen delivery review",
+            body_text="Frozen delivery review body",
+            attachments=attachments,
+        )
+    else:
+        # Snapshots are append-only. Seed the stale timestamp at insertion time
+        # instead of mutating a valid frozen row after it has been reserved.
+        with repo.get_connection() as conn, conn.transaction():
+            email_row = conn.execute(
+                """
+                INSERT INTO email_messages (
+                    run_id, direction, message_id, subject, from_addr, to_addr,
+                    body_text, purpose, send_state, round, epoch
+                ) VALUES (%s, 'outbound', %s, 'Frozen delivery review',
+                          'agent@payroll-agent.local', 'payroll@coastalcleaning.example',
+                          'Frozen delivery review body', %s, 'reserved', 0, 0)
+                RETURNING id
+                """,
+                (str(run_id), message_id, purpose),
+            ).fetchone()
+            assert email_row is not None
+            snapshot_row = conn.execute(
+                """
+                INSERT INTO outbound_email_snapshots (
+                    email_id, message_id, from_addr, to_addr, subject, body_text, reserved_at
+                ) VALUES (%s, %s, 'agent@payroll-agent.local',
+                          'payroll@coastalcleaning.example', 'Frozen delivery review',
+                          'Frozen delivery review body', %s)
+                RETURNING id
+                """,
+                (str(email_row[0]), message_id, reserved_at),
+            ).fetchone()
+            assert snapshot_row is not None
+            for ordinal, (filename, content) in enumerate(attachments):
+                conn.execute(
+                    """
+                    INSERT INTO outbound_email_attachments (snapshot_id, ordinal, filename, content)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (str(snapshot_row[0]), ordinal, filename, content),
+                )
+        loaded_snapshot = repo.load_outbound_snapshot(
+            run_id, uuid.UUID(str(email_row[0]))
+        )
+        assert loaded_snapshot is not None
+        snapshot = loaded_snapshot
     job_id = repo.enqueue_job(
         kind=JobKind.SEND_OUTBOUND,
         dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
@@ -1722,6 +1772,10 @@ def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None
 
     legacy_categories = _DELIVERY_FAILURE_CATEGORIES - {"authorization_expired"}
     with repo.get_connection() as conn, conn.transaction():
+        # The seed can already contain post-upgrade evidence.  A deployed legacy
+        # CHECK cannot be installed while such a row exists, so clear only this
+        # resettable proof table before emulating the pre-upgrade vocabulary.
+        conn.execute("TRUNCATE outbound_delivery_attempts")
         constraints = conn.execute(
             """
             SELECT c.conname
@@ -1739,14 +1793,22 @@ def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None
         assert constraints
         for (constraint_name,) in constraints:
             conn.execute(
-                "ALTER TABLE outbound_delivery_attempts DROP CONSTRAINT "
-                + psycopg.sql.Identifier(str(constraint_name)).as_string(conn)
+                psycopg.sql.SQL(
+                    "ALTER TABLE outbound_delivery_attempts DROP CONSTRAINT {}"
+                ).format(psycopg.sql.Identifier(str(constraint_name)))
             )
-        legacy_values = ", ".join(f"'{category}'" for category in sorted(legacy_categories))
         conn.execute(
-            "ALTER TABLE outbound_delivery_attempts "
-            "ADD CONSTRAINT legacy_outbound_delivery_failure_category_check "
-            f"CHECK (failure_category IN ({legacy_values}))"
+            psycopg.sql.SQL(
+                "ALTER TABLE outbound_delivery_attempts "
+                "ADD CONSTRAINT {} CHECK (failure_category IN ({}))"
+            ).format(
+                psycopg.sql.Identifier(
+                    "legacy_outbound_delivery_failure_category_check"
+                ),
+                psycopg.sql.SQL(", ").join(
+                    psycopg.sql.Literal(category) for category in sorted(legacy_categories)
+                ),
+            )
         )
 
     bootstrap(reset=False)
@@ -1812,16 +1874,12 @@ def test_pre_provider_authorization_expired_enters_delivery_review(
     from app.queue.handlers import send_outbound
 
     run_id, snapshot, job = _seed_claimed_delivery(
-        purpose=purpose, run_status=run_status
+        purpose=purpose,
+        run_status=run_status,
+        reserved_at=datetime.now(UTC) - timedelta(hours=20),
     )
     before = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
     assert before is not None
-    with repo.get_connection() as conn, conn.transaction():
-        conn.execute(
-            "UPDATE outbound_email_snapshots "
-            "SET reserved_at = now() - interval '20 hours' WHERE id = %s",
-            (str(snapshot["snapshot_id"]),),
-        )
 
     provider_calls: list[object] = []
     monkeypatch.setattr(
