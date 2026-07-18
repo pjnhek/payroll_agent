@@ -1,9 +1,9 @@
 ---
 phase: 20
 slug: exactly-once-send
-status: planned
+status: verified
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-17
 ---
 
@@ -38,9 +38,9 @@ created: 2026-07-17
 
 | Requirement | Secure behavior to prove | Test type | Automated command | Existing coverage | Status |
 |-------------|--------------------------|-----------|-------------------|-------------------|--------|
-| SEND-01 | A retry retains the original reserved Message-ID and no conflict path overwrites the logical send slot. | Unit + live-Postgres integration | `uv run pytest tests/test_send_idempotency.py -q` | Extend existing idempotency tests | ⬜ pending |
-| SEND-02 | A replay reads one frozen subject/body/recipient/attachment-byte snapshot and never calls drafting or PDF generation. | Unit + integration | `uv run pytest tests/test_delivery.py tests/test_send_idempotency.py -q` | Extend existing delivery/idempotency tests | ⬜ pending |
-| SEND-03 | Every provider call uses the reserved Message-ID-derived key; only classified transient failures reschedule before reservation age 20h, and ambiguity escalates safely. | Unit + queue integration + live-Postgres proof | `uv run pytest tests/test_delivery.py tests/test_send_idempotency.py -q` | Extend queue and delivery tests; add non-vacuity proof | ⬜ pending |
+| SEND-01 | A retry retains the original reserved Message-ID and no conflict path overwrites the logical send slot. | Unit + live-Postgres integration | `uv run pytest tests/test_send_idempotency.py -q` | `tests/test_send_idempotency.py`, including current-epoch and append-only evidence | ✅ green |
+| SEND-02 | A replay reads one frozen subject/body/recipient/attachment-byte snapshot and never calls drafting or PDF generation. | Unit + integration | `uv run pytest tests/test_delivery.py tests/test_send_idempotency.py -q` | `tests/test_delivery.py`, `tests/test_gateway.py`, and idempotency replay regressions | ✅ green |
+| SEND-03 | Every provider call uses the reserved Message-ID-derived key; only classified transient failures reschedule before reservation age 20h, and ambiguity escalates safely. | Unit + queue integration + live-Postgres proof | `uv run pytest tests/test_delivery.py tests/test_send_idempotency.py -q` | Gateway deadline/key tests, queueproof coverage, and recorded guarded PostgreSQL evidence | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -135,6 +135,23 @@ selected test must pass with zero skips, including the deliberately unsafe contr
 
 ---
 
+## Validation Audit 2026-07-18
+
+| Metric | Count |
+|--------|-------|
+| Requirements audited | 3 |
+| Automated requirements covered | 3 |
+| Gaps found | 1 |
+| Gaps resolved | 1 |
+| Manual-only checks | 2 |
+
+The audit first found five planning-decision citations in source comments, which
+violated the permanent comment-provenance test. The comments were rewritten to
+describe their delivery-review behavior directly; no runtime behavior changed.
+The provenance gate and full suite are green: `1188 passed, 95 skipped`.
+
+`wave_0_complete` is now `true`: the planned evidence is implemented and green.
+
 ## Validation Sign-Off
 
 - [x] All tasks have `<automated>` verification or Wave 0 dependencies
@@ -142,8 +159,6 @@ selected test must pass with zero skips, including the deliberately unsafe contr
 - [x] Wave 0/planning coverage identifies the SEND-01 through SEND-03 evidence paths
 - [x] No watch-mode flags
 - [x] Feedback latency under 60 seconds for hermetic checks
-- [x] `nyquist_compliant: true` set in frontmatter after plans define task IDs
+- [x] `nyquist_compliant: true` set in frontmatter after implementation evidence passed
 
-`wave_0_complete` remains `false`: none of this planned evidence has been executed yet.
-
-**Approval:** pending
+**Approval:** approved 2026-07-18
