@@ -731,8 +731,10 @@ def test_send_handler_noops_before_gateway_for_stale_epoch(
         provider_calls.append(snapshot)
         return PipelineResult(outcome=PipelineOutcome.OK)
 
+    from app.email import gateway
+
     monkeypatch.setattr(
-        send_outbound.gateway,
+        gateway,
         "send_reserved_outbound_snapshot",
         provider_spy,
     )

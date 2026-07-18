@@ -686,7 +686,7 @@ def test_fenced_clarification_delivery_loser_preserves_reply_workflow(fake_conn)
 
     assert (
         settle_outbound_delivery_job(job, PipelineResult(), conn=fake_conn)
-        is SettlementOutcome.FENCED
+        is SettlementOutcome.LOST_LEASE
     )
     sql = fake_conn.all_sql()
     assert "INSERT INTO outbound_delivery_attempts" not in sql

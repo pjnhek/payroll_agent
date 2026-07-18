@@ -351,7 +351,7 @@ def test_a_sent_row_takes_the_EXISTING_guard_not_this_one(fake_repo, mock_llm, m
 
 
 def test_delivery_confirmation_uses_current_epoch_sent_proof(fake_repo, monkeypatch):
-    """D-04/D-07: delivery consumes only the proof for the current epoch.
+    """Delivery consumes only the proof for the current epoch.
 
     A stale sent row must leave the epoch-1 slot eligible; the current epoch's
     sent proof must take the already-delivered branch. This exercises the same
@@ -396,8 +396,10 @@ def test_delivery_confirmation_uses_current_epoch_sent_proof(fake_repo, monkeypa
             "confirmation delivery must use the current-epoch proof seam directly"
         ),
     )
+    from app.pipeline import send_guard
+
     monkeypatch.setattr(
-        delivery.send_guard,
+        send_guard,
         "outbound_replay_policy",
         lambda *_args, **_kwargs: SimpleNamespace(
             has_existing_snapshot=True, email_id=uuid.uuid4()
@@ -832,7 +834,7 @@ def test_delivery_settlement_rejects_a_lost_lease_before_any_attempt_write(fake_
 
     assert (
         settle_outbound_delivery_job(job, PipelineResult(), conn=fake_conn)
-        is SettlementOutcome.FENCED
+        is SettlementOutcome.LOST_LEASE
     )
     sql = fake_conn.all_sql()
     assert "INSERT INTO outbound_delivery_attempts" not in sql
@@ -861,10 +863,11 @@ def test_delivery_settlement_fences_a_claimed_email_id_against_the_persisted_job
         lease_token=uuid.uuid4(),
     )
     fake_conn.script_fetchone((1, 8, run_id, "send_outbound", persisted_email_id))
+    fake_conn.script_fetchone((job.id,))
 
     assert (
         settle_outbound_delivery_job(job, PipelineResult(), conn=fake_conn)
-        is SettlementOutcome.FENCED
+        is SettlementOutcome.INVALID_CONTEXT
     )
     sql = fake_conn.all_sql()
     assert "email_id" in sql
@@ -872,7 +875,7 @@ def test_delivery_settlement_fences_a_claimed_email_id_against_the_persisted_job
     assert "outbound_delivery_attempts" not in sql
     assert "UPDATE email_messages" not in sql
     assert "UPDATE payroll_runs" not in sql
-    assert "UPDATE jobs" not in sql
+    assert "UPDATE jobs" in sql
 
 
 @pytest.mark.parametrize(
@@ -940,6 +943,7 @@ def test_retry_now_locks_the_job_before_its_owned_snapshot(fake_conn: Any) -> No
     run_id, email_id, job_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     fake_conn.script_fetchone((job_id, "pending"))
     fake_conn.script_fetchone((True,))
+    fake_conn.script_fetchone((run_id,))
     fake_conn.script_fetchone((job_id,))
 
     assert (
@@ -949,6 +953,7 @@ def test_retry_now_locks_the_job_before_its_owned_snapshot(fake_conn: Any) -> No
     sql_statements = [str(statement) for statement, _ in fake_conn.executed]
     assert "FROM jobs" in sql_statements[0]
     assert "outbound_email_snapshots" in sql_statements[1]
+    assert "payroll_runs" in sql_statements[2]
 
 
 def test_clarification_delivery_review_retry_reopens_the_same_row(fake_conn: Any) -> None:

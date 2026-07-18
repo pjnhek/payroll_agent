@@ -180,7 +180,7 @@ def test_approve_load_run_failure_routes_to_error_not_500(client, fake_repo, mon
     def _boom(rid, conn=None):
         raise RuntimeError("simulated transient DB failure during load_run")
 
-    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)  # type: ignore[attr-defined]  # patch the route module's own `repo` import binding -- the exact seam approve() calls; mypy cannot see the module attribute
+    monkeypatch.setattr(runs_mod.repo, "load_run", _boom)
 
     r = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
     assert r.status_code == 303, (

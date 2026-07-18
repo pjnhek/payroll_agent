@@ -946,9 +946,10 @@ class InMemoryRepo:
         return True
 
     def advance_existing_send_job_due_now(self, run_id, email_id, *, conn=None):
-        """Mirror the existing-job-only delivery retry operation."""
+        """Mirror the confirmation-only delivery review retry operation."""
         from app.db.repo.jobs import AdvanceSendJobOutcome
         from app.models.job import JobKind
+        from app.models.status import RunStatus
 
         if conn is None:
             raise ValueError(
@@ -959,6 +960,23 @@ class InMemoryRepo:
             return AdvanceSendJobOutcome.MISSING
         if snapshot["reserved_at"] + timedelta(hours=20) <= datetime.now(UTC):
             return AdvanceSendJobOutcome.EXPIRED
+        if snapshot.get("purpose") != "confirmation":
+            return AdvanceSendJobOutcome.MISSING
+        outbound = next(
+            (
+                message
+                for message in self.outbound.get(str(run_id), [])
+                if message.get("id") == email_id
+            ),
+            None,
+        )
+        if outbound is None or outbound.get("send_state") != "reserved":
+            return AdvanceSendJobOutcome.MISSING
+        run = self.runs.get(str(run_id))
+        if run is None or run.get("status") != RunStatus.NEEDS_OPERATOR.value:
+            return AdvanceSendJobOutcome.MISSING
+        if run.get("error_reason") != "DeliveryReview":
+            return AdvanceSendJobOutcome.MISSING
         for job in self.jobs.values():
             if (
                 job["kind"] == JobKind.SEND_OUTBOUND.value

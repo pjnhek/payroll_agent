@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any, cast
 
+import psycopg
 import pytest
 
 from app.models.job import JobKind
@@ -395,6 +397,7 @@ def test_fake_stale_epoch_final_lease_retires_invalid_lease_without_mutation(
 
 
 def test_fake_stale_epoch_handler_is_provider_free(fake_repo, monkeypatch) -> None:
+    from app.email import gateway
     from app.queue.handlers import send_outbound
 
     run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
@@ -409,7 +412,7 @@ def test_fake_stale_epoch_handler_is_provider_free(fake_repo, monkeypatch) -> No
         return PipelineResult(outcome=PipelineOutcome.OK)
 
     monkeypatch.setattr(
-        send_outbound.gateway,
+        gateway,
         "send_reserved_outbound_snapshot",
         provider_spy,
     )
@@ -438,9 +441,10 @@ def test_fake_clarification_review_retry_advances_the_same_row_only(fake_repo) -
         "reserved_at": snapshot["reserved_at"],
     }
     assert hasattr(repo, "advance_existing_clarification_delivery_review_job_due_now")
+    fake_connection = cast(psycopg.Connection[Any], object())
     assert (
         repo.advance_existing_clarification_delivery_review_job_due_now(
-            run_id, snapshot["email_id"], conn=object()
+            run_id, snapshot["email_id"], conn=fake_connection
         )
         is AdvanceSendJobOutcome.ADVANCED
     )
@@ -455,6 +459,35 @@ def test_fake_clarification_review_retry_advances_the_same_row_only(fake_repo) -
         key: fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"])[key]
         for key in original
     } == original
+
+
+def test_fake_confirmation_retry_rejects_clarification_review(fake_repo) -> None:
+    from app.db.repo.jobs import AdvanceSendJobOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo, purpose="clarification")
+    job = fake_repo.get_job(claimed.id)
+    assert job is not None
+    job.update(state="pending", lease_token=None, available_in_seconds=45.0)
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.NEEDS_OPERATOR.value
+    fake_repo.runs[str(run_id)]["error_reason"] = "ClarificationDeliveryReview"
+    before_run = dict(fake_repo.load_run(run_id))
+    before_snapshot = fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    assert before_snapshot is not None
+    before_message_id = before_snapshot["message_id"]
+    fake_connection = cast(psycopg.Connection[Any], object())
+
+    assert (
+        fake_repo.advance_existing_send_job_due_now(
+            run_id, snapshot["email_id"], conn=fake_connection
+        )
+        is AdvanceSendJobOutcome.MISSING
+    )
+
+    assert fake_repo.get_job(claimed.id)["available_in_seconds"] == 45.0
+    assert fake_repo.load_run(run_id) == before_run
+    after_snapshot = fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    assert after_snapshot == before_snapshot
+    assert after_snapshot["message_id"] == before_message_id
 
 
 def test_fake_header_routing_rejects_stale_epoch_but_keeps_late_observability(fake_repo):

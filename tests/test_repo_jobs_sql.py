@@ -315,6 +315,10 @@ def test_fake_retry_now_advances_only_the_one_eligible_send_job(fake_repo) -> No
         email_id=email_id,
     )
     assert first is not None
+    fake_repo.runs[str(run_id)].update(
+        status="needs_operator",
+        error_reason="DeliveryReview",
+    )
     assert (
         fake_repo.enqueue_job(
             kind=JobKind.SEND_OUTBOUND,

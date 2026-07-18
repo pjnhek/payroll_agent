@@ -143,6 +143,7 @@ def test_clarification_retry_expired_is_a_noop(fake_repo, monkeypatch):
 
 def test_confirmation_retry_now_rejects_clarification_review(fake_repo, monkeypatch):
     import app.routes.runs as runs_mod
+    from app.email import gateway
 
     run_id, snapshot = _clarification_review_run(fake_repo)
     job = next(iter(fake_repo.jobs.values()))
@@ -159,7 +160,7 @@ def test_confirmation_retry_now_rejects_clarification_review(fake_repo, monkeypa
     )
     monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
     monkeypatch.setattr(
-        runs_mod.gateway,
+        gateway,
         "send_outbound",
         lambda **_: pytest.fail("confirmation retry called provider"),
     )
@@ -181,6 +182,7 @@ def test_mark_delivery_delivered_rejects_clarification_review_without_mutation(
     fake_repo, monkeypatch
 ):
     import app.routes.runs as runs_mod
+    from app.email import gateway
 
     run_id, snapshot = _clarification_review_run(fake_repo)
     before_run = dict(fake_repo.load_run(run_id))
@@ -195,7 +197,7 @@ def test_mark_delivery_delivered_rejects_clarification_review_without_mutation(
     )
     monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
     monkeypatch.setattr(
-        runs_mod.gateway,
+        gateway,
         "send_outbound",
         lambda **_: pytest.fail("mark delivered called provider"),
     )
@@ -216,6 +218,7 @@ def test_authorize_new_confirmation_rejects_clarification_review_without_mutatio
     fake_repo, monkeypatch
 ):
     import app.routes.runs as runs_mod
+    from app.email import gateway
 
     run_id, snapshot = _clarification_review_run(fake_repo)
     before_run = dict(fake_repo.load_run(run_id))
@@ -230,7 +233,7 @@ def test_authorize_new_confirmation_rejects_clarification_review_without_mutatio
     )
     monkeypatch.setattr(runs_mod.wake, "wake", lambda: wake_calls.append(None))
     monkeypatch.setattr(
-        runs_mod.gateway,
+        gateway,
         "send_outbound",
         lambda **_: pytest.fail("authorize confirmation called provider"),
     )
