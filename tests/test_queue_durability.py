@@ -102,7 +102,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -1662,6 +1662,277 @@ def _seed_claimed_confirmation_send() -> tuple[uuid.UUID, dict[str, Any], Job]:
     job = repo.claim_job()
     assert job is not None and job.id == job_id
     return run_id, snapshot, job
+
+
+def _seed_claimed_delivery(
+    *, purpose: str, run_status: RunStatus
+) -> tuple[uuid.UUID, dict[str, Any], Job]:
+    """Seed one current-generation frozen delivery and claim its exact job."""
+    from app.db import repo
+    from app.models.job import JobKind
+
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, run_status)
+    snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose=purpose,
+        round=0,
+        message_id=f"<expiry-{purpose}-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen delivery review",
+        body_text="Frozen delivery review body",
+        attachments=(),
+    )
+    job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    job = repo.claim_job()
+    assert job is not None and job.id == job_id
+    return run_id, snapshot, job
+
+
+_DELIVERY_FAILURE_CATEGORIES = {
+    "none",
+    "transport",
+    "provider_5xx",
+    "rate_limited",
+    "payload_mismatch",
+    "authorization",
+    "validation",
+    "configuration",
+    "authorization_expired",
+    "unknown",
+    "final_attempt_lease_expired",
+}
+
+
+def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None:
+    """Non-reset bootstrap repairs a real legacy failure-category CHECK."""
+    from app.db import repo
+    from app.db.bootstrap import bootstrap
+
+    legacy_categories = _DELIVERY_FAILURE_CATEGORIES - {"authorization_expired"}
+    with repo.get_connection() as conn, conn.transaction():
+        constraints = conn.execute(
+            """
+            SELECT c.conname
+              FROM pg_constraint AS c
+             WHERE c.contype = 'c'
+               AND c.conrelid = 'outbound_delivery_attempts'::regclass
+               AND (
+                   SELECT array_agg(a.attname::text ORDER BY u.ord)
+                     FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                     JOIN pg_attribute AS a
+                       ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+               ) = ARRAY['failure_category']
+            """
+        ).fetchall()
+        assert constraints
+        for (constraint_name,) in constraints:
+            conn.execute(
+                "ALTER TABLE outbound_delivery_attempts DROP CONSTRAINT "
+                + psycopg.sql.Identifier(str(constraint_name)).as_string(conn)
+            )
+        legacy_values = ", ".join(f"'{category}'" for category in sorted(legacy_categories))
+        conn.execute(
+            "ALTER TABLE outbound_delivery_attempts "
+            "ADD CONSTRAINT legacy_outbound_delivery_failure_category_check "
+            f"CHECK (failure_category IN ({legacy_values}))"
+        )
+
+    bootstrap(reset=False)
+
+    with repo.get_connection() as conn:
+        repaired = conn.execute(
+            """
+            SELECT c.conname, pg_get_constraintdef(c.oid)
+              FROM pg_constraint AS c
+             WHERE c.contype = 'c'
+               AND c.conrelid = 'outbound_delivery_attempts'::regclass
+               AND (
+                   SELECT array_agg(a.attname::text ORDER BY u.ord)
+                     FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                     JOIN pg_attribute AS a
+                       ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+               ) = ARRAY['failure_category']
+            """
+        ).fetchall()
+    assert len(repaired) == 1
+    repaired_categories = set(re.findall(r"'([^']+)'", str(repaired[0][1])))
+    assert repaired_categories == _DELIVERY_FAILURE_CATEGORIES
+
+    run_id, snapshot, _job = _seed_claimed_delivery(
+        purpose="confirmation", run_status=RunStatus.APPROVED
+    )
+    with repo.get_connection() as conn, conn.transaction():
+        attempt = conn.execute(
+            """
+            INSERT INTO outbound_delivery_attempts (
+                snapshot_id, attempt_state, failure_category
+            ) VALUES (%s, 'needs_operator', 'authorization_expired')
+            RETURNING id
+            """,
+            (str(snapshot["snapshot_id"]),),
+        ).fetchone()
+    assert attempt is not None
+    assert repo.load_run(run_id) is not None
+
+
+@pytest.mark.parametrize(
+    ("purpose", "run_status", "review_reason"),
+    [
+        ("confirmation", RunStatus.APPROVED, "DeliveryReview"),
+        ("clarification", RunStatus.AWAITING_REPLY, "ClarificationDeliveryReview"),
+        (
+            "clarification_field_regression",
+            RunStatus.AWAITING_REPLY,
+            "ClarificationDeliveryReview",
+        ),
+    ],
+)
+def test_pre_provider_authorization_expired_enters_delivery_review(
+    seeded_db,
+    monkeypatch: pytest.MonkeyPatch,
+    purpose: str,
+    run_status: RunStatus,
+    review_reason: str,
+) -> None:
+    """A stale reservation records review evidence before any provider boundary."""
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.email import gateway
+    from app.queue.handlers import send_outbound
+
+    run_id, snapshot, job = _seed_claimed_delivery(
+        purpose=purpose, run_status=run_status
+    )
+    before = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    assert before is not None
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE outbound_email_snapshots "
+            "SET reserved_at = now() - interval '20 hours' WHERE id = %s",
+            (str(snapshot["snapshot_id"]),),
+        )
+
+    provider_calls: list[object] = []
+    monkeypatch.setattr(
+        gateway.resend.Emails,
+        "send",
+        lambda *_args, **_kwargs: provider_calls.append(object()),
+    )
+    result = send_outbound.handle_send_outbound(job)
+
+    assert result.reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED
+    assert provider_calls == []
+    assert repo.settle_outbound_delivery_job(job, result) is SettlementOutcome.DONE
+    after = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    run = repo.load_run(run_id)
+    settled_job = repo.get_job(job.id)
+    assert after is not None
+    assert run is not None
+    assert settled_job is not None
+    assert after["message_id"] == before["message_id"]
+    assert after["body_text"] == before["body_text"]
+    assert run["status"] == RunStatus.NEEDS_OPERATOR.value
+    assert run["error_reason"] == review_reason
+    assert settled_job["state"] == "done"
+    with repo.get_connection() as conn:
+        attempt = conn.execute(
+            "SELECT attempt_state, failure_category FROM outbound_delivery_attempts "
+            "WHERE snapshot_id = %s",
+            (str(snapshot["snapshot_id"]),),
+        ).fetchone()
+        open_jobs = conn.execute(
+            "SELECT count(*) FROM jobs WHERE run_id = %s "
+            "AND state IN ('pending', 'leased')",
+            (str(run_id),),
+        ).fetchone()
+    assert attempt == ("needs_operator", "authorization_expired")
+    assert open_jobs == (0,)
+
+
+@pytest.mark.parametrize(
+    ("purpose", "run_status", "review_reason"),
+    [
+        ("confirmation", RunStatus.APPROVED, "DeliveryReview"),
+        ("clarification", RunStatus.AWAITING_REPLY, "ClarificationDeliveryReview"),
+        (
+            "clarification_field_regression",
+            RunStatus.AWAITING_REPLY,
+            "ClarificationDeliveryReview",
+        ),
+    ],
+)
+def test_provider_handoff_authorization_expired_at_gateway_boundary_enters_review(
+    seeded_db,
+    monkeypatch: pytest.MonkeyPatch,
+    purpose: str,
+    run_status: RunStatus,
+    review_reason: str,
+) -> None:
+    """A valid handoff that reaches its fixed send budget never calls Resend."""
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.db.repo.outbound_handoffs import ProviderHandoffAuthorization
+    from app.email import gateway
+    from app.pipeline.result import DELIVERY_SEND_BUDGET
+    from app.queue.handlers import send_outbound
+
+    run_id, snapshot, job = _seed_claimed_delivery(
+        purpose=purpose, run_status=run_status
+    )
+    before = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    assert before is not None
+    authorization = repo.authorize_outbound_provider_handoff(job)
+    assert isinstance(authorization, ProviderHandoffAuthorization)
+
+    provider_calls: list[object] = []
+    monkeypatch.setattr(
+        gateway.resend.Emails,
+        "send",
+        lambda *_args, **_kwargs: provider_calls.append(object()),
+    )
+    boundary = authorization.not_after - timedelta(
+        seconds=DELIVERY_SEND_BUDGET.timeout_seconds
+    ) - DELIVERY_SEND_BUDGET.safety_margin
+    result = send_outbound.handle_send_outbound(job, clock=lambda: boundary)
+
+    assert result.reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED
+    assert provider_calls == []
+    assert repo.settle_outbound_delivery_job(job, result) is SettlementOutcome.DONE
+    after = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    run = repo.load_run(run_id)
+    settled_job = repo.get_job(job.id)
+    assert after is not None
+    assert run is not None
+    assert settled_job is not None
+    assert after["message_id"] == before["message_id"]
+    assert after["body_text"] == before["body_text"]
+    assert run["status"] == RunStatus.NEEDS_OPERATOR.value
+    assert run["error_reason"] == review_reason
+    assert settled_job["state"] == "done"
+    with repo.get_connection() as conn:
+        attempt = conn.execute(
+            "SELECT attempt_state, failure_category FROM outbound_delivery_attempts "
+            "WHERE snapshot_id = %s",
+            (str(snapshot["snapshot_id"]),),
+        ).fetchone()
+        open_jobs = conn.execute(
+            "SELECT count(*) FROM jobs WHERE run_id = %s "
+            "AND state IN ('pending', 'leased')",
+            (str(run_id),),
+        ).fetchone()
+    assert attempt == ("needs_operator", "authorization_expired")
+    assert open_jobs == (0,)
 
 
 def _backend_pid(conn: psycopg.Connection) -> int:
