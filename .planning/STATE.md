@@ -4,16 +4,16 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: Exactly-Once Send
-status: ready_to_execute
-stopped_at: Phase 20 gap-closure planning complete (20 plans ready)
-last_updated: "2026-07-17T23:54:07Z"
-last_activity: 2026-07-17
-last_activity_desc: Phase 20 executed; verifier found 6 closure gaps
+status: executing
+stopped_at: Completed 20-17-PLAN.md
+last_updated: "2026-07-18T00:40:42.405Z"
+last_activity: 2026-07-18
+last_activity_desc: Phase 20 execution started
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 57
-  completed_plans: 57
+  total_plans: 61
+  completed_plans: 58
   percent: 67
 ---
 
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 19 complete)
 
 ## Current Position
 
-Phase: 20 — Exactly-Once Send
-Plan: 20 of 20
-Status: Ready to execute
-Last activity: 2026-07-17 — Phase 20 gap-closure planning complete; 20 plans ready
+Phase: 20 (Exactly-Once Send) — EXECUTING
+Plan: 18 of 20
+Status: Executing Phase 20
+Last activity: 2026-07-18 — Phase 20 execution started
 
 ## Performance Metrics
 
@@ -131,6 +131,7 @@ Last activity: 2026-07-17 — Phase 20 gap-closure planning complete; 20 plans r
 | Phase 20 P05 | 6min | 2 tasks | 6 files |
 | Phase 20 P04 | 25min | 2 tasks | 8 files |
 | Phase 20 P08 | 4 min | 2 tasks | 3 files |
+| Phase 20 P17 | 2 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -269,6 +270,8 @@ Recent decisions affecting current work:
 - [Phase 19]: Live operator-resolution writes reopened only for exact proven revision dad22b3 after repeated clean postflight. — The old writer remained disabled until authority, schema, health, deployment identity, and fence evidence all agreed.
 - [Phase 20]: Use dashboard navy, indigo, neutral, and semantic-danger tokens for the offline SVG while preserving scoring and --check semantics. — The chart is recruiter-facing presentation only; explicit tokens make the visual contract testable without coupling it to delivery state.
 - [Phase 20]: Render the committed SVG from aggregate scoring output only and forbid delivery, queue, gateway, snapshot, and persistence-writer imports. — D-04 and D-13 require eval artifact changes to remain incapable of replaying provider snapshots or mutating outbound audit records.
+- [Phase 20]: Sent proof queries correlate email_messages.epoch with the current payroll_runs.reply_epoch.
+- [Phase 20]: Confirmation delivery remains purpose-aware and consumes the current-epoch proof seam without rebuilding frozen content.
 
 ### Pending Todos
 
@@ -335,8 +338,8 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-17T21:32:17.378Z
-Stopped at: Completed 20-08-PLAN.md
+Last session: 2026-07-18T00:40:42.396Z
+Stopped at: Completed 20-17-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
