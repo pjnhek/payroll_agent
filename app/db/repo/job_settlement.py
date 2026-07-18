@@ -38,6 +38,8 @@ class SettlementOutcome(enum.StrEnum):
     RETRIED = "retried"
     DEAD = "dead"
     FENCED = "fenced"
+    LOST_LEASE = "lost_lease"
+    INVALID_CONTEXT = "invalid_context"
     REAPED_FINAL_LEASE = "reaped_final_lease"
 
 
@@ -102,6 +104,29 @@ def _locked_job(
     run_id = uuid.UUID(str(row[2])) if row[2] is not None else None
     email_id = uuid.UUID(str(row[4])) if row[4] is not None else None
     return int(row[0]), int(row[1]), run_id, JobKind(str(row[3])), email_id
+
+
+def _retire_invalid_outbound_lease(
+    conn: psycopg.Connection,
+    *,
+    job_id: uuid.UUID,
+    lease_token: uuid.UUID,
+    target_state: str,
+) -> None:
+    """Retire an obsolete held outbound lease without touching delivery state."""
+    retired = conn.execute(
+        "UPDATE jobs SET state = %s, last_error = %s, lease_token = NULL, "
+        "leased_until = NULL, updated_at = now() WHERE id = %s "
+        "AND state = 'leased' AND lease_token = %s RETURNING id",
+        (
+            target_state,
+            "delivery:invalid_context",
+            str(job_id),
+            str(lease_token),
+        ),
+    ).fetchone()
+    if retired is None:
+        raise RuntimeError("locked invalid delivery context lost its lease")
 
 
 def _delivery_failure_category(result: PipelineResult) -> str:
@@ -220,7 +245,7 @@ def settle_outbound_delivery_job(
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         locked = _locked_job(c, job)
         if locked is None:
-            return SettlementOutcome.FENCED
+            return SettlementOutcome.LOST_LEASE
         attempts, _max_attempts, stored_run_id, stored_kind, stored_email_id = locked
         if (
             stored_kind is not JobKind.SEND_OUTBOUND
@@ -231,13 +256,19 @@ def settle_outbound_delivery_job(
             or stored_email_id is None
             or stored_email_id != job.email_id
         ):
-            return SettlementOutcome.FENCED
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
 
         reservation = _lock_outbound_reservation(
             c, run_id=stored_run_id, email_id=job.email_id
         )
         if reservation is None:
-            return SettlementOutcome.FENCED
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
         (
             snapshot_id,
             reserved_at,
@@ -251,21 +282,33 @@ def settle_outbound_delivery_job(
             "clarification",
             "clarification_field_regression",
         } or send_state != "reserved":
-            return SettlementOutcome.FENCED
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
 
         run_generation = _lock_run_status(c, stored_run_id)
         if run_generation is None:
-            return SettlementOutcome.FENCED
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
         run_status, run_epoch = run_generation
         if run_epoch is not None and message_epoch != run_epoch:
-            return SettlementOutcome.FENCED
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
         expected_status = (
             RunStatus.APPROVED
             if purpose == "confirmation"
             else RunStatus.AWAITING_REPLY
         )
         if run_status is not expected_status:
-            return SettlementOutcome.FENCED
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
 
         if result.outcome is PipelineOutcome.OK:
             _append_delivery_attempt(
@@ -759,7 +802,7 @@ def reap_expired_final_attempt(
     """Atomically dead-letter one exact expired final-attempt lease."""
     with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
         row = c.execute(
-            "SELECT id, run_id, email_id, attempts, max_attempts, kind FROM jobs"
+            "SELECT id, run_id, email_id, attempts, max_attempts, kind, lease_token FROM jobs"
             " WHERE state = 'leased' AND attempts = max_attempts"
             " AND leased_until < now() ORDER BY leased_until"
             " FOR UPDATE SKIP LOCKED LIMIT 1"
@@ -771,17 +814,30 @@ def reap_expired_final_attempt(
         email_id = uuid.UUID(str(row[2])) if row[2] is not None else None
         attempts, max_attempts = int(row[3]), int(row[4])
         kind = JobKind(str(row[5]))
+        lease_token = uuid.UUID(str(row[6]))
         if kind is JobKind.INGEST:
             if run_id is not None:
                 return SettlementOutcome.FENCED
         elif kind is JobKind.SEND_OUTBOUND:
             if run_id is None or email_id is None:
-                return SettlementOutcome.FENCED
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
             reservation = _lock_outbound_reservation(
                 c, run_id=run_id, email_id=email_id
             )
             if reservation is None:
-                return SettlementOutcome.FENCED
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
             (
                 snapshot_id,
                 _reserved_at,
@@ -795,20 +851,44 @@ def reap_expired_final_attempt(
                 "clarification",
                 "clarification_field_regression",
             } or send_state != "reserved":
-                return SettlementOutcome.FENCED
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
             run_generation = _lock_run_status(c, run_id)
             if run_generation is None:
-                return SettlementOutcome.FENCED
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
             run_status, run_epoch = run_generation
             if run_epoch is not None and message_epoch != run_epoch:
-                return SettlementOutcome.FENCED
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
             expected_status = (
                 RunStatus.APPROVED
                 if purpose == "confirmation"
                 else RunStatus.AWAITING_REPLY
             )
             if run_status is not expected_status:
-                return SettlementOutcome.FENCED
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
             _append_delivery_attempt(
                 c,
                 snapshot_id=snapshot_id,

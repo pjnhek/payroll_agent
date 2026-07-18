@@ -135,6 +135,8 @@ class DrainOutcome(enum.StrEnum):
     RETRIED = "retried"
     DEAD = "dead"
     FENCED = "fenced"
+    LOST_LEASE = "lost_lease"
+    INVALID_CONTEXT = "invalid_context"
     REAPED_FINAL_LEASE = "reaped_final_lease"
 
     def __bool__(self) -> bool:
@@ -148,8 +150,20 @@ def _map_settlement_outcome(outcome: enum.StrEnum) -> DrainOutcome:
         "retried": DrainOutcome.RETRIED,
         "dead": DrainOutcome.DEAD,
         "fenced": DrainOutcome.FENCED,
+        "lost_lease": DrainOutcome.LOST_LEASE,
+        "invalid_context": DrainOutcome.INVALID_CONTEXT,
         "reaped_final_lease": DrainOutcome.REAPED_FINAL_LEASE,
     }[outcome.value]
+
+
+def _lease_is_settled(*, job_kind: JobKind, outcome: enum.StrEnum) -> bool:
+    """Return whether the coordinator durably released this worker's token."""
+    if outcome.value in {"done", "retried", "dead", "lost_lease", "invalid_context"}:
+        return True
+    # Generic pipeline FENCED retains its established meaning: this worker lost
+    # the exact lease fence. SEND_OUTBOUND has explicit outcomes so an invalid
+    # context cannot masquerade as that ownership loss.
+    return job_kind is not JobKind.SEND_OUTBOUND and outcome.value == "fenced"
 
 
 def drain_once() -> DrainOutcome:
@@ -207,7 +221,7 @@ def drain_once() -> DrainOutcome:
                     backoff_seconds=backoff_seconds(job.attempts),
                 )
             outcome = _map_settlement_outcome(settled)
-            lease_settled = True
+            lease_settled = _lease_is_settled(job_kind=job.kind, outcome=settled)
         except Exception as settlement_exc:  # noqa: BLE001 — settlement itself failed
             # Log the exception TYPE only, never the exception object/str: on an
             # infra outage the exception can carry a DB connection string, and
@@ -238,7 +252,7 @@ def drain_once() -> DrainOutcome:
                 backoff_seconds=backoff_seconds(job.attempts),
             )
         outcome = _map_settlement_outcome(settled)
-        lease_settled = True
+        lease_settled = _lease_is_settled(job_kind=job.kind, outcome=settled)
     finally:
         if lease_settled:
             with _held_tokens_lock:

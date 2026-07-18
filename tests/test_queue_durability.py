@@ -536,7 +536,10 @@ def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
         ).fetchone()
     assert attempts_before_row is not None
     attempts_before = attempts_before_row[0]
-    assert repo.settle_outbound_delivery_job(claimed, retryable) is SettlementOutcome.FENCED
+    assert (
+        repo.settle_outbound_delivery_job(claimed, retryable)
+        is SettlementOutcome.LOST_LEASE
+    )
     with repo.get_connection() as conn:
         attempts_after_row = conn.execute(
             "SELECT count(*) FROM outbound_delivery_attempts WHERE snapshot_id = %s",
@@ -827,6 +830,47 @@ def test_invalid_context_stale_epoch_retirement_after_epoch_fence(
     assert old_job_row["lease_token"] is None
     assert old_job_row["leased_until"] is None
     assert old_job_row["last_error"] == "delivery:invalid_context"
+
+
+def test_invalid_context_settlement_retires_exact_leased_row(fake_conn) -> None:
+    """An owned but invalid SEND_OUTBOUND lease is retired by its exact token."""
+    from app.db.repo import job_settlement
+    from app.models.job import Job, JobKind
+
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=uuid.uuid4(),
+        email_id=uuid.uuid4(),
+        attempts=1,
+        max_attempts=5,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone(
+        (1, 5, job.run_id, JobKind.SEND_OUTBOUND.value, job.email_id)
+    )
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), "not-an-outbound-purpose", 0, "reserved", True)
+    )
+    fake_conn.script_fetchone((job.id,))
+
+    assert job_settlement.settle_outbound_delivery_job(
+        job, PipelineResult(outcome=PipelineOutcome.OK), conn=fake_conn
+    ) is job_settlement.SettlementOutcome.INVALID_CONTEXT
+
+    retirement_sql, retirement_params = fake_conn.last()
+    assert "UPDATE jobs SET state = %s, last_error = %s, lease_token = NULL" in str(
+        retirement_sql
+    )
+    assert "AND state = 'leased' AND lease_token = %s" in str(retirement_sql)
+    assert retirement_params == (
+        "done",
+        "delivery:invalid_context",
+        str(job.id),
+        str(job.lease_token),
+    )
+    assert "outbound_delivery_attempts" not in fake_conn.all_sql()
+    assert "UPDATE payroll_runs" not in fake_conn.all_sql()
 
 
 def test_final_send_lease_retires_stale_epoch_without_current_review_mutation(

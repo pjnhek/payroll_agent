@@ -1276,19 +1276,30 @@ class InMemoryRepo:
             row is None
             or row["state"] != "leased"
             or row["lease_token"] != job.lease_token
-            or job.kind is not JobKind.SEND_OUTBOUND
+        ):
+            return SettlementOutcome.LOST_LEASE
+
+        def retire_invalid_context(*, target_state: str) -> SettlementOutcome:
+            row["state"] = target_state
+            row["last_error"] = "delivery:invalid_context"
+            row["lease_token"] = None
+            row["leased_until"] = None
+            return SettlementOutcome.INVALID_CONTEXT
+
+        if (
+            job.kind is not JobKind.SEND_OUTBOUND
             or row["kind"] != JobKind.SEND_OUTBOUND.value
             or row["run_id"] != job.run_id
             or row["email_id"] != job.email_id
             or job.run_id is None
             or job.email_id is None
         ):
-            return SettlementOutcome.FENCED
+            return retire_invalid_context(target_state="done")
 
         snapshot = self.load_outbound_snapshot(job.run_id, job.email_id)
         run = self.runs.get(str(job.run_id))
         if snapshot is None or run is None:
-            return SettlementOutcome.FENCED
+            return retire_invalid_context(target_state="done")
         snapshot_epoch = snapshot.get("epoch", 0)
         run_epoch = run.get("reply_epoch", 0)
         if (
@@ -1298,7 +1309,7 @@ class InMemoryRepo:
             or not isinstance(run_epoch, int)
             or snapshot_epoch != run_epoch
         ):
-            return SettlementOutcome.FENCED
+            return retire_invalid_context(target_state="done")
         purpose = snapshot.get("purpose")
         expected_status = (
             RunStatus.APPROVED.value
@@ -1310,7 +1321,7 @@ class InMemoryRepo:
             "clarification",
             "clarification_field_regression",
         } or run.get("status") != expected_status:
-            return SettlementOutcome.FENCED
+            return retire_invalid_context(target_state="done")
         outbound = next(
             (
                 message
@@ -1320,7 +1331,7 @@ class InMemoryRepo:
             None,
         )
         if outbound is None or outbound.get("send_state") != "reserved":
-            return SettlementOutcome.FENCED
+            return retire_invalid_context(target_state="done")
 
         if result.outcome is PipelineOutcome.OK:
             self._append_delivery_attempt(
@@ -1470,13 +1481,21 @@ class InMemoryRepo:
                 return SettlementOutcome.REAPED_FINAL_LEASE
             if row["kind"] == JobKind.SEND_OUTBOUND.value:
                 if row["run_id"] is None or row["email_id"] is None:
-                    return SettlementOutcome.FENCED
+                    row["state"] = "dead"
+                    row["last_error"] = "delivery:invalid_context"
+                    row["lease_token"] = None
+                    row["leased_until"] = None
+                    return SettlementOutcome.INVALID_CONTEXT
                 snapshot = self.load_outbound_snapshot(
                     row["run_id"], row["email_id"]
                 )
                 run = self.runs.get(str(row["run_id"]))
                 if snapshot is None or run is None:
-                    return SettlementOutcome.FENCED
+                    row["state"] = "dead"
+                    row["last_error"] = "delivery:invalid_context"
+                    row["lease_token"] = None
+                    row["leased_until"] = None
+                    return SettlementOutcome.INVALID_CONTEXT
                 snapshot_epoch = snapshot.get("epoch", 0)
                 run_epoch = run.get("reply_epoch", 0)
                 if (
@@ -1486,7 +1505,11 @@ class InMemoryRepo:
                     or not isinstance(run_epoch, int)
                     or snapshot_epoch != run_epoch
                 ):
-                    return SettlementOutcome.FENCED
+                    row["state"] = "dead"
+                    row["last_error"] = "delivery:invalid_context"
+                    row["lease_token"] = None
+                    row["leased_until"] = None
+                    return SettlementOutcome.INVALID_CONTEXT
                 purpose = snapshot.get("purpose")
                 expected_status = (
                     RunStatus.APPROVED.value
@@ -1498,7 +1521,11 @@ class InMemoryRepo:
                     "clarification",
                     "clarification_field_regression",
                 } or run.get("status") != expected_status:
-                    return SettlementOutcome.FENCED
+                    row["state"] = "dead"
+                    row["last_error"] = "delivery:invalid_context"
+                    row["lease_token"] = None
+                    row["leased_until"] = None
+                    return SettlementOutcome.INVALID_CONTEXT
                 outbound = next(
                     (
                         message
@@ -1508,7 +1535,11 @@ class InMemoryRepo:
                     None,
                 )
                 if outbound is None or outbound.get("send_state") != "reserved":
-                    return SettlementOutcome.FENCED
+                    row["state"] = "dead"
+                    row["last_error"] = "delivery:invalid_context"
+                    row["lease_token"] = None
+                    row["leased_until"] = None
+                    return SettlementOutcome.INVALID_CONTEXT
                 self._append_delivery_attempt(
                     snapshot_id=snapshot["snapshot_id"],
                     attempt_state="needs_operator",
