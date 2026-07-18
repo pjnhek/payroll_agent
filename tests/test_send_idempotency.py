@@ -56,6 +56,12 @@ _SKIP_LIVE_DB = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 
+def _script_exact_handoff_release(fake_conn: Any) -> None:
+    """Script the exact owner lookup and its release for settlement SQL tests."""
+    fake_conn.script_fetchone((uuid.uuid4(), datetime.now(UTC) + timedelta(hours=1)))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+
 def _metrodeli_business_id(fake_repo: Any) -> uuid.UUID:
     business_id: uuid.UUID = fake_repo.contact_to_business["hr@metrodeli.example"]
     return business_id
@@ -897,6 +903,7 @@ def test_delivery_settlement_uses_an_exact_lease_and_pii_safe_attempt_facts(
         (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
     )
     fake_conn.script_fetchone(("approved",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
@@ -948,6 +955,7 @@ def test_delivery_settlement_reschedules_the_same_job_without_rewinding_approval
         (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
     )
     fake_conn.script_fetchone(("approved",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
 
@@ -1002,6 +1010,7 @@ def test_delivery_settlement_moves_expired_or_terminal_delivery_to_review(
         )
     )
     fake_conn.script_fetchone(("approved",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
@@ -1124,6 +1133,7 @@ def test_retryable_non_replayable_delivery_reason_goes_to_review(
         (uuid.uuid4(), datetime.now(UTC), "confirmation", 0, 0, "reserved", True)
     )
     fake_conn.script_fetchone(("approved",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))

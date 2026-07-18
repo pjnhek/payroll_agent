@@ -337,6 +337,11 @@ class InMemoryRepo:
         # Review projections derive their count from this ledger, matching the
         # production outbound_delivery_attempts table rather than a mutable counter.
         self.delivery_attempts: list[dict[str, Any]] = []
+        # Active provider authority is intentionally a separate durable record from
+        # the frozen snapshot.  The fake retains the same exact-owner rules as
+        # Postgres so default-running tests cannot make a stale provider result look
+        # safe merely because no database is involved.
+        self.outbound_provider_handoffs: dict[str, dict[str, Any]] = {}
         # Durable job queue mirror: job_id -> job row, plus a dedup_key index
         # standing in for the real table's UNIQUE(dedup_key) constraint.
         self.jobs: dict[str, dict[str, Any]] = {}
@@ -777,6 +782,7 @@ class InMemoryRepo:
         than None, as this used to) lets a caller key a retrigger's dedup_key
         on the fresh epoch without a separate read.
         """
+        self.assert_no_active_outbound_provider_handoff(run_id, conn=conn)
         run = self.runs.get(str(run_id))
         if run is not None:
             run["clarified_fields"] = None
@@ -922,6 +928,9 @@ class InMemoryRepo:
             if job["state"] == "pending" and job["attempts"] < job["max_attempts"]:
                 job["state"] = "leased"
                 job["lease_token"] = uuid.uuid4()
+                job["leased_until"] = datetime.now(UTC) + timedelta(
+                    seconds=lease_seconds if lease_seconds is not None else 900
+                )
                 job["attempts"] += 1
                 return Job(
                     id=job["id"],
@@ -1280,7 +1289,158 @@ class InMemoryRepo:
             return "validation"
         if reason is PipelineReason.DELIVERY_CONFIGURATION_FAILURE:
             return "configuration"
+        if reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED:
+            return "authorization_expired"
         return "unknown"
+
+    def _provider_handoff_authorization(
+        self, job: Any, snapshot: dict[str, Any], handoff: dict[str, Any]
+    ) -> Any:
+        from app.db.repo.outbound_handoffs import ProviderHandoffAuthorization
+
+        return ProviderHandoffAuthorization(
+            handoff_id=handoff["id"],
+            run_id=job.run_id,
+            email_id=job.email_id,
+            snapshot_id=snapshot["snapshot_id"],
+            job_id=job.id,
+            lease_token=job.lease_token,
+            epoch=snapshot["epoch"],
+            snapshot=copy.deepcopy(snapshot),
+            not_after=handoff["not_after"],
+        )
+
+    def authorize_outbound_provider_handoff(self, job: Any, *, conn: Any = None) -> Any:
+        """Mirror durable pre-provider authority, including crash reclamation."""
+        from app.db.repo.outbound_handoffs import (
+            ProviderHandoffActive,
+            ProviderHandoffRecordOnly,
+        )
+        from app.models.job import JobKind
+        from app.models.status import RunStatus
+
+        row = self.jobs.get(str(job.id))
+        if (
+            row is None
+            or row["state"] != "leased"
+            or row["lease_token"] != job.lease_token
+            or job.kind is not JobKind.SEND_OUTBOUND
+            or row["kind"] != JobKind.SEND_OUTBOUND.value
+            or row["run_id"] != job.run_id
+            or row["email_id"] != job.email_id
+            or job.run_id is None
+            or job.email_id is None
+        ):
+            return ProviderHandoffActive("invalid_context")
+        snapshot = self.load_outbound_snapshot(job.run_id, job.email_id)
+        run = self.runs.get(str(job.run_id))
+        if snapshot is None or run is None or snapshot.get("send_state") not in {None, "reserved"}:
+            return ProviderHandoffActive("invalid_context")
+        if run.get("record_only") is True:
+            return ProviderHandoffRecordOnly(job.run_id)
+        expected_status = (
+            RunStatus.APPROVED.value
+            if snapshot.get("purpose") == "confirmation"
+            else RunStatus.AWAITING_REPLY.value
+        )
+        if (
+            snapshot.get("purpose")
+            not in {"confirmation", "clarification", "clarification_field_regression"}
+            or run.get("status") != expected_status
+            or snapshot.get("epoch") != run.get("reply_epoch")
+        ):
+            return ProviderHandoffActive("invalid_context")
+        reserved_at = snapshot.get("reserved_at")
+        if (
+            not isinstance(reserved_at, datetime)
+            or reserved_at + timedelta(hours=20) <= datetime.now(UTC)
+        ):
+            return ProviderHandoffActive("replay_window_closed")
+        active = next(
+            (
+                handoff
+                for handoff in self.outbound_provider_handoffs.values()
+                if handoff["run_id"] == job.run_id and handoff.get("released_at") is None
+            ),
+            None,
+        )
+        if active is None:
+            active = {
+                "id": uuid.uuid4(),
+                "run_id": job.run_id,
+                "email_id": job.email_id,
+                "snapshot_id": snapshot["snapshot_id"],
+                "job_id": job.id,
+                "lease_token": job.lease_token,
+                "owner_leased_until": row["leased_until"],
+                "epoch": snapshot["epoch"],
+                "authorized_at": datetime.now(UTC),
+                "not_after": reserved_at + timedelta(hours=20),
+                "released_at": None,
+                "release_reason": None,
+            }
+            self.outbound_provider_handoffs[str(active["id"])] = active
+            return self._provider_handoff_authorization(job, snapshot, active)
+        if (
+            active["email_id"] != job.email_id
+            or active["snapshot_id"] != snapshot["snapshot_id"]
+            or active["job_id"] != job.id
+            or active["epoch"] != snapshot["epoch"]
+        ):
+            return ProviderHandoffActive("foreign_active_handoff", active["id"])
+        if active["lease_token"] == job.lease_token:
+            return self._provider_handoff_authorization(job, snapshot, active)
+        owner_until = active.get("owner_leased_until")
+        if not isinstance(owner_until, datetime) or owner_until >= datetime.now(UTC):
+            return ProviderHandoffActive("active_handoff_unexpired", active["id"])
+        active["lease_token"] = job.lease_token
+        active["owner_leased_until"] = row["leased_until"]
+        return self._provider_handoff_authorization(job, snapshot, active)
+
+    def _release_outbound_provider_handoff(
+        self, authorization: Any, *, reason: str
+    ) -> bool:
+        handoff = self.outbound_provider_handoffs.get(str(authorization.handoff_id))
+        if handoff is None or handoff.get("released_at") is not None:
+            return False
+        if (
+            handoff["run_id"] != authorization.run_id
+            or handoff["email_id"] != authorization.email_id
+            or handoff["snapshot_id"] != authorization.snapshot_id
+            or handoff["job_id"] != authorization.job_id
+            or handoff["epoch"] != authorization.epoch
+            or handoff["lease_token"] != authorization.lease_token
+        ):
+            return False
+        handoff["released_at"] = datetime.now(UTC)
+        handoff["release_reason"] = reason
+        return True
+
+    def finalize_outbound_provider_handoff(
+        self, authorization: Any, *, conn: Any = None
+    ) -> bool:
+        return self._release_outbound_provider_handoff(authorization, reason="finalized")
+
+    def release_outbound_provider_handoff_for_retry(
+        self, authorization: Any, *, conn: Any = None
+    ) -> bool:
+        return self._release_outbound_provider_handoff(authorization, reason="retry_scheduled")
+
+    def release_outbound_provider_handoff_to_delivery_review(
+        self, authorization: Any, *, conn: Any = None
+    ) -> bool:
+        return self._release_outbound_provider_handoff(authorization, reason="delivery_review")
+
+    def assert_no_active_outbound_provider_handoff(
+        self, run_id: uuid.UUID, *, conn: Any = None
+    ) -> None:
+        from app.db.repo.outbound_handoffs import ActiveOutboundProviderHandoffError
+
+        if any(
+            handoff["run_id"] == run_id and handoff.get("released_at") is None
+            for handoff in self.outbound_provider_handoffs.values()
+        ):
+            raise ActiveOutboundProviderHandoffError(run_id)
 
     def settle_outbound_delivery_job(self, job, result, *, conn=None):
         """Mirror fenced settlement for one immutable outbound reservation."""
@@ -1351,7 +1511,44 @@ class InMemoryRepo:
         if outbound is None or outbound.get("send_state") != "reserved":
             return retire_invalid_context(target_state="done")
 
+        if result.reason is PipelineReason.DELIVERY_RECORD_ONLY:
+            if run.get("record_only") is not True:
+                return retire_invalid_context(target_state="done")
+            outbound["send_state"] = "sent"
+            if purpose == "confirmation":
+                run["status"] = RunStatus.SENT.value
+                from app.pipeline import alias_learning
+
+                roster = self.load_roster_for_business(run["business_id"])
+                with contextlib.suppress(Exception):  # noqa: BLE001
+                    alias_learning.write_aliases_if_safe(job.run_id, run, roster)
+                run["status"] = RunStatus.RECONCILED.value
+            row["state"] = "done"
+            row["lease_token"] = None
+            row["leased_until"] = None
+            return SettlementOutcome.DONE
+
+        handoff = next(
+            (
+                candidate
+                for candidate in self.outbound_provider_handoffs.values()
+                if candidate.get("released_at") is None
+                and candidate["run_id"] == job.run_id
+                and candidate["email_id"] == job.email_id
+                and candidate["snapshot_id"] == snapshot["snapshot_id"]
+                and candidate["job_id"] == job.id
+                and candidate["epoch"] == snapshot_epoch
+                and candidate["lease_token"] == job.lease_token
+            ),
+            None,
+        )
+        if handoff is None:
+            return retire_invalid_context(target_state="done")
+        authorization = self._provider_handoff_authorization(job, snapshot, handoff)
+
         if result.outcome is PipelineOutcome.OK:
+            if not self.finalize_outbound_provider_handoff(authorization):
+                raise RuntimeError("fake delivery success lost its provider handoff")
             self._append_delivery_attempt(
                 snapshot_id=snapshot["snapshot_id"],
                 attempt_state="sent",
@@ -1388,6 +1585,8 @@ class InMemoryRepo:
                 reserved_at, completed_attempts=row["attempts"]
             )
             if next_attempt is not None:
+                if not self.release_outbound_provider_handoff_for_retry(authorization):
+                    raise RuntimeError("fake delivery retry lost its provider handoff")
                 self._append_delivery_attempt(
                     snapshot_id=snapshot["snapshot_id"],
                     attempt_state="retry_scheduled",
@@ -1402,6 +1601,8 @@ class InMemoryRepo:
                 )
                 return SettlementOutcome.RETRIED
 
+        if not self.release_outbound_provider_handoff_to_delivery_review(authorization):
+            raise RuntimeError("fake delivery review lost its provider handoff")
         self._append_delivery_attempt(
             snapshot_id=snapshot["snapshot_id"],
             attempt_state="needs_operator",
@@ -1476,7 +1677,7 @@ class InMemoryRepo:
             _FINAL_LEASE_PRESERVE_STATUSES,
             SettlementOutcome,
         )
-        from app.models.job import JobKind
+        from app.models.job import Job, JobKind
         from app.models.status import RunStatus
 
         candidates = [
@@ -1558,6 +1759,40 @@ class InMemoryRepo:
                     row["lease_token"] = None
                     row["leased_until"] = None
                     return SettlementOutcome.INVALID_CONTEXT
+                reaper_job = Job(
+                    id=row["id"],
+                    kind=JobKind.SEND_OUTBOUND,
+                    run_id=row["run_id"],
+                    email_id=row["email_id"],
+                    attempts=row["attempts"],
+                    max_attempts=row["max_attempts"],
+                    lease_token=row["lease_token"],
+                )
+                handoff = next(
+                    (
+                        candidate
+                        for candidate in self.outbound_provider_handoffs.values()
+                        if candidate.get("released_at") is None
+                        and candidate["run_id"] == reaper_job.run_id
+                        and candidate["email_id"] == reaper_job.email_id
+                        and candidate["snapshot_id"] == snapshot["snapshot_id"]
+                        and candidate["job_id"] == reaper_job.id
+                        and candidate["epoch"] == snapshot_epoch
+                        and candidate["lease_token"] == reaper_job.lease_token
+                    ),
+                    None,
+                )
+                if handoff is None:
+                    row["state"] = "dead"
+                    row["last_error"] = "delivery:invalid_context"
+                    row["lease_token"] = None
+                    row["leased_until"] = None
+                    return SettlementOutcome.INVALID_CONTEXT
+                authorization = self._provider_handoff_authorization(
+                    reaper_job, snapshot, handoff
+                )
+                if not self.release_outbound_provider_handoff_to_delivery_review(authorization):
+                    raise RuntimeError("fake final delivery reap lost its provider handoff")
                 self._append_delivery_attempt(
                     snapshot_id=snapshot["snapshot_id"],
                     attempt_state="needs_operator",
@@ -2334,6 +2569,11 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "enqueue_job",
         "advance_existing_send_job_due_now",
         "advance_existing_clarification_delivery_review_job_due_now",
+        "authorize_outbound_provider_handoff",
+        "finalize_outbound_provider_handoff",
+        "release_outbound_provider_handoff_for_retry",
+        "release_outbound_provider_handoff_to_delivery_review",
+        "assert_no_active_outbound_provider_handoff",
         "claim_job",
         "complete_job",
         "fail_job",

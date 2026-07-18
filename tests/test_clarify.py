@@ -32,6 +32,12 @@ from app.models.roster import NameMatchResult
 from app.pipeline.compose_email import compose_clarification
 from app.pipeline.orchestrator import run_pipeline
 
+
+def _script_exact_handoff_release(fake_conn: Any) -> None:
+    """Script exact current-handoff ownership before a delivery settlement."""
+    fake_conn.script_fetchone((uuid.uuid4(), datetime.now(UTC)))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
 # ---------------------------------------------------------------------------
 # compose_clarification — drafts a body, falls back to a template on empty content
 # ---------------------------------------------------------------------------
@@ -617,6 +623,7 @@ def test_clarification_delivery_success_preserves_reply_workflow(fake_conn):
         (uuid.uuid4(), datetime.now(UTC), "clarification", 3, 7, "reserved", True)
     )
     fake_conn.script_fetchone(("awaiting_reply",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
@@ -653,6 +660,7 @@ def test_clarification_delivery_retry_reschedules_only_the_original_job(fake_con
         (uuid.uuid4(), datetime.now(UTC), "clarification_field_regression", 2, 4, "reserved", True)
     )
     fake_conn.script_fetchone(("awaiting_reply",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
 
@@ -706,6 +714,7 @@ def test_terminal_clarification_delivery_uses_reply_safe_escalation(fake_conn):
         (uuid.uuid4(), datetime.now(UTC), "clarification", 1, 2, "reserved", True)
     )
     fake_conn.script_fetchone(("awaiting_reply",))
+    _script_exact_handoff_release(fake_conn)
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))
     fake_conn.script_fetchone((uuid.uuid4(),))

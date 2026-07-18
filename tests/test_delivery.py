@@ -752,7 +752,7 @@ def test_record_only_snapshot_settles_without_calling_the_provider(fake_repo, mo
     monkeypatch.setattr(
         gateway,
         "send_reserved_outbound_snapshot",
-        lambda _snapshot: pytest.fail("record-only work reached the provider"),
+        lambda _snapshot, **_kwargs: pytest.fail("record-only work reached the provider"),
     )
 
     result = handle_send_outbound(

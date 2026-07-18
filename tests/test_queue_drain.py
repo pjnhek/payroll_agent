@@ -735,11 +735,18 @@ def test_send_handler_uses_only_the_frozen_snapshot_before_provider_work(
         body_text="Frozen bytes only",
         attachments=[("paystub.pdf", b"frozen-pdf")],
     )
-    job = _job(run_id=run_id, kind=JobKind.SEND_OUTBOUND)
-    job = dataclasses.replace(job, email_id=snapshot["email_id"])
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    job = fake_repo.claim_job()
+    assert job is not None and job.id == job_id
     observed: list[dict[str, object]] = []
 
-    def send(stored_snapshot: dict[str, object]) -> PipelineResult:
+    def send(stored_snapshot: dict[str, object], **_kwargs: object) -> PipelineResult:
         observed.append(stored_snapshot)
         return PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
 
@@ -778,7 +785,7 @@ def test_send_handler_drops_unowned_or_stale_context_before_provider_work(
     monkeypatch.setattr(
         gateway,
         "send_reserved_outbound_snapshot",
-        lambda *_args: pytest.fail("provider work must not run for unowned context"),
+        lambda *_args, **_kwargs: pytest.fail("provider work must not run for unowned context"),
     )
     result = send_outbound.handle_send_outbound(job)
     assert result.outcome is PipelineOutcome.OK
@@ -962,7 +969,7 @@ def test_send_drain_settles_a_frozen_snapshot_through_the_fake_pair(
     monkeypatch.setattr(
         gateway,
         "send_reserved_outbound_snapshot",
-        lambda _snapshot: PipelineResult(
+        lambda _snapshot, **_kwargs: PipelineResult(
             outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY
         ),
     )

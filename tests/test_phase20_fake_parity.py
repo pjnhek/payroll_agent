@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import psycopg
@@ -25,10 +26,17 @@ _REPLAYABLE_DELIVERY_REASONS = (
 )
 
 
-def _seed_send_job(fake_repo, *, purpose: str = "confirmation"):
+def _seed_send_job(
+    fake_repo,
+    *,
+    purpose: str = "confirmation",
+    authorize: bool = True,
+    record_only: bool = False,
+):
     run_id = fake_repo.create_run(
         business_id=fake_repo.contact_to_business["payroll@coastalcleaning.example"],
         source_email_id=None,
+        record_only=record_only,
     )
     fake_repo.set_status(
         run_id,
@@ -57,6 +65,12 @@ def _seed_send_job(fake_repo, *, purpose: str = "confirmation"):
     assert job_id is not None
     claimed = fake_repo.claim_job()
     assert claimed is not None and claimed.id == job_id
+    if authorize:
+        authorization = fake_repo.authorize_outbound_provider_handoff(claimed)
+        if record_only:
+            assert getattr(authorization, "run_id", None) == run_id
+        else:
+            assert getattr(authorization, "job_id", None) == claimed.id
     return run_id, snapshot, claimed
 
 
@@ -219,7 +233,17 @@ def test_fake_outbound_settlement_replays_only_the_four_allowed_reasons(
 
 
 @pytest.mark.parametrize(
-    "reason", [reason for reason in PipelineReason if reason not in _REPLAYABLE_DELIVERY_REASONS]
+    "reason",
+    [
+        reason
+        for reason in PipelineReason
+        if reason
+        not in {
+            *_REPLAYABLE_DELIVERY_REASONS,
+            PipelineReason.DELIVERY_RECORD_ONLY,
+            PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+        }
+    ],
 )
 def test_fake_outbound_settlement_direct_reviews_every_other_retryable_reason(
     fake_repo, reason
@@ -246,6 +270,136 @@ def test_fake_outbound_settlement_direct_reviews_every_other_retryable_reason(
     }
 
 
+def test_fake_record_only_settlement_completes_without_attempt_or_handoff(fake_repo) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo, record_only=True)
+    assert fake_repo.outbound_provider_handoffs == {}
+
+    outcome = fake_repo.settle_outbound_delivery_job(
+        claimed,
+        _delivery_result(PipelineReason.DELIVERY_RECORD_ONLY, PipelineOutcome.OK),
+    )
+
+    assert outcome is SettlementOutcome.DONE
+    assert fake_repo.delivery_attempts == []
+    assert fake_repo.outbound_provider_handoffs == {}
+    assert fake_repo.get_job(claimed.id)["state"] == "done"
+    assert fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"]) is not None
+    assert fake_repo.outbound[str(run_id)][0]["send_state"] == "sent"
+
+
+def test_fake_expired_authorization_releases_exact_handoff_to_review(fake_repo) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo)
+    authorization = fake_repo.authorize_outbound_provider_handoff(claimed)
+
+    outcome = fake_repo.settle_outbound_delivery_job(
+        claimed,
+        _delivery_result(
+            PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED, PipelineOutcome.TERMINAL
+        ),
+    )
+
+    assert outcome is SettlementOutcome.DONE
+    handoff = fake_repo.outbound_provider_handoffs[str(authorization.handoff_id)]
+    assert handoff["release_reason"] == "delivery_review"
+    assert handoff["released_at"] is not None
+    assert fake_repo.get_job(claimed.id)["state"] == "done"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+    assert fake_repo.load_run(run_id)["error_detail"] == "delivery_review:authorization_expired"
+    assert fake_repo.delivery_attempts[-1] == {
+        "snapshot_id": snapshot["snapshot_id"],
+        "attempt_state": "needs_operator",
+        "failure_category": "authorization_expired",
+    }
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [PipelineReason.DELIVERY_TIMEOUT, PipelineReason.DELIVERY_SERVER_FAILURE],
+)
+def test_fake_retry_releases_exact_handoff_then_reauthorizes_frozen_slot(
+    fake_repo, reason
+) -> None:
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    _run_id, snapshot, first_claim = _seed_send_job(fake_repo)
+    first_authorization = fake_repo.authorize_outbound_provider_handoff(first_claim)
+
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            first_claim, _delivery_result(reason, PipelineOutcome.RETRYABLE)
+        )
+        is SettlementOutcome.RETRIED
+    )
+    first_handoff = fake_repo.outbound_provider_handoffs[str(first_authorization.handoff_id)]
+    assert first_handoff["release_reason"] == "retry_scheduled"
+    assert fake_repo.get_job(first_claim.id)["state"] == "pending"
+
+    second_claim = fake_repo.claim_job()
+    assert second_claim is not None and second_claim.id == first_claim.id
+    second_authorization = fake_repo.authorize_outbound_provider_handoff(second_claim)
+    assert second_authorization.handoff_id != first_authorization.handoff_id
+    assert second_authorization.snapshot["message_id"] == snapshot["message_id"]
+    assert second_authorization.snapshot_id == snapshot["snapshot_id"]
+    assert second_authorization.not_after == first_authorization.not_after
+    assert not fake_repo.release_outbound_provider_handoff_for_retry(first_authorization)
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            second_claim, _delivery_result(PipelineReason.UNCLASSIFIED, PipelineOutcome.OK)
+        )
+        is SettlementOutcome.DONE
+    )
+    assert (
+        fake_repo.outbound_provider_handoffs[str(second_authorization.handoff_id)][
+            "release_reason"
+        ]
+        == "finalized"
+    )
+
+
+def test_fake_crash_reclaim_adopts_only_expired_exact_handoff(fake_repo, monkeypatch) -> None:
+    from app.email import gateway
+    from app.queue.handlers import send_outbound
+
+    _run_id, snapshot, first_claim = _seed_send_job(fake_repo)
+    first_authorization = fake_repo.authorize_outbound_provider_handoff(first_claim)
+    original = fake_repo.outbound_provider_handoffs[str(first_authorization.handoff_id)]
+    original_authorized_at = original["authorized_at"]
+    fake_repo.jobs[str(first_claim.id)].update(
+        state="pending",
+        lease_token=None,
+        leased_until=None,
+    )
+    original["owner_leased_until"] = datetime.now(UTC) - timedelta(seconds=1)
+
+    reclaimed = fake_repo.claim_job()
+    assert reclaimed is not None and reclaimed.id == first_claim.id
+    adopted = fake_repo.authorize_outbound_provider_handoff(reclaimed)
+    assert adopted.handoff_id == first_authorization.handoff_id
+    assert adopted.snapshot_id == snapshot["snapshot_id"]
+    assert adopted.snapshot["message_id"] == snapshot["message_id"]
+    assert adopted.not_after == first_authorization.not_after
+    assert original["authorized_at"] == original_authorized_at
+    assert not fake_repo.finalize_outbound_provider_handoff(first_authorization)
+
+    calls: list[object] = []
+
+    def _provider_spy(stored, **_kwargs) -> PipelineResult:
+        calls.append(stored)
+        return PipelineResult(outcome=PipelineOutcome.OK, stage=PipelineStage.DELIVERY)
+
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        _provider_spy,
+    )
+    assert send_outbound.handle_send_outbound(reclaimed).outcome is PipelineOutcome.OK
+    assert calls == [adopted.snapshot]
+
+
 def test_fake_review_projection_counts_append_only_attempt_facts_and_hides_body(
     fake_repo,
 ) -> None:
@@ -256,6 +410,8 @@ def test_fake_review_projection_counts_append_only_attempt_facts_and_hides_body(
     )
     second_claim = fake_repo.claim_job()
     assert second_claim is not None
+    second_authorization = fake_repo.authorize_outbound_provider_handoff(second_claim)
+    assert getattr(second_authorization, "job_id", None) == second_claim.id
     fake_repo.settle_outbound_delivery_job(
         second_claim,
         _delivery_result(
@@ -322,7 +478,7 @@ def test_fake_stale_epoch_send_settlement_retires_invalid_lease_without_mutation
 ) -> None:
     from app.db.repo.job_settlement import SettlementOutcome
 
-    run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
+    run_id, old_snapshot, claimed = _seed_send_job(fake_repo, authorize=False)
     assert fake_repo.clear_reply_context(run_id) == 1
     current_snapshot = _reserve_current_epoch_snapshot(
         fake_repo, run_id, purpose="confirmation"
@@ -362,7 +518,7 @@ def test_fake_stale_epoch_final_lease_retires_invalid_lease_without_mutation(
 ) -> None:
     from app.db.repo.job_settlement import SettlementOutcome
 
-    run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
+    run_id, old_snapshot, claimed = _seed_send_job(fake_repo, authorize=False)
     assert fake_repo.clear_reply_context(run_id) == 1
     current_snapshot = _reserve_current_epoch_snapshot(
         fake_repo, run_id, purpose="confirmation"
@@ -400,7 +556,7 @@ def test_fake_stale_epoch_handler_is_provider_free(fake_repo, monkeypatch) -> No
     from app.email import gateway
     from app.queue.handlers import send_outbound
 
-    run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
+    run_id, old_snapshot, claimed = _seed_send_job(fake_repo, authorize=False)
     assert fake_repo.clear_reply_context(run_id) == 1
     current_snapshot = _reserve_current_epoch_snapshot(
         fake_repo, run_id, purpose="confirmation"
@@ -491,7 +647,9 @@ def test_fake_confirmation_retry_rejects_clarification_review(fake_repo) -> None
 
 
 def test_fake_header_routing_rejects_stale_epoch_but_keeps_late_observability(fake_repo):
-    run_id, snapshot, _claimed = _seed_send_job(fake_repo, purpose="clarification")
+    run_id, snapshot, _claimed = _seed_send_job(
+        fake_repo, purpose="clarification", authorize=False
+    )
     fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_REPLY.value
 
     assert (

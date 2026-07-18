@@ -16,6 +16,12 @@ import psycopg
 from app.db.repo._shared import _conn_ctx, _nulltx
 from app.db.repo.jobs import enqueue_job
 from app.db.repo.operator_resume_resolutions import load_operator_resume_resolution
+from app.db.repo.outbound_handoffs import (
+    ProviderHandoffAuthorization,
+    finalize_outbound_provider_handoff,
+    release_outbound_provider_handoff_for_retry,
+    release_outbound_provider_handoff_to_delivery_review,
+)
 from app.db.repo.roster import load_roster_for_business
 from app.db.repo.runs import load_run
 from app.models.job import Job, JobKind
@@ -152,6 +158,8 @@ def _delivery_failure_category(result: PipelineResult) -> str:
         return "validation"
     if reason is PipelineReason.DELIVERY_CONFIGURATION_FAILURE:
         return "configuration"
+    if reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED:
+        return "authorization_expired"
     return "unknown"
 
 
@@ -202,6 +210,53 @@ def _lock_outbound_reservation(
         int(row[4]),
         str(row[5]),
         bool(row[6]),
+    )
+
+
+def _lock_current_provider_handoff(
+    conn: psycopg.Connection,
+    *,
+    job: Job,
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    epoch: int,
+) -> ProviderHandoffAuthorization | None:
+    """Lock authority owned by this exact leased delivery job, never adopt it.
+
+    Provider authority may only be transferred by the pre-provider authorizer.  A
+    post-provider result is therefore allowed to release/finalize the fence it
+    already owns, but never to turn an expired predecessor into its own authority.
+    """
+    row = conn.execute(
+        "SELECT id, not_after FROM outbound_provider_handoffs "
+        "WHERE run_id = %s AND email_id = %s AND snapshot_id = %s "
+        "AND job_id = %s AND epoch = %s AND lease_token = %s "
+        "AND released_at IS NULL FOR UPDATE",
+        (
+            str(run_id),
+            str(email_id),
+            str(snapshot_id),
+            str(job.id),
+            epoch,
+            str(job.lease_token),
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    not_after = row[1]
+    if not isinstance(not_after, datetime):
+        raise RuntimeError("locked provider handoff has no replay deadline")
+    return ProviderHandoffAuthorization(
+        handoff_id=uuid.UUID(str(row[0])),
+        run_id=run_id,
+        email_id=email_id,
+        snapshot_id=snapshot_id,
+        job_id=job.id,
+        lease_token=job.lease_token,
+        epoch=epoch,
+        snapshot={},
+        not_after=not_after,
     )
 
 
@@ -293,7 +348,7 @@ def settle_outbound_delivery_job(
                 c, job_id=job.id, lease_token=job.lease_token, target_state="done"
             )
             return SettlementOutcome.INVALID_CONTEXT
-        run_status, run_epoch = run_generation
+        run_status, run_epoch, record_only = run_generation
         if run_epoch is not None and message_epoch != run_epoch:
             _retire_invalid_outbound_lease(
                 c, job_id=job.id, lease_token=job.lease_token, target_state="done"
@@ -310,7 +365,56 @@ def settle_outbound_delivery_job(
             )
             return SettlementOutcome.INVALID_CONTEXT
 
+        if result.reason is PipelineReason.DELIVERY_RECORD_ONLY:
+            if not record_only:
+                _retire_invalid_outbound_lease(
+                    c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+                )
+                return SettlementOutcome.INVALID_CONTEXT
+            sent = c.execute(
+                "UPDATE email_messages SET send_state = 'sent' "
+                "WHERE id = %s AND run_id = %s AND direction = 'outbound' "
+                "AND send_state = 'reserved' RETURNING id",
+                (str(job.email_id), str(stored_run_id)),
+            ).fetchone()
+            if sent is None:
+                raise RuntimeError("locked record-only delivery lost its reservation")
+            if purpose == "confirmation":
+                advanced = c.execute(
+                    "UPDATE payroll_runs SET status = 'sent', updated_at = now() "
+                    "WHERE id = %s AND status = 'approved' RETURNING id",
+                    (str(stored_run_id),),
+                ).fetchone()
+                if advanced is None:
+                    raise RuntimeError("locked record-only confirmation lost its run state")
+                _complete_confirmation_after_send(c, stored_run_id)
+            completed = c.execute(
+                "UPDATE jobs SET state = 'done', lease_token = NULL, leased_until = NULL, "
+                "updated_at = now() WHERE id = %s AND state = 'leased' "
+                "AND lease_token = %s RETURNING id",
+                (str(job.id), str(job.lease_token)),
+            ).fetchone()
+            if completed is None:
+                raise RuntimeError("locked record-only delivery lost its lease")
+            return SettlementOutcome.DONE
+
+        authorization = _lock_current_provider_handoff(
+            c,
+            job=job,
+            run_id=stored_run_id,
+            email_id=job.email_id,
+            snapshot_id=snapshot_id,
+            epoch=message_epoch,
+        )
+        if authorization is None:
+            _retire_invalid_outbound_lease(
+                c, job_id=job.id, lease_token=job.lease_token, target_state="done"
+            )
+            return SettlementOutcome.INVALID_CONTEXT
+
         if result.outcome is PipelineOutcome.OK:
+            if not finalize_outbound_provider_handoff(authorization, conn=c):
+                raise RuntimeError("locked delivery success lost its provider handoff")
             _append_delivery_attempt(
                 c,
                 snapshot_id=snapshot_id,
@@ -355,6 +459,8 @@ def settle_outbound_delivery_job(
             )
         category = _delivery_failure_category(result)
         if next_attempt is not None:
+            if not release_outbound_provider_handoff_for_retry(authorization, conn=c):
+                raise RuntimeError("locked delivery retry lost its provider handoff")
             _append_delivery_attempt(
                 c,
                 snapshot_id=snapshot_id,
@@ -371,6 +477,8 @@ def settle_outbound_delivery_job(
                 raise RuntimeError("locked delivery retry lost its lease")
             return SettlementOutcome.RETRIED
 
+        if not release_outbound_provider_handoff_to_delivery_review(authorization, conn=c):
+            raise RuntimeError("locked delivery review lost its provider handoff")
         _append_delivery_attempt(
             c,
             snapshot_id=snapshot_id,
@@ -474,9 +582,9 @@ def _set_run_error(
 
 def _lock_run_status(
     conn: psycopg.Connection, run_id: uuid.UUID
-) -> tuple[RunStatus, int | None] | None:
+) -> tuple[RunStatus, int | None, bool] | None:
     row = conn.execute(
-        "SELECT status, reply_epoch FROM payroll_runs WHERE id = %s FOR UPDATE",
+        "SELECT status, reply_epoch, record_only FROM payroll_runs WHERE id = %s FOR UPDATE",
         (str(run_id),),
     ).fetchone()
     if row is None:
@@ -484,7 +592,8 @@ def _lock_run_status(
     # The one-column fallback keeps old FakeConnection contract tests useful; a
     # real payroll_runs row always returns the locked reply_epoch column.
     run_epoch = int(row[1]) if len(row) > 1 and row[1] is not None else None
-    return RunStatus(str(row[0])), run_epoch
+    record_only = bool(row[2]) if len(row) > 2 and row[2] is not None else False
+    return RunStatus(str(row[0])), run_epoch, record_only
 
 
 def _rewind_run(conn: psycopg.Connection, run_id: uuid.UUID) -> bool:
@@ -867,7 +976,7 @@ def reap_expired_final_attempt(
                     target_state="dead",
                 )
                 return SettlementOutcome.INVALID_CONTEXT
-            run_status, run_epoch = run_generation
+            run_status, run_epoch, _record_only = run_generation
             if run_epoch is not None and message_epoch != run_epoch:
                 _retire_invalid_outbound_lease(
                     c,
@@ -889,6 +998,33 @@ def reap_expired_final_attempt(
                     target_state="dead",
                 )
                 return SettlementOutcome.INVALID_CONTEXT
+            reaper_job = Job(
+                id=job_id,
+                kind=kind,
+                run_id=run_id,
+                email_id=email_id,
+                attempts=attempts,
+                max_attempts=max_attempts,
+                lease_token=lease_token,
+            )
+            authorization = _lock_current_provider_handoff(
+                c,
+                job=reaper_job,
+                run_id=run_id,
+                email_id=email_id,
+                snapshot_id=snapshot_id,
+                epoch=message_epoch,
+            )
+            if authorization is None:
+                _retire_invalid_outbound_lease(
+                    c,
+                    job_id=job_id,
+                    lease_token=lease_token,
+                    target_state="dead",
+                )
+                return SettlementOutcome.INVALID_CONTEXT
+            if not release_outbound_provider_handoff_to_delivery_review(authorization, conn=c):
+                raise RuntimeError("locked final delivery reap lost its provider handoff")
             _append_delivery_attempt(
                 c,
                 snapshot_id=snapshot_id,
@@ -919,7 +1055,7 @@ def reap_expired_final_attempt(
             run_generation = _lock_run_status(c, run_id)
             if run_generation is None:
                 return SettlementOutcome.FENCED
-            run_status, _run_epoch = run_generation
+            run_status, _run_epoch, _record_only = run_generation
             if run_status in _FINAL_LEASE_ERROR_STATUSES and not _set_run_error(
                 c,
                 run_id,

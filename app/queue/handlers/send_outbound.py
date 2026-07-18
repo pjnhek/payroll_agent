@@ -39,19 +39,28 @@ def handle_send_outbound(
         raise ValueError(f"handle_send_outbound: job {job.id} has mixed identifier context")
 
     authorization = repo.authorize_outbound_provider_handoff(job)
-    if isinstance(authorization, repo.ProviderHandoffRecordOnly):
+    # Keep this consumer structurally coupled to the bounded authority result,
+    # rather than importing the repository's concrete classes into queue tier.
+    # Only record-only authority has the exact run id without a bounded reason.
+    if (
+        getattr(authorization, "run_id", None) == job.run_id
+        and getattr(authorization, "reason", None) is None
+        and getattr(authorization, "snapshot", None) is None
+    ):
         return PipelineResult(
             outcome=PipelineOutcome.OK,
             stage=PipelineStage.DELIVERY,
             reason=PipelineReason.DELIVERY_RECORD_ONLY,
         )
-    if not isinstance(authorization, repo.ProviderHandoffAuthorization):
+    snapshot = getattr(authorization, "snapshot", None)
+    not_after = getattr(authorization, "not_after", None)
+    if snapshot is None or not isinstance(not_after, datetime):
         return _bounded_noop()
 
     return normalize_pipeline_result(
         gateway.send_reserved_outbound_snapshot(
-            authorization.snapshot,
-            not_after=authorization.not_after,
+            snapshot,
+            not_after=not_after,
             clock=clock,
             budget=DELIVERY_SEND_BUDGET,
         )

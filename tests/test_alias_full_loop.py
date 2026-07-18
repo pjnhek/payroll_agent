@@ -148,7 +148,7 @@ def test_full_loop_learns_alias_and_stops_asking(fake_repo, mock_llm, monkeypatc
 
     monkeypatch.setattr(
         "app.email.gateway.send_reserved_outbound_snapshot",
-        lambda snapshot: PipelineResult(
+        lambda snapshot, **_kwargs: PipelineResult(
             outcome=PipelineOutcome.OK,
             stage=PipelineStage.DELIVERY,
         ),
@@ -389,7 +389,7 @@ def test_field_regression_replay_preserves_its_slot_without_confirming_an_alias(
     )
     monkeypatch.setattr(
         "app.email.gateway.send_reserved_outbound_snapshot",
-        lambda snapshot: PipelineResult(
+        lambda snapshot, **_kwargs: PipelineResult(
             outcome=PipelineOutcome.OK,
             stage=PipelineStage.DELIVERY,
         ),
