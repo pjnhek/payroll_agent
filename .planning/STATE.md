@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 20
-current_phase_name: exactly-once-send
-status: complete
+current_phase: 21
+current_phase_name: Durability Proofs & Ops View
+status: planning
 stopped_at: Completed 20-27-PLAN.md
-last_updated: "2026-07-18T17:34:06.497Z"
+last_updated: "2026-07-18T17:43:55.200Z"
 last_activity: 2026-07-18
-last_activity_desc: completed Plan 20-27 live schema and provider-handoff evidence
+last_activity_desc: Phase 20 complete, transitioned to Phase 21
 progress:
   total_phases: 6
   completed_phases: 5
@@ -28,16 +28,16 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation comple
 
 ## Current Position
 
-Phase: 20 (exactly-once-send) — COMPLETE
-Plan: 27 of 27 completed
+Phase: 21 — Durability Proofs & Ops View
+Plan: Not started
 Status: Ready to plan Phase 21
-Last activity: 2026-07-18 — completed Plan 20-27 guarded live schema and provider-handoff evidence
+Last activity: 2026-07-18 — Phase 20 complete, transitioned to Phase 21
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 116
+- Total plans completed: 140
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -64,7 +64,7 @@ Last activity: 2026-07-18 — completed Plan 20-27 guarded live schema and provi
 | 17 | 5 | - | - |
 | 18 | 14 | - | - |
 | 19 | 12 | - | - |
-| 20 | 27 | 8h 32m | - |
+| 20 | 27 | - | - |
 
 **Recent Trend:**
 
