@@ -1,112 +1,121 @@
 ---
 phase: 20-exactly-once-send
-verified: 2026-07-17
+verified: 2026-07-18T03:46:57Z
 status: gaps_found
-score: "29/32 must-haves verified; 2 failed; 1 uncertain"
-requirements:
-  - id: SEND-01
-    status: verified_with_phase_blocker
-  - id: SEND-02
-    status: verified_with_phase_blocker
-  - id: SEND-03
-    status: verified_with_phase_blocker
+score: 3/4 must-haves verified
+behavior_unverified: 1
+overrides_applied: 0
 gaps:
-  - severity: blocker
-    truth: "A stale epoch must be unable to reach Resend after an operator retrigger."
-    remediation: "Add a durable provider-handoff fence that serializes the exact leased job, snapshot epoch, and run epoch with clear_reply_context, then prove the after-preflight epoch-bump interleaving cannot invoke the gateway."
-  - severity: warning
-    truth: "Database lock ordering and epoch fencing must be exercised with genuine concurrent Postgres connections."
-    remediation: "Run the guarded queueproof/live-Postgres tests with DATABASE_URL and ALLOW_DB_RESET=1 after the blocker is fixed."
+  - truth: "A stale or deadline-expired confirmation delivery is escalated to purpose-aware operator review rather than silently retired or blindly replayed after Resend's deduplication window."
+    status: failed
+    reason: "CR-01 remains: `replay_window_closed` is converted to an unclassified OK no-op, then the exact lease is retired as invalid context. Separately, the real schema rejects the `authorization_expired` attempt category that the gateway-expiry settlement writes. Either path prevents the required durable delivery-review outcome."
+    artifacts:
+      - path: app/queue/handlers/send_outbound.py
+        issue: "Lines 55-58 discard ProviderHandoffActive.reason, including replay_window_closed, as an unclassified OK result."
+      - path: app/db/repo/job_settlement.py
+        issue: "Lines 401-413 retire a no-handoff result as invalid context; lines 480-514 require an exact handoff before creating review."
+      - path: app/db/schema.sql
+        issue: "The outbound_delivery_attempts failure-category checks at lines 482 and 509-513 omit authorization_expired, although job_settlement.py emits it."
+    missing:
+      - "Map replay_window_closed to DELIVERY_AUTHORIZATION_EXPIRED (or an equally bounded distinct result) and settle its exact leased reservation directly into purpose-aware delivery review with zero provider calls."
+      - "Allow authorization_expired in both fresh-schema and deployed-schema failure-category checks, and add production plus fake-parity regressions for pre-authorization and provider-boundary expiry."
+behavior_unverified_items:
+  - truth: "The durable provider-handoff fence prevents a post-authorization epoch bump from reaching the old snapshot gateway on real Postgres."
+    test: "Run the two marker-selected provider_handoff queueproof tests with DATABASE_URL and ALLOW_DB_RESET=1 against a resettable Postgres database."
+    expected: "The protected case performs one gateway call at epoch 0 after rejecting the separate epoch bump; the deliberately unfenced control observes epoch 1 at its gateway spy. Both run with zero skips."
+    why_human: "The tests are collected but skipped locally because guarded database credentials are absent. Fake/unit checks cannot prove two-connection lock ordering."
 ---
 
-# Phase 20 Verification
+# Phase 20: Exactly-Once Send Verification Report
 
-## Goal assessment
+**Phase Goal:** A client is sent at most one payroll confirmation per approved run, per epoch — a retry never redrafts, never regenerates non-deterministic bytes, and never silently orphans a reply into a phantom run.
 
-**Verdict: FAILED — phase completion is not authorized.**
+**Verified:** 2026-07-18T03:46:57Z
+**Status:** gaps_found
+**Re-verification:** Yes — after Plans 20-17 through 20-25 gap closure
 
-The immutable reservation, frozen replay payload, Resend idempotency key, bounded replay ladder, and review escalation are implemented and exercised. However, the current-epoch authorization check is a non-atomic preflight. A retrigger can increment `reply_epoch` after that read and before the provider request, allowing an obsolete epoch to send. Settlement notices the epoch later, but cannot undo the external email.
+## Goal Achievement
 
-## Roadmap success criteria
+### Observable Truths
 
-| Criterion | Status | Evidence |
-|---|---|---|
-| Retry retains the reserved `message_id` | VERIFIED | `reserve_outbound_snapshot()` locks/returns the established logical slot without applying retry arguments; `test_fake_reservation_reuses_the_original_provider_snapshot` exercises original-ID replay. |
-| Retry replays original subject, body, and PDF bytes | VERIFIED | Handler loads the frozen snapshot only; gateway constructs the request from its persisted fields/attachments; `test_send_reserved_snapshot_replays_fixed_payload_and_idempotency_key` exercises byte-equivalent replay. |
-| Every call carries a Message-ID-derived Resend key; ladder stays within retention | VERIFIED | `gateway.send_reserved_outbound_snapshot()` passes `{"idempotency_key": message_id}`; `delivery_replay_allowed()` and `next_delivery_attempt_at()` enforce the reservation-time 20-hour bound. Gateway/result/settlement tests passed. |
-| Ambiguous timeout/5xx outcomes never auto-replay beyond retention | VERIFIED | `settle_outbound_delivery_job()` permits only timeout, connection, rate-limit, and server-failure reasons while the reservation window remains open; otherwise it writes purpose-specific operator review. Focused settlement tests passed. |
+| # | Roadmap must-have | Status | Evidence |
+| --- | --- | --- | --- |
+| 1 | A retry reuses the exact reserved Message-ID. | VERIFIED | `reserve_outbound_snapshot()` is a read-or-reserve operation over the epoch-scoped slot; `tests/test_send_idempotency.py::test_fake_reservation_reuses_the_original_provider_snapshot` passed. |
+| 2 | A retry replays the persisted subject, body, and PDF bytes without redrafting or regeneration. | VERIFIED | `delivery.deliver()` returns to enqueue when a snapshot exists; `gateway.send_reserved_outbound_snapshot()` constructs Resend parameters only from the stored snapshot and attachments. `test_send_reserved_snapshot_replays_fixed_payload_and_idempotency_key` passed. |
+| 3 | Every send uses a Message-ID-derived Resend idempotency key and retries remain bounded below retention. | VERIFIED | The gateway supplies `{"idempotency_key": message_id}` at `app/email/gateway.py:167`; handoff `not_after` is derived from `reserved_at + interval '20 hours'`; the final provider boundary rejects insufficient remaining time. |
+| 4 | An ambiguous send is never blindly replayed beyond provider deduplication retention and instead enters human review. | FAILED (BLOCKER) | See CR-01 assessment below. A pre-provider expired reservation is collapsed to `ok/unknown/unclassified` and settled as invalid context; gateway-boundary expiry would emit `authorization_expired`, a value the real schema rejects. Neither path reliably reaches `needs_operator` delivery review. |
 
-## Truth-by-truth evidence
+**Score:** 3/4 roadmap must-haves verified; 1 present-but-behavior-unverified real-Postgres concurrency invariant.
 
-| # | Plan must-have / wiring truth | Status | Evidence |
-|---:|---|---|---|
-| 1 | Provider envelope and ordered attachment bytes persist before provider work | VERIFIED | Immutable snapshot/attachment schema plus producer reserve-and-enqueue path; Phase-20 regression suite passed. |
-| 2 | Same-slot reservation cannot overwrite Message-ID, headers, recipient, body, or bytes | VERIFIED | `reserve_outbound_snapshot()` reads/locks existing slot; immutable replay test passed. |
-| 3 | Logical run/purpose/round/epoch slot retains one Message-ID | VERIFIED | Epoch-scoped uniqueness/read-or-reserve and current-epoch sent-proof regression passed. |
-| 4 | Send work is an identifier-only durable job, not a route provider call | VERIFIED | `SEND_OUTBOUND` queue context plus fail-closed legacy gateway; queue and gateway tests passed. |
-| 5 | Automatic and operator retry reopen the same eligible job, not a new job | VERIFIED | Existing-job-only due-now repository operations and fake/SQL tests passed. |
-| 6 | Snapshot gateway sends only persisted fields and original idempotency key | VERIFIED | Gateway replay test captured two identical provider requests and the stored key. |
-| 7 | Only classified timeout/connection/rate-limit/5xx outcomes auto-replay | VERIFIED | Exact allowlist in settlement; unsafe-category regressions passed. |
-| 8 | Replay age is anchored to `reserved_at`, capped before 20 hours | VERIFIED | Result and settlement cutoff tests passed. |
-| 9 | Handler cannot draft or regenerate PDF on replay | VERIFIED | Handler calls only `load_outbound_snapshot()` then snapshot gateway; delivery/queue tests exercise frozen snapshot use. |
-| 10 | Payload mismatch is terminal review, never a replacement send | VERIFIED | Gateway classification and settlement review tests passed. |
-| 11 | Composition/YTD/PDF work is absent when a snapshot already exists | VERIFIED | `delivery.deliver()` returns to enqueue path before composition; delivery/PDF tests passed. |
-| 12 | Allowed replay keeps a confirmation approved until delivery outcome settles | VERIFIED | Same-job reschedule path and settlement regression passed. |
-| 13 | Snapshot and job commit before a worker can be woken | VERIFIED | Producer caller-owned transactions reserve then enqueue; provider is absent from producer path. |
-| 14 | Dispatch invokes executable send handler and exact-token settlement | VERIFIED | `HANDLERS` registration and `drain_once()` outbound settlement path exercised. |
-| 15 | Stale/unowned static context no-ops before provider work | VERIFIED | `test_send_handler_drops_unowned_or_stale_context_before_provider_work` passed. |
-| 16 | Final lease expiry / unsafe outcome enters purpose-aware review with bounded facts | VERIFIED | Final reaper and review tests passed. |
-| 17 | Confirmation and clarification review actions are purpose-isolated | VERIFIED | Direct-POST negative tests and confirmation-owned retry predicates passed. |
-| 18 | Review projection is bounded; frozen body/attachments require scoped readers | VERIFIED | Repository hygiene and clarification-review tests passed. |
-| 19 | Human-authorized confirmation repeat clones frozen bytes | VERIFIED | Delivery/route tests cover snapshot clone rather than regeneration. |
-| 20 | Clarification initial and retry paths use frozen SEND_OUTBOUND slots | VERIFIED | Clarification/alias loop tests passed. |
-| 21 | Clarification replay preserves RFC thread, round, and awaiting-reply state | VERIFIED | Clarification regression suite passed. |
-| 22 | Clarification delivery cannot write aliases | VERIFIED | Clarification and alias tests passed. |
-| 23 | Stale reply headers cannot resume the current epoch | VERIFIED | Current-epoch routing guard and threading regression passed. |
-| 24 | Settlement fences claimed `email_id` before reservation/attempt writes | VERIFIED | Persisted-job identity fence tests passed. |
-| 25 | Invalid outbound context retires exact held lease before drain forgets token | VERIFIED | `INVALID_CONTEXT`/`LOST_LEASE` separation and drain tests passed. |
-| 26 | No legacy producer sends caller-supplied content | VERIFIED | `gateway.send_outbound()` is fail-closed; legacy-caller test passed. |
-| 27 | Final reaper and settlement reject an already-stale epoch without mutating current evidence | VERIFIED | Production/fake stale-context branches are present and hermetic parity tests passed. |
-| 28 | Current-epoch check authorizes the actual irreversible provider handoff | **FAILED (BLOCKER)** | The check at `send_outbound.py:70-79` is a separate, unlocked read; provider call is at line 89. `clear_reply_context()` increments `reply_epoch` in a separate update (`pipeline_state.py:403-413`). A controlled exercising probe changed epoch at the provider boundary and `handle_send_outbound()` still called the provider and returned `ok`. |
-| 29 | No phase path silently creates a phantom reply-routing anchor | VERIFIED | Frozen Message-ID is reused for retry and stale header routing is epoch-scoped; relevant gateway/threading tests passed. |
-| 30 | The durable DB fence/lock ordering survives genuine concurrent connections | UNCERTAIN (WARNING) | Guarded live-Postgres queueproof selection was unavailable locally: 53 skipped because `DATABASE_URL` and `ALLOW_DB_RESET=1` are absent. |
-| 31 | Phase quality gates remain clean | VERIFIED | `uv run ruff check` and `uv run mypy` both passed. |
-| 32 | All current-epoch guarantees hold through provider work, settlement, and retry | **FAILED (BLOCKER)** | Settlement fencing is after provider work; it cannot repair truth 28's external side effect. |
+### CR-01 Assessment: confirmed
 
-## Artifact and wiring evidence
+The review finding is correct and remains unresolved in the current implementation.
 
-- `app/db/repo/emails.py` provides immutable read-or-reserve snapshots and owner-scoped loading; it does not reapply retry content.
-- `app/pipeline/delivery.py` and `app/pipeline/clarification.py` create a snapshot/job before wake and do not call the provider directly.
-- `app/email/gateway.py` projects only frozen snapshot fields and passes the stored Message-ID as Resend's idempotency key.
-- `app/queue/drain.py` sends the claimed job result to fenced settlement. `app/db/repo/job_settlement.py` correctly fences state writes, but that occurs after the provider request.
-- `app/queue/handlers/send_outbound.py` is the broken link: it observes run epoch before, rather than atomically with, the provider handoff.
+- `authorize_outbound_provider_handoff()` returns `ProviderHandoffActive("replay_window_closed")` for a reservation outside the 20-hour window (`app/db/repo/outbound_handoffs.py:275-276`).
+- `handle_send_outbound()` then discards every active/no-snapshot outcome through `_bounded_noop()` (`app/queue/handlers/send_outbound.py:55-58`). An independent seam probe returned `ok unknown unclassified` for exactly that authorization outcome.
+- Because no active handoff was created, `settle_outbound_delivery_job()` cannot satisfy `_lock_current_provider_handoff()` and retires the held job as `invalid_context` (`app/db/repo/job_settlement.py:401-413`), leaving the confirmation's approved state without the required delivery review.
 
-## Test evidence
+There is also a second live-Postgres blocker on the related gateway-boundary-expiry path: `job_settlement._delivery_failure_category()` emits `authorization_expired` (`app/db/repo/job_settlement.py:161-162`), but both schema checks for `outbound_delivery_attempts.failure_category` omit that value (`app/db/schema.sql:482`, `509-513`). The fake-only expiry test passes because `InMemoryRepo` does not enforce the production check constraint; the production scripted-connection tests do not execute it against Postgres.
 
-Completed checks:
+### Required Artifacts
 
-- `uv run pytest -q tests/test_send_idempotency.py tests/test_delivery.py tests/test_gateway.py tests/test_queue_drain.py tests/test_queue_durability.py tests/test_phase20_fake_parity.py tests/test_phase20_clarification_review.py tests/test_phase20_repo_hygiene.py tests/test_threading.py tests/test_dashboard.py tests/test_repo_jobs_sql.py tests/test_job_kind_drift.py tests/test_clarify.py tests/test_alias_full_loop.py tests/test_alias_write.py tests/test_pdf.py` — **429 passed, 58 skipped**.
-- Targeted smaller Phase-20 core suite — **195 passed, 55 skipped**.
-- `uv run ruff check` — passed.
-- `uv run mypy` — passed (160 source files).
-- Guarded live-Postgres selection — **53 skipped, 114 deselected**; unavailable evidence, not a pass.
+| Artifact | Expected | Status | Details |
+| --- | --- | --- | --- |
+| `app/db/repo/emails.py` + `app/db/schema.sql` | Immutable snapshot, ordered attachment bytes, and logical epoch slot | VERIFIED | Append-only snapshot/attachment triggers and a conflict path that returns the stored record are substantive and used by delivery. |
+| `app/pipeline/delivery.py` + `app/db/repo/jobs.py` | Approval creates one frozen snapshot and identifier-only durable job before wake | VERIFIED | `deliver()` reserves/enqueues in the caller transaction; it contains no provider call. |
+| `app/email/gateway.py` | Frozen provider payload, Message-ID header/key, final deadline check | VERIFIED | The provider call is wired to frozen fields and stored key; focused replay and deadline tests passed. |
+| `app/db/repo/outbound_handoffs.py` + `app/queue/handlers/send_outbound.py` | Exact job/snapshot/epoch authorization before provider work | VERIFIED (unit/fake evidence) | The handoff transaction locks job → snapshot/email → run → handoff; retrigger checks the active fence. Real-Postgres concurrency proof remains unavailable. |
+| `app/db/repo/job_settlement.py` | Exact-owner retry/final/review settlement | FAILED | It has the intended exact-handoff path, but does not accept the pre-handoff expiry outcome and can write a category prohibited by the production schema. |
+| `tests/test_queue_durability.py` | Non-vacuous two-connection provider-handoff proof and unsafe control | PRESENT_BEHAVIOR_UNVERIFIED | Both tests collect, but both skip without `DATABASE_URL` and `ALLOW_DB_RESET=1`; this is not a passing real-Postgres proof. |
 
-Independent failure probe (no repository files changed): a `Job` and current-epoch snapshot entered `handle_send_outbound`; the gateway boundary advanced the simulated run epoch from 0 to 1. The handler had already completed its preflight and still invoked the provider, returning `{"result": "ok", "provider_called_after_epoch_bump": true, "epoch_after": 1}`.
+### Key Link Verification
 
-## Gaps and remediation
+| From | To | Via | Status | Details |
+| --- | --- | --- | --- | --- |
+| Approval/delivery | durable send job | caller-owned snapshot reservation then `enqueue_job`, post-commit wake | WIRED | The provider is absent from `delivery.deliver()`. |
+| Send handler | durable authority → frozen gateway request | `authorize_outbound_provider_handoff()` then `send_reserved_outbound_snapshot()` | WIRED | Valid authorization sends only its snapshot; record-only is provider-free. |
+| Gateway | Resend | stored Message-ID in header and `idempotency_key` | WIRED | Focused frozen-payload/idempotency test passed. |
+| Handler/drain | exact settlement | `drain_once()` forwards the handler's bounded result to `settle_outbound_delivery_job()` | PARTIAL / BLOCKED | `replay_window_closed` loses its bounded reason before this link, so the review settlement is unreachable. |
+| Gateway expiry | delivery review ledger | `DELIVERY_AUTHORIZATION_EXPIRED` → attempt category → review | NOT WIRED IN PRODUCTION | The result is mapped, but the database constraint rejects `authorization_expired`. |
 
-### BLOCKER — preflight epoch check is not a provider-handoff fence
+### Requirements Coverage
 
-`handle_send_outbound()` reads snapshot/run facts, releases them, and then calls Resend. A concurrent retrigger may commit `clear_reply_context()` in the gap. The old snapshot can reach the client after a new epoch is authorized, and later settlement merely retires the obsolete job.
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| SEND-01 — reuse reserved Message-ID | SATISFIED | Immutable epoch-scoped read-or-reserve snapshot; focused original-snapshot test passed. |
+| SEND-02 — replay persisted payload, never rederive it | SATISFIED | Snapshot-only gateway and delivery replay branch; focused byte-equivalent gateway test passed. |
+| SEND-03 — Idempotency-Key and bounded retry with stale sends escalated to human | BLOCKED | Key and nominal deadline bound exist, but both pre-provider and boundary-expiry review transitions are broken as described above. |
 
-Remediate with a durable authorization state that serializes retrigger and provider handoff: lock/check exact leased job, snapshot, run status/epoch, and reservation age in one transaction; record a provider-attempt fence before releasing the transaction; make retrigger reject or wait on that state; then call the provider. Add a two-connection regression with a barrier immediately after authorization that proves an epoch bump cannot permit the stale gateway call.
+No Phase-20 requirement is orphaned: all three SEND IDs are claimed by one or more Phase-20 plans.
 
-### WARNING — live database concurrency evidence unavailable
+### Behavioral Spot-Checks
 
-Run the guarded integration/queueproof tests with a resettable Postgres database after implementing the fence. This warning does not downgrade the blocker: the handler probe and source ordering already demonstrate the unsafe interleaving.
+| Behavior | Command | Result | Status |
+| --- | --- | --- | --- |
+| Frozen snapshot/Message-ID replay | Six focused Phase-20 tests covering reservation, frozen gateway replay, expiry review, handoff deadline, fake expiry, and retrigger fence | 6 passed | PASS |
+| Static quality | `uv run ruff check ...` and `uv run mypy` | Ruff clean; 161 source files type-clean | PASS |
+| Real provider-handoff race proof selection | `uv run pytest tests/ -m queueproof --collect-only -q` | Both protected/control tests collected | PASS (collection only) |
+| Real provider-handoff race execution | `uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k provider_handoff -rs` | 2 skipped; `DATABASE_URL` or `ALLOW_DB_RESET=1` absent | SKIPPED — unavailable evidence, not a pass |
+| Pre-provider expiry reason preservation | Isolated handler seam with `ProviderHandoffActive('replay_window_closed')` | Returned `ok unknown unclassified` | FAIL |
 
-## Concise verdict
+### Anti-Patterns Found
 
-The retry payload/key/retention mechanics are sound, but the phase goal is not. **Do not mark Phase 20 complete** until provider authorization is made linearizable against `reply_epoch` changes and is proven with a real concurrent Postgres regression.
+| File | Line | Pattern | Severity | Impact |
+| --- | --- | --- | --- |
+| `app/queue/handlers/send_outbound.py` | 55-58 | Bounded reason discarded into generic successful no-op | BLOCKER | Silently retires an expired confirmation without operator review. |
+| `app/db/schema.sql` | 482; 509-513 | Result vocabulary and DB check constraint drift | BLOCKER | A real authorization-expiry review transaction rolls back on its attempt-ledger insert. |
 
-## Verification Complete
+## Human Verification Required
+
+1. Run the guarded two-connection Postgres proof with reset-authorized credentials. The two skipped local tests are explicitly **not** proof that lock ordering and epoch fencing work in a real database.
+
+2. After fixing the blockers, inspect both confirmation and clarification delivery-review cards in a browser. Verify frozen evidence is visible, confirmation alone offers typed new-confirmation authorization, clarification has only its purpose-specific actions, and neither exposes raw provider diagnostics or generic alias resolution.
+
+## Gaps Summary
+
+Phase 20's core immutable-replay, idempotency-key, and provider-handoff design is substantively implemented. It cannot be accepted because its required safe outcome after deduplication expiry is not durable: the CR-01 initial-expiry path is treated as invalid context, and the gateway-boundary-expiry path has a production schema vocabulary mismatch. Fix both routes to purpose-aware delivery review and add a real-Postgres regression for each. Then run the already-collected guarded two-connection proof with credentials; its current skips remain a warning rather than a passing claim.
+
+---
+
+_Verified: 2026-07-18T03:46:57Z_
+_Verifier: the agent (generic-agent workaround for gsd-verifier)_
