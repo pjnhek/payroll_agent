@@ -4,17 +4,17 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 20
 current_phase_name: exactly-once-send
-status: executing
-stopped_at: Completed 20-26-PLAN.md
-last_updated: "2026-07-18T15:59:10.083Z"
+status: complete
+stopped_at: Completed 20-27-PLAN.md
+last_updated: "2026-07-18T17:34:06.497Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 Plan 26 completed; Plan 27 remains
+last_activity_desc: completed Plan 20-27 live schema and provider-handoff evidence
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 68
-  completed_plans: 67
-  percent: 67
+  completed_plans: 68
+  percent: 83
 ---
 
 # Project State
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation complete; gap closure remains)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 20 — exactly-once-send
+**Current focus:** Phase 21 — durability-proofs-and-ops-view planning
 
 ## Current Position
 
-Phase: 20 (exactly-once-send) — EXECUTING
-Plan: 26 of 27 executed; Plan 20-27 remains
-Status: Ready to execute Plan 20-27
-Last activity: 2026-07-18 — completed Plan 20-26 pre-provider expiry settlement
+Phase: 20 (exactly-once-send) — COMPLETE
+Plan: 27 of 27 completed
+Status: Ready to plan Phase 21
+Last activity: 2026-07-18 — completed Plan 20-27 guarded live schema and provider-handoff evidence
 
 ## Performance Metrics
 
@@ -64,7 +64,7 @@ Last activity: 2026-07-18 — completed Plan 20-26 pre-provider expiry settlemen
 | 17 | 5 | - | - |
 | 18 | 14 | - | - |
 | 19 | 12 | - | - |
-| 20 | 25 | - | - |
+| 20 | 27 | 8h 32m | - |
 
 **Recent Trend:**
 
@@ -137,6 +137,7 @@ Last activity: 2026-07-18 — completed Plan 20-26 pre-provider expiry settlemen
 | Phase 20 P19 | ~15min | 2 tasks | 6 files |
 | Phase 20 P20 | ~30min | 2 tasks | 10 files |
 | Phase 20 P26 | 32 min | 2 tasks | 6 files |
+| Phase 20 P27 | 8h 32m | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -280,6 +281,8 @@ Recent decisions affecting current work:
 - [Phase 20]: Sent proof queries correlate email_messages.epoch with the current payroll_runs.reply_epoch.
 - [Phase 20]: Confirmation delivery remains purpose-aware and consumes the current-epoch proof seam without rebuilding frozen content.
 - [Phase 20 P18]: Stale outbound jobs compare immutable message epoch with locked/current reply_epoch before provider, settlement, or final-lease review work; invalid leases are fenced without mutating the active epoch slot.
+- [Phase 20]: Fresh and deployed failure-category checks share a bounded `authorization_expired` vocabulary; live repair proof must inspect the catalog and execute the constrained INSERT.
+- [Phase 20]: Two-connection handoff proofs must execute no SQL before their intended outer transaction; recording client identity inside that transaction avoids an implicit psycopg transaction that invalidates the schedule.
 
 ### Pending Todos
 
@@ -346,10 +349,10 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-18T15:59:10.073Z
-Stopped at: Completed 20-26-PLAN.md
+Last session: 2026-07-18T17:33:51.174Z
+Stopped at: Completed 20-27-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
 
-- Resume Phase 20 execution with `/gsd-execute-phase 20`; execute Plan 20-26 in Wave 20, then Plan 20-27's blocking guarded live-Postgres evidence gate in Wave 21. Missing disposable credentials, missing `ALLOW_DB_RESET=1`, or selected-test skips are unavailable evidence, not a successful phase close.
+- Verify Phase 20 with `/gsd-verify-work 20`, then plan Phase 21 with `/gsd-plan-phase 21`.
