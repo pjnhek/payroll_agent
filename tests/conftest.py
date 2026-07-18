@@ -1289,6 +1289,16 @@ class InMemoryRepo:
         run = self.runs.get(str(job.run_id))
         if snapshot is None or run is None:
             return SettlementOutcome.FENCED
+        snapshot_epoch = snapshot.get("epoch", 0)
+        run_epoch = run.get("reply_epoch", 0)
+        if (
+            isinstance(snapshot_epoch, bool)
+            or not isinstance(snapshot_epoch, int)
+            or isinstance(run_epoch, bool)
+            or not isinstance(run_epoch, int)
+            or snapshot_epoch != run_epoch
+        ):
+            return SettlementOutcome.FENCED
         purpose = snapshot.get("purpose")
         expected_status = (
             RunStatus.APPROVED.value
@@ -1466,6 +1476,16 @@ class InMemoryRepo:
                 )
                 run = self.runs.get(str(row["run_id"]))
                 if snapshot is None or run is None:
+                    return SettlementOutcome.FENCED
+                snapshot_epoch = snapshot.get("epoch", 0)
+                run_epoch = run.get("reply_epoch", 0)
+                if (
+                    isinstance(snapshot_epoch, bool)
+                    or not isinstance(snapshot_epoch, int)
+                    or isinstance(run_epoch, bool)
+                    or not isinstance(run_epoch, int)
+                    or snapshot_epoch != run_epoch
+                ):
                     return SettlementOutcome.FENCED
                 purpose = snapshot.get("purpose")
                 expected_status = (

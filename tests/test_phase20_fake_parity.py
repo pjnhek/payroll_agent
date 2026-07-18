@@ -337,8 +337,13 @@ def test_fake_stale_epoch_send_settlement_rejects_without_mutation(fake_repo) ->
     assert fake_repo.delivery_attempts == before_attempts
     assert fake_repo.load_run(run_id) == before_run
     assert fake_repo.get_job(claimed.id) == old_job
-    assert fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])["message_id"] == old_snapshot["message_id"]
-    assert fake_repo.load_outbound_snapshot(run_id, current_snapshot["email_id"])["message_id"] == current_snapshot["message_id"]
+    old_frozen = fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])
+    current_frozen = fake_repo.load_outbound_snapshot(
+        run_id, current_snapshot["email_id"]
+    )
+    assert old_frozen is not None and old_frozen["message_id"] == old_snapshot["message_id"]
+    assert current_frozen is not None
+    assert current_frozen["message_id"] == current_snapshot["message_id"]
     assert all(
         message["send_state"] == "reserved"
         for message in fake_repo.outbound[str(run_id)]
@@ -366,8 +371,13 @@ def test_fake_stale_epoch_final_lease_rejects_without_mutation(fake_repo) -> Non
     assert fake_repo.delivery_attempts == before_attempts
     assert fake_repo.load_run(run_id) == before_run
     assert fake_repo.get_job(claimed.id) == old_job
-    assert fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])["message_id"] == old_snapshot["message_id"]
-    assert fake_repo.load_outbound_snapshot(run_id, current_snapshot["email_id"])["message_id"] == current_snapshot["message_id"]
+    old_frozen = fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])
+    current_frozen = fake_repo.load_outbound_snapshot(
+        run_id, current_snapshot["email_id"]
+    )
+    assert old_frozen is not None and old_frozen["message_id"] == old_snapshot["message_id"]
+    assert current_frozen is not None
+    assert current_frozen["message_id"] == current_snapshot["message_id"]
     assert all(
         message["send_state"] == "reserved"
         for message in fake_repo.outbound[str(run_id)]
