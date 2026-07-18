@@ -30,6 +30,7 @@ import inspect
 import json
 import os
 import pathlib
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -885,11 +886,37 @@ def test_outbound_snapshot_schema_declares_append_only_evidence() -> None:
     assert "UNIQUE (snapshot_id, ordinal)" in schema
     assert "content BYTEA NOT NULL" in schema
     assert "attempt_state IN ('attempting', 'retry_scheduled', 'sent', 'needs_operator')" in schema
-    assert (
-        "failure_category IN ('none', 'transport', 'provider_5xx', 'rate_limited', "
-        "'payload_mismatch', 'authorization', 'validation', 'configuration', 'unknown', "
-        "'final_attempt_lease_expired')" in schema
+    fresh_match = re.search(
+        r"CREATE TABLE IF NOT EXISTS outbound_delivery_attempts \(.*?"
+        r"failure_category\s+TEXT\s+NOT NULL\s+CHECK \(failure_category IN \(([^)]*)\)\)",
+        schema,
+        re.DOTALL,
     )
+    repair_match = re.search(
+        r"ADD CONSTRAINT outbound_delivery_attempts_failure_category_check\s+"
+        r"CHECK \(failure_category IN \(([^)]*)\)\)",
+        schema,
+        re.DOTALL,
+    )
+    assert fresh_match is not None
+    assert repair_match is not None
+    fresh_categories = set(re.findall(r"'([^']+)'", fresh_match.group(1)))
+    repaired_categories = set(re.findall(r"'([^']+)'", repair_match.group(1)))
+    assert fresh_categories == repaired_categories
+
+    from app.db.repo.job_settlement import _delivery_failure_category
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    emitted_category = _delivery_failure_category(
+        PipelineResult(
+            outcome=PipelineOutcome.TERMINAL,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+        )
+    )
+    assert emitted_category == "authorization_expired"
+    assert emitted_category in fresh_categories
+    assert emitted_category in repaired_categories
 
     for trigger in (
         "trg_outbound_email_snapshots_append_only",
