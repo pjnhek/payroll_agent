@@ -741,10 +741,10 @@ def test_send_handler_noops_before_gateway_for_stale_epoch(
     assert current_snapshot["message_id"] != old_snapshot["message_id"]
 
 
-def test_delivery_settlement_rejects_stale_epoch_without_current_reservation_mutation(
+def test_invalid_context_stale_epoch_retirement_after_epoch_fence(
     seeded_db,
 ) -> None:
-    """Settlement fences an old lease before any delivery or payroll write."""
+    """Epoch fencing retires only the obsolete leased send row."""
     from app.db import repo
     from app.db.repo.job_settlement import SettlementOutcome
     from app.models.job import JobKind
@@ -795,7 +795,7 @@ def test_delivery_settlement_rejects_stale_epoch_without_current_reservation_mut
     assert before is not None
     assert repo.settle_outbound_delivery_job(
         old_job, PipelineResult(outcome=PipelineOutcome.OK)
-    ) is SettlementOutcome.FENCED
+    ) is SettlementOutcome.INVALID_CONTEXT
 
     with repo.get_connection() as conn:
         old_state = conn.execute(
@@ -821,10 +821,15 @@ def test_delivery_settlement_rejects_stale_epoch_without_current_reservation_mut
     assert old_attempts == (0,)
     assert current_attempts == (0,)
     assert after == before
-    assert repo.get_job(old_job.id)["state"] == "leased"
+    old_job_row = repo.get_job(old_job.id)
+    assert old_job_row is not None
+    assert old_job_row["state"] == "done"
+    assert old_job_row["lease_token"] is None
+    assert old_job_row["leased_until"] is None
+    assert old_job_row["last_error"] == "delivery:invalid_context"
 
 
-def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
+def test_final_send_lease_retires_stale_epoch_without_current_review_mutation(
     seeded_db,
 ) -> None:
     """The final-lease reaper cannot review an old epoch as current delivery."""
@@ -883,7 +888,7 @@ def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
 
     before = repo.load_run(run_id)
     assert before is not None
-    assert repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
+    assert repo.reap_expired_final_attempt() is SettlementOutcome.INVALID_CONTEXT
 
     with repo.get_connection() as conn:
         old_state = conn.execute(
@@ -905,7 +910,12 @@ def test_final_send_lease_rejects_stale_epoch_without_current_review_mutation(
     assert current_state == ("reserved",)
     assert attempts == (0,)
     assert after == before
-    assert repo.get_job(old_job.id)["state"] == "leased"
+    old_job_row = repo.get_job(old_job.id)
+    assert old_job_row is not None
+    assert old_job_row["state"] == "dead"
+    assert old_job_row["lease_token"] is None
+    assert old_job_row["leased_until"] is None
+    assert old_job_row["last_error"] == "delivery:invalid_context"
 
 
 def _payroll_status_snapshot() -> list[tuple[object, ...]]:

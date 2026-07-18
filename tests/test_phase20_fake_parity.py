@@ -315,7 +315,9 @@ def test_fake_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review
     }
 
 
-def test_fake_stale_epoch_send_settlement_rejects_without_mutation(fake_repo) -> None:
+def test_fake_stale_epoch_send_settlement_retires_invalid_lease_without_mutation(
+    fake_repo,
+) -> None:
     from app.db.repo.job_settlement import SettlementOutcome
 
     run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
@@ -325,18 +327,21 @@ def test_fake_stale_epoch_send_settlement_rejects_without_mutation(fake_repo) ->
     )
     before_run = dict(fake_repo.load_run(run_id))
     before_attempts = list(fake_repo.delivery_attempts)
-    old_job = dict(fake_repo.get_job(claimed.id))
-
     assert (
         fake_repo.settle_outbound_delivery_job(
             claimed, PipelineResult(outcome=PipelineOutcome.OK)
         )
-        is SettlementOutcome.FENCED
+        is SettlementOutcome.INVALID_CONTEXT
     )
 
     assert fake_repo.delivery_attempts == before_attempts
     assert fake_repo.load_run(run_id) == before_run
-    assert fake_repo.get_job(claimed.id) == old_job
+    old_job = fake_repo.get_job(claimed.id)
+    assert old_job is not None
+    assert old_job["state"] == "done"
+    assert old_job["lease_token"] is None
+    assert old_job["leased_until"] is None
+    assert old_job["last_error"] == "delivery:invalid_context"
     old_frozen = fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])
     current_frozen = fake_repo.load_outbound_snapshot(
         run_id, current_snapshot["email_id"]
@@ -350,7 +355,9 @@ def test_fake_stale_epoch_send_settlement_rejects_without_mutation(fake_repo) ->
     )
 
 
-def test_fake_stale_epoch_final_lease_rejects_without_mutation(fake_repo) -> None:
+def test_fake_stale_epoch_final_lease_retires_invalid_lease_without_mutation(
+    fake_repo,
+) -> None:
     from app.db.repo.job_settlement import SettlementOutcome
 
     run_id, old_snapshot, claimed = _seed_send_job(fake_repo)
@@ -364,13 +371,16 @@ def test_fake_stale_epoch_final_lease_rejects_without_mutation(fake_repo) -> Non
     )
     before_run = dict(fake_repo.load_run(run_id))
     before_attempts = list(fake_repo.delivery_attempts)
-    old_job = dict(fake_repo.get_job(claimed.id))
-
-    assert fake_repo.reap_expired_final_attempt() is SettlementOutcome.FENCED
+    assert fake_repo.reap_expired_final_attempt() is SettlementOutcome.INVALID_CONTEXT
 
     assert fake_repo.delivery_attempts == before_attempts
     assert fake_repo.load_run(run_id) == before_run
-    assert fake_repo.get_job(claimed.id) == old_job
+    old_job = fake_repo.get_job(claimed.id)
+    assert old_job is not None
+    assert old_job["state"] == "dead"
+    assert old_job["lease_token"] is None
+    assert old_job["leased_until"] is None
+    assert old_job["last_error"] == "delivery:invalid_context"
     old_frozen = fake_repo.load_outbound_snapshot(run_id, old_snapshot["email_id"])
     current_frozen = fake_repo.load_outbound_snapshot(
         run_id, current_snapshot["email_id"]
