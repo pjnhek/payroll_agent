@@ -103,10 +103,12 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import psycopg
 import pytest
 
+from app.models.job import Job
 from app.models.status import RunStatus
 from app.pipeline.result import (
     PipelineOutcome,
@@ -1583,7 +1585,7 @@ def test_genuine_claim_race_exactly_one_winner(seeded_db) -> None:
     OS threads calling repo.claim_job() directly. Exactly one must come back
     non-None, and it must be THIS test's own job — never a stranger's."""
     from app.db import repo
-    from app.models.job import Job, JobKind
+    from app.models.job import JobKind
 
     run_id = _seed_run_for_queue_proof()
     enqueued_id = repo.enqueue_job(
@@ -1622,6 +1624,267 @@ def test_genuine_claim_race_exactly_one_winner(seeded_db) -> None:
     winner = winners[0]
     assert winner.id == enqueued_id, "the winner must be THIS test's own job"
     assert winner.attempts == 1
+
+
+# ---------------------------------------------------------------------------
+# Provider handoff / retrigger interleaving: real connections, post-commit pause
+# ---------------------------------------------------------------------------
+
+
+def _seed_claimed_confirmation_send() -> tuple[uuid.UUID, dict[str, Any], Job]:
+    """Seed and claim one current-epoch confirmation SEND_OUTBOUND job."""
+    from app.db import repo
+    from app.models.job import JobKind
+
+    run_id = _seed_run_for_queue_proof()
+    repo.set_status(run_id, RunStatus.APPROVED)
+    snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=f"<handoff-race-{uuid.uuid4()}@test.example>",
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@coastalcleaning.example",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen confirmation",
+        body_text="Frozen confirmation body",
+        attachments=(),
+    )
+    job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(snapshot["email_id"]),
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    job = repo.claim_job()
+    assert job is not None and job.id == job_id
+    return run_id, snapshot, job
+
+
+def _backend_pid(conn: psycopg.Connection) -> int:
+    row = conn.execute("SELECT pg_backend_pid()").fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_provider_handoff_blocks_epoch_bump_before_gateway(
+    seeded_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A committed active handoff blocks the only dangerous epoch-bump window.
+
+    This is a two-connection, sync handler/repository proof. The wrapper pauses
+    *after* the real authorizer committed its handoff and *before* the unmodified
+    handler reaches its gateway seam; the gateway is only a passive recorder.
+    Falsifying mutation: removing clear_reply_context's active-handoff predicate
+    makes the retrigger advance to epoch 1 and this test fail.
+    """
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.queue.handlers import send_outbound
+
+    run_id, snapshot, job = _seed_claimed_confirmation_send()
+    before_run = repo.load_run(run_id)
+    assert before_run is not None
+    original_snapshot = repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+    assert original_snapshot is not None
+
+    barrier = threading.Barrier(2, timeout=30)
+    return_to_handler = threading.Event()
+    barrier_passes: list[str] = []
+    worker_pid: list[int] = []
+    retrigger_pid: list[int] = []
+    gateway_epochs: list[int] = []
+    gateway_message_ids: list[str] = []
+    worker_errors: list[BaseException] = []
+    retrigger_errors: list[BaseException] = []
+    real_authorize = repo.authorize_outbound_provider_handoff
+
+    def authorize_then_pause(leased_job):
+        with repo.get_connection() as conn:
+            worker_pid.append(_backend_pid(conn))
+            with conn.transaction():
+                authorization = real_authorize(leased_job, conn=conn)
+            barrier.wait()
+            barrier_passes.append("worker")
+            assert return_to_handler.wait(timeout=30), "retrigger did not release worker"
+            return authorization
+
+    def provider_spy(frozen_snapshot: dict[str, object], **_kwargs: object) -> PipelineResult:
+        gateway_epochs.append(_read_reply_epoch(run_id))
+        gateway_message_ids.append(str(frozen_snapshot["message_id"]))
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    def run_handler() -> None:
+        try:
+            assert send_outbound.handle_send_outbound(job).outcome is PipelineOutcome.OK
+        except BaseException as exc:  # surface thread failures in the test thread
+            worker_errors.append(exc)
+
+    def retrigger_after_authorization() -> None:
+        try:
+            with repo.get_connection() as conn:
+                retrigger_pid.append(_backend_pid(conn))
+                barrier.wait()
+                barrier_passes.append("retrigger")
+                with (
+                    pytest.raises(repo.ActiveOutboundProviderHandoffError),
+                    conn.transaction(),
+                ):
+                    repo.clear_reply_context(run_id, conn=conn)
+                assert _read_reply_epoch(run_id) == 0
+        except BaseException as exc:  # always unblock the handler, then fail visibly
+            retrigger_errors.append(exc)
+        finally:
+            return_to_handler.set()
+
+    monkeypatch.setattr(
+        repo, "authorize_outbound_provider_handoff", authorize_then_pause
+    )
+    from app.email import gateway
+
+    monkeypatch.setattr(gateway, "send_reserved_outbound_snapshot", provider_spy)
+    worker = threading.Thread(target=run_handler, name="handoff-race-worker")
+    retrigger = threading.Thread(
+        target=retrigger_after_authorization, name="handoff-race-retrigger"
+    )
+    worker.start()
+    retrigger.start()
+    worker.join(timeout=35)
+    retrigger.join(timeout=35)
+    return_to_handler.set()
+
+    assert not worker.is_alive(), "worker did not leave its post-authorization pause"
+    assert not retrigger.is_alive(), "retrigger did not leave its barrier/transaction"
+    assert worker_errors == []
+    assert retrigger_errors == []
+    assert sorted(barrier_passes) == ["retrigger", "worker"]
+    assert len(worker_pid) == len(retrigger_pid) == 1
+    assert worker_pid[0] != retrigger_pid[0], "the race needs two real backend connections"
+    assert _read_reply_epoch(run_id) == 0
+    assert repo.load_run(run_id) == before_run
+    assert repo.load_outbound_snapshot(run_id, snapshot["email_id"]) == original_snapshot
+    assert gateway_epochs == [0]
+    assert gateway_message_ids == [str(snapshot["message_id"])]
+    with repo.get_connection() as conn:
+        run_jobs = conn.execute(
+            "SELECT count(*) FROM jobs WHERE run_id = %s AND kind = 'run_pipeline'",
+            (str(run_id),),
+        ).fetchone()
+    assert run_jobs == (0,), "blocked retrigger must not enqueue or wake a pipeline job"
+
+    assert (
+        repo.settle_outbound_delivery_job(job, PipelineResult(outcome=PipelineOutcome.OK))
+        is SettlementOutcome.DONE
+    )
+    settled = repo.get_job(job.id)
+    assert settled is not None and settled["state"] == "done"
+
+
+def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_released(
+    seeded_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The barrier catches stale provider work when this test releases its fence.
+
+    This intentionally unsafe direct-SQL setup is confined to the resettable
+    queueproof fixture. Falsifying mutation: retaining the handoff instead of
+    releasing it makes clear_reply_context reject the bump, so the required epoch-1
+    gateway observation fails. Together with the protected companion, that proves
+    the schedule can expose the actual forbidden interleaving.
+    """
+    from app.db import repo
+    from app.db.repo.job_settlement import SettlementOutcome
+    from app.queue.handlers import send_outbound
+
+    run_id, _snapshot, job = _seed_claimed_confirmation_send()
+    barrier = threading.Barrier(2, timeout=30)
+    return_to_handler = threading.Event()
+    barrier_passes: list[str] = []
+    worker_pid: list[int] = []
+    retrigger_pid: list[int] = []
+    authorizations: list[object] = []
+    gateway_epochs: list[int] = []
+    worker_errors: list[BaseException] = []
+    retrigger_errors: list[BaseException] = []
+    real_authorize = repo.authorize_outbound_provider_handoff
+
+    def authorize_then_pause(leased_job):
+        with repo.get_connection() as conn:
+            worker_pid.append(_backend_pid(conn))
+            with conn.transaction():
+                authorization = real_authorize(leased_job, conn=conn)
+            authorizations.append(authorization)
+            barrier.wait()
+            barrier_passes.append("worker")
+            assert return_to_handler.wait(timeout=30), "control retrigger did not release worker"
+            return authorization
+
+    def provider_spy(_frozen_snapshot: dict[str, object], **_kwargs: object) -> PipelineResult:
+        gateway_epochs.append(_read_reply_epoch(run_id))
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    def run_handler() -> None:
+        try:
+            assert send_outbound.handle_send_outbound(job).outcome is PipelineOutcome.OK
+        except BaseException as exc:
+            worker_errors.append(exc)
+
+    def release_fence_then_retrigger() -> None:
+        try:
+            with repo.get_connection() as conn:
+                retrigger_pid.append(_backend_pid(conn))
+                barrier.wait()
+                barrier_passes.append("retrigger")
+                assert len(authorizations) == 1
+                handoff_id = getattr(authorizations[0], "handoff_id", None)
+                assert handoff_id is not None
+                with conn.transaction():
+                    released = conn.execute(
+                        "UPDATE outbound_provider_handoffs "
+                        "SET released_at = now(), release_reason = 'finalized' "
+                        "WHERE id = %s AND released_at IS NULL RETURNING id",
+                        (str(handoff_id),),
+                    ).fetchone()
+                    assert released is not None
+                    assert repo.clear_reply_context(run_id, conn=conn) == 1
+        except BaseException as exc:
+            retrigger_errors.append(exc)
+        finally:
+            return_to_handler.set()
+
+    monkeypatch.setattr(
+        repo, "authorize_outbound_provider_handoff", authorize_then_pause
+    )
+    from app.email import gateway
+
+    monkeypatch.setattr(gateway, "send_reserved_outbound_snapshot", provider_spy)
+    worker = threading.Thread(target=run_handler, name="handoff-control-worker")
+    retrigger = threading.Thread(
+        target=release_fence_then_retrigger, name="handoff-control-retrigger"
+    )
+    worker.start()
+    retrigger.start()
+    worker.join(timeout=35)
+    retrigger.join(timeout=35)
+    return_to_handler.set()
+
+    assert not worker.is_alive()
+    assert not retrigger.is_alive()
+    assert worker_errors == []
+    assert retrigger_errors == []
+    assert sorted(barrier_passes) == ["retrigger", "worker"]
+    assert len(worker_pid) == len(retrigger_pid) == 1
+    assert worker_pid[0] != retrigger_pid[0]
+    assert _read_reply_epoch(run_id) == 1
+    assert gateway_epochs == [1], "the control must observe the stale gateway epoch"
+    assert (
+        repo.settle_outbound_delivery_job(job, PipelineResult(outcome=PipelineOutcome.OK))
+        is SettlementOutcome.INVALID_CONTEXT
+    )
+    settled = repo.get_job(job.id)
+    assert settled is not None and settled["state"] == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -1814,7 +2077,7 @@ def test_skip_locked_steps_over_a_row_another_worker_is_holding(seeded_db) -> No
 
     from app.config import get_settings
     from app.db import repo
-    from app.models.job import Job, JobKind
+    from app.models.job import JobKind
 
     claim_timeout_s = 5.0
 
