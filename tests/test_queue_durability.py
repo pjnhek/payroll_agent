@@ -1994,12 +1994,6 @@ def test_provider_handoff_authorization_expired_at_gateway_boundary_enters_revie
     assert open_jobs == (0,)
 
 
-def _backend_pid(conn: psycopg.Connection) -> int:
-    row = conn.execute("SELECT pg_backend_pid()").fetchone()
-    assert row is not None
-    return int(row[0])
-
-
 def test_provider_handoff_blocks_epoch_bump_before_gateway(
     seeded_db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2024,8 +2018,8 @@ def test_provider_handoff_blocks_epoch_bump_before_gateway(
     barrier = threading.Barrier(2, timeout=30)
     return_to_handler = threading.Event()
     barrier_passes: list[str] = []
-    worker_pid: list[int] = []
-    retrigger_pid: list[int] = []
+    worker_connection_ids: list[int] = []
+    retrigger_connection_ids: list[int] = []
     gateway_epochs: list[int] = []
     gateway_message_ids: list[str] = []
     worker_errors: list[BaseException] = []
@@ -2034,8 +2028,11 @@ def test_provider_handoff_blocks_epoch_bump_before_gateway(
 
     def authorize_then_pause(leased_job):
         with repo.get_connection() as conn:
-            worker_pid.append(_backend_pid(conn))
             with conn.transaction():
+                # No SQL may precede this outer transaction. Otherwise psycopg opens
+                # an implicit transaction and this block becomes only a savepoint,
+                # leaving the handoff and run lock uncommitted at the barrier.
+                worker_connection_ids.append(id(conn))
                 authorization = real_authorize(leased_job, conn=conn)
             barrier.wait()
             barrier_passes.append("worker")
@@ -2056,7 +2053,8 @@ def test_provider_handoff_blocks_epoch_bump_before_gateway(
     def retrigger_after_authorization() -> None:
         try:
             with repo.get_connection() as conn:
-                retrigger_pid.append(_backend_pid(conn))
+                with conn.transaction():
+                    retrigger_connection_ids.append(id(conn))
                 barrier.wait()
                 barrier_passes.append("retrigger")
                 with (
@@ -2091,8 +2089,8 @@ def test_provider_handoff_blocks_epoch_bump_before_gateway(
     assert worker_errors == []
     assert retrigger_errors == []
     assert sorted(barrier_passes) == ["retrigger", "worker"]
-    assert len(worker_pid) == len(retrigger_pid) == 1
-    assert worker_pid[0] != retrigger_pid[0], "the race needs two real backend connections"
+    assert len(worker_connection_ids) == len(retrigger_connection_ids) == 1
+    assert worker_connection_ids[0] != retrigger_connection_ids[0]
     assert _read_reply_epoch(run_id) == 0
     assert repo.load_run(run_id) == before_run
     assert repo.load_outbound_snapshot(run_id, snapshot["email_id"]) == original_snapshot
@@ -2132,8 +2130,8 @@ def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_rele
     barrier = threading.Barrier(2, timeout=30)
     return_to_handler = threading.Event()
     barrier_passes: list[str] = []
-    worker_pid: list[int] = []
-    retrigger_pid: list[int] = []
+    worker_connection_ids: list[int] = []
+    retrigger_connection_ids: list[int] = []
     authorizations: list[object] = []
     gateway_epochs: list[int] = []
     worker_errors: list[BaseException] = []
@@ -2142,8 +2140,8 @@ def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_rele
 
     def authorize_then_pause(leased_job):
         with repo.get_connection() as conn:
-            worker_pid.append(_backend_pid(conn))
             with conn.transaction():
+                worker_connection_ids.append(id(conn))
                 authorization = real_authorize(leased_job, conn=conn)
             authorizations.append(authorization)
             barrier.wait()
@@ -2164,7 +2162,8 @@ def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_rele
     def release_fence_then_retrigger() -> None:
         try:
             with repo.get_connection() as conn:
-                retrigger_pid.append(_backend_pid(conn))
+                with conn.transaction():
+                    retrigger_connection_ids.append(id(conn))
                 barrier.wait()
                 barrier_passes.append("retrigger")
                 assert len(authorizations) == 1
@@ -2205,8 +2204,8 @@ def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_rele
     assert worker_errors == []
     assert retrigger_errors == []
     assert sorted(barrier_passes) == ["retrigger", "worker"]
-    assert len(worker_pid) == len(retrigger_pid) == 1
-    assert worker_pid[0] != retrigger_pid[0]
+    assert len(worker_connection_ids) == len(retrigger_connection_ids) == 1
+    assert worker_connection_ids[0] != retrigger_connection_ids[0]
     assert _read_reply_epoch(run_id) == 1
     assert gateway_epochs == [1], "the control must observe the stale gateway epoch"
     assert (
