@@ -317,6 +317,133 @@ def test_fake_expired_authorization_releases_exact_handoff_to_review(fake_repo) 
 
 
 @pytest.mark.parametrize(
+    ("purpose", "review_reason"),
+    [
+        ("confirmation", "DeliveryReview"),
+        ("clarification", "ClarificationDeliveryReview"),
+    ],
+)
+def test_fake_pre_provider_expiry_enters_purpose_review_without_handoff(
+    fake_repo, purpose, review_reason
+) -> None:
+    """A closed authorizer window has no provider authority to release."""
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo, purpose=purpose, authorize=False)
+    fake_repo.outbound_snapshots[str(snapshot["email_id"])]["payload"]["reserved_at"] = (
+        datetime.now(UTC) - timedelta(hours=20)
+    )
+    before_snapshot = fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"])
+
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            claimed,
+            _delivery_result(
+                PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED, PipelineOutcome.TERMINAL
+            ),
+        )
+        is SettlementOutcome.DONE
+    )
+
+    job = fake_repo.get_job(claimed.id)
+    run = fake_repo.load_run(run_id)
+    assert fake_repo.outbound_provider_handoffs == {}
+    assert job is not None and job["state"] == "done"
+    assert job["lease_token"] is None and job["leased_until"] is None
+    assert run["status"] == RunStatus.NEEDS_OPERATOR.value
+    assert run["error_reason"] == review_reason
+    assert run["error_detail"] == "delivery_review:authorization_expired"
+    assert fake_repo.delivery_attempts == [
+        {
+            "snapshot_id": snapshot["snapshot_id"],
+            "attempt_state": "needs_operator",
+            "failure_category": "authorization_expired",
+        }
+    ]
+    assert fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"]) == before_snapshot
+    assert fake_repo.outbound[str(run_id)][0]["send_state"] == "reserved"
+
+
+def test_fake_pre_provider_branch_rejects_other_no_handoff_terminal_results(fake_repo) -> None:
+    """Missing provider authority does not grant arbitrary terminal review writes."""
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo, authorize=False)
+    before_run = dict(fake_repo.load_run(run_id))
+
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            claimed,
+            _delivery_result(
+                PipelineReason.DELIVERY_VALIDATION_FAILURE, PipelineOutcome.TERMINAL
+            ),
+        )
+        is SettlementOutcome.INVALID_CONTEXT
+    )
+
+    assert fake_repo.delivery_attempts == []
+    assert fake_repo.load_run(run_id) == before_run
+    assert fake_repo.outbound_provider_handoffs == {}
+    assert fake_repo.get_job(claimed.id)["state"] == "done"
+    assert fake_repo.load_outbound_snapshot(run_id, snapshot["email_id"]) is not None
+
+
+def test_fake_pre_provider_expiry_rejects_a_foreign_active_handoff(fake_repo) -> None:
+    """The no-handoff branch cannot write review evidence around another authority."""
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo, authorize=False)
+    authorization = fake_repo.authorize_outbound_provider_handoff(claimed)
+    foreign = fake_repo.outbound_provider_handoffs[str(authorization.handoff_id)]
+    foreign["email_id"] = uuid.uuid4()
+    fake_repo.outbound_snapshots[str(snapshot["email_id"])]["payload"]["reserved_at"] = (
+        datetime.now(UTC) - timedelta(hours=20)
+    )
+    before_run = dict(fake_repo.load_run(run_id))
+
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            claimed,
+            _delivery_result(
+                PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED, PipelineOutcome.TERMINAL
+            ),
+        )
+        is SettlementOutcome.INVALID_CONTEXT
+    )
+
+    assert fake_repo.delivery_attempts == []
+    assert fake_repo.load_run(run_id) == before_run
+    assert fake_repo.get_job(claimed.id)["state"] == "done"
+    assert foreign["released_at"] is None
+
+
+def test_fake_pre_provider_expiry_lost_lease_writes_no_review_evidence(fake_repo) -> None:
+    """A stale worker cannot settle the replacement lease's expired reservation."""
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id, snapshot, claimed = _seed_send_job(fake_repo, authorize=False)
+    fake_repo.outbound_snapshots[str(snapshot["email_id"])]["payload"]["reserved_at"] = (
+        datetime.now(UTC) - timedelta(hours=20)
+    )
+    fake_repo.jobs[str(claimed.id)]["lease_token"] = uuid.uuid4()
+    before_run = dict(fake_repo.load_run(run_id))
+
+    assert (
+        fake_repo.settle_outbound_delivery_job(
+            claimed,
+            _delivery_result(
+                PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED, PipelineOutcome.TERMINAL
+            ),
+        )
+        is SettlementOutcome.LOST_LEASE
+    )
+
+    assert fake_repo.delivery_attempts == []
+    assert fake_repo.load_run(run_id) == before_run
+    assert fake_repo.get_job(claimed.id)["state"] == "leased"
+
+
+@pytest.mark.parametrize(
     "reason",
     [PipelineReason.DELIVERY_TIMEOUT, PipelineReason.DELIVERY_SERVER_FAILURE],
 )

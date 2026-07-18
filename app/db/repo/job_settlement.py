@@ -260,6 +260,68 @@ def _lock_current_provider_handoff(
     )
 
 
+def _lock_any_active_provider_handoff(
+    conn: psycopg.Connection, run_id: uuid.UUID
+) -> bool:
+    """Lock the one active handoff, if any, before a no-handoff settlement.
+
+    The partial unique index permits at most one active handoff per run.  A
+    pre-provider expiry may write review evidence only when that slot is empty;
+    otherwise the regular exact-owner handoff path below remains authoritative.
+    """
+    row = conn.execute(
+        "SELECT id FROM outbound_provider_handoffs WHERE run_id = %s "
+        "AND released_at IS NULL FOR UPDATE",
+        (str(run_id),),
+    ).fetchone()
+    return row is not None
+
+
+def _settle_delivery_review(
+    conn: psycopg.Connection,
+    *,
+    job: Job,
+    result: PipelineResult,
+    run_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    purpose: str,
+    expected_status: RunStatus,
+) -> SettlementOutcome:
+    """Append bounded review evidence and complete the exact leased delivery job."""
+    category = _delivery_failure_category(result)
+    _append_delivery_attempt(
+        conn,
+        snapshot_id=snapshot_id,
+        attempt_state="needs_operator",
+        failure_category=category,
+    )
+    review_reason = (
+        "DeliveryReview" if purpose == "confirmation" else "ClarificationDeliveryReview"
+    )
+    reviewed = conn.execute(
+        "UPDATE payroll_runs SET status = 'needs_operator', error_reason = %s, "
+        "error_detail = %s, updated_at = now() WHERE id = %s AND status = %s "
+        "RETURNING id",
+        (
+            review_reason,
+            f"delivery_review:{category}",
+            str(run_id),
+            expected_status.value,
+        ),
+    ).fetchone()
+    if reviewed is None:
+        raise RuntimeError("locked delivery review lost its run state")
+    completed = conn.execute(
+        "UPDATE jobs SET state = 'done', last_error = %s, lease_token = NULL, "
+        "leased_until = NULL, updated_at = now() WHERE id = %s "
+        "AND state = 'leased' AND lease_token = %s RETURNING id",
+        (result.diagnostic_code, str(job.id), str(job.lease_token)),
+    ).fetchone()
+    if completed is None:
+        raise RuntimeError("locked delivery review lost its lease")
+    return SettlementOutcome.DONE
+
+
 def _complete_confirmation_after_send(
     conn: psycopg.Connection,
     run_id: uuid.UUID,
@@ -398,6 +460,24 @@ def settle_outbound_delivery_job(
                 raise RuntimeError("locked record-only delivery lost its lease")
             return SettlementOutcome.DONE
 
+        pre_provider_expiry = (
+            result.outcome is PipelineOutcome.TERMINAL
+            and result.stage is PipelineStage.DELIVERY
+            and result.reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED
+            and not record_only
+            and not replay_window_open
+        )
+        if pre_provider_expiry and not _lock_any_active_provider_handoff(c, stored_run_id):
+            return _settle_delivery_review(
+                c,
+                job=job,
+                result=result,
+                run_id=stored_run_id,
+                snapshot_id=snapshot_id,
+                purpose=purpose,
+                expected_status=expected_status,
+            )
+
         authorization = _lock_current_provider_handoff(
             c,
             job=job,
@@ -479,39 +559,15 @@ def settle_outbound_delivery_job(
 
         if not release_outbound_provider_handoff_to_delivery_review(authorization, conn=c):
             raise RuntimeError("locked delivery review lost its provider handoff")
-        _append_delivery_attempt(
+        return _settle_delivery_review(
             c,
+            job=job,
+            result=result,
+            run_id=stored_run_id,
             snapshot_id=snapshot_id,
-            attempt_state="needs_operator",
-            failure_category=category,
+            purpose=purpose,
+            expected_status=expected_status,
         )
-        review_reason = (
-            "DeliveryReview"
-            if purpose == "confirmation"
-            else "ClarificationDeliveryReview"
-        )
-        reviewed = c.execute(
-            "UPDATE payroll_runs SET status = 'needs_operator', error_reason = %s, "
-            "error_detail = %s, updated_at = now() WHERE id = %s AND status = %s "
-            "RETURNING id",
-            (
-                review_reason,
-                f"delivery_review:{category}",
-                str(stored_run_id),
-                expected_status.value,
-            ),
-        ).fetchone()
-        if reviewed is None:
-            raise RuntimeError("locked delivery review lost its run state")
-        completed = c.execute(
-            "UPDATE jobs SET state = 'done', last_error = %s, lease_token = NULL, "
-            "leased_until = NULL, updated_at = now() WHERE id = %s "
-            "AND state = 'leased' AND lease_token = %s RETURNING id",
-            (result.diagnostic_code, str(job.id), str(job.lease_token)),
-        ).fetchone()
-        if completed is None:
-            raise RuntimeError("locked delivery review lost its lease")
-        return SettlementOutcome.DONE
 
 
 def _settle_ingest_job(

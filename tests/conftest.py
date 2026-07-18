@@ -1478,7 +1478,12 @@ class InMemoryRepo:
         from app.db.repo.job_settlement import SettlementOutcome
         from app.models.job import JobKind
         from app.models.status import RunStatus
-        from app.pipeline.result import PipelineOutcome, PipelineReason, next_delivery_attempt_at
+        from app.pipeline.result import (
+            PipelineOutcome,
+            PipelineReason,
+            PipelineStage,
+            next_delivery_attempt_at,
+        )
 
         row = self.jobs.get(str(job.id))
         if (
@@ -1557,6 +1562,41 @@ class InMemoryRepo:
             row["state"] = "done"
             row["lease_token"] = None
             row["leased_until"] = None
+            return SettlementOutcome.DONE
+
+        pre_provider_expiry = (
+            result.outcome is PipelineOutcome.TERMINAL
+            and result.stage is PipelineStage.DELIVERY
+            and result.reason is PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED
+            and run.get("record_only") is not True
+        )
+        reserved_at = snapshot.get("reserved_at")
+        has_active_handoff = any(
+            candidate.get("released_at") is None and candidate["run_id"] == job.run_id
+            for candidate in self.outbound_provider_handoffs.values()
+        )
+        if (
+            pre_provider_expiry
+            and isinstance(reserved_at, datetime)
+            and reserved_at + timedelta(hours=20) <= datetime.now(UTC)
+            and not has_active_handoff
+        ):
+            self._append_delivery_attempt(
+                snapshot_id=snapshot["snapshot_id"],
+                attempt_state="needs_operator",
+                failure_category="authorization_expired",
+            )
+            run["status"] = RunStatus.NEEDS_OPERATOR.value
+            run["error_reason"] = (
+                "DeliveryReview"
+                if purpose == "confirmation"
+                else "ClarificationDeliveryReview"
+            )
+            run["error_detail"] = "delivery_review:authorization_expired"
+            row["state"] = "done"
+            row["lease_token"] = None
+            row["leased_until"] = None
+            row["last_error"] = result.diagnostic_code
             return SettlementOutcome.DONE
 
         handoff = next(

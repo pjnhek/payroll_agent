@@ -1071,6 +1071,67 @@ def test_delivery_settlement_moves_expired_or_terminal_delivery_to_review(
     assert "state = 'done', last_error = %s" in sql
 
 
+@pytest.mark.parametrize(
+    ("purpose", "status", "review_reason"),
+    [
+        ("confirmation", "approved", "DeliveryReview"),
+        ("clarification", "awaiting_reply", "ClarificationDeliveryReview"),
+    ],
+)
+def test_pre_provider_expiry_settlement_requires_no_active_handoff_and_writes_review(
+    fake_conn: Any, purpose: str, status: str, review_reason: str
+) -> None:
+    """The authorizer's no-provider expiry settles the exact lease without release."""
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.models.job import Job, JobKind
+    from app.pipeline.result import PipelineOutcome, PipelineReason, PipelineResult, PipelineStage
+
+    run_id = uuid.uuid4()
+    email_id = uuid.uuid4()
+    job = Job(
+        id=uuid.uuid4(),
+        kind=JobKind.SEND_OUTBOUND,
+        run_id=run_id,
+        email_id=email_id,
+        attempts=1,
+        max_attempts=8,
+        lease_token=uuid.uuid4(),
+    )
+    fake_conn.script_fetchone((1, 8, run_id, "send_outbound", email_id))
+    fake_conn.script_fetchone(
+        (uuid.uuid4(), datetime.now(UTC), purpose, 0, 0, "reserved", False)
+    )
+    fake_conn.script_fetchone((status, 0, False))
+    fake_conn.script_fetchone(None)
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+    fake_conn.script_fetchone((uuid.uuid4(),))
+
+    assert (
+        settle_outbound_delivery_job(
+            job,
+            PipelineResult(
+                outcome=PipelineOutcome.TERMINAL,
+                stage=PipelineStage.DELIVERY,
+                reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+            ),
+            conn=fake_conn,
+        )
+        is SettlementOutcome.DONE
+    )
+
+    sql = fake_conn.all_sql()
+    assert "FROM outbound_provider_handoffs" in sql
+    assert "released_at IS NULL FOR UPDATE" in sql
+    assert "UPDATE outbound_provider_handoffs" not in sql
+    assert "INSERT INTO outbound_delivery_attempts" in sql
+    assert "status = 'needs_operator'" in sql
+    assert "state = 'done', last_error = %s" in sql
+    params = str(fake_conn.executed)
+    assert "authorization_expired" in params
+    assert review_reason in params
+
+
 def test_delivery_settlement_rejects_a_lost_lease_before_any_attempt_write(fake_conn: Any) -> None:
     """A reclaimed worker cannot append evidence, change a run, or settle the replacement lease."""
     from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
