@@ -46,7 +46,7 @@ created: 2026-07-17
 
 ## Planned Execution Coverage
 
-All 40 planned implementation tasks include an automated verification command. The
+All 47 planned implementation tasks include an automated verification command. The
 phase plan structure has been checked for task completeness, wave ordering, and
 sampling continuity; these are planning facts, not evidence that the commands have
 already passed.
@@ -63,6 +63,11 @@ already passed.
 | 12 | 20-18 | Epoch fencing before provider work and locked settlement/reaper no-write regressions; durable outcome mapping is deferred to 20-19. |
 | 13 | 20-19 | Sole owner of LOST_LEASE/INVALID_CONTEXT, exact-token stale-epoch retirement, and drain token bookkeeping. |
 | 14 | 20-20 | Confirmation-only route/repository/fake checks plus final ruff, bare mypy, bare full-suite, and guarded integration/queueproof evidence. |
+| 15 | 20-21 | Handoff schema/repository authority tests establish the immutable reservation-derived `not_after` deadline, retain predecessor lease expiry, and prove only a reclaimed exact current lease can atomically adopt the matching active handoff without changing snapshot, epoch, `authorized_at`, or deadline. |
+| 16 | 20-22 | Gateway/handler regression verifies the handler uses the authorizer's reclaimed matching-handoff result rather than a foreign-active no-op; equality at `not_after - 15 seconds` rejects with zero Resend I/O, while only a strictly earlier clock can send through the fixed 10-second synchronous transport. |
+| 17 | 20-24 | Production and InMemoryRepo parity verify that timeout/5xx settlement exact-owner-releases the active handoff into retry history before rescheduling, then a due new lease reauthorizes and replays one original frozen snapshot/Message-ID under its reservation-derived deadline while the former token cannot settle or release; record-only, expired-authorization, and crash-after-authorization adoption remain covered. |
+| 18 | 20-25 | Generic retrigger rollback and the D-09/D-11 review-only paths verify epoch changes cannot cross an active handoff. |
+| 19 | 20-23 | The barrier-driven real-Postgres queueproof verifies protected and deliberately unsafe provider/epoch interleavings. |
 
 ---
 
@@ -82,10 +87,20 @@ reported as unavailable evidence, never as a passing queueproof.
 | 20-19 | 2 | `uv run pytest -q tests/test_queue_drain.py tests/test_queue_durability.py` |
 | 20-20 | 1 | `uv run pytest -q tests/test_phase20_clarification_review.py tests/test_repo_jobs_sql.py tests/test_dashboard.py` |
 | 20-20 | 2 | `uv run pytest -q tests/test_phase20_clarification_review.py tests/test_phase20_fake_parity.py tests/test_repo_jobs_sql.py tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_queue_drain.py`; `uv run ruff check app/routes/runs.py app/db/repo/jobs.py app/db/repo/job_settlement.py app/db/repo/emails.py app/queue/handlers/send_outbound.py app/queue/drain.py tests/conftest.py tests/test_phase20_clarification_review.py tests/test_phase20_fake_parity.py tests/test_repo_jobs_sql.py tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_queue_drain.py`; `uv run mypy`; `uv run pytest -q`; `uv run pytest -q -m 'integration and queueproof' tests/test_send_idempotency.py tests/test_queue_durability.py tests/test_queue_drain.py tests/test_threading.py`. |
+| 20-21 | 1 | `uv run pytest -q tests/test_send_idempotency.py tests/test_repo_jobs_sql.py`; `uv run ruff check app/db/schema.sql app/db/repo/outbound_handoffs.py app/db/repo/__init__.py tests/test_send_idempotency.py` |
+| 20-21 | 2 | `uv run pytest -q tests/test_send_idempotency.py tests/test_repo_jobs_sql.py`; `uv run ruff check app/db/repo/outbound_handoffs.py app/db/repo/__init__.py tests/test_send_idempotency.py`; `uv run mypy` |
+| 20-22 | 1 | `uv run pytest -q tests/test_gateway.py tests/test_delivery.py tests/test_queue_durability.py` (including strict-deadline equality rejection and strictly-earlier send); `uv run ruff check app/queue/handlers/send_outbound.py app/email/gateway.py app/pipeline/result.py tests/test_gateway.py`; `uv run mypy` |
+| 20-24 | 1 | `uv run pytest -q tests/test_phase20_fake_parity.py tests/test_queue_durability.py tests/test_queue_drain.py` (including timeout/5xx release → reschedule → new lease → original snapshot replay and old-token fencing in production/fake parity); `uv run ruff check app/db/repo/job_settlement.py tests/conftest.py tests/test_phase20_fake_parity.py tests/test_queue_durability.py`; `uv run mypy`; `DATABASE_URL="$DATABASE_URL" ALLOW_DB_RESET=1 uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k handoff` |
+| 20-25 | 1 | `uv run pytest -q tests/test_retrigger_epoch.py tests/test_phase20_clarification_review.py tests/test_delivery.py`; `uv run ruff check app/db/repo/pipeline_state.py app/routes/runs.py tests/test_retrigger_epoch.py tests/test_phase20_clarification_review.py`; `uv run mypy` |
+| 20-23 | 1 | `uv run pytest tests/ -m queueproof --collect-only -q | rg 'test_provider_handoff_(blocks_epoch_bump_before_gateway|race_control_observes_stale_gateway_when_fence_is_released)'` |
+| 20-23 | 2 | `DATABASE_URL="$DATABASE_URL" ALLOW_DB_RESET=1 uv run pytest -q tests/test_queue_durability.py -m 'integration and queueproof' -k provider_handoff -rs` |
 
 Final quality commands required by Plan 20 are the bare `uv run mypy`, bare
 `uv run pytest -q`, the listed `uv run ruff check`, and the guarded
-`integration and queueproof` command.
+`integration and queueproof` command. Plan 20-23 is a real-Postgres closure gate:
+when `DATABASE_URL` or `ALLOW_DB_RESET=1` is absent, selected-test skips are unavailable
+evidence and cannot close the phase; when both are supplied, the command must have zero
+skipped selected tests and the deliberately unsafe control must pass.
 
 ---
 
