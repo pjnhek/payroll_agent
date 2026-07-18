@@ -54,11 +54,11 @@ files_reviewed_list:
   - tests/test_send_idempotency.py
   - tests/test_threading.py
 findings:
-  critical: 1
+  critical: 0
   warning: 0
   info: 0
-  total: 1
-status: issues_found
+  total: 0
+status: clean
 ---
 
 # Phase 20: Code Review Report
@@ -66,23 +66,36 @@ status: issues_found
 **Reviewed:** 2026-07-18T00:00:00Z
 **Depth:** standard
 **Files Reviewed:** 49
-**Status:** issues_found
+**Status:** clean
 
 ## Summary
 
-Reviewed the immutable snapshot, fenced provider handoff, settlement, delivery-review, retrigger, and fake-parity paths. The provider-handoff fence correctly blocks an epoch bump after authorization, but an already-expired reservation takes a no-provider path that is retired as invalid context. This silently leaves a live confirmation run approved rather than escalating its ambiguous delivery state for operator review.
+The durable send path preserves the immutable snapshot through authorization,
+provider dispatch, settlement, and delivery review. The pre-provider and
+gateway-boundary expiration paths now both append the bounded
+`authorization_expired` fact and transition the purpose-owned run to delivery
+review without provider I/O. Settlement releases only the exact handoff owner,
+and retrigger is fenced while a committed handoff remains active.
 
-## Critical Issues
+The deployed-schema repair recreates the same bounded failure-category
+vocabulary used by fresh installs, including `authorization_expired`. The
+two-connection queue proofs no longer execute SQL before their intended outer
+transactions, so their authorization commit is observable before the race
+interleaving begins.
 
-### CR-01: Expired reservation is dropped without delivery review
+The prior expired-reservation review finding is resolved by the handler's
+explicit `replay_window_closed` result and the settlement branch that performs
+the no-handoff delivery-review transition.
 
-**File:** `app/queue/handlers/send_outbound.py:55-58`; `app/db/repo/outbound_handoffs.py:275-276`; `app/db/repo/job_settlement.py:401-413`
-**Issue:** When a claimed `SEND_OUTBOUND` job is first handled after its reservation’s 20-hour window has expired, `authorize_outbound_provider_handoff()` returns `ProviderHandoffActive("replay_window_closed")` without creating a handoff. The handler collapses that outcome into a successful no-op. Settlement then cannot lock a handoff, retires the exact job as `invalid_context`, and returns without changing the run from `approved`/`awaiting_reply` to purpose-specific `needs_operator`. Thus a delayed initial send or delayed retry can disappear silently instead of entering the required delivery-review state; the fake repository reproduces the same behavior at `tests/conftest.py:1353-1358`.
+## Verification
 
-**Fix:** Preserve the authorization outcome’s reason at the handler/settlement boundary. For `replay_window_closed`, settle the leased reservation directly into the existing purpose-aware delivery-review transition (append a bounded `authorization_expired` attempt, complete the job, and set the run to the appropriate `needs_operator` marker) without requiring a provider handoff. Add production and fake-parity tests that claim a snapshot with `reserved_at <= now() - interval '20 hours'` and assert zero provider calls, a completed job, and the delivery-review status.
+- `uv run pytest -q tests/test_send_idempotency.py tests/test_delivery.py tests/test_queue_drain.py tests/test_queue_durability.py -m 'not integration'` — 125 passed, 61 deselected.
+- `uv run ruff check` across the reviewed Python files — passed.
 
----
+## Findings
+
+No actionable BLOCKER or WARNING findings.
 
 _Reviewed: 2026-07-18T00:00:00Z_
-_Reviewer: the agent (gsd-code-reviewer)_
+_Reviewer: generic-agent workaround (gsd-code-reviewer)_
 _Depth: standard_
