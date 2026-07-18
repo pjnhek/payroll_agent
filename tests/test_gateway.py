@@ -1727,6 +1727,66 @@ def test_send_handler_record_only_authority_never_reaches_gateway(monkeypatch):
     )
 
 
+def test_send_handler_translates_pre_provider_replay_window_expiry_without_provider_io(
+    monkeypatch,
+):
+    """The authorizer's closed replay window enters review before gateway work."""
+    from app.db.repo.outbound_handoffs import ProviderHandoffActive
+    from app.queue.handlers import send_outbound
+
+    job = _send_job()
+    authorized: list[Job] = []
+    provider_calls: list[object] = []
+
+    def _expired(received: Job) -> ProviderHandoffActive:
+        authorized.append(received)
+        return ProviderHandoffActive("replay_window_closed")
+
+    monkeypatch.setattr(repo, "authorize_outbound_provider_handoff", _expired)
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        lambda *_args, **_kwargs: provider_calls.append("gateway"),
+    )
+    monkeypatch.setattr(
+        resend.Emails,
+        "send",
+        staticmethod(lambda *_args, **_kwargs: provider_calls.append("resend")),
+    )
+
+    assert send_outbound.handle_send_outbound(job) == PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.DELIVERY,
+        reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+    )
+    assert authorized == [job]
+    assert provider_calls == []
+
+
+def test_send_handler_does_not_overbroadly_map_active_authority_to_review(monkeypatch):
+    """Only the fixed replay-window reason is a no-handoff review outcome."""
+    from app.db.repo.outbound_handoffs import ProviderHandoffActive
+    from app.queue.handlers import send_outbound
+
+    job = _send_job()
+    provider_calls: list[object] = []
+    monkeypatch.setattr(
+        repo,
+        "authorize_outbound_provider_handoff",
+        lambda _job: ProviderHandoffActive("active_handoff_unexpired"),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "send_reserved_outbound_snapshot",
+        lambda *_args, **_kwargs: provider_calls.append("gateway"),
+    )
+
+    assert send_outbound.handle_send_outbound(job) == PipelineResult(
+        outcome=PipelineOutcome.OK
+    )
+    assert provider_calls == []
+
+
 def test_send_handler_rechecks_authorization_after_authority_is_granted(monkeypatch):
     from app.db.repo.outbound_handoffs import ProviderHandoffAuthorization
     from app.queue.handlers import send_outbound

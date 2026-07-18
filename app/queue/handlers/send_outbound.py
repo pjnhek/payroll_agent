@@ -41,6 +41,18 @@ def handle_send_outbound(
     authorization = repo.authorize_outbound_provider_handoff(job)
     # Keep this consumer structurally coupled to the bounded authority result,
     # rather than importing the repository's concrete classes into queue tier.
+    # The authorizer closes the 20-hour reservation window before any handoff
+    # exists. Preserve that fixed no-provider reason so settlement can enter
+    # purpose-aware delivery review rather than retiring the exact lease.
+    if (
+        getattr(authorization, "reason", None) == "replay_window_closed"
+        and getattr(authorization, "snapshot", None) is None
+    ):
+        return PipelineResult(
+            outcome=PipelineOutcome.TERMINAL,
+            stage=PipelineStage.DELIVERY,
+            reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
+        )
     # Only record-only authority has the exact run id without a bounded reason.
     if (
         getattr(authorization, "run_id", None) == job.run_id
