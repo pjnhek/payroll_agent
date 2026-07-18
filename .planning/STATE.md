@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 21
-current_phase_name: Durability Proofs & Ops View
-status: ready
-stopped_at: Completed 20-20-PLAN.md
-last_updated: "2026-07-18T01:28:59Z"
+current_phase: 20
+current_phase_name: exactly-once-send
+status: executing
+stopped_at: Phase 20 verification gaps after 25/25 plans
+last_updated: "2026-07-18T02:53:59.319Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 20 Plan 20 complete; ready for Phase 21
+last_activity_desc: Phase 20 verification found delivery-safety gaps; closure planning required
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 61
+  completed_phases: 4
+  total_plans: 66
   completed_plans: 61
-  percent: 83
+  percent: 67
 ---
 
 # Project State
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 complete)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 21 — Durability Proofs & Ops View
+**Current focus:** Phase 20 — exactly-once-send (gap closure required)
 
 ## Current Position
 
-Phase: 21 (Durability Proofs & Ops View) — READY
-Plan: not started
-Status: Ready to plan Phase 21
-Last activity: 2026-07-18 — Phase 20 Plan 20 complete; ready for Phase 21
+Phase: 20 (exactly-once-send) — GAPS FOUND
+Plan: 25 of 25 executed; gap closure pending
+Status: Verification found delivery-safety gaps
+Last activity: 2026-07-18 — verification found two delivery-safety blockers; plan gap closure required
 
 ## Performance Metrics
 
