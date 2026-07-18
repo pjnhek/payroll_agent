@@ -385,7 +385,7 @@ def test_delivery_review_marker_blocks_retrigger_before_context_clear_or_enqueue
 def test_mark_delivered_releases_only_its_active_confirmation_handoff(
     fake_repo, monkeypatch
 ):
-    """D-09 is an explicit no-send resolution: it may settle the matching
+    """An explicit no-send resolution may settle the matching
     ambiguous handoff but cannot queue or wake another confirmation."""
     import app.routes.runs as runs_mod
 
@@ -409,7 +409,7 @@ def test_mark_delivered_releases_only_its_active_confirmation_handoff(
 def test_typed_confirmation_authorization_releases_handoff_and_clones_frozen_bytes(
     fake_repo, monkeypatch
 ):
-    """D-11 alone can supersede an ambiguous handoff, and its replacement is a
+    """A typed confirmation can supersede an ambiguous handoff, and its replacement is a
     new slot containing the original immutable envelope and attachment bytes."""
     import app.routes.runs as runs_mod
 

@@ -829,7 +829,7 @@ def test_provider_handoff_release_is_exact_owner_and_active_fence_is_queryable(
 def test_delivery_review_can_release_only_its_matching_active_handoff(
     fake_conn: Any,
 ) -> None:
-    """D-09/D-11 do not have a worker lease, but their explicit review must
+    """A delivery review does not have a worker lease, but it must
     still be exact to the frozen email/snapshot it displays."""
     from app.db.repo.outbound_handoffs import (
         resolve_outbound_provider_handoff_for_delivery_review,

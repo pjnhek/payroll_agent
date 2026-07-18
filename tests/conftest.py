@@ -1440,7 +1440,7 @@ class InMemoryRepo:
         resolution: str,
         conn: Any = None,
     ) -> bool:
-        """Mirror the narrow D-09/D-11 review override, not a generic release."""
+        """Mirror the narrow delivery-review override, not a generic release."""
         if resolution not in {"finalized", "delivery_review"}:
             raise ValueError("unsupported delivery-review handoff resolution")
         active = next(

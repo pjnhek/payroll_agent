@@ -439,8 +439,8 @@ def resolve_outbound_provider_handoff_for_delivery_review(
 ) -> bool:
     """Release only the active handoff owned by one explicit delivery review.
 
-    D-09 and D-11 are deliberate human overrides of uncertain provider delivery;
-    unlike worker settlement they do not possess a leased-job authorization.  They
+    Explicit human overrides of uncertain provider delivery, unlike worker
+    settlement, do not possess a leased-job authorization.  They
     still cannot release an arbitrary active row: the review's frozen email and
     snapshot must match the sole active handoff for the locked run.  No active row
     is also safe -- settlement may already have released it before the operator
