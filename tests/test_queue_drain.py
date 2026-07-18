@@ -826,6 +826,112 @@ def test_send_drain_uses_delivery_settlement_with_the_claimed_lease(
     assert observed[0][1] is expected
 
 
+def test_drain_invalid_context_durably_retires_lease_before_token_discard(
+    fake_repo, monkeypatch
+) -> None:
+    """The drain drops a send token only after invalid context retires its row."""
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<invalid-context@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen payroll",
+        body_text="Frozen bytes only",
+        attachments=[],
+    )
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    monkeypatch.setattr(
+        dispatch,
+        "handle",
+        lambda _job: PipelineResult(outcome=PipelineOutcome.OK),
+    )
+
+    def retire_invalid_context(job: Job, _result: PipelineResult) -> SettlementOutcome:
+        row = fake_repo.get_job(job.id)
+        assert row is not None
+        assert job.lease_token in drain.held_tokens()
+        row["state"] = "done"
+        row["last_error"] = "delivery:invalid_context"
+        row["lease_token"] = None
+        row["leased_until"] = None
+        return SettlementOutcome.INVALID_CONTEXT
+
+    monkeypatch.setattr(repo, "settle_outbound_delivery_job", retire_invalid_context)
+
+    assert drain.drain_once() is DrainOutcome.INVALID_CONTEXT
+    row = fake_repo.get_job(job_id)
+    assert row is not None
+    assert row["state"] == "done"
+    assert row["lease_token"] is None
+    assert drain.held_tokens() == []
+
+
+def test_drain_distinguishes_lost_lease_from_invalid_context(fake_repo, monkeypatch) -> None:
+    """A reclaimed lease reports ownership loss without a second settlement write."""
+    from app.db.repo.job_settlement import SettlementOutcome
+
+    run_id = _seed_run(fake_repo, status=RunStatus.APPROVED)
+    snapshot = fake_repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id="<lost-lease@example.test>",
+        from_addr="sender@example.test",
+        to_addr="recipient@example.test",
+        reply_to=None,
+        in_reply_to=None,
+        references_header=None,
+        subject="Frozen payroll",
+        body_text="Frozen bytes only",
+        attachments=[],
+    )
+    job_id = fake_repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=f"send_outbound:{snapshot['email_id']}",
+        run_id=run_id,
+        email_id=snapshot["email_id"],
+    )
+    assert job_id is not None
+    reclaimed_token = uuid.uuid4()
+
+    def reclaim_before_settlement(job: Job) -> PipelineResult:
+        row = fake_repo.get_job(job.id)
+        assert row is not None
+        row["lease_token"] = reclaimed_token
+        return PipelineResult(outcome=PipelineOutcome.OK)
+
+    settlement_calls: list[Job] = []
+
+    def report_lost_lease(job: Job, _result: PipelineResult) -> SettlementOutcome:
+        settlement_calls.append(job)
+        row = fake_repo.get_job(job.id)
+        assert row is not None and row["lease_token"] == reclaimed_token
+        return SettlementOutcome.LOST_LEASE
+
+    monkeypatch.setattr(dispatch, "handle", reclaim_before_settlement)
+    monkeypatch.setattr(repo, "settle_outbound_delivery_job", report_lost_lease)
+
+    assert drain.drain_once() is DrainOutcome.LOST_LEASE
+    assert len(settlement_calls) == 1
+    row = fake_repo.get_job(job_id)
+    assert row is not None and row["lease_token"] == reclaimed_token
+    assert drain.held_tokens() == []
+
+
 def test_send_drain_settles_a_frozen_snapshot_through_the_fake_pair(
     fake_repo, monkeypatch
 ):
