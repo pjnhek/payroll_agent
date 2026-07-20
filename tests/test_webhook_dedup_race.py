@@ -21,7 +21,9 @@ to prove.
 """
 from __future__ import annotations
 
+import ast
 import os
+import pathlib
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -198,11 +200,39 @@ def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.queueproof
+@pytest.mark.proof(id="PROOF-02")
 def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     monkeypatch,
     seeded_db: None,
 ):
-    """One authenticated transport identity stays singular across a DB race."""
+    """One authenticated transport identity stays singular across a DB race.
+
+    PROOF-02 (ROADMAP criterion 2): a redelivery of the same Svix event must
+    survive as exactly one `inbound_events` row, one `jobs` row, one
+    `payroll_runs` row, and one `email_messages` row. The four "exactly one"
+    assertions below establish each of those in turn:
+      - `event_count == 1` (line ~286) — one `inbound_events` row.
+      - `len(job_rows) == 1` (line ~287) — one `jobs` row.
+      - `email_row[1] == 1` (line ~312) — one `email_messages` row.
+      - `run_count == 1` (line ~319) — one `payroll_runs` row.
+
+    REQUIREMENTS' named vacuity condition for PROOF-02 is that this would be
+    trivially true if the dedup key were something available only AFTER the
+    provider fetch (the RFC `Message-ID`) — a key that is unstable across
+    concurrent deliveries would make this proof empty. That premise is now a
+    checked fact, not prose: `test_prefetch_dedup_key_derivation_guard` below
+    asserts, via `ast`, that `external_event_id` (the two-layer dedup's Layer
+    0 — see `app/db/repo/inbound_events.py`'s `ON CONFLICT
+    (external_event_id) DO NOTHING`) derives ONLY from `request.headers`
+    (signed path) or the raw request body (fixture path), and that no
+    provider-message parse/fetch call happens before the durable-receipt
+    handoff. The RFC `Message-ID` cannot serve as this layer's key precisely
+    because it is Layer 1 — `email_messages.message_id UNIQUE` — read only
+    after the provider fetch, which runs inside the delayed ingest worker
+    (never inline in this webhook request) so the request path never blocks
+    on it. Layer 0 (this test) dedups the DELIVERY; Layer 1 dedups the
+    MESSAGE.
+    """
     if not _HAS_DB:
         pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
 
@@ -318,3 +348,319 @@ def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     run_count = run_count_row[0]
     assert run_count == 1
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# PROOF-02's pre-fetch guard: an AST/dataflow check over app/routes/webhook.py,
+# not a text search (a comment can satisfy a text search; this repo has already
+# been burned by a verification grep that silently lied).
+#
+# Two structural properties, each pinning one half of REQUIREMENTS' named
+# vacuity condition for PROOF-02 ("vacuous if dedup is keyed on something
+# available only post-fetch"):
+#
+#   1. Every assignment to `external_event_id` inside the webhook handler
+#      derives from `request.headers` (the signed, authenticated path) or the
+#      raw request body (the explicitly-opt-in fixture path) — never from a
+#      fetched provider message. Matched on the assignment VALUE's node
+#      structure (a Subscript of `request.headers` keyed the constant
+#      "svix-id"), not on a rendered source string, so a resolver limited to
+#      string literals could not see it.
+#   2. No call to a provider message-parse/fetch seam appears, by AST node
+#      position, before the `_persist_verified_receipt_sync` durable-receipt
+#      handoff inside the same handler.
+#
+# Mirrors the AST-over-source idiom already established by
+# tests/test_bound01_private_imports.py (scan_tree_for_violations) and
+# tests/test_fake_repo_pairing.py: pure detection functions, scanned against
+# the live tree by one test, and proven reachable against a synthetic
+# violation by companion tests — so a scanner that silently finds nothing
+# stays distinguishable from a scanner that correctly finds nothing.
+# ---------------------------------------------------------------------------
+
+_WEBHOOK_SOURCE_PATH = (
+    pathlib.Path(__file__).resolve().parent.parent / "app" / "routes" / "webhook.py"
+)
+_HANDLER_FUNCTION_NAME = "inbound"
+_PERSIST_HANDOFF_NAME = "_persist_verified_receipt_sync"
+
+# Enumerated from live source (app/email/gateway.py, app/queue/handlers/ingest.py)
+# rather than guessed: any call to one of these names is a provider
+# message-parse/fetch. Written as a named constant, not inlined into the check
+# below, so a future seam rename reds this guard instead of silently widening
+# the hole it exists to close.
+_PROVIDER_PARSE_SEAM_NAMES = {"parse_inbound", "process_inbound_event"}
+
+
+def _find_function(
+    tree: ast.Module, name: str
+) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """Locate a top-level-or-nested function/coroutine `FunctionDef` by name."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"no function named {name!r} found in the parsed tree")
+
+
+def _is_signed_path_header_derivation(value: ast.expr) -> bool:
+    """True for exactly `request.headers["svix-id"]`: a Subscript of the
+    attribute access `request.headers`, keyed by the string constant
+    "svix-id". Matches the ASSIGNMENT VALUE's node structure, not a rendered
+    source string — a differently-derived value (a different header, a
+    fetched-message field, a hardcoded constant) fails this shape check even
+    though it might still satisfy a naive text search for "svix-id".
+    """
+    if not isinstance(value, ast.Subscript):
+        return False
+    receiver = value.value
+    if not (isinstance(receiver, ast.Attribute) and receiver.attr == "headers"):
+        return False
+    if not (isinstance(receiver.value, ast.Name) and receiver.value.id == "request"):
+        return False
+    key = value.slice
+    return isinstance(key, ast.Constant) and key.value == "svix-id"
+
+
+def _is_raw_body_digest_derivation(value: ast.expr) -> bool:
+    """True for the explicitly-opt-in fixture branch's derivation: any
+    expression embedding a call rooted at `hashlib` (the raw-body digest,
+    `hashlib.sha256(raw_body).hexdigest()`) — content-addressed on the
+    request body actually received, never on a fetched provider message.
+    """
+    for node in ast.walk(value):
+        if not isinstance(node, ast.Call):
+            continue
+        root: ast.expr = node.func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if isinstance(root, ast.Name) and root.id == "hashlib":
+            return True
+    return False
+
+
+def _external_event_id_assignments(handler: ast.AST) -> list[ast.Assign]:
+    """Every `ast.Assign` inside `handler` whose sole target is the name
+    `external_event_id`, in the order `ast.walk` visits them."""
+    assigns: list[ast.Assign] = []
+    for node in ast.walk(handler):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == "external_event_id":
+            assigns.append(node)
+    return assigns
+
+
+def _check_signed_path_derivation(
+    tree: ast.Module, function_name: str = _HANDLER_FUNCTION_NAME
+) -> list[str]:
+    """Return violation strings unless EVERY assignment to `external_event_id`
+    inside `function_name` derives from `request.headers['svix-id']` or the
+    raw-body digest, AND at least one such assignment is the header-derived
+    (signed-path) one. An empty return means the pre-fetch property holds.
+    """
+    handler = _find_function(tree, function_name)
+    assigns = _external_event_id_assignments(handler)
+    if not assigns:
+        return [
+            f"no assignment to 'external_event_id' found in {function_name}() — "
+            "the signed-path pre-fetch derivation this guard protects cannot be located"
+        ]
+
+    violations: list[str] = []
+    found_header_derivation = False
+    for assign in assigns:
+        value = assign.value
+        if _is_signed_path_header_derivation(value):
+            found_header_derivation = True
+            continue
+        if _is_raw_body_digest_derivation(value):
+            continue
+        violations.append(
+            f"line {assign.lineno}: 'external_event_id' is assigned from "
+            f"{ast.dump(value)}, which is neither request.headers['svix-id'] "
+            "nor a raw-body digest — it may be reading a value only available "
+            "after a provider fetch"
+        )
+    if not found_header_derivation:
+        violations.append(
+            "no assignment derives 'external_event_id' from "
+            "request.headers['svix-id'] — the signed-path pre-fetch "
+            "derivation PROOF-02's vacuity condition requires is missing"
+        )
+    return violations
+
+
+def _preorder_positions(node: ast.AST) -> dict[int, int]:
+    """Map `id(node)` -> its index in one full pre-order traversal of `node`'s
+    subtree, walking each node's child fields in their declared (source)
+    order via `ast.iter_child_nodes`. This is a STRUCTURAL position derived
+    purely from the AST's own child ordering — never from `.lineno` /
+    `.col_offset` file-text coordinates — so the ordering check below compares
+    AST node positions, not line numbers read from the file.
+    """
+    positions: dict[int, int] = {}
+    counter = 0
+
+    def _visit(current: ast.AST) -> None:
+        nonlocal counter
+        positions[id(current)] = counter
+        counter += 1
+        for child in ast.iter_child_nodes(current):
+            _visit(child)
+
+    _visit(node)
+    return positions
+
+
+def _call_target_name(call: ast.Call) -> str | None:
+    """The bare or attribute name a Call node invokes (`foo(...)` -> "foo",
+    `mod.foo(...)` -> "foo"), or None for a call through a non-name/attribute
+    expression this guard has no seam name to compare against."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _check_no_provider_parse_before_handoff(
+    tree: ast.Module, function_name: str = _HANDLER_FUNCTION_NAME
+) -> list[str]:
+    """Return violation strings if any call to a name in
+    `_PROVIDER_PARSE_SEAM_NAMES` occupies an earlier AST position, within
+    `function_name`'s body, than the reference to `_PERSIST_HANDOFF_NAME`
+    (the durable-receipt handoff). An empty return means no provider
+    message-parse/fetch call happens before the handoff.
+    """
+    handler = _find_function(tree, function_name)
+    positions = _preorder_positions(handler)
+
+    handoff_position: int | None = None
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Name) and node.id == _PERSIST_HANDOFF_NAME:
+            position = positions[id(node)]
+            if handoff_position is None or position < handoff_position:
+                handoff_position = position
+    if handoff_position is None:
+        return [
+            f"no reference to {_PERSIST_HANDOFF_NAME!r} found in {function_name}() "
+            "— the durable-receipt handoff this guard orders against cannot be located"
+        ]
+
+    violations: list[str] = []
+    for node in ast.walk(handler):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_target_name(node)
+        if name in _PROVIDER_PARSE_SEAM_NAMES and positions[id(node)] < handoff_position:
+            violations.append(
+                f"line {node.lineno}: call to provider parse/fetch seam {name!r} "
+                f"occupies an earlier AST position than the {_PERSIST_HANDOFF_NAME!r} "
+                "durable-receipt handoff"
+            )
+    return violations
+
+
+@pytest.mark.integration
+@pytest.mark.queueproof
+def test_prefetch_dedup_key_derivation_guard() -> None:
+    """PROOF-02's vacuity condition, closed as a checked fact over live source.
+
+    PROOF-02 is vacuous if dedup is keyed on something available only
+    post-fetch — specifically, the RFC `Message-ID`, which is Layer 1
+    (`email_messages.message_id UNIQUE`) and is not read until the provider
+    fetch that runs inside the delayed ingest worker, never inline in this
+    webhook request. This test pins that premise structurally instead of
+    leaving it as prose: it asserts, via `ast`, that Layer 0's key
+    (`external_event_id`, the `inbound_events.external_event_id UNIQUE` /
+    `ON CONFLICT (external_event_id) DO NOTHING` arbiter's key — see
+    app/db/repo/inbound_events.py) derives only from the request transport
+    (headers or raw body) inside app/routes/webhook.py's `inbound` handler,
+    and that no provider-message parse/fetch call happens before the
+    handler's durable-receipt transaction. This guard, not a behavioural
+    mutation elsewhere, is what pins the "unavailable until after the fetch"
+    premise; a stability mutation only falsifies a narrower, separate claim
+    (dedup-key stability). Carries `integration`/`queueproof`, not `proof`:
+    exactly one test (above) carries the PROOF-02 id.
+    """
+    source = _WEBHOOK_SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(_WEBHOOK_SOURCE_PATH))
+
+    violations = _check_signed_path_derivation(tree) + _check_no_provider_parse_before_handoff(
+        tree
+    )
+    assert not violations, (
+        "PROOF-02 pre-fetch dedup-key guard violation(s) in "
+        f"{_WEBHOOK_SOURCE_PATH}:\n" + "\n".join(violations)
+    )
+
+
+def test_signed_path_guard_reds_when_assignment_is_repointed() -> None:
+    """Proves `_check_signed_path_derivation` is reachable, not dead code.
+
+    Rather than temporarily editing the live app/routes/webhook.py file and
+    reverting it (stateful, and unnecessary since the check function is pure
+    over whatever AST it is given), this constructs a synthetic handler whose
+    `external_event_id` is repointed at an unrelated expression and confirms
+    the SAME check function reds on it — the codebase's established idiom
+    for proving a scanner's own detection logic
+    (tests/test_bound01_private_imports.py's
+    test_scanner_detects_synthetic_violation uses the equivalent tmp_path
+    form). Equivalent in rigor to a literal mutate-observe-revert cycle: the
+    function under test never inspects anything but its AST argument.
+    """
+    synthetic_source = (
+        "def inbound(request):\n"
+        "    external_event_id = some_unrelated_value\n"
+        "    result = _persist_verified_receipt_sync(external_event_id)\n"
+        "    return result\n"
+    )
+    tree = ast.parse(synthetic_source)
+
+    violations = _check_signed_path_derivation(tree)
+
+    assert violations, "expected a violation when 'external_event_id' is repointed"
+    assert any("external_event_id" in v for v in violations)
+    assert any("some_unrelated_value" in v or "no assignment derives" in v for v in violations)
+
+
+def test_ordering_guard_reds_when_provider_parse_precedes_handoff() -> None:
+    """Proves `_check_no_provider_parse_before_handoff` is reachable.
+
+    Synthetic handler mirroring the live shape, but with a provider
+    parse/fetch call inserted BEFORE the durable-receipt handoff reference —
+    the exact defect shape this check exists to catch (a future refactor
+    that starts reading the fetched message before the receipt commits).
+    """
+    synthetic_source = (
+        "def inbound(request):\n"
+        "    parsed = gateway.parse_inbound(raw_body)\n"
+        "    result = _persist_verified_receipt_sync(external_event_id)\n"
+        "    return result\n"
+    )
+    tree = ast.parse(synthetic_source)
+
+    violations = _check_no_provider_parse_before_handoff(tree)
+
+    assert violations, "expected a violation when provider parsing precedes the handoff"
+    assert any("parse_inbound" in v for v in violations)
+
+
+def test_ordering_guard_is_clean_when_no_provider_parse_seam_appears() -> None:
+    """Confirms the ordering check does not false-positive against a handler
+    whose only calls are unrelated to the enumerated provider parse/fetch
+    seam names — proving the live-source guard's clean result reflects an
+    actual absence, not an ordering check that never fires."""
+    synthetic_source = (
+        "def inbound(request):\n"
+        "    validated = _validated_payload(raw_body, allow_unsigned_fixture)\n"
+        "    result = _persist_verified_receipt_sync(external_event_id)\n"
+        "    return result\n"
+    )
+    tree = ast.parse(synthetic_source)
+
+    violations = _check_no_provider_parse_before_handoff(tree)
+
+    assert not violations
