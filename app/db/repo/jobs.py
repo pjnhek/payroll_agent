@@ -1,8 +1,10 @@
 """DB repo — the durable job queue's claim/lease/fencing protocol.
 
-Eight functions, and this is the whole public surface: `enqueue_job`,
+Twelve functions, and this is the whole public surface: `enqueue_job`,
 `claim_job`, `complete_job`, `fail_job`, `release_leases`, `get_job`,
-`count_open_jobs`, `get_run_queue_label`. Every one takes
+`count_open_jobs`, `get_run_queue_label`, `count_jobs_by_state`,
+`oldest_due_pending_age_seconds`, `attempts_distribution`,
+`list_dead_letter_jobs`. Every one takes
 `conn: psycopg.Connection | None = None`
 and opens with this package's `_conn_ctx(conn)` / `_nulltx()` convention, so a
 caller that already owns a transaction (the retrigger route enqueuing a job
@@ -623,3 +625,121 @@ def get_run_queue_label(
     if row is None or row[0] not in {"Running", "Queued", "Retry queued"}:
         return None
     return str(row[0])
+
+
+# ---------------------------------------------------------------------------
+# D-12 queue-metric reads — the four `/ops` panels. Every one of these is a
+# plain SELECT with no mutation and no fencing (cited per-function below, the
+# same side-effect-free-read contract `count_open_jobs` and
+# `get_run_queue_label` already carry, per Phase 18's D-18 convention).
+# ---------------------------------------------------------------------------
+
+
+def count_jobs_by_state(conn: psycopg.Connection | None = None) -> dict[str, int]:
+    """Return the open backlog split by state: `{"pending": N, "leased": M}`.
+
+    Side-effect-free read (D-18): a `GROUP BY state` count, no mutation. Both
+    keys are ALWAYS present with an explicit `0` — never a missing key — so a
+    caller never has to special-case "no leased jobs right now" as a KeyError.
+    D-12 requires the depth SPLIT rather than a single opaque total, because
+    "5 pending" and "5 leased" are different operational signals (a stalled
+    worker vs. a genuine backlog). `count_open_jobs` stays untouched: the pump
+    route's `queue_depth` response field already depends on its single-int
+    shape, and this function is additive, not a replacement.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        rows = c.execute(
+            "SELECT state, count(*) FROM jobs"
+            " WHERE state IN ('pending', 'leased') GROUP BY state",
+            (),
+        ).fetchall()
+    counts = {"pending": 0, "leased": 0}
+    for state, n in rows:
+        counts[str(state)] = int(n)
+    return counts
+
+
+def oldest_due_pending_age_seconds(
+    conn: psycopg.Connection | None = None,
+) -> float | None:
+    """Return the age, in seconds, of the oldest currently-due pending job.
+
+    Side-effect-free read (D-18). `None` when no pending job is due right now
+    (an empty backlog, or every pending job is still backed off). Otherwise a
+    non-negative `float` — psycopg maps Postgres `numeric` to `Decimal`, and
+    this function converts explicitly with `float(...)` before returning so
+    the annotated return type holds under strict mypy and the `/ops`
+    template's formatting filter receives the type it was written for.
+
+    Measured from `available_at`, NEVER `created_at`. A job deliberately
+    backed off by the retry ladder (`fail_job`'s `available_at = now() +
+    backoff`) is not late — it is exactly where the backoff curve put it.
+    Measuring from `created_at` would report scheduled backoff as pump
+    failure, which is the wrong signal for the metric D-12 renders against
+    the documented worst-case recovery latency (the 30-minute pump cadence
+    documented in README's "The pump: cadence, recovery, and the 750-hour
+    budget" section) — an operator reading this panel needs to know "how
+    long has something been ready and unclaimed", not "how old is the row".
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            "SELECT extract(epoch FROM (now() - min(available_at)))"
+            " FROM jobs WHERE state = 'pending' AND available_at <= now()",
+            (),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return float(row[0])
+
+
+def attempts_distribution(
+    conn: psycopg.Connection | None = None,
+) -> list[tuple[int, int]]:
+    """Return `[(attempts, count), ...]` for open jobs, ordered ascending.
+
+    Side-effect-free read (D-18). Scoped to `state IN ('pending', 'leased')`
+    only — a dead job's attempts are already shown, per job, in the
+    dead-letter list (`list_dead_letter_jobs`), and folding them into this
+    distribution would double-count the same failure in two `/ops` panels.
+    This is the distribution D-12 renders against `MAX_ATTEMPTS`, so an
+    operator can see at a glance how much of the open backlog is close to
+    exhausting its retry ladder.
+    """
+    with _conn_ctx(conn) as (c, _owns):
+        rows = c.execute(
+            "SELECT attempts, count(*) FROM jobs"
+            " WHERE state IN ('pending', 'leased')"
+            " GROUP BY attempts ORDER BY attempts",
+            (),
+        ).fetchall()
+    return [(int(attempts), int(n)) for attempts, n in rows]
+
+
+def list_dead_letter_jobs(
+    limit: int = 50, conn: psycopg.Connection | None = None
+) -> list[dict[str, Any]]:
+    """Return the newest `limit` dead-lettered jobs, bounded and PII-safe.
+
+    Side-effect-free read (D-18), read through
+    `c.cursor(row_factory=psycopg.rows.dict_row)` the way `get_job` is —
+    never `SELECT *`. Ordered `updated_at DESC` (newest dead-letter first)
+    and bounded by `limit` (default 50), so this can never hand an
+    unauthenticated `/ops` caller an unbounded result set.
+
+    Projects EXACTLY these seven columns: `id`, `kind`, `run_id`, `attempts`,
+    `max_attempts`, `last_error`, `updated_at`. No payload, no lease token, no
+    dedup key, no other diagnostic — `last_error` is the one diagnostic field
+    allowed to cross the browser boundary, because it is already PII-scrubbed
+    and length-bounded at both of its write sites (`fail_job` here routes it
+    through `_build_error_detail`, the same scrub helper `record_run_error`
+    uses; the settlement path in `job_settlement.py` writes a bounded
+    diagnostic code, never raw exception text) — mirroring
+    `get_run_queue_label`'s deliberate projection discipline.
+    """
+    sql = (
+        "SELECT id, kind, run_id, attempts, max_attempts, last_error, updated_at"
+        " FROM jobs WHERE state = 'dead' ORDER BY updated_at DESC LIMIT %s"
+    )
+    with _conn_ctx(conn) as (c, _owns), c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+        cur.execute(sql, (limit,))
+        return cur.fetchall()

@@ -807,6 +807,150 @@ def test_count_open_jobs_empty_row_returns_zero(fake_conn) -> None:
     assert isinstance(result, int)
 
 
+def test_count_jobs_by_state_groups_and_scopes_to_open_states(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchall([("pending", 3), ("leased", 2)])
+    result = jobs.count_jobs_by_state(conn=fake_conn)
+    assert result == {"pending": 3, "leased": 2}
+    sql, params = fake_conn.last()
+    assert "state IN ('pending', 'leased')" in str(sql)
+    assert "GROUP BY state" in str(sql)
+
+
+def test_count_jobs_by_state_always_has_both_keys_even_when_empty(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchall([])
+    result = jobs.count_jobs_by_state(conn=fake_conn)
+    assert result == {"pending": 0, "leased": 0}
+
+
+def test_count_jobs_by_state_one_state_only_still_has_both_keys(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchall([("pending", 5)])
+    result = jobs.count_jobs_by_state(conn=fake_conn)
+    assert result == {"pending": 5, "leased": 0}
+
+
+def test_oldest_due_pending_age_seconds_sql_shape(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchone((120.5,))
+    result = jobs.oldest_due_pending_age_seconds(conn=fake_conn)
+    assert result == 120.5
+    assert isinstance(result, float)
+    sql, params = fake_conn.last()
+    assert "state = 'pending'" in str(sql)
+    assert "available_at <= now()" in str(sql)
+    assert "min(available_at)" in str(sql)
+    # Must never measure from created_at — a backed-off job is not late.
+    assert "created_at" not in str(sql)
+
+
+def test_oldest_due_pending_age_seconds_none_when_nothing_due(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchone((None,))
+    assert jobs.oldest_due_pending_age_seconds(conn=fake_conn) is None
+
+
+def test_oldest_due_pending_age_seconds_converts_decimal_to_float(fake_conn) -> None:
+    from decimal import Decimal
+
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchone((Decimal("42.75"),))
+    result = jobs.oldest_due_pending_age_seconds(conn=fake_conn)
+    assert result == 42.75
+    assert isinstance(result, float)
+
+
+def test_attempts_distribution_sql_shape_and_ordering(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchall([(0, 4), (1, 2), (3, 1)])
+    result = jobs.attempts_distribution(conn=fake_conn)
+    assert result == [(0, 4), (1, 2), (3, 1)]
+    sql, params = fake_conn.last()
+    assert "state IN ('pending', 'leased')" in str(sql)
+    assert "GROUP BY attempts ORDER BY attempts" in str(sql)
+    # Must not fold in dead jobs — those are shown per-job in the dead-letter list.
+    assert "'dead'" not in str(sql)
+
+
+def test_attempts_distribution_empty_returns_empty_list(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchall([])
+    assert jobs.attempts_distribution(conn=fake_conn) == []
+
+
+def test_list_dead_letter_jobs_projects_exactly_seven_bounded_columns(
+    fake_conn,
+) -> None:
+    from app.db.repo import jobs
+
+    job_id, run_id = uuid.uuid4(), uuid.uuid4()
+    row = {
+        "id": job_id,
+        "kind": "run_pipeline",
+        "run_id": run_id,
+        "attempts": 5,
+        "max_attempts": 5,
+        "last_error": "extract:provider_timeout",
+        "updated_at": datetime.now(UTC),
+    }
+    fake_conn.script_fetchall([row])
+    result = jobs.list_dead_letter_jobs(conn=fake_conn)
+    assert result == [row]
+    sql, params = fake_conn.last()
+    sql_text = str(sql)
+    assert "SELECT *" not in sql_text
+    assert "FROM jobs WHERE state = 'dead'" in sql_text
+    assert "ORDER BY updated_at DESC" in sql_text
+    assert "LIMIT %s" in sql_text
+    assert params == (50,)
+    # Bounded projection: no payload, lease token, or dedup key column.
+    assert "payload" not in sql_text
+    assert "lease_token" not in sql_text
+    assert "dedup_key" not in sql_text
+
+
+def test_list_dead_letter_jobs_respects_limit_parameter(fake_conn) -> None:
+    from app.db.repo import jobs
+
+    fake_conn.script_fetchall([])
+    jobs.list_dead_letter_jobs(limit=10, conn=fake_conn)
+    _sql, params = fake_conn.last()
+    assert params == (10,)
+
+
+def test_four_ops_metric_functions_are_exported_and_side_effect_free() -> None:
+    """Exported through the facade, and each opens with _conn_ctx(conn) like
+    every other read in this module — checked via source inspection."""
+    import inspect
+
+    from app.db import repo
+    from app.db.repo import jobs
+
+    names = (
+        "count_jobs_by_state",
+        "oldest_due_pending_age_seconds",
+        "attempts_distribution",
+        "list_dead_letter_jobs",
+    )
+    for name in names:
+        assert hasattr(repo, name), f"app.db.repo is missing facade export {name!r}"
+        fn = getattr(jobs, name)
+        sig = inspect.signature(fn)
+        assert "conn" in sig.parameters, f"{name} is missing a conn parameter"
+        assert sig.parameters["conn"].default is None
+        source = inspect.getsource(fn)
+        assert "_conn_ctx(conn)" in source, f"{name} does not open with _conn_ctx(conn)"
+
+
 def _schema_sql() -> str:
     from pathlib import Path
 
