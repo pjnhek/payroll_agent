@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
-current_phase: 21
-status: milestone-complete
-stopped_at: "Milestone v4 complete — all 6 phases (16–21) done; ready for /gsd-complete-milestone v4"
-last_updated: "2026-07-20T20:07:01.794Z"
+status: Awaiting next milestone
+stopped_at: Phase 21 complete (UAT 2/2, verification passed) — Milestone v4 100%, all 6 phases done
+last_updated: "2026-07-20T21:14:50.053Z"
 last_activity: 2026-07-20
-last_activity_desc: "Phase 21 complete via /gsd-verify-work (UAT 2/2, verification canonicalized human_needed→passed) — MILESTONE v4 100%"
+last_activity_desc: Milestone v4 completed and archived
 progress:
   total_phases: 6
   completed_phases: 6
   total_plans: 84
   completed_plans: 84
   percent: 100
+current_phase: 21
 current_phase_name: durability-proofs-ops-view
 ---
 
@@ -21,17 +21,17 @@ current_phase_name: durability-proofs-ops-view
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-20 — Phase 21 complete; Milestone v4 100%)
+See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution milestone shipped & archived)
 
-**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Milestone v4 complete (all 6 phases 16–21 done) — ready to archive via /gsd-complete-milestone v4
+**Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 made the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
+**Current focus:** v4 SHIPPED & archived 2026-07-20 (tag `v4`). Next = a mini-milestone (demo polish & run-detail UI — 4 items bundled in `backlog.md` → "Next milestone (mini)"), formalize via `/gsd-new-milestone`.
 
 ## Current Position
 
-Phase: 21 (durability-proofs-ops-view) — COMPLETE
-Plan: 16/16 complete
-Status: Milestone v4 complete — ready for /gsd-complete-milestone v4
-Last activity: 2026-07-20 — Phase 21 complete via /gsd-verify-work (UAT 2/2, verification passed); milestone v4 100%
+Phase: Milestone v4 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-20 — Milestone v4 completed and archived
 
 ## Performance Metrics
 
@@ -357,5 +357,4 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Milestone v4 is complete. Run `/gsd-complete-milestone v4` to archive it and prepare the next milestone.
-- Note: this session pushed 94 local commits to `origin/master` (`b50d982..eeb1c78`) and the phase-close commits; the deployed Render service now serves `/ops` and `/health/queue`. Nothing left unpushed for Phase 21.
+- Start the next milestone with /gsd-new-milestone

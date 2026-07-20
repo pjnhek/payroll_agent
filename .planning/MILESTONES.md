@@ -1,5 +1,38 @@
 # Milestones
 
+## v4 Durable Execution (Shipped: 2026-07-20)
+
+**Phases completed:** 6 phases (16–21), 84 plans, 164 tasks
+**Timeline:** 7 days (2026-07-13 → 2026-07-20)
+**Git range:** `v3` (`a508abd`) → HEAD (566 commits) · 380 files changed (+93,573 / −9,127)
+**Codebase:** ~17,936 LOC Python in `app/`
+**Requirements:** 19/19 checked off (0 gaps)
+**Closeout:** verified_closeout — pre-close artifact audit clear, all 6 phases verified `passed`, milestone audit PASSED (19/19 reqs · 6/6 seams · OPS-01 live UAT 2/2)
+**Deferred at close:** 4 demo/UI-polish items reclassified to `backlog.md` → "Next milestone (mini)" (run-detail UI rework, progressive-enhancement, paystub YTD, eval-chart restyle) — not requirements, bundled as the next mini-milestone scope.
+
+**Delivered:** Made the payroll pipeline durable end-to-end — no accepted email is ever lost, every failure recovers automatically within ~30 minutes without a human noticing, and a client is sent at most one confirmation per approved run, per epoch — and, per Phase 21's four falsifiable proofs, demonstrated *able to fail*.
+
+**Key accomplishments:**
+
+- **Non-blocking durable queue substrate** (Phase 16) — A durable `jobs` table (UNIQUE `dedup_key`, `SKIP LOCKED` claim, lease + double-fence protocol, epoch-stable auto-reclaim) drained by a 2-thread worker pool owned by the app's first-ever FastAPI `lifespan`; the webhook's blocking ingest work moves to `run_in_threadpool` so the event loop never stalls (two 0.6s-slow requests finish in ~0.6s, not ~1.2s). INVARIANT J-1 (transport state is never a business status) is machine-enforced by an AST guard + a kind/state drift test.
+- **The pump — recovery without a warm process** (Phase 17) — An authenticated, fail-closed `GET /internal/pump` sharing the single `drain_once()` with the workers, driven by a 30-min cron folded into one `pump.yml` alongside the keepalive + schema-drift checks; on Render free this is what makes the queue durable *execution*, not merely durable storage.
+- **Explicit failure policy + sweep deletion** (Phase 18) — The orchestrator returns an explicit result type (`ok` / `retryable` / `terminal`); retries use exponential backoff + jitter via `available_at` with an attempt cap that dead-letters; the old age-based `sweep_stranded_runs` second status-writer is DELETED, leaving the durable queue as the sole automatic recovery path.
+- **Durable webhook cutover** (Phase 19) — All 8 `BackgroundTasks` producers migrated to a durable INGEST job: the webhook commits an `inbound_events` receipt + one identifier-only job atomically and only then returns 200; two independent dedup layers (Svix `external_event_id`, queue `dedup_key`) stay uncoupled; an AST inventory makes reintroducing `BackgroundTasks` fail CI deterministically.
+- **At-most-once send** (Phase 20) — Confirmation delivery is frozen into an immutable snapshot and handed to the worker over a row-locked (`FOR UPDATE`) provider-handoff authorization; a retry reuses the reserved `message_id` as both Message-ID and Resend `Idempotency-Key` and replays the persisted payload; an epoch fence plus operator review for ambiguity give at-most-once-per-approved-run-per-epoch confirmation (exactly-once is impossible — Two Generals — and the limitation is documented honestly).
+- **Four falsifiable durability proofs + ops view** (Phase 21) — Live-Postgres proofs for kill-mid-run, Svix redelivery, crash-between-provider-accept-and-`sent`-commit, and expired-lease zombie-fencing — each with a falsifying mutation executed red and byte-identically reverted — registered in the `queueproof`/`proof` CI gate; a read-only `/ops` page + `GET /health/queue` alarm surface queue depth, oldest-pending age, attempts, and the dead-letter list; `docs/DURABILITY-PROOFS.md` published; OPS-01 closed live 2/2 against the deployed service.
+
+<details>
+<summary>Full per-plan accomplishment log (84 plans)</summary>
+
+The complete per-plan one-liner log is preserved in each phase's `*-SUMMARY.md` under
+`.planning/milestones/v4-phases/` (or `.planning/phases/16..21/` if phases were not archived)
+and in the archived `.planning/milestones/v4-ROADMAP.md`. It was intentionally not inlined here:
+the six accomplishments above are the curated milestone-level record.
+
+</details>
+
+---
+
 ## v2 Production Hardening (Shipped: 2026-07-07)
 
 **Phases completed:** 6 phases (7, 7.5, 8, 9, 10, 11), 26 plans, 55 tasks

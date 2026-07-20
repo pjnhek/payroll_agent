@@ -1,8 +1,9 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "ci run failed"
 created: 2026-07-16T17:52:59Z
-updated: 2026-07-16T18:12:00Z
+updated: 2026-07-20T00:00:00Z
+resolution_note: "Schema-cast fix proven on live Supabase + PG16; the reset-enabled concurrency-proof rerun ran green (run 29589513220, confirmed in v4-MILESTONE-AUDIT §2). Human/environment verification complete — flipped awaiting_human_verify -> resolved at v4 close."
 ---
 
 # Debug Session: Jobs Kind Array Mismatch

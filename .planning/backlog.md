@@ -260,3 +260,99 @@ stalls — the widened-trigger proof). Both self-contained: bootstrap, seed, run
    terminal, operator-visible state instead of stalling at `approved`. Money-adjacent; this
    is the path all of Phase 20 was about, so it wants the same care.
 3. **Bound the likelihood first** — the one question the repros deliberately leave open.
+
+---
+
+## ▶ Next milestone (mini) — Demo Polish & Run-Detail UI
+
+**Reclassified here at v4 close (2026-07-20).** These four items were open artifacts at the
+v4 pre-close audit (3 pending todos + 1 planned-but-unexecuted quick task). None is a v4
+requirement; all are demo/UI polish. Per user decision at v4 close, they are **bundled as the
+scope of the next mini-milestone** — promote together via `/gsd-new-milestone` (seed = this
+section). Content is preserved verbatim below; the originals were removed from
+`.planning/todos/pending/` and `.planning/quick/` so the milestone-close audit reads clean.
+
+### 1. Run-detail page → chronological email conversation  *(was quick 260718-hie — full plan, previously UNTRACKED; preserved here in full)*
+
+**Files:** `app/routes/runs.py`, `app/templates/run_detail.html`, `app/static/style.css`, `tests/test_dashboard.py`, `tests/test_demo_landing.py`
+
+**Objective:** Make a run readable top-to-bottom as the client email conversation: inbound
+request first, then each sent clarification/confirmation and any inbound reply in chronological
+order. Remove the duplicate `Sent Emails` and `Conversation thread` surfaces and demote
+extraction/paystub tables to a clearly labelled, collapsible details area. When the run is
+awaiting a reply, its single reply composer is the last interactive content on the page. Safety
+model unchanged: delivery-review actions retain purpose-specific wording, frozen-evidence links,
+routes, and no-auto-recovery; all text stays Jinja-autoescaped; no provider diagnostics on page.
+
+**Task 1 — one chronological conversation surface** (`runs.py`, `run_detail.html`, `style.css`):
+- Make `thread_messages` the sole normal email-display source in `run_detail`; remove the unused
+  `load_outbound_emails` load/context; update the route docstring (no longer a three-column view).
+  Retain best-effort error handling and safe run/delivery-review projections.
+- Replace the raw-email/extracted/paystub three-column grid + separate `Sent Emails` block +
+  duplicate `Conversation thread` block with one `Conversation` section rendered in ascending
+  `created_at`. Each card identifies inbound/outbound, shows sender, recipient, subject, purpose
+  (when present), timestamp, then cleaned stored body. **No silent 300-char truncation** — render
+  full body or use an accessible, keyboard-operable expand/collapse whose collapsed state signals
+  more content. Use source `raw_email` only as an inbound fallback when the thread read is empty.
+- Keep the safe delivery-review card + forms intact, positioned as an explicit operator action
+  after the relevant conversation context (not replacing the timeline). Do not alter URLs, choice-
+  encoding labels, typed-confirmation requirement, or frozen-evidence links.
+- Move extraction/reconciliation + computed-paystub tables into one collapsed-by-default `details`
+  section ("Payroll details"); preserve exact/alias/unresolved + field-provenance badges, per-
+  employee paystub values, `Download PDF` links, in-progress/empty states, name-resolution notes.
+  Hierarchy change only — evidence must not disappear.
+- Remove the duplicate awaiting-reply form from the top status banner; leave a short waiting
+  status; render exactly one clearly labelled demo reply composer after timeline + operator
+  context + collapsed details — it must remain the final action for `awaiting_reply`. Other
+  controls (approval/reject, unresolved-name resolution, retrigger) retain status gates + routes.
+- Add focused timeline/detail styles (one-column reading width, metadata wrapping, inbound/outbound
+  distinction, collapsed details, composer spacing). Retire only CSS obsoleted by the old three-
+  column + duplicate sent-email layout; retain shared card/button/badge primitives.
+
+**Task 2 — pin the hierarchy + preserve the safe action boundary** (`test_dashboard.py`, `test_demo_landing.py`):
+- Extend run-detail/thread fixtures with a multi-message thread (inbound → clarification → inbound
+  reply/confirmation); assert rendered order, direction labels, sender/recipient metadata, one-
+  conversation heading; assert legacy duplicate `Sent Emails` heading + standalone three-column
+  layout are absent.
+- Include a >300-char thread message; assert a distinctive post-300 suffix is present in the
+  response or via the documented accessible expansion (locks out the old silent `[:300]` loss).
+- Awaiting-reply regression: verify one `simulate-reply` form, composer after conversation +
+  collapsed payroll-details markup.
+- Render representative extracted/paystub fixtures; assert collapsed `Payroll details` retains an
+  exact/alias/unresolved reconciliation badge, a field-provenance badge, matching employee
+  `Download PDF` link.
+- Keep/adjust Phase 20 delivery-review tests (frozen evidence, purpose-isolated controls, no unsafe
+  provider fields, typed acknowledgement, no auto recovery) against the redesigned page; add only
+  order assertions proving the review card has conversation context before its action choices.
+
+**Verify:** `uv run pytest -q tests/test_dashboard.py tests/test_demo_landing.py tests/test_phase20_clarification_review.py tests/test_send_idempotency.py` then `uv run pytest -q`; `uv run ruff check` the touched files.
+
+### 2. Frontend progressive enhancement (NO build step)  *(was todo 260623-02, priority low)*
+
+Server-rendered Jinja2 + vanilla JS is a locked decision (no SPA/React/Vue; slim Docker on Render
+free). If the dashboard needs to feel more "live" post-demo, do **progressive enhancement**, not a
+framework: a ~30-line vanilla-JS `fetch('/runs/{id}/status')` poll that swaps the status badge in
+place while in-flight and stops on terminal status (add a tiny `GET /runs/{id}/status` JSON
+endpoint) — replaces the `<meta http-equiv="refresh">`. Optional: htmx/Alpine via CDN `<script>`
+(no bundler). **Do NOT** add TypeScript/bundler/SPA (build artifact + cold-start cost on the one
+phase whose job is to ship free-tier). Trigger to revisit: only if the meta-refresh feels janky in
+the live demo.
+
+### 3. Paystub YTD columns  *(was todo 260623-03, priority low)*
+
+The redesigned paystub PDF deliberately shows **no YTD** — the system stores only
+`employees.ytd_ss_wages` (for the SS wage-base cap); there is no per-category YTD accumulation and
+each run is standalone. Showing one YTD number with the rest blank looks half-built (all-or-none →
+"none" for now, which is honest for a single run). **v2 feature:** add a YTD-accumulation step —
+sum each employee's prior `reconciled` runs per category (gross, FIT, FICA-SS, Medicare, state,
+net) as of the current pay-period, thread totals into `generate_paystub_pdf` (take optional YTD
+params so it slots in without a rewrite) → standard Current | YTD two-column stub.
+
+### 4. Eval chart restyle  *(was todo 260623-04, priority low)*
+
+Eval page cards + metric strip match the UI-SPEC, but the CHART (`/eval/chart.svg`, generated by
+`eval/run_eval.py` via matplotlib) still reads as a raw DS plot. Pick one: (a) restyle matplotlib
+output — dashboard palette (`#1E3A5F` / `#6B7280`), drop chart junk (top/right spines, heavy
+gridlines), clean sans-serif, tighter labels, regenerate + recommit `eval/chart.svg`; or (b)
+replace the SVG with an inline HTML/CSS bar chart in `eval.html` (no image, no serve-time
+matplotlib) — fully on-brand. Not a blocker — numbers are correct + legible; pure aesthetics.
