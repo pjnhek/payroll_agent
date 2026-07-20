@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Transport Ops</h1>
+<p>As of {{ generated_at }}</p>
+<p>Pending: {{ pending_count }} · Leased: {{ leased_count }}</p>
+<p>Oldest due-pending age (seconds): {{ oldest_due_pending_seconds }}</p>
+<p>Pump cadence bound (minutes): {{ pump_cadence_minutes }}</p>
+<p>Attempts distribution: {{ attempts_rows }} (max attempts: {{ max_attempts }})</p>
+<p>Dead letter rows: {{ dead_letter_rows }}</p>
+<p>Unaccounted error rows: {{ unaccounted_error_rows }}</p>
+{% endblock %}
