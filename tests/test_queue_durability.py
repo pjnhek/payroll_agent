@@ -487,12 +487,21 @@ def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
     """A configured database proves one reservation never grows a replacement send job."""
     from app.db import repo
     from app.db.repo.job_settlement import SettlementOutcome
+    from app.db.repo.outbound_handoffs import (
+        ProviderHandoffActive,
+        ProviderHandoffAuthorization,
+    )
     from app.models.job import JobKind
 
     retryable = PipelineResult(
         outcome=PipelineOutcome.RETRYABLE,
         stage=PipelineStage.DELIVERY,
         reason=PipelineReason.DELIVERY_TIMEOUT,
+    )
+    authorization_expired = PipelineResult(
+        outcome=PipelineOutcome.TERMINAL,
+        stage=PipelineStage.DELIVERY,
+        reason=PipelineReason.DELIVERY_AUTHORIZATION_EXPIRED,
     )
     run_id = _seed_run_for_queue_proof()
     repo.set_status(run_id, RunStatus.APPROVED)
@@ -519,6 +528,8 @@ def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
     assert job_id is not None
     claimed = repo.claim_job()
     assert claimed is not None and claimed.id == job_id
+    authorization = repo.authorize_outbound_provider_handoff(claimed)
+    assert isinstance(authorization, ProviderHandoffAuthorization)
     assert repo.settle_outbound_delivery_job(claimed, retryable) is SettlementOutcome.RETRIED
     assert repo.enqueue_job(
         kind=JobKind.SEND_OUTBOUND,
@@ -589,7 +600,18 @@ def test_outbound_delivery_settlement_proves_retry_cutoff_and_zombie_fence(
     assert cutoff_job_id is not None
     cutoff_job = repo.claim_job()
     assert cutoff_job is not None and cutoff_job.id == cutoff_job_id
-    assert repo.settle_outbound_delivery_job(cutoff_job, retryable) is SettlementOutcome.DONE
+    # The reservation is already past its 20-hour replay window at insert time, so
+    # authorization never grants a handoff here -- this is the real precondition
+    # production hits before mapping to a TERMINAL DELIVERY_AUTHORIZATION_EXPIRED
+    # result (see app/queue/handlers/send_outbound.py), which is what settlement's
+    # pre-provider-expiry review path requires.
+    cutoff_authorization = repo.authorize_outbound_provider_handoff(cutoff_job)
+    assert isinstance(cutoff_authorization, ProviderHandoffActive)
+    assert cutoff_authorization.reason == "replay_window_closed"
+    assert (
+        repo.settle_outbound_delivery_job(cutoff_job, authorization_expired)
+        is SettlementOutcome.DONE
+    )
     cutoff_row = repo.get_job(cutoff_job_id)
     cutoff_run_row = repo.load_run(cutoff_run)
     assert cutoff_row is not None and cutoff_row["state"] == "done"
@@ -619,6 +641,7 @@ def test_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review(
     """A crash after provider acceptance cannot become generic recovery."""
     from app.db import repo
     from app.db.repo.job_settlement import SettlementOutcome
+    from app.db.repo.outbound_handoffs import ProviderHandoffAuthorization
     from app.models.job import JobKind
 
     run_id = _seed_run_for_queue_proof()
@@ -647,6 +670,11 @@ def test_final_send_lease_reap_preserves_snapshot_and_enters_purpose_review(
     assert job_id is not None
     claimed = repo.claim_job()
     assert claimed is not None and claimed.id == job_id
+    # Mirror the real worker: authorize the provider handoff for this exact leased
+    # job before the simulated crash, so the reaper's fenced provider-handoff lock
+    # finds the same authority a live worker would have held at crash time.
+    authorization = repo.authorize_outbound_provider_handoff(claimed)
+    assert isinstance(authorization, ProviderHandoffAuthorization)
     with repo.get_connection() as conn, conn.transaction():
         conn.execute(
             "UPDATE jobs SET attempts = max_attempts, "
