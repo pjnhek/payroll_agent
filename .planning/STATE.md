@@ -1,16 +1,20 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.1
-milestone_name: Demo Polish & Run-Detail UI
-status: planning
-last_updated: "2026-07-20T21:46:33.301Z"
+milestone: v4
+milestone_name: — Durable Execution
+status: Awaiting next milestone
+stopped_at: Phase 21 complete (UAT 2/2, verification passed) — Milestone v4 100%, all 6 phases done
+last_updated: "2026-07-20T21:14:50.053Z"
 last_activity: 2026-07-20
+last_activity_desc: Retired premature v4.1 milestone (demo-polish items already shipped); closed dashboard-YTD parity gap via quick 260720-lba; records reconciled
 progress:
-  total_phases: 0
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 84
+  completed_plans: 84
+  percent: 100
+current_phase: 21
+current_phase_name: durability-proofs-ops-view
 ---
 
 # Project State
@@ -20,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution milestone shipped & archived)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 made the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** v4 SHIPPED & archived 2026-07-20 (tag `v4`). Next = a mini-milestone (demo polish & run-detail UI — 4 items bundled in `backlog.md` → "Next milestone (mini)"), formalize via `/gsd-new-milestone`.
+**Current focus:** v4 SHIPPED & archived 2026-07-20 (tag `v4`). **The planned "demo polish & run-detail UI" mini-milestone was found already shipped** — a `/gsd-new-milestone` research pass (2026-07-20) verified all 4 backlog items landed during Phase 20 / an untracked quick task (`260718-hie`) and were never marked done. The single real gap (dashboard paystub-download YTD parity) was closed via quick task `260720-lba`; the premature v4.1 milestone was retired and the records reconciled. App is demo-ready; no active milestone.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Milestone v4 complete
 Plan: —
-Status: Defining requirements
-Last activity: 2026-07-20 — Milestone v4.1 started
+Status: Awaiting next milestone
+Last activity: 2026-07-20 — Milestone v4 completed and archived
 
 ## Performance Metrics
 
@@ -314,6 +318,7 @@ Open items surfaced by v4 research, to resolve during phase planning (not blocki
 | 260710-iw0 | Rewrite README for recruiter-first clarity and correct inaccurate claims | 2026-07-10 | 5b9eda1 | [260710-iw0-rewrite-readme-for-recruiter-first-clari](./quick/260710-iw0-rewrite-readme-for-recruiter-first-clari/) |
 | 260717-anx | Wire the same-Svix real-Postgres deduplication proof into ephemeral CI and verify its exact execution | 2026-07-17 | 130c038 | [260717-anx-wire-the-phase-19-same-svix-real-postgre](./quick/260717-anx-wire-the-phase-19-same-svix-real-postgre/) |
 | 260720-ie3 | Fix 19 mypy --strict test-file type errors failing the ci workflow (red since Phase 20; Phase 21 added to it) — annotations/casts only, 0 behavior change | 2026-07-20 | 2335a0c | [260720-ie3-fix-mypy-strict-test-file-type-errors-fa](./quick/260720-ie3-fix-mypy-strict-test-file-type-errors-fa/) |
+| 260720-lba | Thread YTD into the on-demand dashboard paystub download route (paystub_pdf) so an operator's manual PDF matches the emailed confirmation PDF — display-only parity fix + hermetic regression test (RED→GREEN proven) | 2026-07-20 | 25e2582 | [260720-lba-dashboard-paystub-ytd](./quick/260720-lba-dashboard-paystub-ytd/) |
 
 ### Build-time guidance (author review at roadmap lock — pull these forward, do not let them sit in the last phase)
 

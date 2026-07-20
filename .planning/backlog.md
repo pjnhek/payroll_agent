@@ -263,7 +263,34 @@ stalls — the widened-trigger proof). Both self-contained: bootstrap, seed, run
 
 ---
 
-## ▶ Next milestone (mini) — Demo Polish & Run-Detail UI
+## ✅ RESOLVED — Demo Polish & Run-Detail UI (all four items already shipped)
+
+> **RESOLVED 2026-07-20 — this section was STALE; all four items were already built.**
+> A `/gsd-new-milestone` run (started as v4.1) opened a 4-agent research pass to verify current
+> state before defining requirements. Three independent codebase-grounded researchers confirmed
+> **all four items had already shipped** and were simply never marked done here — the same
+> "shipped-in-a-quick-task, tracking-artifact-never-updated" drift that produced the untracked
+> `260718-hie`. The premature v4.1 milestone was retired; no build phases were planned for finished
+> work. Full current-state audit: `.planning/research/SUMMARY.md`. Per-item status:
+>
+> 1. **Run-detail → chronological conversation** — ✅ shipped via untracked quick `260718-hie`
+>    (commit `91bc6ca`, 2026-07-18); pinned by `tests/test_dashboard.py` (incl. `>300-char`
+>    no-silent-truncation). 3-column grid + duplicate surfaces gone; Phase-20 safety preserved.
+> 2. **Frontend progressive enhancement** — ✅ shipped: `GET /runs/{id}/status` + vanilla-JS 2s
+>    poller live; zero `<meta refresh>` remains.
+> 3. **Paystub YTD columns** — ✅ shipped (Phase 20: engine + emailed-PDF wiring). One residual
+>    parity gap — the on-demand **download** route (`paystub_pdf`) wasn't passing `ytd=` — closed
+>    via quick `260720-lba` (commit `25e2582`): display-only fix + hermetic RED→GREEN test.
+> 4. **Eval chart restyle** — ✅ shipped (`1159b6a` + `fe53d46`, 2026-07-17): dashboard palette,
+>    chart-junk removed, `eval/chart.svg` regenerated; matplotlib dev-group-only.
+>
+> Original per-item plans preserved verbatim below as the historical record of what was verified.
+> Optional **net-new** polish (NOT part of these items) is catalogued in `research/SUMMARY.md`:
+> inline HTML/CSS eval chart, HTML "Payroll details" YTD table, thread affordances, dead-code
+> hygiene (delete now-dead `load_outbound_emails` route load).
+
+<details>
+<summary>Original (now-resolved) mini-milestone item plans — preserved verbatim</summary>
 
 **Reclassified here at v4 close (2026-07-20).** These four items were open artifacts at the
 v4 pre-close audit (3 pending todos + 1 planned-but-unexecuted quick task). None is a v4
@@ -356,3 +383,5 @@ output — dashboard palette (`#1E3A5F` / `#6B7280`), drop chart junk (top/right
 gridlines), clean sans-serif, tighter labels, regenerate + recommit `eval/chart.svg`; or (b)
 replace the SVG with an inline HTML/CSS bar chart in `eval.html` (no image, no serve-time
 matplotlib) — fully on-brand. Not a blocker — numbers are correct + legible; pure aesthetics.
+
+</details>
