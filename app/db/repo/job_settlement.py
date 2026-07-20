@@ -1141,24 +1141,23 @@ def reap_expired_final_attempt(
 def list_unaccounted_error_runs(
     limit: int = 50, conn: psycopg.Connection | None = None
 ) -> list[dict[str, Any]]:
-    """The D-13 alarm predicate: runs in ERROR that no job ever settled for.
+    """The alarm predicate: runs in ERROR that no job ever settled for.
 
     Side-effect-free read — a plain SELECT, no mutation, no fencing. Projects
     ONLY `id`, `error_reason`, `updated_at`. `error_detail` is deliberately
     excluded from this projection: the alarm needs to make a problem
     FINDABLE, not reproduce a diagnostic — the operator follows the run's own
-    detail link for that (D-10). Ordered by the run's `updated_at DESC` and
-    bounded by `limit` (default 50), so this can never hand an
-    unauthenticated caller an unbounded result set.
+    detail link for that. Ordered by the run's `updated_at DESC` and bounded
+    by `limit` (default 50), so this can never hand an unauthenticated
+    caller an unbounded result set.
 
-    OPS-01's literal predicate ("job success ~100% while
-    `payroll_runs.status='error'` count is nonzero") is a FALSE-POSITIVE
-    GENERATOR after Phase 18's D-16 made "job `done` + run `error`" the
-    normal, correct shape of a legitimately-classified terminal failure —
-    every ordinary stage failure ends up exactly there. CONTEXT.md D-13
-    supersedes that literal ratio: fire only on a run in `error` with NO
-    corresponding terminal/dead job settlement — an error state no job ever
-    claimed responsibility for. This is an ANTI-JOIN, not a ratio.
+    A naive "job success rate vs. error-run count" ratio is a FALSE-POSITIVE
+    GENERATOR now that "job `done` + run `error`" is the normal, correct
+    shape of a legitimately-classified terminal failure — every ordinary
+    stage failure ends up exactly there. This function replaces that literal
+    ratio: fire only on a run in `error` with NO corresponding terminal/dead
+    job settlement — an error state no job ever claimed responsibility for.
+    This is an ANTI-JOIN, not a ratio.
 
     THE CORRELATION IS TRANSACTION-TIMESTAMP EQUALITY, and that is the whole
     discriminating power of this query:
@@ -1174,11 +1173,10 @@ def list_unaccounted_error_runs(
       final-lease-expiry branch) writes the run's `error` status and the
       settling job's terminal state inside ONE transaction. Postgres
       evaluates `now()` as the TRANSACTION START time, so both rows receive
-      the IDENTICAL timestamp and the equality holds EXACTLY — that shape
-      (Phase 18's D-16 "job done/dead + run error") is therefore silent here,
-      which is precisely the false-positive class the literal ratio
-      predicate above would have generated on every correctly-handled
-      terminal failure.
+      the IDENTICAL timestamp and the equality holds EXACTLY — that "job
+      done/dead + run error" shape is therefore silent here, which is
+      precisely the false-positive class the naive ratio above would have
+      generated on every correctly-handled terminal failure.
 
     - EQUALITY, NOT `>=` — IN BOTH DIRECTIONS, and relaxing this is
       forbidden. An earlier terminal job is a stale success and must not
@@ -1195,22 +1193,22 @@ def list_unaccounted_error_runs(
       with a strictly LATER `updated_at`
       (`settle_pipeline_job`'s OK branch). Under `>=` that unrelated LATER
       settlement would silently vouch for the EARLIER, genuinely unaccounted
-      error, and the alarm would stay quiet on exactly the pathology D-13
-      exists to catch. Equality still fires there, correctly. This trades a
-      POSSIBLE false positive (a legitimate settlement whose timestamps
-      happen to diverge for some reason not enumerated below) for the
-      ELIMINATION of a real false negative — and for an alarm that is the
-      correct direction: a false positive costs an operator one look at a
-      run that turns out fine; a false negative is the swallowing bug
-      persisting completely undetected, which is the entire failure mode
-      this predicate exists to surface.
+      error, and the alarm would stay quiet on exactly the swallowing
+      pathology this predicate exists to catch. Equality still fires there,
+      correctly. This trades a POSSIBLE false positive (a legitimate
+      settlement whose timestamps happen to diverge for some reason not
+      enumerated below) for the ELIMINATION of a real false negative — and
+      for an alarm that is the correct direction: a false positive costs an
+      operator one look at a run that turns out fine; a false negative is
+      the swallowing bug persisting completely undetected, which is the
+      entire failure mode this predicate exists to surface.
 
     - `settle_background_terminal()` writes a run's `error` status with NO
       JOB AT ALL, and has no production caller today. It is classified here
       DELIBERATELY, not by accident: a run errored through it is reported —
-      no job took responsibility for that error, which is exactly D-13's
-      definition of unaccounted — so a future caller inherits a decided
-      semantics rather than a silent gap.
+      no job took responsibility for that error, which is exactly this
+      predicate's definition of unaccounted — so a future caller inherits a
+      decided semantics rather than a silent gap.
 
     - A KNOWN, REACHABLE production path this predicate correctly fires on,
       and this is a TRUE POSITIVE, not a bug: the approve route's delivery
@@ -1220,11 +1218,11 @@ def list_unaccounted_error_runs(
       this is an error the transport layer never recorded anywhere else, so
       the run is reported. Do not widen this predicate to silence it.
 
-    - NO MUTE, NO ACKNOWLEDGE, NO TIME-BOXED AUTO-CLEAR (D-16). The result
-      is purely derived from current state: once the run is retriggered
-      (moved out of `error`) or settled by a later legitimate write, this
-      query returns empty on its own and the alarm goes quiet without any
-      operator action. A lookback window was considered and rejected here
+    - NO MUTE, NO ACKNOWLEDGE, NO TIME-BOXED AUTO-CLEAR. The result is
+      purely derived from current state: once the run is retriggered (moved
+      out of `error`) or settled by a later legitimate write, this query
+      returns empty on its own and the alarm goes quiet without any operator
+      action. A lookback window was considered and rejected here
       deliberately — a window is a time-boxed auto-clear by another name.
 
     EQUALITY SAFETY — every writer of `payroll_runs.updated_at` was
@@ -1232,24 +1230,24 @@ def list_unaccounted_error_runs(
     checking specifically for one failure mode: could ANY of them bump a
     run's `updated_at` WHILE its `status` stays `error`, breaking the
     equality match on an already-correctly-settled run (a false positive)?
-    The enumeration and its conclusion are recorded in this plan's SUMMARY
-    (21-02-SUMMARY.md) rather than only here, because the predicate's safety
-    rests on it and it must be checked, not assumed. Short version: every
-    DIRECT status writer either no-ops once a run is already `error`
-    (`record_run_error`'s own `_TERMINAL_STATUSES` CAS), is itself CAS'd to
-    a specific expected prior status that is never `error`
-    (`_set_run_error`'s `expected_status`, always the one queue/repo module
-    allowed to WRITE `error`), or explicitly excludes `error` from its scope
-    (`rewind_for_reclaim`'s `WHERE status IN ('extracting', 'computed',
-    'sent')`). The JSONB-only writers in `pipeline_state.py` carry no status
-    gate at all, but every reachable single-execution call path only invokes
-    them while a run is `extracting` (they run inside `_run_stages`, which
-    only starts after `set_status(EXTRACTING)`); the sole theoretical
-    exception is the pre-existing, independently documented reclaimed-job
-    double-execution hazard (a lease-expired worker's zombie predecessor
-    still mid-flight) that this queue design already accepts elsewhere as a
-    residual risk — not a new hazard introduced by this predicate, and
-    consistent with the equality-over-`>=` tradeoff already made above.
+    The full enumeration is recorded alongside this plan's execution record
+    rather than only here, because the predicate's safety rests on it and it
+    must be checked, not assumed. Short version: every DIRECT status writer
+    either no-ops once a run is already `error` (`record_run_error`'s own
+    `_TERMINAL_STATUSES` CAS), is itself CAS'd to a specific expected prior
+    status that is never `error` (`_set_run_error`'s `expected_status`,
+    always the one queue/repo module allowed to WRITE `error`), or
+    explicitly excludes `error` from its scope (`rewind_for_reclaim`'s
+    `WHERE status IN ('extracting', 'computed', 'sent')`). The JSONB-only
+    writers in `pipeline_state.py` carry no status gate at all, but every
+    reachable single-execution call path only invokes them while a run is
+    `extracting` (they run inside `_run_stages`, which only starts after
+    `set_status(EXTRACTING)`); the sole theoretical exception is the
+    pre-existing, independently documented reclaimed-job double-execution
+    hazard (a lease-expired worker's zombie predecessor still mid-flight)
+    that this queue design already accepts elsewhere as a residual risk —
+    not a new hazard introduced by this predicate, and consistent with the
+    equality-over-`>=` tradeoff already made above.
     """
     sql = (
         "SELECT id, error_reason, updated_at FROM payroll_runs"

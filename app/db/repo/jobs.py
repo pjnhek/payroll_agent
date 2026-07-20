@@ -628,24 +628,24 @@ def get_run_queue_label(
 
 
 # ---------------------------------------------------------------------------
-# D-12 queue-metric reads — the four `/ops` panels. Every one of these is a
-# plain SELECT with no mutation and no fencing (cited per-function below, the
-# same side-effect-free-read contract `count_open_jobs` and
-# `get_run_queue_label` already carry, per Phase 18's D-18 convention).
+# Queue-metric reads — the four `/ops` panels. Every one of these is a plain
+# SELECT with no mutation and no fencing, the same side-effect-free-read
+# contract `count_open_jobs` and `get_run_queue_label` already carry.
 # ---------------------------------------------------------------------------
 
 
 def count_jobs_by_state(conn: psycopg.Connection | None = None) -> dict[str, int]:
     """Return the open backlog split by state: `{"pending": N, "leased": M}`.
 
-    Side-effect-free read (D-18): a `GROUP BY state` count, no mutation. Both
-    keys are ALWAYS present with an explicit `0` — never a missing key — so a
-    caller never has to special-case "no leased jobs right now" as a KeyError.
-    D-12 requires the depth SPLIT rather than a single opaque total, because
-    "5 pending" and "5 leased" are different operational signals (a stalled
-    worker vs. a genuine backlog). `count_open_jobs` stays untouched: the pump
-    route's `queue_depth` response field already depends on its single-int
-    shape, and this function is additive, not a replacement.
+    Side-effect-free read: a `GROUP BY state` count, no mutation. Both keys
+    are ALWAYS present with an explicit `0` — never a missing key — so a
+    caller never has to special-case "no leased jobs right now" as a
+    KeyError. The depth is deliberately SPLIT rather than a single opaque
+    total, because "5 pending" and "5 leased" are different operational
+    signals (a stalled worker vs. a genuine backlog). `count_open_jobs` stays
+    untouched: the pump route's `queue_depth` response field already depends
+    on its single-int shape, and this function is additive, not a
+    replacement.
     """
     with _conn_ctx(conn) as (c, _owns):
         rows = c.execute(
@@ -664,8 +664,8 @@ def oldest_due_pending_age_seconds(
 ) -> float | None:
     """Return the age, in seconds, of the oldest currently-due pending job.
 
-    Side-effect-free read (D-18). `None` when no pending job is due right now
-    (an empty backlog, or every pending job is still backed off). Otherwise a
+    Side-effect-free read. `None` when no pending job is due right now (an
+    empty backlog, or every pending job is still backed off). Otherwise a
     non-negative `float` — psycopg maps Postgres `numeric` to `Decimal`, and
     this function converts explicitly with `float(...)` before returning so
     the annotated return type holds under strict mypy and the `/ops`
@@ -675,11 +675,8 @@ def oldest_due_pending_age_seconds(
     backed off by the retry ladder (`fail_job`'s `available_at = now() +
     backoff`) is not late — it is exactly where the backoff curve put it.
     Measuring from `created_at` would report scheduled backoff as pump
-    failure, which is the wrong signal for the metric D-12 renders against
-    the documented worst-case recovery latency (the 30-minute pump cadence
-    documented in README's "The pump: cadence, recovery, and the 750-hour
-    budget" section) — an operator reading this panel needs to know "how
-    long has something been ready and unclaimed", not "how old is the row".
+    failure, which is the wrong signal for an operator asking "how long has
+    something been ready and unclaimed", not "how old is the row".
     """
     with _conn_ctx(conn) as (c, _owns):
         row = c.execute(
@@ -697,13 +694,12 @@ def attempts_distribution(
 ) -> list[tuple[int, int]]:
     """Return `[(attempts, count), ...]` for open jobs, ordered ascending.
 
-    Side-effect-free read (D-18). Scoped to `state IN ('pending', 'leased')`
-    only — a dead job's attempts are already shown, per job, in the
-    dead-letter list (`list_dead_letter_jobs`), and folding them into this
-    distribution would double-count the same failure in two `/ops` panels.
-    This is the distribution D-12 renders against `MAX_ATTEMPTS`, so an
-    operator can see at a glance how much of the open backlog is close to
-    exhausting its retry ladder.
+    Side-effect-free read. Scoped to `state IN ('pending', 'leased')` only —
+    a dead job's attempts are already shown, per job, in the dead-letter list
+    (`list_dead_letter_jobs`), and folding them into this distribution would
+    double-count the same failure in two `/ops` panels. Rendered against
+    `MAX_ATTEMPTS`, this lets an operator see at a glance how much of the
+    open backlog is close to exhausting its retry ladder.
     """
     with _conn_ctx(conn) as (c, _owns):
         rows = c.execute(
@@ -720,7 +716,7 @@ def list_dead_letter_jobs(
 ) -> list[dict[str, Any]]:
     """Return the newest `limit` dead-lettered jobs, bounded and PII-safe.
 
-    Side-effect-free read (D-18), read through
+    Side-effect-free read, read through
     `c.cursor(row_factory=psycopg.rows.dict_row)` the way `get_job` is —
     never `SELECT *`. Ordered `updated_at DESC` (newest dead-letter first)
     and bounded by `limit` (default 50), so this can never hand an

@@ -1,4 +1,4 @@
-"""Live-Postgres behavioural proof of the D-13 unaccounted-error alarm predicate
+"""Live-Postgres behavioural proof of the unaccounted-error alarm predicate
 (`app.db.repo.list_unaccounted_error_runs`).
 
 The transaction-timestamp EQUALITY this predicate depends on is a real-Postgres
@@ -6,17 +6,16 @@ fact — `now()` is evaluated once, at transaction start, and held stable for
 every statement inside that transaction. A mocked/hermetic test cannot observe
 that; only a real database can. This module is therefore `integration` +
 `queueproof` (mirrors `tests/test_queue_durability.py`'s own module-level
-pytestmark), NOT `proof` — it is not one of the four durability proofs plan
-21-09 inventories, and tagging it `proof` would break that exactly-once
+pytestmark), NOT `proof` — it is not one of the durability proofs the queue's
+exactly-once proof inventory tracks, and tagging it `proof` would break that
 inventory.
 
-Eight tests, one per behaviour named in 21-02-PLAN.md's <behavior> block:
-three legitimate settlement paths (must be SILENT) and five unaccounted
-shapes (must FIRE) — including the two regression tests the cross-AI review
-added: the late-no-op-job false negative (equality vs `>=`) and the
-`settle_background_terminal()` classification. Every test asserts on the
-returned run id specifically, never merely on row count, so a test cannot
-pass by returning the wrong run.
+Eight tests, one per behaviour the predicate must exhibit: three legitimate
+settlement paths (must be SILENT) and five unaccounted shapes (must FIRE) —
+including two regression tests: the late-no-op-job false negative (equality
+vs `>=`) and the `settle_background_terminal()` classification. Every test
+asserts on the returned run id specifically, never merely on row count, so a
+test cannot pass by returning the wrong run.
 """
 from __future__ import annotations
 
