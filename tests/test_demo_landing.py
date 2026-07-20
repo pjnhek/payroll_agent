@@ -1189,6 +1189,7 @@ def test_run_detail_thread_includes_source_inbound(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_line_items", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: thread, raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
 
     from fastapi.testclient import TestClient
 
@@ -1200,6 +1201,17 @@ def test_run_detail_thread_includes_source_inbound(monkeypatch):
     assert resp.status_code == 200
     assert b"INBOUND" in resp.content or b"inbound" in resp.content.lower(), (
         "Thread view must render INBOUND direction label"
+    )
+
+    # Falsification: an EMPTY thread must not render an inbound direction
+    # label — pins that the assertion above genuinely depends on the real
+    # thread content, not boilerplate present on every response.
+    monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        empty_resp = tc.get(f"/runs/{run_id}")
+    assert empty_resp.status_code == 200
+    assert b"INBOUND" not in empty_resp.content and (
+        b"inbound" not in empty_resp.content.lower()
     )
 
 
@@ -1261,6 +1273,7 @@ def test_run_detail_alias_rationale_rendered(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_line_items", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
@@ -1276,6 +1289,16 @@ def test_run_detail_alias_rationale_rendered(monkeypatch):
     assert b"known nickname" in resp.content, (
         "alias rationale note must contain 'known nickname'"
     )
+
+    # Falsification: a source='exact' resolution for the SAME data must NOT
+    # render "known nickname" — pins that the assertion above genuinely
+    # depends on the resolution's source field, not boilerplate present on
+    # every computed-run response.
+    run["decision"]["resolutions"][0]["source"] = "exact"
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        exact_resp = tc.get(f"/runs/{run_id}")
+    assert exact_resp.status_code == 200
+    assert b"known nickname" not in exact_resp.content
 
 
 def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
@@ -1336,6 +1359,7 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
     monkeypatch.setattr(repo_mod, "load_line_items", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_outbound_emails", lambda *a, **kw: [], raising=False)
     monkeypatch.setattr(repo_mod, "load_thread_messages", lambda *a, **kw: [], raising=False)
+    monkeypatch.setattr(repo_mod, "load_clarified_fields", lambda *a, **kw: {}, raising=False)
     monkeypatch.setattr(
         repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
     )
@@ -1351,6 +1375,20 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
     assert b"known nickname" not in resp.content, (
         "'known nickname' must NOT appear for source='exact' resolutions"
     )
+
+    # Falsification (Truth #2 — this is one of the negative-assertion tests
+    # most likely to pass vacuously): the SAME run, with the resolution's
+    # source flipped to 'alias' and a matching known_alias on the employee,
+    # MUST render "known nickname" — proving the absence above is genuinely
+    # caused by source='exact', not by the alias-rationale block failing to
+    # render at all regardless of input.
+    run["decision"]["resolutions"][0]["source"] = "alias"
+    run["decision"]["resolutions"][0]["submitted_name"] = "Maria"
+    emp.known_aliases.append("Maria")
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        alias_resp = tc.get(f"/runs/{run_id}")
+    assert alias_resp.status_code == 200
+    assert b"known nickname" in alias_resp.content
 
 
 # ---------------------------------------------------------------------------

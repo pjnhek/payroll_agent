@@ -42,15 +42,36 @@ def _default_dashboard_queue_projection(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_runs_list_returns_200():
-    """DASH-01: GET /runs → 200 (runs list page).
+def test_runs_list_returns_200(fake_repo):
+    """DASH-01: GET /runs → 200 (runs list page), rendering a real seeded run.
 
-    Will fail RED until Wave 3 adds the GET /runs route to app/main.py.
+    A bare status-code check on an unmocked repo layer is satisfied even when
+    repo.load_all_runs() fails and the route degrades to an empty list (its
+    own `except Exception: runs = []` fallback) — 200 either way. Wired onto
+    fake_repo with a real seeded run so the assertion actually proves the row
+    renders, not merely that SOME page (possibly the empty-state page) came
+    back.
     """
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+
     response = client.get("/runs")
     assert response.status_code == 200, (
         f"GET /runs must return 200 (DASH-01 runs list); got {response.status_code}"
     )
+    assert str(run_id) in response.text, (
+        "the seeded run must actually render as a row, not fall through to "
+        "the empty-state page"
+    )
+    assert "No payroll runs yet" not in response.text
+
+    # Falsification: with no runs seeded at all, the page must show the
+    # empty-state copy instead — pins that the row assertion above depended
+    # on the real seeded run, not boilerplate present on every response.
+    fake_repo.runs.clear()
+    empty = client.get("/runs")
+    assert empty.status_code == 200
+    assert "No payroll runs yet" in empty.text
 
 
 # ---------------------------------------------------------------------------
@@ -114,16 +135,28 @@ def test_load_all_runs_tolerates_non_array_employee_count_value(fake_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_run_detail_returns_200_or_404():
-    """DASH-02: GET /runs/{valid_uuid} → 200 (found) or 404 (not found).
+def test_run_detail_returns_200_or_404(fake_repo):
+    """DASH-02: GET /runs/{valid_uuid} → 404 for a genuinely missing run, 200
+    for a real one.
 
-    A valid UUID that doesn't exist in the DB must return 404, not 500 or 422.
-    Will fail RED until Wave 3 adds the GET /runs/{run_id} route.
+    A valid UUID that doesn't exist in the store must return 404, not 500 or
+    422. Wired onto fake_repo and tightened from the original "200 or 404"
+    (which any exception from an unmocked repo layer would also satisfy, via
+    the route's `except Exception: raise 404`) to the precise, provable
+    contract: missing -> 404, present -> 200.
     """
     non_existent_id = uuid.uuid4()
     response = client.get(f"/runs/{non_existent_id}")
-    assert response.status_code in (200, 404), (
-        f"GET /runs/{{uuid}} must return 200 or 404 (DASH-02); got {response.status_code}"
+    assert response.status_code == 404, (
+        f"GET /runs/{{uuid}} for a genuinely missing run must return 404 "
+        f"(DASH-02); got {response.status_code}"
+    )
+
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    real_run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    found = client.get(f"/runs/{real_run_id}")
+    assert found.status_code == 200, (
+        f"GET /runs/{{uuid}} for a real run must return 200; got {found.status_code}"
     )
 
 
@@ -153,16 +186,31 @@ def test_eval_view_returns_200():
 # ---------------------------------------------------------------------------
 
 
-def test_send_test_returns_303():
-    """DASH-04: POST /demo/send-test → 303 redirect (back to /runs or run detail).
+def test_send_test_returns_303(fake_repo):
+    """DASH-04: POST /demo/send-test → 303 redirect to the newly created run.
 
-    The demo button fires the whole flow and redirects the operator to the
-    resulting run. Will fail RED until Wave 3 adds the POST /demo/send-test route.
+    A bare status-code check is satisfied by BOTH the success path
+    (redirect to /runs/{run_id}) and the failure path (redirect to
+    /runs?demo_queue_error=1 — see app/routes/demo.py's except block), so it
+    proves nothing about whether the demo write actually happened. Wired onto
+    fake_repo so the write (insert_inbound_email/create_run/enqueue_job) is a
+    real success against the in-memory store, and the assertions pin the
+    SUCCESS redirect target and that a real run was persisted.
     """
     response = client.post("/demo/send-test", follow_redirects=False)
     assert response.status_code == 303, (
         f"POST /demo/send-test must return 303 redirect (DASH-04); "
         f"got {response.status_code}"
+    )
+    location = response.headers["location"]
+    assert location.startswith("/runs/"), (
+        "a successful demo send must redirect to the new run's detail page, "
+        f"not the failure fallback (/runs?demo_queue_error=1); got Location={location!r}"
+    )
+    run_id = location.removeprefix("/runs/")
+    assert run_id in fake_repo.runs, (
+        "the redirected run_id must be a real run persisted through fake_repo, "
+        "not a coincidental 303 from the exception fallback path"
     )
 
 
@@ -303,11 +351,15 @@ def test_runs_invalid_uuid_returns_422():
 # ---------------------------------------------------------------------------
 
 
-def test_run_status_endpoint_404_for_unknown_run():
+def test_run_status_endpoint_404_for_unknown_run(fake_repo):
     """GET /runs/{id}/status → 404 for a run that does not exist.
 
     The JS poller relies on this contract to stop polling on a missing run.
-    The endpoint must never return 500 for an unknown UUID.
+    The endpoint must never return 500 for an unknown UUID. Wired onto
+    fake_repo so `repo.load_run` genuinely returns None for the unknown id
+    (the route's `if run is None: raise 404` branch) rather than 404 arriving
+    via the route's OTHER except-clause catching an unrelated real-DB
+    connection failure — the same status code for the wrong reason.
     """
     non_existent_id = uuid.uuid4()
     response = client.get(f"/runs/{non_existent_id}/status")
@@ -315,6 +367,13 @@ def test_run_status_endpoint_404_for_unknown_run():
         f"GET /runs/{{uuid}}/status must return 404 for unknown run; "
         f"got {response.status_code}"
     )
+
+    # Falsification: a run that DOES exist must NOT 404 — pins that the 404
+    # above genuinely depended on the id being absent from the real store.
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    real_run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    found = client.get(f"/runs/{real_run_id}/status")
+    assert found.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -338,12 +397,19 @@ def test_run_status_endpoint_422_for_non_uuid():
 # ---------------------------------------------------------------------------
 
 
-def test_runs_list_has_no_meta_refresh():
+def test_runs_list_has_no_meta_refresh(fake_repo):
     """GET /runs must NOT emit <meta http-equiv="refresh">.
 
     The blunt meta-refresh was replaced by a vanilla-JS status poll.
-    This test pins the removal so it can't silently regress.
+    This test pins the removal so it can't silently regress. Wired onto
+    fake_repo (with a real seeded run so the page renders the actual runs
+    table, not the empty-state fallback) purely to close the latency this
+    plan exists to fix — the assertion itself is structural/template-level
+    and independent of run content.
     """
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    fake_repo.create_run(business_id=business_id, source_email_id=None)
+
     response = client.get("/runs")
     assert response.status_code == 200
     assert 'http-equiv="refresh"' not in response.text, (
@@ -385,7 +451,8 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: inflight_run)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     response = client.get(f"/runs/{run_id}")
     assert response.status_code == 200, (
@@ -395,6 +462,15 @@ def test_run_detail_inflight_run_renders_200_not_500(monkeypatch):
     # The poll script must be present (run is in-flight) and carry the run id as a JSON string.
     assert "/status" in response.text
     assert str(run_id) in response.text
+
+    # Falsification: a SETTLED, non-in-flight run with no open job must NOT
+    # render the poll script — pins that the "/status" assertion above
+    # genuinely depends on the run being in-flight, not boilerplate present
+    # on every response regardless of status.
+    inflight_run["status"] = "reconciled"
+    settled = client.get(f"/runs/{run_id}")
+    assert settled.status_code == 200
+    assert "/status" not in settled.text
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +515,8 @@ def test_run_detail_never_renders_raw_error_detail(fake_conn, monkeypatch):
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: run)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     response = client.get(f"/runs/{run_id}")
     assert response.status_code == 200
@@ -447,6 +524,38 @@ def test_run_detail_never_renders_raw_error_detail(fake_conn, monkeypatch):
     assert "maria@example.test" not in response.text
     assert "provider said" not in response.text
     assert "Error" in response.text
+
+    # Falsification (Truth #2 — negative-assertion tests are the most likely
+    # to pass vacuously on an error/fallback page that simply never rendered
+    # the field at all). The template only ever surfaces error_detail through
+    # `run.failure.reason` (the bounded-vocabulary reduction in
+    # _safe_failure_presentation) — it never references run.error_detail
+    # directly. Bypass ONLY that vocabulary check, passing the raw
+    # error_detail straight through as `reason` (keeping the other required
+    # keys well-formed so the template still renders), and confirm the
+    # hostile content NOW appears — proving the "not in text" assertions
+    # above are load-bearing on real redaction, not on an unrelated fallback
+    # that happens to never surface error_detail either way.
+    import app.routes.runs as _runs_route
+
+    def _leaky_failure_presentation(r: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "secondary_label": None,
+            "stage": None,
+            "reason": r.get("error_detail"),
+            "attempts": None,
+        }
+
+    monkeypatch.setattr(
+        _runs_route, "_safe_failure_presentation", _leaky_failure_presentation
+    )
+    leaking = client.get(f"/runs/{run_id}")
+    assert leaking.status_code == 200
+    assert "Maria Chen" in leaking.text, (
+        "sanity: with the bounded-vocabulary reduction bypassed, the hostile "
+        "content must actually leak through — otherwise the negative "
+        "assertions above would pass even if redaction were silently removed"
+    )
 
 
 def test_retry_exhausted_diagnostics_are_bounded_across_html_and_polling(monkeypatch):
@@ -473,7 +582,8 @@ def test_retry_exhausted_diagnostics_are_bounded_across_html_and_polling(monkeyp
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: dict(run))
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     detail = client.get(f"/runs/{run_id}")
     poll = client.get(f"/runs/{run_id}/status")
@@ -491,6 +601,29 @@ def test_retry_exhausted_diagnostics_are_bounded_across_html_and_polling(monkeyp
     assert "Provider timeout" in poll_text
     assert "5 of 5 attempts" in poll_text
     assert hostile not in poll_text
+
+    # Falsification: an error_detail that does NOT match the bounded
+    # diagnostic grammar must produce NONE of the derived labels above —
+    # pins that "Retries exhausted"/"Stage: Extraction"/"Provider
+    # timeout"/"5 of 5 attempts" genuinely come from parsing THIS run's real
+    # error_detail through the bounded-vocabulary reduction, not from static
+    # boilerplate present on every error-status response regardless of
+    # content. ("Extraction" alone is excluded — it also appears in the
+    # page's unconditional "Payroll details" section header, so it cannot
+    # distinguish real derivation from boilerplate on its own.)
+    run["error_detail"] = "not a real diagnostic code"
+    mismatched_detail = client.get(f"/runs/{run_id}")
+    mismatched_poll = client.get(f"/runs/{run_id}/status")
+    assert mismatched_detail.status_code == 200
+    assert mismatched_poll.status_code == 200
+    for derived in (
+        "Retries exhausted",
+        "Provider timeout",
+        "5 of 5 attempts",
+    ):
+        assert derived not in mismatched_detail.text
+        assert derived not in mismatched_poll.text
+    assert "Stage:</strong> Extraction" not in mismatched_detail.text
 
 
 def test_runs_list_uses_safe_failure_projection(monkeypatch):
@@ -671,7 +804,8 @@ def test_queued_run_detail_has_secondary_badge_durability_and_bounded_polling(
     )
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     response = client.get(f"/runs/{run_id}")
 
@@ -691,6 +825,19 @@ def test_queued_run_detail_has_secondary_badge_durability_and_bounded_polling(
         "claim_status(",
     ):
         assert forbidden not in poll_script.lower()
+
+    # Falsification: with no open queue work at all, the durability note and
+    # the queue-polling script must NOT render — pins that the assertions
+    # above genuinely depend on the real "Queued" state, not boilerplate
+    # present on every run-detail response.
+    monkeypatch.setattr(_repo, "get_run_queue_label", lambda rid, conn=None: None)
+    settled = client.get(f"/runs/{run_id}")
+    assert settled.status_code == 200
+    assert (
+        "This action is durably saved; you can safely leave this page."
+        not in settled.text
+    )
+    assert "var MAX_ATTEMPTS = 60" not in settled.text
 
 
 def test_retry_queued_runs_list_keeps_payroll_badge_first_and_updates_in_place(
@@ -753,13 +900,27 @@ def test_queue_feedback_hidden_when_no_open_work(monkeypatch):
     monkeypatch.setattr(_repo, "get_run_queue_label", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     text = client.get(f"/runs/{run_id}").text
 
     assert "This action is durably saved; you can safely leave this page." not in text
     assert "run-queue-badge" not in text
     assert "MAX_ATTEMPTS" not in text
+
+    # Falsification (Truth #2 — this is one of the negative-assertion tests
+    # most likely to pass vacuously): with real open queue work, ALL THREE
+    # of the above must actually appear — pins that their absence above is
+    # genuinely caused by "no open job", not by the page failing to render
+    # this section at all regardless of state.
+    monkeypatch.setattr(_repo, "get_run_queue_label", lambda rid, conn=None: "Queued")
+    open_work_text = client.get(f"/runs/{run_id}").text
+    assert "This action is durably saved; you can safely leave this page." in (
+        open_work_text
+    )
+    assert "run-queue-badge" in open_work_text
+    assert "MAX_ATTEMPTS" in open_work_text
 
 
 def test_run_detail_is_one_ordered_conversation_with_final_reply_composer(monkeypatch):
@@ -876,6 +1037,7 @@ def test_run_detail_fallback_inbound_message_keeps_created_at_metadata(monkeypat
     monkeypatch.setattr(_repo, "load_inbound_email", lambda *args, **kwargs: raw_email)
     monkeypatch.setattr(_repo, "load_line_items", lambda *args, **kwargs: [])
     monkeypatch.setattr(_repo, "load_thread_messages", lambda *args, **kwargs: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda *args, **kwargs: {})
 
     response = client.get(f"/runs/{run_id}")
 
@@ -907,7 +1069,15 @@ def test_resolution_superseded_notice_uses_fixed_copy_not_query_text(monkeypatch
     monkeypatch.setattr(_repo, "get_run_queue_label", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
+    from app.models.roster import Roster as _Roster
+
+    monkeypatch.setattr(
+        _repo,
+        "load_roster_for_business",
+        lambda business_id, conn=None: _Roster(business_id=business_id, employees=[]),
+    )
 
     response = client.get(
         f"/runs/{run_id}", params={"resolution_superseded": hostile}
@@ -919,6 +1089,17 @@ def test_resolution_superseded_notice_uses_fixed_copy_not_query_text(monkeypatch
         "but not applied."
     ) in response.text
     assert hostile not in response.text
+
+    # Falsification: the fixed-copy notice must NOT appear when the query
+    # param is absent — pins that its presence above is genuinely gated on
+    # `resolution_superseded`, not boilerplate rendered on every needs_operator
+    # response regardless of the query string.
+    no_flag = client.get(f"/runs/{run_id}")
+    assert no_flag.status_code == 200
+    assert (
+        "An earlier resolution was already accepted. This submission was recorded "
+        "but not applied."
+    ) not in no_flag.text
 
 
 def test_demo_queue_error_notice_uses_fixed_copy_not_query_text(monkeypatch):
@@ -1304,13 +1485,22 @@ def test_run_detail_inflight_poll_reloads_on_settle(monkeypatch):
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: inflight_run)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     response = client.get(f"/runs/{run_id}")
     assert response.status_code == 200
     assert "location.reload()" in response.text, (
         "in-flight run-detail poll must reload once on settle so data columns populate"
     )
+
+    # Falsification: a SETTLED run (no open job) must not render the poll
+    # script at all — pins that "location.reload()" above genuinely depends
+    # on the run being in-flight, not boilerplate present on every response.
+    inflight_run["status"] = "reconciled"
+    settled = client.get(f"/runs/{run_id}")
+    assert settled.status_code == 200
+    assert "location.reload()" not in settled.text
 
 
 def test_run_detail_poll_reloads_on_status_change_not_just_settle(monkeypatch):
@@ -1335,7 +1525,8 @@ def test_run_detail_poll_reloads_on_status_change_not_just_settle(monkeypatch):
     monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: run)
     monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
     monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_thread_messages", lambda rid, conn=None: [])
+    monkeypatch.setattr(_repo, "load_clarified_fields", lambda rid, conn=None: {})
 
     text = client.get(f"/runs/{run_id}").text
     assert "/status" in text, (
@@ -1349,19 +1540,34 @@ def test_run_detail_poll_reloads_on_status_change_not_just_settle(monkeypatch):
         "not only on leaving in-flight"
     )
 
+    # Falsification: a settled, non-in-flight run with no open job must not
+    # render the poll script (and therefore none of INITIAL_STATUS/the
+    # reload comparison) — pins that the markers above depend on the real
+    # rendered status, not boilerplate present regardless of state.
+    run["status"] = "reconciled"
+    settled = client.get(f"/runs/{run_id}").text
+    assert "INITIAL_STATUS" not in settled
+    assert "data.status !== INITIAL_STATUS" not in settled
 
-def test_run_detail_has_no_meta_refresh():
+
+def test_run_detail_has_no_meta_refresh(fake_repo):
     """GET /runs/{id} must NOT emit <meta http-equiv="refresh">.
 
-    The blunt meta-refresh was replaced by a vanilla-JS status poll.
+    The blunt meta-refresh was replaced by a vanilla-JS status poll. The
+    original version of this test only asserted `if response.status_code ==
+    200`, guarded against a non-existent run — since an unmocked repo layer
+    always 404'd (whether genuinely missing or from a real-DB exception),
+    that `if` body NEVER executed and the assertion never ran, on this plan's
+    fix or before it. Wired onto fake_repo with a real seeded run so the
+    body actually executes against a genuine 200.
     """
-    non_existent_id = uuid.uuid4()
-    response = client.get(f"/runs/{non_existent_id}")
-    # 404 is acceptable (run not found) — we're testing the 200 path for no-refresh.
-    if response.status_code == 200:
-        assert 'http-equiv="refresh"' not in response.text, (
-            "GET /runs/{id} must not emit <meta http-equiv='refresh'>"
-        )
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    response = client.get(f"/runs/{run_id}")
+    assert response.status_code == 200
+    assert 'http-equiv="refresh"' not in response.text, (
+        "GET /runs/{id} must not emit <meta http-equiv='refresh'>"
+    )
 
 
 # ---------------------------------------------------------------------------
