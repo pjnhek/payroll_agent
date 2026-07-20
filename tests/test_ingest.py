@@ -107,6 +107,18 @@ def _script_clean_run(mock_llm) -> None:
     mock_llm.script = [extraction]
 
 
+def _drain_all() -> None:
+    """Drain every currently-claimable job to EMPTY, deterministically.
+
+    A single `drain_once()` call claims exactly ONE job — `FOR UPDATE SKIP
+    LOCKED` FIFO order, not "the job I meant." After an INGEST job runs it may
+    itself enqueue a RUN_PIPELINE job; a caller that wants a clean point (no
+    leftover work queued) must drain to EMPTY, not just call it once.
+    """
+    while drain.drain_once() is not DrainOutcome.EMPTY:
+        pass
+
+
 def _install_durable_event_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[_uuid_module.UUID, dict[str, Any]]:
@@ -266,6 +278,35 @@ def test_duplicate_delivery_pipeline_runs_once():
 
     Requires DATABASE_URL + ALLOW_DB_RESET=1 (the same two-factor guard as the other
     integration tests) and is excluded from the mocked suite by its marker.
+
+    `/webhook/inbound` (`app/routes/webhook.py`) is a durable-receipt-only
+    boundary — it commits the `inbound_events` row + one identifier-only
+    INGEST job and calls `wake.wake()` (a plain `threading.Event.set()` only a
+    running lifespan-owned worker thread would observe). A bare
+    `TestClient(app, ...)` with no `with` block never starts that lifespan, so
+    nothing ever drains the job. The mocked twin just above
+    (`test_duplicate_delivery_pipeline_runs_once_unit`) already handles this —
+    it explicitly calls `drain.drain_once()` after both POSTs. This live-DB
+    counterpart uses the same idiom, chosen over `with TestClient(app) as
+    client:` because the actual worker pool races asynchronously against the
+    assertions below; the mocked twin's explicit synchronous `drain_once()`
+    call is what makes this test deterministic.
+
+    TWO INDEPENDENT DEDUP LAYERS, BOTH EXERCISED. A bare identical-payload
+    redelivery (r1/r2 below) is caught entirely at the `inbound_events` layer —
+    `external_event_id` is a SHA-256 digest of the exact raw bytes in fixture
+    mode, so the second POST never even reaches a second INGEST job. That layer
+    alone would make the ORIGINAL invariant this test is named for — "the
+    ON CONFLICT DO NOTHING clause [on email_messages.message_id] doing its
+    job" — unreachable code from this test's own perspective, which is exactly
+    the "regression wearing a fix's clothes" a version that no longer exercises
+    the retry would be. So a THIRD delivery (r3) uses a DIFFERENT top-level
+    `id` (different raw bytes -> different event -> its own INGEST job) but
+    the SAME `message_id` — simulating a genuinely distinct provider event
+    that happens to reference the same underlying message. Draining THAT job
+    is what actually reaches `insert_inbound_email`'s `ON CONFLICT
+    (message_id) DO NOTHING` a second time and proves the layer this test was
+    originally written to prove still holds post-Phase-19.
     """
     if not (_HAS_DB and _HAS_RESET):
         pytest.skip("DATABASE_URL or ALLOW_DB_RESET=1 not set — skipping live-DB dedup test")
@@ -304,6 +345,39 @@ def test_duplicate_delivery_pipeline_runs_once():
     assert r2.status_code == 200, (
         f"Duplicate POST must return 200 (silent dedup, not an error); got {r2.status_code}"
     )
+    assert r1.json()["event_id"] == r2.json()["event_id"], (
+        "both deliveries of the same payload must resolve to the SAME durable "
+        "event — a different event_id here means the SHA-256 fixture dedup key "
+        "failed to recognize the redelivery as the same event"
+    )
+    assert r1.json()["status"] == "accepted"
+    assert r2.json()["status"] == "duplicate"
+
+    # Drain the durable ingest boundary synchronously to EMPTY — see the
+    # docstring above for why this replaces the old assumption that the
+    # webhook itself already did this work in-request, and the _drain_all
+    # docstring for why one drain_once() call is not enough here: the r1/r2
+    # INGEST job itself enqueues a RUN_PIPELINE job on success, and a bare
+    # single call could claim EITHER one depending on queue state.
+    _drain_all()
+
+    # A THIRD delivery: a genuinely DIFFERENT event (different top-level `id`,
+    # so a different raw-byte hash and a different inbound_events row) carrying
+    # the SAME message_id. This is what actually exercises the message_id-level
+    # dedup the test's docstring is about — see the docstring for why r1/r2
+    # alone cannot reach it.
+    payload_distinct_event = dict(payload, id=str(_uuid_module.uuid4()))
+    r3 = test_client.post("/webhook/inbound", json=payload_distinct_event)
+    assert r3.status_code == 200, f"Third POST must return 200; got {r3.status_code}"
+    assert r3.json()["status"] == "accepted", (
+        "a genuinely different event must be accepted as new at the event layer "
+        "— only the shared message_id should be deduplicated, one layer deeper"
+    )
+    assert r3.json()["event_id"] != r1.json()["event_id"], (
+        "the third delivery must be a DISTINCT event from r1/r2, or this test "
+        "would just be re-proving the event-layer dedup a second time"
+    )
+    _drain_all()
 
     # Verify only one email_messages row exists for this message_id (DB-level assertion).
     # The ON CONFLICT DO NOTHING constraint is the correctness backstop.

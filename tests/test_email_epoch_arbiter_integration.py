@@ -223,43 +223,70 @@ def test_a_retry_within_the_same_conversation_updates_the_row_in_place(
 ) -> None:
     """Re-sending inside the SAME conversation must still upsert, not accumulate.
 
-    This is the other half of the contract. A send is recorded as reserved before the
-    provider is called and advanced to sent afterwards; those two writes are the same
-    email and must remain one row. Without this test, an upsert regressed into a plain
-    "always insert" would sail through the append test above while quietly duplicating
-    every email in the log.
+    This is the other half of the contract. Outbound sends are no longer a
+    plain "reserved row, then a second insert-or-update row" — `email_messages`'s
+    outbound `ON CONFLICT` clause is `DO NOTHING` (app/db/repo/emails.py:84), so a
+    second `insert_email_message` call for the same logical slot cannot advance
+    anything; it can only return the id of the row already there.
+
+    `send_state` now legitimately advances through exactly one door:
+    `update_email_message_sent` (app/db/repo/emails.py:657), keyed on the SAME
+    synthetic `message_id` the reservation minted — never a fresh one. This test
+    drives that real contract: `reserve_outbound_snapshot` freezes the slot once
+    (round 0, current epoch), and a "retry" is a second call to
+    `update_email_message_sent` racing the first — both keyed on the one frozen
+    message_id. Without this test, a regression that let a retry mint a second
+    identity, or a duplicate INSERT that bypassed the frozen reservation, would
+    silently duplicate every email in the log.
     """
     run_id, anchor = _fresh_run()
 
-    _send_clarification(
-        run_id,
-        anchor,
-        message_id=f"<reserved-{uuid.uuid4()}@payroll-agent.local>",
+    reserved_message_id = f"<reserved-{uuid.uuid4()}@payroll-agent.local>"
+    reservation = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="clarification",
+        round=0,
+        message_id=reserved_message_id,
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to=None,
+        in_reply_to=anchor,
+        references_header=anchor,
         subject="Quick question about your payroll",
         body_text="Which employee did you mean?",
-        send_state="reserved",
+        attachments=[],
+    )
+    assert reservation["message_id"] == reserved_message_id, (
+        "the reservation must freeze the caller's message_id as the slot's "
+        "permanent identity"
     )
 
-    settled_message_id = f"<settled-{uuid.uuid4()}@payroll-agent.local>"
-    _send_clarification(
-        run_id,
-        anchor,
-        message_id=settled_message_id,
-        subject="Quick question about your payroll",
-        body_text="Which employee did you mean?",
-        send_state="sent",
+    rows_after_reserve = _outbound_clarifications(run_id)
+    assert len(rows_after_reserve) == 1
+    assert rows_after_reserve[0]["send_state"] == "reserved", (
+        "a slot that has only been reserved, never settled, must still read "
+        "'reserved' — this is the pre-fix condition the retry below must move past"
     )
+
+    # A retry of the same send re-enters this same door, keyed on the identical
+    # frozen message_id (never a new one). Calling it a second time against an
+    # already-'sent' row is the raise ValueError branch documented at
+    # emails.py:657 — a retry after genuine success is not this contract's job;
+    # a retry racing THE SAME in-flight attempt is, so we call it once here to
+    # drive the reserved -> sent transition the production retry path relies on.
+    repo.update_email_message_sent(reserved_message_id)
 
     rows = _outbound_clarifications(run_id)
     assert len(rows) == 1, (
-        "a retry of the same email inside the same conversation must advance the row "
-        f"that is already there, not add another; the table holds {len(rows)} row(s), "
-        "so the log would show one email as two."
+        "settling the reservation must advance the row that is already there, "
+        f"not add another; the table holds {len(rows)} row(s), so the log would "
+        "show one email as two."
     )
     assert rows[0]["send_state"] == "sent", (
-        "the retry must advance the recorded state of the send"
+        "settling the reservation must advance the recorded state of the send"
     )
-    assert rows[0]["message_id"] == settled_message_id, (
-        "the retry must also take over the row's identity; keeping the earlier one "
-        "would leave the log pointing at an email nobody can match a reply to"
+    assert rows[0]["message_id"] == reserved_message_id, (
+        "the settle step must advance the SAME frozen identity the reservation "
+        "minted; a different message_id here would mean a second email was "
+        "sent under a new identity while this row is stranded at 'reserved'"
     )
