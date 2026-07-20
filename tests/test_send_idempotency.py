@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+import resend
 
 from app.db import repo
 from app.models.contracts import InboundEmail
@@ -610,6 +611,294 @@ def test_a_human_epoch_bump_clears_the_guard(seeded_db: None) -> None:
 
     # Must not raise now that the epoch has moved on.
     send_guard.assert_no_unconfirmed_send(run_id, purpose="clarification", round=0)
+
+
+# ---------------------------------------------------------------------------
+# Section B.1 — PROOF-03: crash between provider-accept and the local `sent`
+# commit sends no second email
+# ---------------------------------------------------------------------------
+
+
+@_SKIP_LIVE_DB
+@pytest.mark.integration
+@pytest.mark.queueproof
+@pytest.mark.proof(id="PROOF-03")
+def test_crash_between_provider_accept_and_local_sent_commit_sends_no_second_email(
+    seeded_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker killed between Resend accepting the send and the local `sent`
+    commit must send no second email, against a real Postgres.
+
+    THE THREE NAMED TEETH -- the only thing that distinguishes this proof
+    from a vacuous "the pipeline stopped somewhere" twin:
+      1. The persisted `message_id` is byte-identical across every attempt --
+         compared as exact strings, never truthiness or prefixes.
+      2. Every recorded provider call carries an Idempotency-Key equal to
+         that same frozen `message_id`.
+      3. The provider-call count is asserted as an exact predeclared
+         integer at each checkpoint -- never `>= 1`, never a range, never an
+         expectation written after observing the run.
+
+    TWO HALVES, because `jobs.leased_until` and
+    `outbound_provider_handoffs.owner_leased_until` are TWO INDEPENDENT
+    LEASES (app/db/repo/outbound_handoffs.py:181,345) -- expiring the job
+    lease alone does NOT expire the handoff owner lease, so a genuine replay
+    requires expiring BOTH:
+
+      HALF A (job lease expired, handoff owner lease still ACTIVE):
+        predeclared count stays at 1 -- the reclaimed job is REFUSED at the
+        handoff fence (an app-level structural refusal, not provider-side
+        deduplication), and the refusal is asserted BY ITS OWN REASON
+        (`active_handoff_unexpired`), not merely "nothing happened".
+
+      HALF B (both leases expired):
+        predeclared count becomes 2 -- a genuine replay now reaches the
+        provider, carrying the SAME frozen `message_id` as its
+        Idempotency-Key, so the provider (not the app) collapses the two
+        calls into one email. This is the distinct, weaker-but-still-safe
+        property half A does not exercise: half A proves the app declines to
+        ask again; half B proves that when it DOES ask again, the identity
+        it asks with makes a second ask safe.
+
+    MECHANISM: the crash is simulated by wrapping the real
+    `settle_outbound_delivery_job` in a test-owned transaction and raising
+    before that transaction commits -- an injected-seam failure against a
+    real Postgres, not a hard connection kill, so the proof is deterministic
+    under a shared CI Postgres rather than flaky.
+    """
+    from app.db.repo.job_settlement import SettlementOutcome, settle_outbound_delivery_job
+    from app.db.repo.outbound_handoffs import (
+        ProviderHandoffActive,
+        ProviderHandoffAuthorization,
+    )
+    from app.email import gateway
+    from app.models.job import JobKind
+    from app.models.status import RunStatus
+    from app.pipeline.result import (
+        DELIVERY_SEND_BUDGET,
+        PipelineOutcome,
+    )
+
+    # ---- Arrange: seed a run approved for confirmation delivery, with a
+    # frozen reservation and its send_outbound job. ----
+    run_id, anchor = _fresh_run()
+    repo.set_status(run_id, RunStatus.APPROVED)
+    frozen_message_id = f"<proof03-{uuid.uuid4()}@payroll-agent.local>"
+    snapshot = repo.reserve_outbound_snapshot(
+        run_id=run_id,
+        purpose="confirmation",
+        round=0,
+        message_id=frozen_message_id,
+        from_addr="agent@payroll-agent.local",
+        to_addr="payroll@example.test",
+        reply_to=None,
+        in_reply_to=anchor,
+        references_header=anchor,
+        subject="Payroll confirmation",
+        body_text="Frozen confirmation body",
+        attachments=(),
+    )
+    email_id = snapshot["email_id"]
+    # Captured BEFORE any send -- the expected value every later read is
+    # compared against.
+    captured_message_id = snapshot["message_id"]
+    assert captured_message_id == frozen_message_id
+
+    job_id = repo.enqueue_job(
+        kind=JobKind.SEND_OUTBOUND,
+        dedup_key=repo.send_outbound_dedup_key(email_id),
+        run_id=run_id,
+        email_id=email_id,
+    )
+    assert job_id is not None
+
+    # A gateway double in place of the real provider: records every call,
+    # capturing the full keyword shape production sends, and accepts.
+    provider_calls: list[dict[str, Any]] = []
+
+    def _spy_send(params: dict[str, Any], options: dict[str, Any]) -> dict[str, str]:
+        provider_calls.append({"idempotency_key": options.get("idempotency_key")})
+        return {"id": f"resend-{uuid.uuid4()}"}
+
+    monkeypatch.setattr(resend.Emails, "send", staticmethod(_spy_send))
+
+    # ---- Attempt 1: the provider accepts, then the settlement transaction
+    # is forced to fail AFTER provider-accept, BEFORE it commits. ----
+    job1 = repo.claim_job()
+    assert job1 is not None and job1.id == job_id
+    authorization1 = repo.authorize_outbound_provider_handoff(job1)
+    assert isinstance(authorization1, ProviderHandoffAuthorization)
+
+    send_result_1 = gateway.send_reserved_outbound_snapshot(
+        authorization1.snapshot,
+        not_after=authorization1.not_after,
+        budget=DELIVERY_SEND_BUDGET,
+    )
+    assert send_result_1.outcome is PipelineOutcome.OK
+    assert len(provider_calls) == 1, "attempt 1 must reach the provider exactly once"
+
+    class _SimulatedWorkerDeath(Exception):
+        """Models a worker SIGKILLed after provider-accept, before local commit."""
+
+    # The higher-fidelity form: the real settlement function's writes
+    # execute inside a caller-owned transaction, and the raise happens
+    # before that transaction commits -- proving the writes actually roll
+    # back, not merely that they never ran.
+    with (
+        pytest.raises(_SimulatedWorkerDeath),
+        repo.get_connection() as crash_conn,
+        crash_conn.transaction(),
+    ):
+        settle_outbound_delivery_job(job1, send_result_1, conn=crash_conn)
+        raise _SimulatedWorkerDeath(
+            "modeling a worker killed between provider-accept and the local sent commit"
+        )
+
+    # ---- Assert, after attempt 1: the settlement transaction rolled back
+    # in full -- reservation still `reserved`, handoff still active, job
+    # still `leased`, message_id unchanged. ----
+    with repo.get_connection() as conn:
+        send_state_row = conn.execute(
+            "SELECT send_state FROM email_messages WHERE id = %s", (str(email_id),)
+        ).fetchone()
+    assert send_state_row == ("reserved",), (
+        "the settlement transaction must have rolled back -- a 'sent' row here "
+        "would mean the crash injection ran AFTER the commit, not before it"
+    )
+    snapshot_after_1 = repo.load_outbound_snapshot(run_id, email_id)
+    assert snapshot_after_1 is not None
+    assert snapshot_after_1["message_id"] == captured_message_id
+    run_after_1 = repo.load_run(run_id)
+    assert run_after_1 is not None and run_after_1["status"] == RunStatus.APPROVED.value
+    job_after_1 = repo.get_job(job_id)
+    assert job_after_1 is not None and job_after_1["state"] == "leased"
+    with repo.get_connection() as conn:
+        handoff_after_1 = conn.execute(
+            "SELECT released_at FROM outbound_provider_handoffs WHERE run_id = %s",
+            (str(run_id),),
+        ).fetchone()
+    assert handoff_after_1 == (None,), "the provider handoff must still be active"
+    assert len(provider_calls) == 1
+
+    # ---- HALF A: expire ONLY jobs.leased_until. The job becomes
+    # reclaimable, but the handoff's OWN owner lease -- a second,
+    # independent lease -- is untouched and still active. ----
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '1 second' WHERE id = %s",
+            (str(job_id),),
+        )
+    with repo.get_connection() as conn:
+        owner_still_active = conn.execute(
+            "SELECT owner_leased_until < now() AS owner_expired "
+            "FROM outbound_provider_handoffs WHERE run_id = %s AND released_at IS NULL",
+            (str(run_id),),
+        ).fetchone()
+    assert owner_still_active == (False,), (
+        "half A requires the handoff owner lease to still be ACTIVE -- only the "
+        "job lease was expired above -- otherwise half A would silently be "
+        "proving half B's scenario"
+    )
+
+    job2 = repo.claim_job()
+    assert job2 is not None and job2.id == job_id
+    assert job2.lease_token != job1.lease_token, "half A must be a genuine reclaim"
+
+    authorization2 = repo.authorize_outbound_provider_handoff(job2)
+    assert isinstance(authorization2, ProviderHandoffActive)
+    assert authorization2.reason == "active_handoff_unexpired", (
+        "the refusal must be the handoff fence's own reason for an unexpired "
+        "active handoff, not merely 'nothing happened'"
+    )
+
+    # PREDECLARED: half A's provider-call count is exactly 1 -- the app-level
+    # fence, not provider-side deduplication, is what prevented the second call.
+    assert len(provider_calls) == 1, "half A: the provider must never be asked again"
+    with repo.get_connection() as conn:
+        send_state_after_a = conn.execute(
+            "SELECT send_state FROM email_messages WHERE id = %s", (str(email_id),)
+        ).fetchone()
+    assert send_state_after_a == ("reserved",)
+    snapshot_after_a = repo.load_outbound_snapshot(run_id, email_id)
+    assert snapshot_after_a is not None
+    assert snapshot_after_a["message_id"] == captured_message_id
+
+    # ---- HALF B: additionally expire the handoff's OWN owner lease. This is
+    # the only way a replay can occur -- the owner lease is independent of
+    # the job lease and does not follow it. ----
+    with repo.get_connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE jobs SET leased_until = now() - interval '1 second' WHERE id = %s",
+            (str(job_id),),
+        )
+        conn.execute(
+            "UPDATE outbound_provider_handoffs SET owner_leased_until = "
+            "now() - interval '1 second' WHERE run_id = %s AND released_at IS NULL",
+            (str(run_id),),
+        )
+
+    job3 = repo.claim_job()
+    assert job3 is not None and job3.id == job_id
+    assert job3.lease_token not in {job1.lease_token, job2.lease_token}, (
+        "half B must be a genuine second reclaim"
+    )
+
+    authorization3 = repo.authorize_outbound_provider_handoff(job3)
+    assert isinstance(authorization3, ProviderHandoffAuthorization), (
+        "with BOTH leases expired the adoption must succeed and grant authority"
+    )
+    assert authorization3.handoff_id == authorization1.handoff_id, (
+        "the SAME handoff row is adopted, not recreated"
+    )
+    assert authorization3.snapshot["message_id"] == captured_message_id
+
+    send_result_3 = gateway.send_reserved_outbound_snapshot(
+        authorization3.snapshot,
+        not_after=authorization3.not_after,
+        budget=DELIVERY_SEND_BUDGET,
+    )
+    assert send_result_3.outcome is PipelineOutcome.OK
+
+    # PREDECLARED: half B's provider-call count is exactly 2 -- the replay
+    # genuinely reached the provider, and it is safe *because* both calls
+    # carry an identical idempotency key, so the provider collapses them
+    # into one email.
+    assert len(provider_calls) == 2, (
+        "half B: the replay must genuinely reach the provider a second time"
+    )
+
+    # TEETH 1 + 2: every recorded provider call, across BOTH halves, carries
+    # an Idempotency-Key equal to the ONE message_id captured before attempt 1.
+    assert provider_calls[0]["idempotency_key"] == captured_message_id
+    assert provider_calls[1]["idempotency_key"] == captured_message_id
+    assert provider_calls[0]["idempotency_key"] == provider_calls[1]["idempotency_key"]
+
+    settled3 = settle_outbound_delivery_job(job3, send_result_3)
+    assert settled3 is SettlementOutcome.DONE
+
+    # TEETH 1 (persisted form): the message_id after the genuine replay is
+    # byte-identical to the value captured before attempt 1 -- exact string
+    # comparison, never truthiness or prefixes.
+    final_snapshot = repo.load_outbound_snapshot(run_id, email_id)
+    assert final_snapshot is not None
+    assert final_snapshot["message_id"] == captured_message_id
+
+    final_run = repo.load_run(run_id)
+    assert final_run is not None and final_run["status"] == RunStatus.RECONCILED.value
+    final_job = repo.get_job(job_id)
+    assert final_job is not None and final_job["state"] == "done"
+
+    # Exactly one row in the outbound audit trail reached `sent` for this
+    # run, purpose, and epoch -- binding the proof to "no second email", not
+    # merely "no second key".
+    with repo.get_connection() as conn:
+        sent_count = conn.execute(
+            "SELECT count(*) FROM email_messages WHERE run_id = %s "
+            "AND direction = 'outbound' AND purpose = 'confirmation' "
+            "AND epoch = 0 AND send_state = 'sent'",
+            (str(run_id),),
+        ).fetchone()
+    assert sent_count == (1,)
 
 
 # ---------------------------------------------------------------------------
