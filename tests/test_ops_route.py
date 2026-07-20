@@ -1,10 +1,10 @@
 """GET /ops — the transport-surface view.
 
 Hermetic route tests, no live DB. Covers the render, the DB-unavailable
-fallback, the per-panel context reaching the template, route registration,
-the pump-cadence bound pinned against the workflow that sets it, and — the
-strengthened half of this suite — a read-only contract proved two ways at
-once:
+fallback, the per-panel context, the nav's fourth entry, the as-of stamp,
+the alarm banner's present/absent states, the bounded dead-letter
+projection, and — the strengthened half of this suite — a read-only
+contract proved two ways at once:
 
 * the positive half asserts the five facade reads the page depends on were
   genuinely invoked, so a panel silently rendering a hardcoded default
@@ -102,7 +102,8 @@ def test_ops_returns_200_and_renders_template(fake_repo):
 
 def test_ops_renders_200_with_db_unavailable(monkeypatch):
     """With every read raising (DB unavailable), the route still renders
-    200 rather than a 500 — matching runs_list's cold-start tolerance."""
+    200 with zeroed/empty metrics instead of a 500 — matching runs_list's
+    cold-start tolerance."""
 
     def _boom(*args, **kwargs):
         raise RuntimeError("no pool")
@@ -112,7 +113,9 @@ def test_ops_renders_200_with_db_unavailable(monkeypatch):
 
     response = client.get("/ops")
     assert response.status_code == 200
-    assert "Transport Ops" in response.text
+    assert "No due pending work" in response.text
+    assert "No open jobs." in response.text
+    assert "No dead-lettered jobs." in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +184,186 @@ def test_ops_context_keys_reach_the_template(fake_repo, monkeypatch):
     assert unaccounted_run_id in body  # unaccounted_error_rows
     assert str(get_settings().max_attempts) in body  # max_attempts bound
     assert str(ops.PUMP_CADENCE_MINUTES) in body  # pump_cadence_minutes bound
+
+
+# ---------------------------------------------------------------------------
+# Panel content
+# ---------------------------------------------------------------------------
+
+
+def test_ops_context_carries_depth_split_not_a_combined_total(fake_repo, monkeypatch):
+    monkeypatch.setattr(
+        repo_mod, "count_jobs_by_state", lambda conn=None: {"pending": 3, "leased": 2}
+    )
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert ">3<" in response.text
+    assert ">2<" in response.text
+    # The split is the point: no combined "5" total anywhere in the page.
+    assert ">5<" not in response.text
+
+
+def test_ops_renders_attempts_distribution_against_max_attempts(fake_repo, monkeypatch):
+    monkeypatch.setattr(
+        repo_mod, "attempts_distribution", lambda conn=None: [(1, 4), (2, 1)]
+    )
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert "1 of 5" in response.text
+    assert "2 of 5" in response.text
+
+
+def test_ops_renders_oldest_due_pending_bound(fake_repo, monkeypatch):
+    monkeypatch.setattr(
+        repo_mod, "oldest_due_pending_age_seconds", lambda conn=None: 125.0
+    )
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert "min" in response.text
+    assert f"{ops.PUMP_CADENCE_MINUTES}-minute cadence" in response.text
+
+
+def test_ops_renders_no_due_pending_work_not_a_zero(fake_repo, monkeypatch):
+    monkeypatch.setattr(repo_mod, "oldest_due_pending_age_seconds", lambda conn=None: None)
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert "No due pending work" in response.text
+
+
+def test_ops_dead_letter_row_links_to_run_detail(fake_repo, monkeypatch):
+    run_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(
+        repo_mod,
+        "list_dead_letter_jobs",
+        lambda limit=50, conn=None: [
+            {
+                "id": "job-1",
+                "kind": "pipeline",
+                "run_id": run_id,
+                "attempts": 5,
+                "max_attempts": 5,
+                "last_error": "provider timeout",
+                "updated_at": None,
+            }
+        ],
+    )
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert f"/runs/{run_id}" in response.text
+
+
+def test_ops_dead_letter_row_with_no_run_id_renders_no_link(fake_repo, monkeypatch):
+    monkeypatch.setattr(
+        repo_mod,
+        "list_dead_letter_jobs",
+        lambda limit=50, conn=None: [
+            {
+                "id": "job-2",
+                "kind": "ingest",
+                "run_id": None,
+                "attempts": 5,
+                "max_attempts": 5,
+                "last_error": "malformed webhook payload",
+                "updated_at": None,
+            }
+        ],
+    )
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert "malformed webhook payload" in response.text
+    assert "/runs/None" not in response.text
+
+
+def test_ops_dead_letter_projects_only_the_bounded_fields(fake_repo, monkeypatch):
+    """No lease token, dedup key, or payload value may cross into the page,
+    even if a future repo edit widens the dict a mocked/real read hands the
+    template — the template itself must reference only the bounded fields
+    by name, not forward whatever a row happens to carry."""
+    monkeypatch.setattr(
+        repo_mod,
+        "list_dead_letter_jobs",
+        lambda limit=50, conn=None: [
+            {
+                "id": "job-3",
+                "kind": "outbound_send",
+                "run_id": None,
+                "attempts": 5,
+                "max_attempts": 5,
+                "last_error": "provider timeout",
+                "updated_at": None,
+                # Fields the real projection never includes — present here
+                # only to prove the template does not forward extra keys.
+                "lease_token": "SECRET-LEASE-TOKEN-ABC123",
+                "dedup_key": "dedupe-xyz-999",
+                "payload": {"ssn": "123-45-6789"},
+            }
+        ],
+    )
+    response = client.get("/ops")
+    body = response.text
+    assert "SECRET-LEASE-TOKEN-ABC123" not in body
+    assert "dedupe-xyz-999" not in body
+    assert "123-45-6789" not in body
+
+
+# ---------------------------------------------------------------------------
+# The alarm banner
+# ---------------------------------------------------------------------------
+
+
+def test_ops_alarm_banner_absent_when_no_unaccounted_errors(fake_repo, monkeypatch):
+    monkeypatch.setattr(repo_mod, "list_unaccounted_error_runs", lambda limit=50, conn=None: [])
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert "ops-alarm-banner" not in response.text
+
+
+def test_ops_alarm_banner_present_and_links_to_the_run(fake_repo, monkeypatch):
+    run_id = "22222222-2222-2222-2222-222222222222"
+    monkeypatch.setattr(
+        repo_mod,
+        "list_unaccounted_error_runs",
+        lambda limit=50, conn=None: [
+            {"id": run_id, "error_reason": "extraction_failed", "updated_at": None}
+        ],
+    )
+    response = client.get("/ops")
+    assert response.status_code == 200
+    assert "ops-alarm-banner" in response.text
+    assert f"/runs/{run_id}" in response.text
+    assert "no job" in response.text.lower()
+    # No acknowledge/mute/dismiss control anywhere in the markup — the page
+    # renders no interactive control of any kind (no form, no button).
+    assert "<form" not in response.text
+    assert "<button" not in response.text
+    assert "acknowledge" not in response.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Nav, as-of stamp, no polling
+# ---------------------------------------------------------------------------
+
+
+def test_ops_nav_has_four_entries_in_order(fake_repo):
+    response = client.get("/ops")
+    body = response.text
+    nav_start = body.index("<nav>")
+    nav_end = body.index("</nav>")
+    nav_html = body[nav_start:nav_end]
+    order = [href for href in ("/", "/runs", "/eval", "/ops") if f'href="{href}"' in nav_html]
+    assert order == ["/", "/runs", "/eval", "/ops"]
+
+
+def test_ops_as_of_stamp_present(fake_repo):
+    response = client.get("/ops")
+    assert "As of" in response.text
+
+
+def test_ops_page_has_no_script_or_polling(fake_repo):
+    response = client.get("/ops")
+    assert "<script" not in response.text
+    assert "setInterval" not in response.text
+    assert "meta http-equiv=\"refresh\"" not in response.text.lower()
 
 
 # ---------------------------------------------------------------------------
