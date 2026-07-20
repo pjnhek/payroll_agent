@@ -102,7 +102,7 @@ constraint — and none could supply the failure contract, which is the actual w
 > This repo has already shipped a "concurrency proof" that passed while proving nothing — its threads
 > serialized through an async route and never raced. **Every proof below must be demonstrated able to fail.**
 
-- [ ] **PROOF-01**: Kill the worker mid-run → the run completes on the next drain. Vacuous if the job never
+- [x] **PROOF-01**: Kill the worker mid-run → the run completes on the next drain. Vacuous if the job never
   actually leased; must assert the reclaim path fired and `attempts` incremented.
 
 - [ ] **PROOF-02**: Redeliver the same Svix event → exactly one job, one run, one email. Vacuous if dedup is
@@ -112,10 +112,10 @@ constraint — and none could supply the failure contract, which is the actual w
   passes against a fake gateway while SEND-01 is unfixed; must assert the persisted `message_id` is
   **byte-identical** across attempts.
 
-- [ ] **PROOF-04**: An expired lease is reclaimed by a second worker, and the zombie's write is fenced —
+- [x] **PROOF-04**: An expired lease is reclaimed by a second worker, and the zombie's write is fenced —
   including `mark_failed`/`reschedule`, which is the fence people forget (not just `mark_done`).
 
-- [ ] **PROOF-05**: Every new integration test is registered in `concurrency-proof.yml` — the **only** workflow
+- [x] **PROOF-05**: Every new integration test is registered in `concurrency-proof.yml` — the **only** workflow
   with a real Postgres, and it hard-codes its test files by name (`concurrency-proof.yml:89`). Three of the four
   proofs need a real database; land them outside that line and **they never run**. Races drive the **sync seam**
   under a `threading.Barrier`, never an HTTP route.
@@ -168,11 +168,11 @@ limitation honestly is itself the differentiator.
 | SEND-01 | Phase 20 | Complete |
 | SEND-02 | Phase 20 | Complete |
 | SEND-03 | Phase 20 | Complete |
-| PROOF-01 | Phase 21 | Pending |
+| PROOF-01 | Phase 21 | Complete |
 | PROOF-02 | Phase 21 | Pending |
 | PROOF-03 | Phase 21 | Pending |
-| PROOF-04 | Phase 21 | Pending |
-| PROOF-05 | Phase 21 | Pending |
+| PROOF-04 | Phase 21 | Complete |
+| PROOF-05 | Phase 21 | Complete |
 | OPS-01 | Phase 21 | Pending |
 
 **Coverage: 19/19 v4 requirements mapped, no orphans, no duplicates.**
