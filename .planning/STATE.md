@@ -5,10 +5,10 @@ milestone_name: — Durable Execution
 current_phase: 21
 current_phase_name: durability-proofs-ops-view
 status: executing
-stopped_at: Phase 21 planned + Codex-reviewed (11 plans, 5 waves)
+stopped_at: "Phase 21 executed — 16/16 plans; 2 human-verify items open (21-UAT.md)"
 last_updated: "2026-07-20T15:34:31.169Z"
 last_activity: 2026-07-20
-last_activity_desc: Phase 21 execution started
+last_activity_desc: "Phase 21 executed: 16 plans across 7 waves. Both CI gates were red on master since Phase 20 (40 test-side failures) — repaired in an unplanned wave 0. Four durability proofs landed, each falsification-proven. A live deploy-blocking schema defect (schema.sql re-adding an obsolete constraint, aborting every non-reset bootstrap once a run is retriggered) was found by a peer session, reproduced outside pytest, and fixed in 21-16. Awaiting 2 human verifications."
 progress:
   total_phases: 6
   completed_phases: 5
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation comple
 
 ## Current Position
 
-Phase: 21 (durability-proofs-ops-view) — EXECUTING
+Phase: 21 (durability-proofs-ops-view) — EXECUTED, awaiting human verification
 Plan: 1 of 14
 Status: Executing Phase 21
-Last activity: 2026-07-20 — Phase 21 execution started
+Last activity: 2026-07-20 — Phase 21 executed (16/16 plans); all automated gates green; 2 UAT items open
 
 ## Performance Metrics
 

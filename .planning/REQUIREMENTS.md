@@ -105,10 +105,10 @@ constraint — and none could supply the failure contract, which is the actual w
 - [x] **PROOF-01**: Kill the worker mid-run → the run completes on the next drain. Vacuous if the job never
   actually leased; must assert the reclaim path fired and `attempts` incremented.
 
-- [ ] **PROOF-02**: Redeliver the same Svix event → exactly one job, one run, one email. Vacuous if dedup is
+- [x] **PROOF-02**: Redeliver the same Svix event → exactly one job, one run, one email. Vacuous if dedup is
   keyed on something available only post-fetch; must assert exactly one `jobs` row survives the `ON CONFLICT`.
 
-- [ ] **PROOF-03**: Crash between Resend-accept and the `sent` commit → **no second email**. Vacuous if it
+- [x] **PROOF-03**: Crash between Resend-accept and the `sent` commit → **no second email**. Vacuous if it
   passes against a fake gateway while SEND-01 is unfixed; must assert the persisted `message_id` is
   **byte-identical** across attempts.
 
@@ -168,11 +168,11 @@ limitation honestly is itself the differentiator.
 | SEND-01 | Phase 20 | Complete |
 | SEND-02 | Phase 20 | Complete |
 | SEND-03 | Phase 20 | Complete |
-| PROOF-01 | Phase 21 | Pending |
-| PROOF-02 | Phase 21 | Pending |
-| PROOF-03 | Phase 21 | Pending |
-| PROOF-04 | Phase 21 | Pending |
-| PROOF-05 | Phase 21 | Pending |
+| PROOF-01 | Phase 21 | Complete |
+| PROOF-02 | Phase 21 | Complete |
+| PROOF-03 | Phase 21 | Complete |
+| PROOF-04 | Phase 21 | Complete |
+| PROOF-05 | Phase 21 | Complete |
 | OPS-01 | Phase 21 | Pending |
 
 **Coverage: 19/19 v4 requirements mapped, no orphans, no duplicates.**
