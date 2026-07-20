@@ -364,6 +364,22 @@ rest of it, not a weaker one. These are the three limits accepted on purpose:
   advances its reply epoch, which mints a fresh idempotency key under that epoch. That is why the
   claim above is written as *"at most once per approved run, per epoch"* and not the flatter, false
   "never twice" — a retrigger is a deliberate new attempt, not a bug in the exactly-once machinery.
+- **CI does not run every live-database test — and this is the gap the five proofs came out of.**
+  The proofs above run in CI by marker, so a new one is picked up with no workflow edit. But the
+  older step beside them still selects two files *by name*. Counting at test granularity: of the
+  104 tests marked as requiring a live database, 78 are executed by some CI step and **26 are
+  executed by none** — spread across nine files, the largest being `test_seed_roundtrip.py` and
+  `test_atomic_persist.py` at eight apiece. They pass locally against a real Postgres and are simply
+  never run by CI. Widening that selection is not a one-line change: it would wake every dormant
+  module at once against a single shared Postgres service, each running a destructive schema reset.
+  The honest status is that these tests are green but unwatched, so a future regression in one of
+  them would not be caught here.
+
+  This is worth stating plainly because it is exactly how the preceding phase shipped a red build
+  undetected: its own sign-off recorded a passing run that, on inspection, was an exact match for
+  a run with no database configured at all. Twenty-three live-database tests were failing at that
+  moment. Every one is fixed and the proofs above now run on every push — but a reader evaluating
+  this system should know the difference between *"proven"* and *"proven, and watched"*.
 
 ## The operational counterpart
 
