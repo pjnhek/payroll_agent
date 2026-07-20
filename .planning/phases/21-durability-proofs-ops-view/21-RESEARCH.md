@@ -589,7 +589,10 @@ data-migration concerns.
 requiring user reconfirmation before planning** — all three are implementation-shape decisions
 CONTEXT.md already delegates to the planner/executor.
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> Both questions were deliberately left for plan time rather than guessed in research.
+> Both were resolved during planning; resolutions are recorded inline below.
 
 1. **What is the precise anti-join shape for D-13's alarm?**
    - What we know: `app/db/repo/job_settlement.py` has `SettlementOutcome` (DONE, RETRIED, LOST_LEASE,
@@ -605,6 +608,17 @@ CONTEXT.md already delegates to the planner/executor.
    - Recommendation: the planner should trace `_set_run_error`'s callers and `jobs.updated_at`
      timing precisely before finalizing SQL — this is squarely a plan-time task, not something to
      guess in research.
+   - **RESOLVED — see `21-02-PLAN.md`.** The planner traced `_set_run_error`'s three call sites
+     and `record_run_error`'s one production caller. The predicate is a **temporally-correlated**
+     anti-join: runs in `error` with no `jobs` row in `done`/`dead` whose `updated_at >=
+     r.updated_at`. The temporal half is load-bearing — a legitimate settlement writes both rows
+     in one transaction, so Postgres' transaction-start `now()` makes the timestamps equal and
+     Phase 18's D-16 shape stays silent; a bare existential anti-join would let a stale earlier
+     success vouch for a later unrelated error, and the alarm would never fire at all. One
+     reachable production true positive was found and documented in source (the approve route's
+     delivery error boundary, `app/routes/runs.py:438`, errors a run whose transaction —
+     including any enqueued send job — has rolled back) so that nobody later widens the
+     predicate to silence it.
 
 2. **Does PROOF-03's "second attempt" need a genuinely separate worker/thread, or can it be driven
    sequentially in the test body (mirroring PROOF-01/02's sequential-claim style)?**
@@ -624,6 +638,10 @@ CONTEXT.md already delegates to the planner/executor.
      BOTH shapes are true: (a) while the handoff is still active/unexpired, a second send attempt is
      refused (zero provider calls), and (b) once the handoff naturally expires and a genuine retry
      proceeds, the replayed `message_id`/`Idempotency-Key` are byte-identical to the first attempt.
+   - **RESOLVED — see `21-05-PLAN.md`,** which adopts the sequential shape (citing this Open
+     Question by number) and reuses PROOF-01's lease-expiry-via-direct-SQL idiom. PROOF-03 models
+     a single worker dying and replaying, so no thread is warranted; the genuinely concurrent
+     requirement belongs to PROOF-04 (D-04) alone.
 
 ## Environment Availability
 

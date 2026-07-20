@@ -1,10 +1,11 @@
 ---
 phase: 21
 slug: durability-proofs-ops-view
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-19
+approved: 2026-07-19
 ---
 
 # Phase 21 — Validation Strategy
@@ -113,14 +114,24 @@ present and exercised in-repo. Zero new dependencies.*
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or a Wave 0 dependency
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Live-DB proofs verified **run, not skipped** (`-rs` skip report read)
-- [ ] Every added guard has both a red-proof and a pinned no-false-positive half
-- [ ] Every falsifying mutation executed in-phase with pasted red + byte-identical revert
-- [ ] Feedback latency measured and recorded
-- [ ] `nyquist_compliant: true` set in frontmatter
+Checked against the 11 plans (`21-01`..`21-11`) by `gsd-plan-checker` on 2026-07-19 —
+verdict: **VERIFICATION PASSED**, 0 blockers.
 
-**Approval:** pending
+- [x] All tasks have `<automated>` verify or a Wave 0 dependency
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Live-DB proofs verified **run, not skipped** — every live-DB acceptance criterion
+      treats a `SKIPPED` line as a FAILED criterion and requires `-rs` output inspection
+- [x] Every added guard has both a red-proof and a pinned no-false-positive half —
+      D-02's gate (21-01 synthetic + 21-09 live typo falsification) and D-06's AST guard
+      (21-10 docstring/comment-copy rejection + negative control)
+- [x] Every falsifying mutation is an executable in-phase task with a blocking
+      `DATABASE_URL` precondition, pasted red, and byte-identical revert
+- [x] Falsification independence: the four proofs mutate four distinct targets
+- [ ] **Feedback latency measured and recorded** — deferred to Wave 0 execution by design
+      (this doc instructs measuring rather than assuming; the number is not yet known)
+- [x] `nyquist_compliant: true` set in frontmatter
+
+**Approval:** approved 2026-07-19 — one item intentionally open (measured latency,
+recorded at Wave 0). `wave_0_complete` stays `false` until execution begins.

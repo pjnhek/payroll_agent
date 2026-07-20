@@ -122,8 +122,8 @@ Downstream agents must plan against these corrections, not the stale text:
   patches themselves rot, and a no-longer-applying patch becomes another gate to get
   right); the anti-rot job is done by D-06's guard instead.
 
-- **D-06: Mutation targets are AST-resolved, and the artifact names the expected failing
-  assertion.** A CI guard resolves each mutation target as a **real AST node**, reusing the
+- **D-06: Mutation targets are AST-resolved; the artifact names the failing assertion.**
+  A CI guard resolves each mutation target as a **real AST node**, reusing the
   repo's existing AST-guard pattern (BOUND-01; the Phase 19-12 producer/retired-symbol
   detector), so a **docstring or comment copy can never satisfy it** — the exact trap that
   previously made a real blind spot look like a passing proof. Separately, the artifact must

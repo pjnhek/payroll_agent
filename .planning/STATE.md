@@ -4,15 +4,15 @@ milestone: v4
 milestone_name: — Durable Execution
 current_phase: 21
 current_phase_name: Durability Proofs & Ops View
-status: planning
-stopped_at: Phase 21 context gathered
-last_updated: "2026-07-20T00:59:52.513Z"
-last_activity: 2026-07-18
-last_activity_desc: Phase 20 complete, transitioned to Phase 21
+status: ready_to_execute
+stopped_at: Phase 21 planned (11 plans, 5 waves)
+last_updated: "2026-07-20T01:56:12.000Z"
+last_activity: 2026-07-19
+last_activity_desc: Phase 21 planned — 11 plans in 5 waves, plan-checker passed (0 blockers)
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 68
+  total_plans: 79
   completed_plans: 68
   percent: 83
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation comple
 ## Current Position
 
 Phase: 21 — Durability Proofs & Ops View
-Plan: Not started
-Status: Ready to plan Phase 21
-Last activity: 2026-07-18 — Phase 20 complete, transitioned to Phase 21
+Plan: Not started (11 plans ready, 5 waves)
+Status: Ready to execute Phase 21
+Last activity: 2026-07-19 — Phase 21 planned (11 plans, 5 waves); plan-checker VERIFICATION PASSED, 0 blockers
 
 ## Performance Metrics
 

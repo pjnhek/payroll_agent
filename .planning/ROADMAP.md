@@ -374,16 +374,30 @@ passing — and an operator can check "is the queue healthy" as a fact, not a vi
 > supersedes it with "runs in `error` with no corresponding terminal/dead job settlement."
 
 Plans:
+**Wave 1**
+
 - [ ] 21-01-PLAN.md — Proof identity substrate: register the `proof` marker and build the completeness checker's pure decision core with its synthetic red-proofs (PROOF-05)
 - [ ] 21-02-PLAN.md — Queue-metric reads and the D-13 unaccounted-error alarm predicate, proven against a real Postgres on both sides (OPS-01)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 21-03-PLAN.md — PROOF-01 promoted in place, plus the attempts-increment mutation executed live (PROOF-01)
 - [ ] 21-04-PLAN.md — PROOF-02 promoted in place with the pre-fetch key property asserted, plus the dedup-key mutation executed live (PROOF-02)
 - [ ] 21-05-PLAN.md — PROOF-03 built new: crash between provider-accept and the `sent` commit, byte-identical `message_id` (PROOF-03)
 - [ ] 21-06-PLAN.md — The `/ops` transport page: every metric beside its bound, alarm banner, fourth nav item (OPS-01)
 - [ ] 21-07-PLAN.md — `/health/queue` alarm endpoint wired last into `pump.yml`, with the D-15 recovery-first ordering pinned (OPS-01)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 21-08-PLAN.md — PROOF-04 rewritten as a genuine two-thread race, plus the reclaim-clause mutation executed live (PROOF-04)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 21-09-PLAN.md — The completeness gate wired into CI and falsified against a real marker typo (PROOF-05)
 - [ ] 21-10-PLAN.md — The AST-anchored mutation-target registry and its synthetic red-proofs (PROOF-01..04)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 21-11-PLAN.md — `docs/DURABILITY-PROOFS.md` published and linked, with the accepted residuals stated beside the claims (all)
 
 **UI hint**: yes
