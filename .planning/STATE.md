@@ -5,8 +5,8 @@ milestone_name: — Durable Execution
 current_phase: 21
 current_phase_name: Durability Proofs & Ops View
 status: planning
-stopped_at: Completed 20-27-PLAN.md
-last_updated: "2026-07-18T17:43:55.200Z"
+stopped_at: Phase 21 context gathered
+last_updated: "2026-07-20T00:59:52.513Z"
 last_activity: 2026-07-18
 last_activity_desc: Phase 20 complete, transitioned to Phase 21
 progress:
@@ -349,9 +349,9 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-18T17:33:51.174Z
-Stopped at: Completed 20-27-PLAN.md
-Resume file: None
+Last session: 2026-07-20T00:59:52.503Z
+Stopped at: Phase 21 context gathered
+Resume file: .planning/phases/21-durability-proofs-ops-view/21-CONTEXT.md
 
 ## Operator Next Steps
 
