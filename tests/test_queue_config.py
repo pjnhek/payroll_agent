@@ -148,3 +148,29 @@ class TestQueueproofMarkerRegistered:
             "pyproject.toml's [tool.pytest.ini_options] markers list does not "
             "register `queueproof`"
         )
+
+
+class TestProofMarkerRegistered:
+    def test_proof_registered_in_pyproject(self) -> None:
+        """An unregistered marker still *works* (pytest only warns), so this
+        registration check is the only thing that would catch a typo'd
+        marker string — and PROOF-05's selection-layer completeness checker
+        (scripts/check_proof_inventory.py) selects on this exact string.
+        """
+        toml_src = _PYPROJECT_TOML.read_text()
+        assert "proof:" in toml_src, (
+            "pyproject.toml's [tool.pytest.ini_options] markers list does not "
+            "register `proof`"
+        )
+
+    def test_proof_marker_description_records_keyword_id_rationale(self) -> None:
+        """The keyword-`id` spelling is load-bearing, not stylistic: pytest's
+        `-m` marker-expression syntax only supports selecting on keyword
+        marker arguments, never positional ones. A future edit that drops
+        this rationale from the registered description must red here.
+        """
+        toml_src = _PYPROJECT_TOML.read_text()
+        assert "keyword argument `id`" in toml_src, (
+            "pyproject.toml's `proof` marker description no longer records "
+            "the keyword-`id` requirement"
+        )
