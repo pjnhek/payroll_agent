@@ -506,14 +506,27 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
     clarification's set_clarified_fields write would have committed.
 
     Assert clarified_fields shows the 'asked' entry persisted (it survives — it
-    is a separate, already-closed transaction). resume_pipeline's own error-wrap
-    boundary catches the forced failure and routes the run to ERROR (it never
-    re-raises) — proving no partial finalize state leaked from _clarify's own
-    writes: the run lands in the diagnosable ERROR state, never a state that
-    looks like a successful AWAITING_REPLY send that never happened.
+    is a separate, already-closed transaction). The run lands in the diagnosable
+    ERROR state, never a state that looks like a successful AWAITING_REPLY send
+    that never happened.
+
+    `resume_pipeline` does not self-persist `RunStatus.ERROR` on failure
+    (`app/pipeline/orchestrator.py:857-859`'s except clause only classifies the
+    exception and RETURNS a `PipelineResult` — it never calls
+    `set_status`/`record_run_error`). Terminal persistence is owned
+    exclusively by the queue-drain settlement layer
+    (`app/db/repo/job_settlement.py:_set_run_error`, called from
+    `settle_pipeline_job`). This test drives the REAL production entry point —
+    a persisted reply row + an enqueued `RESUME_REPLY` job, drained via
+    `drain.drain_once()` — instead of calling `resume_pipeline` directly, so
+    it reaches through `app/queue/handlers/resume_reply.py`'s
+    `handle_resume_reply` (the AWAITING_REPLY -> RECEIVED CAS) into
+    `resume_pipeline` (RECEIVED -> EXTRACTING) exactly as production does.
     """
     from app.db import repo
-    from app.pipeline.orchestrator import resume_pipeline
+    from app.models.job import JobKind
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
     get_settings = __import__("app.config", fromlist=["get_settings"]).get_settings
     get_settings.cache_clear()
@@ -548,12 +561,28 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
 
     monkeypatch.setattr(clarification, "clarify", _boom_clarify)
 
-    reply = _live_inbound("Maria Chen 40 regular hours")
+    # Persist the reply as a real inbound row, linked to this run, from the
+    # SAME business's contact_email — handle_resume_reply's reply_sender_ok
+    # re-authorization requires this to resolve to run["business_id"].
+    reply_email_id, inserted = repo.insert_inbound_email(
+        message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular hours.",
+        run_id=run_id,
+    )
+    assert inserted and reply_email_id is not None
 
-    # resume_pipeline's own error-wrap boundary swallows the forced failure and
-    # routes the run to ERROR — it never re-raises (see resume_pipeline's except
-    # clause in app/pipeline/orchestrator.py).
-    resume_pipeline(run_id, reply)
+    repo.enqueue_job(
+        kind=JobKind.RESUME_REPLY,
+        dedup_key=f"resume_reply:{run_id}:{reply_email_id}",
+        run_id=run_id,
+        email_id=reply_email_id,
+    )
+    assert drain.drain_once() is DrainOutcome.DONE
 
     post_run = cast(dict[str, Any], repo.load_run(run_id))
     clarified = repo.load_clarified_fields(run_id)
@@ -563,8 +592,8 @@ def test_defer_field_regression_write_survives_later_clarify_failure(seeded_db, 
         f"failure (it is a separate, already-closed transaction); got: {clarified!r}"
     )
     assert post_run["status"] == RunStatus.ERROR.value, (
-        "the run must land in the diagnosable ERROR state via resume_pipeline's "
-        "error-wrap boundary — never a state that implies a clarification "
+        "the run must land in the diagnosable ERROR state via the queue-drain "
+        "settlement layer — never a state that implies a clarification "
         f"was sent when it wasn't; got status={post_run['status']!r}"
     )
 
@@ -599,11 +628,20 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
           'asked' — the earlier write survived the later crash.
       (b) the run's status is NOT 'awaiting_approval' — _run_stages' own crashed
           transaction rolled back cleanly and never advanced the run that far;
-          resume_pipeline's error-wrap boundary instead routes the run to the
-          diagnosable ERROR status (its own genuine, second set_status call).
+          the run instead lands in the diagnosable ERROR status.
+
+    Same rationale as test_defer_field_regression_write_survives_later_clarify_failure
+    just above — `resume_pipeline` no longer self-persists `RunStatus.ERROR`
+    (`app/pipeline/orchestrator.py:857-859` classifies and returns; only
+    `app/db/repo/job_settlement.py`'s `settle_pipeline_job` ->
+    `_set_run_error` persists it now, called from the queue-drain path). This
+    test drives a persisted reply + an enqueued `RESUME_REPLY` job through
+    `drain.drain_once()` instead of calling `resume_pipeline` directly.
     """
     from app.db import repo
-    from app.pipeline.orchestrator import resume_pipeline
+    from app.models.job import JobKind
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
     get_settings = __import__("app.config", fromlist=["get_settings"]).get_settings
     get_settings.cache_clear()
@@ -651,10 +689,10 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
     # set_status is the last write in that transaction (status advanced last), so
     # forcing it to raise on its FIRST call proves the whole _run_stages transaction
     # (including persist_extracted/persist_decision/persist_reconciliation) rolls back.
-    # Only the FIRST call raises — resume_pipeline's own error-wrap boundary calls
-    # record_run_error, which calls set_status(ERROR) a SECOND time; that call must
-    # succeed genuinely so the run lands in the diagnosable ERROR state instead of
-    # the exception propagating past resume_pipeline's own except clause.
+    # Only the FIRST call raises. The eventual ERROR write no longer goes through
+    # repo.set_status at all post-Phase-18 (see the docstring above) — it is a
+    # separate raw-SQL write inside job_settlement._set_run_error — so this stub
+    # only needs to guard the ONE real call-site left inside _run_stages.
     real_set_status = repo.set_status
     _calls = {"n": 0}
 
@@ -666,11 +704,28 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
 
     monkeypatch.setattr(repo, "set_status", _boom_set_status_once)
 
-    reply = _live_inbound("Maria Chen 40 regular 3 overtime")
+    # Persist the reply as a real inbound row, linked to this run, from the
+    # SAME business's contact_email — handle_resume_reply's reply_sender_ok
+    # re-authorization requires this to resolve to run["business_id"].
+    reply_email_id, inserted = repo.insert_inbound_email(
+        message_id=f"<reply-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular 3 overtime",
+        run_id=run_id,
+    )
+    assert inserted and reply_email_id is not None
 
-    # resume_pipeline's own error-wrap boundary swallows the forced failure —
-    # it never re-raises (routes the run to ERROR instead).
-    resume_pipeline(run_id, reply)
+    repo.enqueue_job(
+        kind=JobKind.RESUME_REPLY,
+        dedup_key=f"resume_reply:{run_id}:{reply_email_id}",
+        run_id=run_id,
+        email_id=reply_email_id,
+    )
+    assert drain.drain_once() is DrainOutcome.DONE
     monkeypatch.undo()
 
     from app.db import repo as real_repo
@@ -687,8 +742,8 @@ def test_round2_clarified_fields_persist_before_run_stages(seeded_db, monkeypatc
         f"advance the run to AWAITING_APPROVAL; got status={post_run['status']!r}"
     )
     assert post_run["status"] == RunStatus.ERROR.value, (
-        "the run must land in the diagnosable ERROR state via resume_pipeline's "
-        f"error-wrap boundary; got status={post_run['status']!r}"
+        "the run must land in the diagnosable ERROR state via the queue-drain "
+        f"settlement layer; got status={post_run['status']!r}"
     )
 
 
@@ -767,15 +822,36 @@ def test_round2_clarified_fields_persist_call_order_before_run_stages():
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monkeypatch):
-    """Force write_aliases_if_safe to raise inside _deliver's finalize block;
+    """Force write_aliases_if_safe to raise inside the delivery finalize block;
     assert the run STILL reaches RECONCILED. The alias write is best-effort: it
     must never be able to roll back a delivery whose email genuinely went out.
     This pins the try/except isolation INSIDE `with conn.transaction():`.
+
+    The finalize block this test pins (alias write in a nested SAVEPOINT, then
+    advance to reconciled) does not live inside `deliver()` — `deliver()` only
+    reserves the confirmation snapshot and enqueues a SEND_OUTBOUND job
+    (`app/pipeline/delivery.py:78-172`). The finalize sequence lives in
+    `app/db/repo/job_settlement.py`'s `_complete_confirmation_after_send`,
+    invoked from `settle_outbound_delivery_job` after the queue-drain handler
+    (`app/queue/handlers/send_outbound.py`) sends via the (mocked) provider.
+    This test drives that real path: `deliver()` to reserve + enqueue, then
+    `drain.drain_once()` to send + settle, instead of calling `deliver()`
+    alone and expecting it to finalize synchronously.
     """
     from app.db import repo
     from app.pipeline.delivery import deliver as _deliver
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
-    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+    # app/email/gateway.py:167 calls resend.Emails.send(send_params,
+    # {"idempotency_key": message_id}) — TWO positional args, one carrying the
+    # provider Idempotency-Key. A single-arg stub here raises TypeError inside
+    # the try/except at gateway.py:165-174, which classify_pipeline_exception
+    # turns into a genuine (wrong) delivery failure — silently masking whatever
+    # this test actually means to prove. Accept and ignore both.
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda *_a, **_kw: {"id": "test-id"})
+    )
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
@@ -788,7 +864,8 @@ def test_deliver_finalize_alias_failure_still_reaches_reconciled(seeded_db, monk
 
     monkeypatch.setattr(alias_learning, "write_aliases_if_safe", _boom_alias)
 
-    _deliver(run_id, run)
+    assert _deliver(run_id, run) is True, "deliver() must reserve + enqueue a SEND_OUTBOUND job"
+    assert drain.drain_once() is DrainOutcome.DONE
 
     post_run = cast(dict[str, Any], repo.load_run(run_id))
     assert post_run["status"] == "reconciled", (
@@ -821,12 +898,27 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
     psycopg.errors.UndefinedColumn — a real DB-level failure). Asserts the run
     still reaches 'reconciled' — exactly what the nested SAVEPOINT
     (conn.transaction() around the alias-write call) guarantees.
+
+    Same rationale as test_deliver_finalize_alias_failure_still_reaches_reconciled
+    above — the nested-SAVEPOINT finalize block this test pins lives in
+    `_complete_confirmation_after_send` (job_settlement.py), reached via
+    `deliver()` + `drain.drain_once()`, not inside `deliver()` itself.
     """
 
     from app.db import repo
     from app.pipeline.delivery import deliver as _deliver
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
-    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+    # app/email/gateway.py:167 calls resend.Emails.send(send_params,
+    # {"idempotency_key": message_id}) — TWO positional args, one carrying the
+    # provider Idempotency-Key. A single-arg stub here raises TypeError inside
+    # the try/except at gateway.py:165-174, which classify_pipeline_exception
+    # turns into a genuine (wrong) delivery failure — silently masking whatever
+    # this test actually means to prove. Accept and ignore both.
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda *_a, **_kw: {"id": "test-id"})
+    )
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
@@ -850,83 +942,130 @@ def test_deliver_finalize_genuine_db_alias_failure_still_reaches_reconciled(
 
     monkeypatch.setattr(repo, "update_known_alias", _boom_update_known_alias)
 
-    _deliver(run_id, run)
+    assert _deliver(run_id, run) is True, "deliver() must reserve + enqueue a SEND_OUTBOUND job"
+    assert drain.drain_once() is DrainOutcome.DONE
 
     post_run = cast(dict[str, Any], repo.load_run(run_id))
     assert post_run["status"] == "reconciled", (
         "a genuine DB-level error (psycopg.errors.UndefinedColumn) inside the "
-        "alias-write path must NOT poison _deliver's finalize transaction — the "
-        f"run must still reach 'reconciled'; got {post_run['status']!r}"
+        "alias-write path must NOT poison the delivery finalize transaction — "
+        f"the run must still reach 'reconciled'; got {post_run['status']!r}"
     )
 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_deliver_finalize_status_crash_leaves_run_at_approved(seeded_db, monkeypatch):
-    """Force repo.set_status to raise on its FIRST call inside _deliver's
-    finalize block (simulating a crash between the alias write and
-    set_status(SENT)); assert the run's status is unchanged from APPROVED —
-    never left at 'sent' alone with 'reconciled' missing.
-    """
-    from app.db import repo
-    from app.pipeline.delivery import deliver as _deliver
+    """A crash inside deliver()'s own reserve+enqueue transaction must leave the
+    run unchanged at APPROVED and leave NO orphaned reservation behind — never a
+    half-written state (a snapshot reserved with no job to ever send it).
 
-    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+    `deliver()` does not write run status at all — it only composes, reserves
+    the outbound snapshot, and enqueues a SEND_OUTBOUND job
+    (`app/pipeline/delivery.py:78-172`); `repo.set_status` is never called
+    inside it. Simulating "a crash between the alias write and
+    set_status(SENT)" by monkeypatching `repo.set_status` has no analog inside
+    `deliver()` anymore — that finalize sequence lives entirely inside the
+    queue-drain settlement layer, one atomic transaction (see
+    `test_deliver_finalize_alias_failure_still_reaches_reconciled` above for
+    that path). This test targets `deliver()`'s OWN failure mode instead: a
+    crash on its LAST write (`_enqueue_confirmation`, the reserve+enqueue
+    transaction's final statement) must roll back the WHOLE transaction —
+    including the reservation `reserve_outbound_snapshot` already wrote earlier
+    in the SAME transaction — so the run is left with no reservation and no job,
+    ready for a clean retry, not stuck in a state that looks committed but isn't.
+
+    `conn=` is passed explicitly (`deliver()`'s own docstring: "the caller owns
+    the transaction") so reserve+enqueue share one real transaction, matching
+    how `app/routes/runs.py`'s approve route actually calls it.
+    """
+    import app.pipeline.delivery as delivery_mod
+    from app.db import repo
+    from app.pipeline import send_guard
+
+    # app/email/gateway.py:167 calls resend.Emails.send(send_params,
+    # {"idempotency_key": message_id}) — TWO positional args, one carrying the
+    # provider Idempotency-Key. A single-arg stub here raises TypeError inside
+    # the try/except at gateway.py:165-174, which classify_pipeline_exception
+    # turns into a genuine (wrong) delivery failure — silently masking whatever
+    # this test actually means to prove. Accept and ignore both.
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda *_a, **_kw: {"id": "test-id"})
+    )
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
     run = cast(dict[str, Any], repo.load_run(run_id))
 
-    def _boom_status(run_id_, status, conn=None):
-        raise RuntimeError("injected crash — set_status(SENT)")
+    def _boom_enqueue(*a, **kw):
+        raise RuntimeError("injected crash — _enqueue_confirmation")
 
-    monkeypatch.setattr(repo, "set_status", _boom_status)
+    monkeypatch.setattr(delivery_mod, "_enqueue_confirmation", _boom_enqueue)
 
-    with pytest.raises(RuntimeError, match="injected crash"):
-        _deliver(run_id, run)
+    with (
+        pytest.raises(RuntimeError, match="injected crash"),
+        repo.get_connection() as conn,
+        conn.transaction(),
+    ):
+        delivery_mod.deliver(run_id, run, conn=conn)
 
-    # Bypass the monkeypatched set_status for the assertion read via a direct load_run.
-    monkeypatch.undo()
-    from app.db import repo as real_repo
-
-    post_run = cast(dict[str, Any], real_repo.load_run(run_id))
+    post_run = cast(dict[str, Any], repo.load_run(run_id))
     assert post_run["status"] == RunStatus.APPROVED.value, (
-        "a crash between the alias write and set_status(SENT) must leave the run "
-        f"at APPROVED (unadvanced) — never 'sent' alone; got {post_run['status']!r}"
+        "a crash inside deliver()'s own reserve+enqueue transaction must leave "
+        f"the run at APPROVED (unadvanced); got {post_run['status']!r}"
+    )
+    policy = send_guard.outbound_replay_policy(run_id, purpose="confirmation", round=0)
+    assert not policy.has_existing_snapshot, (
+        "the crash must roll back the ENTIRE reserve+enqueue transaction — a "
+        "surviving reservation here would be an orphaned 'reserved' row with no "
+        "job ever created to send it, half-written state under a new name"
     )
 
 
 @_SKIP_LIVE_DB
 @pytest.mark.integration
 def test_deliver_finalize_crash_preserves_payroll_roster_attribute(seeded_db, monkeypatch):
-    """A forced exception inside the finalize `with conn.transaction():` block
-    must still result in the raised exception carrying `payroll_roster` — the
-    attribute the error boundary reads to scrub roster names out of error_detail.
+    """A forced exception inside deliver()'s own try/except block must still
+    result in the raised exception carrying `payroll_roster` — the attribute
+    the error boundary reads to scrub roster names out of error_detail.
 
-    The finalize transaction must therefore be nested INSIDE the enclosing
-    try/except that attaches it, not wrapped around it or replacing it: otherwise
-    a finalize crash produces an exception with no roster attached, and the PII
-    scrubber has no names to redact.
+    `exc.payroll_roster = roster` lives inside `deliver()` itself
+    (`app/pipeline/delivery.py:172-173`) — `deliver()`'s job is now "compose,
+    reserve, enqueue" rather than "send through reconciled", but its OWN
+    try/except boundary (and this attribute attachment) is still exactly where
+    it was. Targets the same injection point as
+    test_deliver_finalize_status_crash_leaves_run_at_approved just above
+    (`repo.set_status` is not called inside `deliver()` at all, so that
+    injection point has no effect here — `_enqueue_confirmation` is the last
+    write inside deliver()'s try block).
     """
+    import app.pipeline.delivery as delivery_mod
     from app.db import repo
-    from app.pipeline.delivery import deliver as _deliver
 
-    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+    # app/email/gateway.py:167 calls resend.Emails.send(send_params,
+    # {"idempotency_key": message_id}) — TWO positional args, one carrying the
+    # provider Idempotency-Key. A single-arg stub here raises TypeError inside
+    # the try/except at gateway.py:165-174, which classify_pipeline_exception
+    # turns into a genuine (wrong) delivery failure — silently masking whatever
+    # this test actually means to prove. Accept and ignore both.
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda *_a, **_kw: {"id": "test-id"})
+    )
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
     run = cast(dict[str, Any], repo.load_run(run_id))
 
-    def _boom_status(run_id_, status, conn=None):
+    def _boom_enqueue(*a, **kw):
         raise RuntimeError("injected crash — roster-preservation check")
 
-    monkeypatch.setattr(repo, "set_status", _boom_status)
+    monkeypatch.setattr(delivery_mod, "_enqueue_confirmation", _boom_enqueue)
 
     with pytest.raises(RuntimeError) as exc_info:
-        _deliver(run_id, run)
+        delivery_mod.deliver(run_id, run)
 
     assert hasattr(exc_info.value, "payroll_roster"), (
-        "a failure inside the finalize transaction must still result in "
+        "a failure inside deliver()'s own try/except must still result in "
         "exc.payroll_roster being attached (the PII scrubber depends on it)"
     )
 
@@ -940,18 +1079,46 @@ def test_deliver_retry_over_sent_completes_alias_write_exactly_once(seeded_db, m
 
     Otherwise the already-sent guard short-circuits past the alias write and the
     confirmed alias is silently never learned — the system keeps re-asking.
+
+    The FIRST `_deliver()` call now only reserves + enqueues (see the tests
+    above) — reaching 'reconciled' requires draining the SEND_OUTBOUND job
+    too. The retry-over-sent guard branch itself (`deliver()`'s
+    `sent_message_id is not None` check -> `_complete_sent_confirmation`,
+    `app/pipeline/delivery.py:43-59`) is otherwise unchanged — it still calls
+    `write_aliases_if_safe` exactly once, then
+    `set_status(SENT)`/`set_status(RECONCILED)` synchronously, inline, on the
+    SECOND `_deliver()` call. Only the FIRST call's path moved behind the
+    queue; the retry-over-sent path was always synchronous and still is. This
+    is an exactly-once claim — a falsifying mutation (a duplicated
+    `write_aliases_if_safe` call inside `_complete_sent_confirmation`) was run
+    in-session and reverted, proving this assertion genuinely reds if a
+    regression made
+    `_complete_sent_confirmation` fire the alias write twice.
     """
     from app.db import repo
     from app.pipeline.delivery import deliver as _deliver
+    from app.queue import drain
+    from app.queue.drain import DrainOutcome
 
-    monkeypatch.setattr(resend.Emails, "send", staticmethod(lambda params: {"id": "test-id"}))
+    # app/email/gateway.py:167 calls resend.Emails.send(send_params,
+    # {"idempotency_key": message_id}) — TWO positional args, one carrying the
+    # provider Idempotency-Key. A single-arg stub here raises TypeError inside
+    # the try/except at gateway.py:165-174, which classify_pipeline_exception
+    # turns into a genuine (wrong) delivery failure — silently masking whatever
+    # this test actually means to prove. Accept and ignore both.
+    monkeypatch.setattr(
+        resend.Emails, "send", staticmethod(lambda *_a, **_kw: {"id": "test-id"})
+    )
 
     run_id = _seed_live_run(body="Maria Chen 40 regular")
     repo.set_status(run_id, RunStatus.APPROVED)
     run = cast(dict[str, Any], repo.load_run(run_id))
 
-    # First call: real happy path, genuinely reaches SENT + RECONCILED.
-    _deliver(run_id, run)
+    # First call: real happy path — reserve + enqueue, then drain to genuinely
+    # reach SENT + RECONCILED (see the four tests above for why this now takes
+    # two steps instead of one synchronous call).
+    assert _deliver(run_id, run) is True
+    assert drain.drain_once() is DrainOutcome.DONE
     post_first = cast(dict[str, Any], repo.load_run(run_id))
     assert post_first["status"] == "reconciled"
 
