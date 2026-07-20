@@ -42,7 +42,7 @@ demonstrated red run. Both are enforced as explicit success criteria in Phase 21
 - [x] **Phase 18: Failure Policy & Sweep Deletion** - The orchestrator returns an explicit ok/retryable/terminal result instead of swallowing failures, and the queue's lease-based recovery replaces the racing dashboard sweep as the sole recovery mechanism. (completed 2026-07-16)
 - [x] **Phase 19: Webhook Cutover & Durable Ingest** - The Resend body-fetch moves off the request path into a durable, retryable job; every remaining in-memory `BackgroundTasks` producer is migrated to the queue. (completed 2026-07-17)
 - [x] **Phase 20: Exactly-Once Send** - A retry reuses the reserved `message_id`, replays the persisted payload, and carries Resend's `Idempotency-Key` — a client is sent at most one confirmation per approved run, per epoch. (completed 2026-07-18)
-- [ ] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact.
+- [x] **Phase 21: Durability Proofs & Ops View** - Four durability proofs, each demonstrated able to fail, wired into the only CI workflow with a real Postgres; an ops page makes "the queue is healthy" a checkable fact. (completed 2026-07-20)
 
 ## Phase Details
 
@@ -362,7 +362,7 @@ passing — and an operator can check "is the queue healthy" as a fact, not a vi
   5. All four proofs above are registered in `concurrency-proof.yml` and demonstrably run in CI against a real Postgres container — none are silently skipped by the workflow's hard-coded file list.
   6. An operator can view queue depth, oldest-pending-job age, attempts distribution, and the dead-letter list on one page, which surfaces an alarm when job success looks ~100% while `payroll_runs.status='error'` count is nonzero.
 
-**Plans**: 14/15 plans executed
+**Plans**: 15/15 plans complete
 
 > Planning note — two criteria above are stated against stale premises and are planned against the
 > corrections in `21-CONTEXT.md`, not their literal text. **Criterion 5**: the "hard-coded file
@@ -405,7 +405,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 21-11-PLAN.md — `docs/DURABILITY-PROOFS.md` published and linked, with the accepted residuals stated beside the claims (all)
+- [x] 21-11-PLAN.md — `docs/DURABILITY-PROOFS.md` published and linked, with the accepted residuals stated beside the claims (all)
 
 **UI hint**: yes
 
@@ -447,4 +447,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 27/27 | Complete    | 2026-07-18 |
-| 21. Durability Proofs & Ops View | v4 | 14/15 | In Progress|  |
+| 21. Durability Proofs & Ops View | v4 | 15/15 | Complete   | 2026-07-20 |
