@@ -151,3 +151,11 @@ None.
 ---
 *Phase: 21-durability-proofs-ops-view*
 *Completed (checkpoint): 2026-07-20*
+
+## Self-Check: PASSED
+
+- FOUND: `tests/test_concurrency_proof.py`
+- FOUND: `tests/test_email_epoch_arbiter_integration.py`
+- FOUND: `.planning/phases/21-durability-proofs-ops-view/21-14-SUMMARY.md`
+- FOUND: commit `fddb918` (task 1)
+- FOUND: commit `f9a3fb7` (task 2 / diagnosis docs)
