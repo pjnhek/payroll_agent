@@ -5,10 +5,10 @@ milestone_name: — Durable Execution
 current_phase: 21
 current_phase_name: Durability Proofs & Ops View
 status: ready_to_execute
-stopped_at: Phase 21 planned (11 plans, 5 waves)
-last_updated: "2026-07-20T01:56:12.000Z"
+stopped_at: Phase 21 planned + Codex-reviewed (11 plans, 5 waves)
+last_updated: "2026-07-20T02:40:00.000Z"
 last_activity: 2026-07-19
-last_activity_desc: Phase 21 planned — 11 plans in 5 waves, plan-checker passed (0 blockers)
+last_activity_desc: "Phase 21 planned (11 plans, 5 waves); Codex cross-AI review found 9 HIGH findings (5 verified vs live source) — all incorporated, re-verified 0 blockers"
 progress:
   total_phases: 6
   completed_phases: 5
@@ -30,8 +30,8 @@ See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation comple
 
 Phase: 21 — Durability Proofs & Ops View
 Plan: Not started (11 plans ready, 5 waves)
-Status: Ready to execute Phase 21
-Last activity: 2026-07-19 — Phase 21 planned (11 plans, 5 waves); plan-checker VERIFICATION PASSED, 0 blockers
+Status: Ready to execute Phase 21 (Codex-reviewed)
+Last activity: 2026-07-19 — Phase 21 planned (11 plans, 5 waves); Codex cross-AI review returned HIGH risk / "do not execute unchanged" with 9 findings; all incorporated via `--reviews` replan (`27fb9a5`); re-verified VERIFICATION PASSED, 0 blockers
 
 ## Performance Metrics
 
