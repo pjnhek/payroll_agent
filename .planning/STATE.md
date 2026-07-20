@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 current_phase: 21
-current_phase_name: Durability Proofs & Ops View
-status: ready_to_execute
+current_phase_name: durability-proofs-ops-view
+status: executing
 stopped_at: Phase 21 planned + Codex-reviewed (11 plans, 5 waves)
-last_updated: "2026-07-20T02:40:00.000Z"
-last_activity: 2026-07-19
-last_activity_desc: "Phase 21 planned (11 plans, 5 waves); Codex cross-AI review found 9 HIGH findings (5 verified vs live source) — all incorporated, re-verified 0 blockers"
+last_updated: "2026-07-20T15:34:31.169Z"
+last_activity: 2026-07-20
+last_activity_desc: Phase 21 execution started
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 79
+  total_plans: 82
   completed_plans: 68
   percent: 83
 ---
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation complete; gap closure remains)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 21 — durability-proofs-and-ops-view planning
+**Current focus:** Phase 21 — durability-proofs-ops-view
 
 ## Current Position
 
-Phase: 21 — Durability Proofs & Ops View
-Plan: Not started (11 plans ready, 5 waves)
-Status: Ready to execute Phase 21 (Codex-reviewed)
-Last activity: 2026-07-19 — Phase 21 planned (11 plans, 5 waves); Codex cross-AI review returned HIGH risk / "do not execute unchanged" with 9 findings; all incorporated via `--reviews` replan (`27fb9a5`); re-verified VERIFICATION PASSED, 0 blockers
+Phase: 21 (durability-proofs-ops-view) — EXECUTING
+Plan: 1 of 14
+Status: Executing Phase 21
+Last activity: 2026-07-20 — Phase 21 execution started
 
 ## Performance Metrics
 
