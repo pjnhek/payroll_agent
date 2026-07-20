@@ -724,6 +724,40 @@ td a:hover {
   text-align: center;
 }
 
+/* --- Ops: transport-surface panels + the unaccounted-error banner --- */
+.ops-asof {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 var(--space-lg) 0;
+}
+
+.ops-panels {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-lg);
+  margin-bottom: var(--space-xl);
+}
+
+.ops-bound {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: var(--space-sm) 0 0 0;
+}
+
+.ops-alarm-banner {
+  background: var(--surface);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  padding: var(--space-md) var(--space-lg);
+  margin-bottom: var(--space-lg);
+  font-size: 14px;
+}
+
+.ops-alarm-banner a {
+  color: var(--danger-hover);
+}
+
 /* --- Eval metric strip --- */
 .metric-strip {
   display: grid;

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Transport Ops</h1>
+<p class="ops-asof">
+  As of {{ generated_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}. This view refreshes only when
+  reloaded — a number here reflects the moment it was read, not the live state.
+</p>
+
+{% if unaccounted_error_rows %}
+<div class="ops-alarm-banner" role="alert">
+  <p>
+    <strong>
+      {{ unaccounted_error_rows | length }}
+      run{{ 's' if unaccounted_error_rows | length != 1 else '' }} in error with no job
+      settlement recorded against it.
+    </strong>
+    No job in the queue ever claimed responsibility for these failures — the transport
+    layer cannot account for them.
+  </p>
+  <ul>
+    {% for row in unaccounted_error_rows %}
+    <li>
+      <a href="/runs/{{ row.id }}">{{ row.id }}</a>{% if row.error_reason %} — {{ row.error_reason }}{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="ops-panels">
+
+  {# Queue depth: pending vs leased, kept as two figures — not a combined total. #}
+  <div class="card card-pad">
+    <h2>Queue depth</h2>
+    <dl class="metric-strip" style="grid-template-columns: repeat(2, 1fr);">
+      <div>
+        <dt class="metric-label">Pending</dt>
+        <dd class="metric-value">{{ pending_count }}</dd>
+      </div>
+      <div>
+        <dt class="metric-label">Leased</dt>
+        <dd class="metric-value">{{ leased_count }}</dd>
+      </div>
+    </dl>
+  </div>
+
+  {# Oldest due-pending age, rendered beside the recovery-latency bound. #}
+  <div class="card card-pad">
+    <h2>Oldest due-pending age</h2>
+    {% if oldest_due_pending_seconds is none %}
+    <p class="metric-value" style="font-size: 20px;">No due pending work</p>
+    {% else %}
+    {% set minutes = oldest_due_pending_seconds / 60 %}
+    <p class="metric-value" style="font-size: 26px;">
+      {% if minutes < 1 %}{{ "%.0f" | format(oldest_due_pending_seconds) }}s{% else %}{{ "%.1f" | format(minutes) }} min{% endif %}
+    </p>
+    {% endif %}
+    <p class="ops-bound">
+      Bound: recovery is expected within the pump's {{ pump_cadence_minutes }}-minute cadence.
+      An age inside that window is expected; well beyond it means the pump is not draining.
+    </p>
+  </div>
+
+  {# Attempts distribution over open jobs, rendered against MAX_ATTEMPTS. #}
+  <div class="card card-pad">
+    <h2>Attempts distribution</h2>
+    {% if attempts_rows %}
+    <table>
+      <thead>
+        <tr><th>Attempts</th><th>Count</th></tr>
+      </thead>
+      <tbody>
+        {% for attempts, count in attempts_rows %}
+        <tr>
+          <td>{{ attempts }} of {{ max_attempts }}</td>
+          <td class="num">{{ count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No open jobs.</p>
+    {% endif %}
+    <p class="ops-bound">Bound: a job dead-letters after {{ max_attempts }} attempts.</p>
+  </div>
+
+  {# Dead letter: the bounded, read-only projection. Retrigger lives on run detail. #}
+  <div class="card card-pad">
+    <h2>Dead letter</h2>
+    {% if dead_letter_rows %}
+    <table>
+      <thead>
+        <tr><th>Kind</th><th>Attempts</th><th>Last error</th><th>Settled</th><th>Run</th></tr>
+      </thead>
+      <tbody>
+        {% for job in dead_letter_rows %}
+        <tr>
+          <td>{{ job.kind }}</td>
+          <td>{{ job.attempts }} of {{ job.max_attempts }}</td>
+          <td class="text-muted">{{ job.last_error or '—' }}</td>
+          <td class="cell-time">
+            {% if job.updated_at %}{% if job.updated_at is string %}{{ job.updated_at[:16] }}{% else %}{{ job.updated_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}{% else %}—{% endif %}
+          </td>
+          <td>{% if job.run_id %}<a href="/runs/{{ job.run_id }}">View</a>{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No dead-lettered jobs.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
