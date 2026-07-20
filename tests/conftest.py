@@ -28,7 +28,7 @@ import threading
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 import resend  # noqa: F401 — imported so the module is available for monkeypatching
@@ -158,9 +158,40 @@ _SKIP_LIVE_DB = pytest.mark.skipif(
 #     here (see tests/test_webhook_dedup_race.py).
 #
 # The sentinel value follows the existing `postgresql://mock-test-stub/mockdb`
-# naming precedent (mock_llm) — obviously fake, and fails loudly (connection
-# refused/DNS error) if anything ever actually tries to connect through it.
+# naming precedent (mock_llm) — obviously fake. It does NOT fail loudly on its
+# own: the host resolves-and-fails in 0.01s (DNS is not the cost), but
+# psycopg_pool then retries opening a connection until ConnectionPool's own
+# `timeout=5` (app/db/supabase.py) elapses — 5s per attempt, silently, on the
+# SAME degraded/error code path a hermetic test was already passing on before
+# this stub existed. That measured 5s-per-attempt cost is exactly why the pool
+# getter is intercepted below: a hermetic test that reaches for a real pooled
+# connection under this sentinel must fail immediately and loudly, not slowly
+# and silently.
 # ---------------------------------------------------------------------------
+
+
+class HermeticPoolAccessError(RuntimeError):
+    """Raised when hermetic test code reaches app.db.supabase.get_pool()."""
+
+
+def _raise_hermetic_pool_access() -> NoReturn:
+    """The fail-fast body patched onto app.db.supabase.get_pool() whenever the
+    sentinel DATABASE_URL applies (see _stub_database_url_when_absent below).
+
+    A real ConnectionPool() call against the sentinel host does not fail fast —
+    psycopg_pool retries for the full `timeout=5` on every attempt, so a test
+    that never intended to touch a real database instead waits 5s+ per call and
+    then passes on the pool's own degraded/error path. Raising here converts
+    that into an immediate, named failure the next time this seam is reached.
+    """
+    raise HermeticPoolAccessError(
+        "Hermetic test reached app.db.supabase.get_pool() under the sentinel "
+        "DATABASE_URL — this test has no real database in the hermetic suite. "
+        "Mock the repo layer (the fake_repo fixture, or this file's established "
+        "equivalent) so the route/pipeline call never opens a real connection, "
+        "or mark this test with the live-DB two-factor guard "
+        "(DATABASE_URL + ALLOW_DB_RESET=1) if it genuinely needs Postgres."
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -176,12 +207,23 @@ def _stub_database_url_when_absent(monkeypatch):
     environment afterward — so, unlike a one-shot cache-priming approach,
     this fixture leaves the sentinel set in os.environ for the duration of
     the test whenever it applies one.
+
+    Whenever the sentinel applies, also patches app.db.supabase.get_pool() to
+    raise immediately (HermeticPoolAccessError) instead of opening a real
+    ConnectionPool against the fake host — see the comment block above this
+    fixture for why the sentinel alone does not fail fast. This patch is
+    scoped to the `if not os.environ.get("DATABASE_URL")` branch, so it can
+    never fire when a real DSN is present: the live-DB suite always opens
+    real pooled connections through the unmodified get_pool().
     """
     from app.config import get_settings
 
     get_settings.cache_clear()
     if not os.environ.get("DATABASE_URL"):
         monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+        monkeypatch.setattr(
+            "app.db.supabase.get_pool", _raise_hermetic_pool_access, raising=True
+        )
     yield
     get_settings.cache_clear()
 
