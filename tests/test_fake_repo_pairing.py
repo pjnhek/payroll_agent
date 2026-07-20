@@ -1,6 +1,6 @@
 """Guards that guard the harness — no DB, no worker module.
 
-Two classes of failure this file makes structurally impossible to
+Three classes of failure this file makes structurally impossible to
 reintroduce silently:
 
 1. A method defined on `tests/conftest.py`'s `InMemoryRepo` (or
@@ -14,6 +14,16 @@ reintroduce silently:
 
 2. A leaked `queue-worker-*` daemon thread surviving a test — the suite-wide
    autouse leak guard defined in `tests/conftest.py`, proven here.
+
+3. A hermetic test silently reaching a real pooled Postgres connection under
+   the sentinel DATABASE_URL and paying `ConnectionPool(timeout=5)` per
+   attempt instead of failing immediately — the fail-fast pool-access guard
+   defined in `tests/conftest.py`'s autouse `_stub_database_url_when_absent`
+   fixture, pinned here (these tests live here, not in `tests/conftest.py`
+   itself, because pytest's directory-glob collection does not treat
+   `conftest.py` as a collectible test module when a full suite run passes
+   no explicit path — a test defined only inside `conftest.py` would never
+   actually run).
 """
 from __future__ import annotations
 
@@ -23,6 +33,8 @@ import pathlib
 import threading
 
 import pytest
+
+from tests.conftest import _SKIP_LIVE_DB
 
 _RETIRED_RECOVERY_SYMBOLS = {
     "sweep_stranded_runs",
@@ -325,3 +337,44 @@ def test_the_leak_guard_is_wired_into_an_autouse_fixture() -> None:
     fn = wrapped() if callable(wrapped) else _no_leaked_queue_workers
     source = inspect.getsource(fn)
     assert "fail_on_leaked_queue_workers()" in source
+
+
+# ---------------------------------------------------------------------------
+# Guard class 3: the hermetic fail-fast pool-access guard
+# ---------------------------------------------------------------------------
+
+
+def test_hermetic_pool_access_fails_fast() -> None:
+    """Under the hermetic sentinel DATABASE_URL (this suite's default — every
+    test here runs through the autouse `_stub_database_url_when_absent`
+    fixture in `tests/conftest.py`), any attempt to obtain a real pooled
+    connection must raise `HermeticPoolAccessError` immediately rather than
+    waiting out `ConnectionPool(timeout=5)` and degrading.
+
+    Red-proofed manually: temporarily commenting out the
+    `monkeypatch.setattr("app.db.supabase.get_pool", ...)` line inside
+    `_stub_database_url_when_absent` makes this test fail with a real (slow)
+    pool-connection error instead of `HermeticPoolAccessError` — confirmed,
+    then reverted.
+    """
+    import app.db.supabase as supabase
+    from tests.conftest import HermeticPoolAccessError
+
+    with pytest.raises(HermeticPoolAccessError):
+        supabase.get_pool()
+
+
+@_SKIP_LIVE_DB
+def test_hermetic_pool_access_inert_with_real_database_url() -> None:
+    """Pin the no-false-positive half: with a genuine DATABASE_URL set (the
+    two-factor live-DB guard below), the autouse sentinel fixture is a no-op
+    and `get_pool()` must NOT be patched to raise — the live-DB suite must
+    still be able to open real pooled connections, or every live-DB test in
+    this repo would break. Gated by the same two-factor guard
+    (DATABASE_URL + ALLOW_DB_RESET=1) as every other live-DB test here.
+    """
+    import app.db.supabase as supabase
+
+    pool = supabase.get_pool()
+    with pool.connection() as conn:
+        conn.execute("SELECT 1")

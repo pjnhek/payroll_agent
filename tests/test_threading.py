@@ -507,6 +507,7 @@ def test_partial_reply_preserves_hours():
     import pytest as _pt
 
     import app.db.repo as repo_mod
+    from tests.conftest import patch_get_connection
 
     monkey = _pt.MonkeyPatch()
     try:
@@ -525,6 +526,12 @@ def test_partial_reply_preserves_hours():
             "get_clarification_round", "mark_reply_consumed", "load_consumed_replies",
         ):
             monkey.setattr(repo_mod, name, getattr(store, name), raising=False)
+        # _run_stages' compute/approval branch opens `with repo.get_connection() as
+        # conn, conn.transaction():` around persist_extracted/persist_decision/etc.
+        # (all patched above via `store`, which ignores the conn= it's handed) — but
+        # get_connection() itself was never patched here, so it fell through to the
+        # real pooled Supabase connection under the hermetic sentinel DSN.
+        patch_get_connection(monkey, repo_mod)
         monkey.setattr(orchestrator, "extract", _spy_extract)
         monkey.setattr(
             orchestrator,

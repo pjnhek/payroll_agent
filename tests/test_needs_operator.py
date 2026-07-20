@@ -1237,31 +1237,29 @@ def test_needs_operator_excluded_from_retrigger_stale_statuses():
 # ===========================================================================
 
 
-def test_run_detail_renders_needs_operator_badge_label(monkeypatch):
+def test_run_detail_renders_needs_operator_badge_label(fake_repo):
     """GET /runs/{id} for a needs_operator run must render the 'Needs Operator'
     label (not a raw title-cased fallback like 'Needs Operator' coincidentally
     matching — assert the badge class is also the dedicated 'escalate' class,
-    not the generic 'neutral' fallback a missing dict entry would produce)."""
-    from app.db import repo as _repo
+    not the generic 'neutral' fallback a missing dict entry would produce).
 
+    Wired onto fake_repo (not ad hoc individual monkeypatches of load_run/
+    load_inbound_email/load_line_items) so every repo call run_detail makes —
+    including load_thread_messages, load_roster_for_business, the delivery-
+    review probe, and the queue-label projection, none of which the old
+    per-function monkeypatch list touched — is answered by the real in-memory
+    store instead of silently degrading to run_detail's own `except
+    Exception` fallback paths. A test that only mocks a subset of the repo
+    calls a route makes can still pass on those unmocked calls' error paths,
+    which proves nothing about the calls the mocked assertions actually rely
+    on.
+    """
+    business_id = next(iter(fake_repo.contact_to_business.values()))
     run_id = uuid.uuid4()
-    needs_operator_run = {
-        "id": run_id,
-        "business_id": uuid.uuid4(),
-        "source_email_id": uuid.uuid4(),
-        "status": "needs_operator",
-        "extracted_data": None,
-        "decision": None,
-        "reconciliation": None,
-        "error_reason": None,
-        "pay_period_start": None,
-        "pay_period_end": None,
-        "updated_at": None,
-    }
-    monkeypatch.setattr(_repo, "load_run", lambda rid, conn=None: needs_operator_run)
-    monkeypatch.setattr(_repo, "load_inbound_email", lambda rid, conn=None: None)
-    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [])
-    monkeypatch.setattr(_repo, "load_outbound_emails", lambda rid, conn=None: [])
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, business_id, ["Jamie Doe"]
+    )
+    fake_repo.runs[str(run_id)]["source_email_id"] = None
 
     response = client.get(f"/runs/{run_id}")
     assert response.status_code == 200
@@ -1272,6 +1270,17 @@ def test_run_detail_renders_needs_operator_badge_label(monkeypatch):
         "the needs_operator run's badge must use the dedicated 'escalate' CSS "
         "class, not a generic/fallback class"
     )
+
+    # Falsification: an ordinary in-flight status must render NEITHER the
+    # needs_operator label NOR its escalate class — pins that both assertions
+    # above actually depend on the real rendered status (from the fake repo's
+    # real data), not on an error page that happens to satisfy an `in` check
+    # regardless of what status was requested.
+    fake_repo.runs[str(run_id)]["status"] = "awaiting_approval"
+    perturbed = client.get(f"/runs/{run_id}")
+    assert perturbed.status_code == 200
+    assert "Needs Operator" not in perturbed.text
+    assert "badge-escalate" not in perturbed.text
 
 
 def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
