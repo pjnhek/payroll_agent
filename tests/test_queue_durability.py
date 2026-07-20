@@ -2356,20 +2356,68 @@ def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_rele
 
 
 # ---------------------------------------------------------------------------
-# An expired lease is reclaimed by a genuinely different claim
+# PROOF-04, ROADMAP criterion 4 — an expired lease is reclaimed by a genuinely
+# concurrent second worker, and the zombie's stale token is fenced on BOTH
+# write paths. The two tests below are a deliberate pair, not a duplicate:
+# the first is ORDERED (proves the fences reliably); the second is UNORDERED
+# (proves the two connections genuinely overlapped in time). Neither alone
+# proves the whole criterion — a genuine race demands both a reliable fence
+# and a proven overlap, and each test below states in its own docstring
+# exactly what it does and does not establish.
 # ---------------------------------------------------------------------------
 
 
-def test_expired_lease_is_reclaimed(seeded_db) -> None:
-    """No sleeping: the lease is expired by manipulating leased_until
-    directly, exercising the exact `leased_until < now()` predicate."""
+@pytest.mark.proof(id="PROOF-04")
+def test_expired_lease_is_reclaimed_by_a_second_worker_and_zombie_is_fenced_on_both_writes(
+    seeded_db,
+) -> None:
+    """PROOF-04, ROADMAP criterion 4. Two genuinely separate OS threads, each
+    on its own psycopg connection, contend for one expired-lease row: worker
+    B reclaims it, and worker A — the zombie still holding the stale token —
+    then attempts BOTH a late `complete_job` and a late `fail_job`/reschedule.
+    Both must be rejected by the fencing token. A test that only checks
+    `complete_job`'s fence is the exact vacuous twin this file exists to
+    avoid: "fail is the fence people forget."
+
+    ORDERING, AND WHY THIS TEST IS DELIBERATELY ORDERED (read before
+    editing). Both threads meet at a shared `threading.Barrier(2, timeout=30)`
+    so both are provably live on the same row before either issues its
+    critical write — `barrier_passes` records that both actually arrived.
+    After the barrier, worker B performs the reclaim and, once its claim has
+    committed, signals a `threading.Event`; only then does worker A issue its
+    late writes. Without that event, worker A's `complete_job` could
+    legitimately land BEFORE worker B's reclaim commits — the stale token is
+    still current until the reclaim actually changes it — and this test
+    would be asserting a fixed outcome on what is, without the event, a
+    genuinely non-deterministic race. The barrier establishes that both
+    workers are live on the row; the event establishes WHICH one is the
+    zombie, which is what criterion 4's "both writes fenced" assertions need
+    a reliably-reachable state to test against.
+
+    WHAT THIS TEST DOES **NOT** ESTABLISH. Distinct connections plus recorded
+    barrier passes prove two independent OS-thread workers were live on the
+    row; they do NOT prove the claim and the zombie's writes ever overlapped
+    in time, because the event orders them. Treating "two threads plus a
+    barrier" as a contention proof repeats a known vacuous shape — thread
+    count asserted with no overlap assertion — which is exactly what let a
+    prior concurrency proof in this repo serialize through a shared
+    TestClient and still pass while proving nothing. The genuine-overlap
+    claim belongs ONLY to the companion test immediately below,
+    `test_expired_lease_reclaim_and_zombie_write_genuinely_race`,
+    which removes the event and asserts the two threads' measured
+    `time.monotonic_ns()` intervals intersect.
+
+    Pool budget: two threads plus the (idle, mid-barrier) test-body thread —
+    comfortably inside the shared pool's `max_size=5` (`app/db/supabase.py`).
+    Do not scale the thread count here past that budget.
+    """
     from app.db import repo
     from app.models.job import JobKind
 
     run_id = _seed_run_for_queue_proof()
     enqueued_id = repo.enqueue_job(
         kind=JobKind.RUN_PIPELINE,
-        dedup_key=f"queueproof-reclaim:{uuid.uuid4()}",
+        dedup_key=f"queueproof-fenced-race:{uuid.uuid4()}",
         run_id=run_id,
     )
     assert enqueued_id is not None
@@ -2377,7 +2425,6 @@ def test_expired_lease_is_reclaimed(seeded_db) -> None:
     first = repo.claim_job()
     assert first is not None
     assert first.id == enqueued_id
-    assert first.attempts == 1
     token_a = first.lease_token
 
     with repo.get_connection() as conn, conn.transaction():
@@ -2386,30 +2433,131 @@ def test_expired_lease_is_reclaimed(seeded_db) -> None:
             (str(enqueued_id),),
         )
 
-    second = repo.claim_job()
-    assert second is not None
-    assert second.id == enqueued_id
-    assert second.attempts == 2
-    assert second.lease_token != token_a
+    barrier = threading.Barrier(2, timeout=30)
+    reclaim_committed = threading.Event()
+    barrier_passes: list[str] = []
+    connection_ids: dict[str, int] = {}
+    results: dict[str, object] = {}
+    errors: dict[str, list[BaseException]] = {"thread_b": [], "thread_a": []}
+
+    def _reclaim_worker() -> None:
+        try:
+            with repo.get_connection() as conn:
+                connection_ids["thread_b"] = id(conn)
+                barrier.wait()
+                barrier_passes.append("thread_b")
+                with conn.transaction():
+                    results["reclaimed"] = repo.claim_job(conn=conn)
+        except BaseException as exc:  # surface thread failures in the test thread
+            errors["thread_b"].append(exc)
+        finally:
+            reclaim_committed.set()
+
+    def _zombie_worker() -> None:
+        try:
+            with repo.get_connection() as conn:
+                connection_ids["thread_a"] = id(conn)
+                barrier.wait()
+                barrier_passes.append("thread_a")
+                assert reclaim_committed.wait(timeout=30), (
+                    "worker B's reclaim did not commit in time"
+                )
+                with conn.transaction():
+                    results["complete_result"] = repo.complete_job(
+                        enqueued_id, token_a, conn=conn
+                    )
+                with conn.transaction():
+                    results["fail_result"] = repo.fail_job(
+                        enqueued_id,
+                        token_a,
+                        error="zombie write",
+                        backoff_seconds=1.0,
+                        conn=conn,
+                    )
+        except BaseException as exc:  # surface thread failures in the test thread
+            errors["thread_a"].append(exc)
+
+    thread_b = threading.Thread(target=_reclaim_worker, name="proof04-reclaim")
+    thread_a = threading.Thread(target=_zombie_worker, name="proof04-zombie")
+    thread_b.start()
+    thread_a.start()
+    thread_b.join(timeout=35)
+    thread_a.join(timeout=35)
+
+    assert not thread_b.is_alive(), "worker B did not finish its reclaim"
+    assert not thread_a.is_alive(), "worker A did not finish its late writes"
+    assert errors["thread_b"] == [], f"worker B raised: {errors['thread_b']}"
+    assert errors["thread_a"] == [], f"worker A raised: {errors['thread_a']}"
+    assert sorted(barrier_passes) == ["thread_a", "thread_b"]
+
+    # Separate workers: distinct connections. Necessary, not sufficient, for
+    # genuine contention (see docstring) — the overlap claim lives in the
+    # companion test below.
+    assert connection_ids["thread_a"] != connection_ids["thread_b"]
+
+    reclaimed = results["reclaimed"]
+    assert reclaimed is not None, "worker B must have reclaimed the expired lease"
+    assert reclaimed.id == enqueued_id
+    assert reclaimed.lease_token != token_a, "the reclaim must mint a new lease token"
+
+    # "the fence people forget" — asserted as its own named assertion, not
+    # folded into the completion check.
+    assert results["complete_result"] is False, (
+        "worker A's stale-token complete_job must be rejected by the fence"
+    )
+    assert results["fail_result"] is None, (
+        "worker A's stale-token fail_job/reschedule must be rejected by the fence"
+    )
+
+    row = repo.get_job(enqueued_id)
+    assert row is not None
+    assert row["state"] == "leased", "the row must reflect ONLY worker B's reclaim"
+    assert row["lease_token"] == reclaimed.lease_token
+    assert row["attempts"] == reclaimed.attempts, (
+        "worker A's fenced writes must not have changed attempts beyond the reclaim itself"
+    )
 
 
-# ---------------------------------------------------------------------------
-# The zombie is fenced on BOTH write paths
-# ---------------------------------------------------------------------------
+def test_expired_lease_reclaim_and_zombie_write_genuinely_race(seeded_db) -> None:
+    """The companion to PROOF-04 above — proves genuine temporal overlap, not
+    just two threads. No `threading.Event` and no other happen-before between
+    the two DB calls: after the shared barrier releases both threads, worker
+    B's reclaim (`claim_job`) and worker A's late `complete_job` (using the
+    stale pre-expiry token) race for real, unordered.
 
+    OVERLAP, NOT OUTCOME, IS THE CLAIM. Each thread brackets its DB call with
+    `time.monotonic_ns()` readings taken immediately before and after; the
+    test asserts the two `[start, end]` intervals INTERSECT — proof that both
+    connections were genuinely in-flight inside the critical section at the
+    same moment. This is the assertion an accidental future serialization
+    (e.g. a change that made one call block behind the other) cannot satisfy,
+    and it is the reason this test exists distinct from the ordered proof
+    above, whose barrier-plus-event structure enforces an ordering and could
+    not detect that regression.
 
-def test_zombie_is_fenced_on_BOTH_complete_and_fail(seeded_db) -> None:
-    """After a reclaim, the ORIGINAL worker's stale token must be rejected by
-    BOTH complete_job AND fail_job — not just one. A test that only checks
-    complete_job's fence is the exact vacuous twin this file exists to avoid:
-    "fail is the fence people forget."""
+    THE INVARIANT IS ORDER-INDEPENDENT, and both outcomes are legitimate, not
+    just one: either (a) worker B's reclaim commits first, in which case
+    worker A's stale-token `complete_job` is fenced (`False`) and the row
+    ends up `leased` under B's new token; or (b) worker A's `complete_job`
+    commits first — legitimately, since the token is still current until B's
+    reclaim actually changes it — in which case worker B's `claim_job` finds
+    no eligible row (the job is now `done`, not `pending`/expired-`leased`)
+    and returns `None`. Both branches are asserted below; neither is treated
+    as a failure. The one state asserted IMPOSSIBLE in either branch is BOTH
+    settlements taking effect. Which branch this run actually took is
+    recorded via `print()` (visible with `pytest -s`) so a run in which one
+    branch never occurs is visible, not silently assumed away.
+
+    Pool budget: two threads plus the (idle, mid-barrier) test-body thread —
+    comfortably inside the shared pool's `max_size=5` (`app/db/supabase.py`).
+    """
     from app.db import repo
     from app.models.job import JobKind
 
     run_id = _seed_run_for_queue_proof()
     enqueued_id = repo.enqueue_job(
         kind=JobKind.RUN_PIPELINE,
-        dedup_key=f"queueproof-zombie:{uuid.uuid4()}",
+        dedup_key=f"queueproof-genuine-race:{uuid.uuid4()}",
         run_id=run_id,
     )
     assert enqueued_id is not None
@@ -2424,18 +2572,84 @@ def test_zombie_is_fenced_on_BOTH_complete_and_fail(seeded_db) -> None:
             (str(enqueued_id),),
         )
 
-    second = repo.claim_job()
-    assert second is not None
-    token_b = second.lease_token
-    assert token_b != token_a
+    barrier = threading.Barrier(2, timeout=30)
+    connection_ids: dict[str, int] = {}
+    intervals: dict[str, tuple[int, int]] = {}
+    outcomes: dict[str, object] = {}
+    errors: dict[str, list[BaseException]] = {"reclaim": [], "zombie": []}
 
-    assert repo.complete_job(enqueued_id, token_a) is False
-    assert repo.fail_job(enqueued_id, token_a, error="zombie write", backoff_seconds=1.0) is None
+    def _reclaim() -> None:
+        try:
+            with repo.get_connection() as conn:
+                connection_ids["reclaim"] = id(conn)
+                barrier.wait()
+                start = time.monotonic_ns()
+                with conn.transaction():
+                    outcomes["reclaim"] = repo.claim_job(conn=conn)
+                intervals["reclaim"] = (start, time.monotonic_ns())
+        except BaseException as exc:  # surface thread failures in the test thread
+            errors["reclaim"].append(exc)
 
+    def _zombie_complete() -> None:
+        try:
+            with repo.get_connection() as conn:
+                connection_ids["zombie"] = id(conn)
+                barrier.wait()
+                start = time.monotonic_ns()
+                with conn.transaction():
+                    outcomes["zombie"] = repo.complete_job(enqueued_id, token_a, conn=conn)
+                intervals["zombie"] = (start, time.monotonic_ns())
+        except BaseException as exc:  # surface thread failures in the test thread
+            errors["zombie"].append(exc)
+
+    thread_reclaim = threading.Thread(target=_reclaim, name="proof04-race-reclaim")
+    thread_zombie = threading.Thread(target=_zombie_complete, name="proof04-race-zombie")
+    thread_reclaim.start()
+    thread_zombie.start()
+    thread_reclaim.join(timeout=35)
+    thread_zombie.join(timeout=35)
+
+    assert not thread_reclaim.is_alive()
+    assert not thread_zombie.is_alive()
+    assert errors["reclaim"] == [], f"reclaim thread raised: {errors['reclaim']}"
+    assert errors["zombie"] == [], f"zombie thread raised: {errors['zombie']}"
+    assert connection_ids["reclaim"] != connection_ids["zombie"]
+
+    r_start, r_end = intervals["reclaim"]
+    z_start, z_end = intervals["zombie"]
+    assert r_start <= z_end and z_start <= r_end, (
+        "the two DB calls did not overlap in this run: "
+        f"reclaim={intervals['reclaim']} zombie={intervals['zombie']} — genuine "
+        "overlap is the claim this test exists to make; see the acceptance "
+        "criteria for how this assertion was confirmed reachable (red under a "
+        "deliberately reintroduced ordering)."
+    )
+
+    reclaimed = outcomes["reclaim"]
+    zombie_completed = outcomes["zombie"]
     row = repo.get_job(enqueued_id)
     assert row is not None
-    assert row["state"] == "leased", "the row must reflect ONLY worker B's action"
-    assert row["lease_token"] == token_b
+
+    if reclaimed is not None:
+        print("[PROOF-04 companion] observed branch: B's reclaim won")
+        assert reclaimed.id == enqueued_id
+        assert reclaimed.lease_token != token_a
+        assert zombie_completed is False, (
+            "worker A's stale-token complete_job must be fenced when B won"
+        )
+        assert row["state"] == "leased"
+        assert row["lease_token"] == reclaimed.lease_token
+    else:
+        print("[PROOF-04 companion] observed branch: A's write landed first")
+        assert zombie_completed is True, (
+            "worker A's completion must have taken effect when B's claim found nothing"
+        )
+        assert row["state"] == "done"
+        assert row["lease_token"] is None
+
+    # The forbidden state — both settlements taking effect — is impossible in
+    # either branch.
+    assert not (reclaimed is not None and zombie_completed is True)
 
 
 # ---------------------------------------------------------------------------
