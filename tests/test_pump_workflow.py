@@ -129,6 +129,109 @@ def test_pump_yml_has_workflow_dispatch() -> None:
     )
 
 
+class TestAlarmStepOrdering:
+    """Structural pins over the parsed YAML for the swallowing-bug alarm step:
+    recovery runs first and unconditionally, reporting runs last and can never
+    suppress it. Structural assertions over the parsed YAML are required here
+    rather than substring checks on the file text — a substring check is
+    satisfied by a comment, and this repo has already had a verification grep
+    silently lie."""
+
+    @staticmethod
+    def _steps() -> list[dict]:
+        parsed = yaml.safe_load(PUMP_WORKFLOW.read_text(encoding="utf-8"))
+        return [
+            step
+            for job in parsed["jobs"].values()
+            for step in job.get("steps", [])
+        ]
+
+    @classmethod
+    def _drain_index(cls, steps: list[dict]) -> int:
+        drain_indices = [
+            i for i, step in enumerate(steps) if "Drain" in step.get("name", "")
+        ]
+        assert len(drain_indices) == 1, (
+            f"expected exactly one drain step, found indices {drain_indices}"
+        )
+        return drain_indices[0]
+
+    @classmethod
+    def _alarm_index(cls, steps: list[dict]) -> int:
+        alarm_indices = [
+            i
+            for i, step in enumerate(steps)
+            if isinstance(step.get("run"), str) and "/health/queue" in step["run"]
+        ]
+        assert len(alarm_indices) == 1, (
+            f"expected exactly one /health/queue alarm step, found indices {alarm_indices}"
+        )
+        return alarm_indices[0]
+
+    def test_alarm_step_runs_after_the_drain_step(self) -> None:
+        steps = self._steps()
+        drain_i = self._drain_index(steps)
+        alarm_i = self._alarm_index(steps)
+        assert alarm_i > drain_i, (
+            "the alarm step must be positioned after the drain step: "
+            "recovery runs first, reporting runs second"
+        )
+
+    def test_alarm_step_is_the_last_step(self) -> None:
+        steps = self._steps()
+        alarm_i = self._alarm_index(steps)
+        assert alarm_i == len(steps) - 1, (
+            "the alarm step must be the last step in the job's steps list"
+        )
+
+    def test_alarm_step_carries_the_same_always_guard_as_the_sibling_health_steps(
+        self,
+    ) -> None:
+        steps = self._steps()
+        alarm_i = self._alarm_index(steps)
+        sibling_health_steps = [
+            s
+            for s in steps
+            if isinstance(s.get("run"), str)
+            and ("/health/ready" in s["run"] or "/health/schema" in s["run"])
+        ]
+        sibling_guards = {str(s.get("if", "")).lower() for s in sibling_health_steps}
+        assert len(sibling_guards) == 1, (
+            f"expected the two sibling health steps to share one guard, got {sibling_guards}"
+        )
+        alarm_guard = str(steps[alarm_i].get("if", "")).lower()
+        assert alarm_guard == next(iter(sibling_guards)), (
+            f"alarm step's `if` guard ({alarm_guard!r}) must match the sibling "
+            f"health steps' guard ({sibling_guards!r}) exactly"
+        )
+        assert "always" in alarm_guard, (
+            "the alarm step must carry an `if: always()` guard so an earlier RED "
+            "step cannot suppress it either"
+        )
+
+    def test_drain_step_carries_no_if_key(self) -> None:
+        """This is the specific regression this repo has already been bitten by
+        once: an `if:` guard accidentally added to the drain step would let an
+        earlier RED (e.g. from the secrets-validation step) skip recovery
+        entirely. Recovery must run unconditionally, every time."""
+        steps = self._steps()
+        drain_i = self._drain_index(steps)
+        assert "if" not in steps[drain_i], (
+            "the drain step must carry NO `if:` key at all — recovery runs "
+            "first and unconditionally, and an alarm ahead of it (or a guard "
+            "added to it) would turn a reporting failure into a recovery failure"
+        )
+
+    def test_alarm_step_uses_the_failing_curl_form(self) -> None:
+        steps = self._steps()
+        alarm_i = self._alarm_index(steps)
+        run_text = steps[alarm_i].get("run", "")
+        assert "curl -f" in run_text, (
+            "the alarm step's `run` must use the failing-curl form (`curl -f`) "
+            "so a non-200 response reds the scheduled run"
+        )
+
+
 def test_health_steps_run_independently_of_the_drain_step() -> None:
     """The three curl steps are INDEPENDENT RED signals. GitHub Actions skips later
     steps once one fails, so without an `if:` guard a RED drain step (the pump route
