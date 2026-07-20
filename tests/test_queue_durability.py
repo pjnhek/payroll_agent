@@ -1855,45 +1855,27 @@ def _restore_modern_failure_category_check() -> None:
         )
 
 
-def _isolate_outbound_history_before_widening_migration() -> None:
-    """Clear the accumulated outbound audit trail before a live widening migration.
-
-    Earlier tests in this module leave behind an old-epoch row alongside a
-    current-epoch row for the same (run_id, purpose, round) -- exactly the
-    duplicate shape schema.sql's live `uq_email_run_purpose_round` widening
-    migration (the intermediate step on the way to
-    `uq_email_run_purpose_round_epoch`) cannot re-add once such rows exist.
-    That ADD CONSTRAINT is table-wide, so scoping a cleanup to only the
-    duplicate rows would still have to touch every earlier test's finished
-    data -- every one of those tests already made its own assertions and is
-    done with it, so this clears the whole outbound trail instead.
-
-    `outbound_email_snapshots` and `outbound_email_attachments` are
-    DB-enforced append-only (BEFORE UPDATE OR DELETE triggers reject row-level
-    mutation -- see schema.sql's `reject_outbound_delivery_evidence_mutation`).
-    TRUNCATE does not fire row-level triggers, so it is the only way to clear
-    them from a test; it must cover all three FK-linked tables together in one
-    statement. `email_messages` carries no such trigger, so its outbound rows
-    are cleared with a plain DELETE once dangling FK-references are gone.
-    `jobs` and `outbound_provider_handoffs` are already emptied by
-    `_isolated_jobs` around every test in this module, so no ordering hazard
-    there.
-    """
-    from app.db import repo
-
-    with repo.get_connection() as conn, conn.transaction():
-        # outbound_provider_handoffs FK-references outbound_email_snapshots, so
-        # Postgres requires it in the same TRUNCATE even though _isolated_jobs
-        # already keeps it empty around every test in this module.
-        conn.execute(
-            "TRUNCATE outbound_delivery_attempts, outbound_email_attachments, "
-            "outbound_email_snapshots, outbound_provider_handoffs"
-        )
-        conn.execute("DELETE FROM email_messages WHERE direction = 'outbound'")
-
-
 def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None:
-    """Non-reset bootstrap repairs a real legacy failure-category CHECK."""
+    """Non-reset bootstrap repairs a real legacy failure-category CHECK, run
+    against the SAME accumulated outbound history earlier tests in this module
+    have already left behind -- never a data-isolated stand-in for it.
+
+    By this point in the module, earlier tests have left an old-epoch
+    email_messages row alongside a current-epoch row for the same
+    (run_id, purpose, round): exactly the retrigger shape schema.sql's
+    email_messages unique-constraint migration must tolerate. A prior version
+    of this test cleared that accumulated history before calling
+    bootstrap(reset=False), which meant the migration underneath the repair
+    below was never actually exercised against realistic deployed data --
+    it always ran against an artificially clean table. schema.sql's migration
+    now handles the retrigger shape unconditionally (the email_messages
+    constraint ladder widens straight to the 4-column uq_email_run_purpose_round_epoch
+    without ever re-adding an unsatisfiable intermediate), so no isolation
+    is needed here any more: bootstrap(reset=False) runs against whatever
+    email_messages history already exists, and the assertions below prove the
+    failure_category repair completed -- not merely that bootstrap raised no
+    exception.
+    """
     from app.db import repo
     from app.db.bootstrap import bootstrap
 
@@ -1939,11 +1921,10 @@ def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None
                 )
             )
 
-        # Isolate this test's data so the widening uq_email_run_purpose_round
-        # migration inside bootstrap(reset=False) below has no epoch-distinct
-        # rows to trip on -- see the helper's own docstring.
-        _isolate_outbound_history_before_widening_migration()
-
+        # No data isolation before this call: it runs against whatever
+        # email_messages / outbound_* history earlier tests in this
+        # module-scoped seeded_db have already accumulated, which is the
+        # actual point -- see the docstring above.
         bootstrap(reset=False)
 
         with repo.get_connection() as conn:
@@ -1961,8 +1942,19 @@ def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None
                    ) = ARRAY['failure_category']
                 """
             ).fetchall()
+        # Assert the repair actually COMPLETED -- the observable schema state,
+        # not merely that bootstrap(reset=False) raised no exception. Exactly
+        # one failure_category CHECK survives (the legacy one this test
+        # installed is gone, not merely superseded-but-still-present), it is
+        # the MODERN constraint by name, and its vocabulary is the full
+        # current set including 'authorization_expired' -- the value the
+        # legacy CHECK this test installed above could not admit.
         assert len(repaired) == 1
-        repaired_categories = set(re.findall(r"'([^']+)'", str(repaired[0][1])))
+        repaired_name, repaired_def = repaired[0]
+        assert repaired_name == "outbound_delivery_attempts_failure_category_check"
+        assert repaired_name != "legacy_outbound_delivery_failure_category_check"
+        repaired_categories = set(re.findall(r"'([^']+)'", str(repaired_def)))
+        assert "authorization_expired" in repaired_categories
         assert repaired_categories == _DELIVERY_FAILURE_CATEGORIES
 
         run_id, snapshot, _job = _seed_claimed_delivery(
@@ -1982,9 +1974,9 @@ def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None
         assert repo.load_run(run_id) is not None
     finally:
         # Unconditional, on every path including a raising bootstrap(reset=False)
-        # above -- this is the actual defect this task closes (truth #2). Without
-        # this, a legacy CHECK installed above and never repaired leaks into every
-        # later test in this module that inserts an 'authorization_expired' row.
+        # above. Without this, a legacy CHECK installed above and never repaired
+        # leaks into every later test in this module that inserts an
+        # 'authorization_expired' row.
         _restore_modern_failure_category_check()
 
 
