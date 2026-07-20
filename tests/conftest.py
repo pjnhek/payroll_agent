@@ -556,6 +556,14 @@ class InMemoryRepo:
             # DEFAULT 0.
             "clarification_round": 0,
             "reply_epoch": 0,
+            "updated_at": datetime.now(UTC),
+            # True only when an atomic settlement (settle_pipeline_job's error
+            # branches, or reap_expired_final_attempt's final-lease-error
+            # branch) drove this run to 'error' alongside a job's terminal
+            # write — the shape list_unaccounted_error_runs must stay silent
+            # on. record_run_error / settle_background_terminal explicitly
+            # leave this False: no job took responsibility for that error.
+            "_error_accounted": False,
         }
         return rid
 
@@ -606,7 +614,9 @@ class InMemoryRepo:
     def set_status(self, run_id: uuid.UUID, status: Any, conn: Any = None) -> None:
         from app.models.status import RunStatus
 
-        self.runs[str(run_id)]["status"] = RunStatus(status).value
+        run = self.runs[str(run_id)]
+        run["status"] = RunStatus(status).value
+        run["updated_at"] = datetime.now(UTC)
 
     def claim_status(
         self, run_id: uuid.UUID, expected: Any, new: Any, conn: Any = None
@@ -624,6 +634,7 @@ class InMemoryRepo:
         if run["status"] != RunStatus(expected).value:
             return False
         run["status"] = RunStatus(new).value
+        run["updated_at"] = datetime.now(UTC)
         return True
 
     def record_run_error(
@@ -642,6 +653,11 @@ class InMemoryRepo:
         # The real PII scrub logic is unit-tested against the real
         # repo.record_run_error — this fake only needs to not error.
         self.runs[str(run_id)]["error_detail"] = None
+        # record_run_error is NEVER an atomic job settlement — no job took
+        # responsibility for this error, so list_unaccounted_error_runs must
+        # report it. Reset explicitly (not just rely on the create_run
+        # default) in case this run previously error'd-and-recovered.
+        self.runs[str(run_id)]["_error_accounted"] = False
         self.set_status(run_id, RunStatus.ERROR)
 
     def persist_extracted(self, run_id, extracted, conn=None):
@@ -997,6 +1013,7 @@ class InMemoryRepo:
         if dedup_key in self._job_dedup_keys:
             return None
         jid = uuid.uuid4()
+        now = datetime.now(UTC)
         self.jobs[str(jid)] = {
             "id": jid,
             "kind": kind_value,
@@ -1013,9 +1030,27 @@ class InMemoryRepo:
             "last_error": safe_last_error,
             "available_in_seconds": available_in_seconds,
             "safe_last_error": safe_last_error,
+            # created_at/updated_at/available_at back the ops-metric reads
+            # (count_jobs_by_state / oldest_due_pending_age_seconds /
+            # attempts_distribution / list_dead_letter_jobs) — settable/
+            # observable like the rest of this row, not hardcoded constants.
+            "created_at": now,
+            "updated_at": now,
+            "available_at": now + timedelta(seconds=available_in_seconds),
         }
         self._job_dedup_keys[dedup_key] = jid
         return jid
+
+    @staticmethod
+    def _touch_job(row: dict[str, Any], *, at: datetime | None = None) -> None:
+        """Stamp updated_at, mirroring every real jobs.py UPDATE.
+
+        `at=` lets a caller stamp a job and its run with the IDENTICAL
+        timestamp when they settle atomically together — the same
+        transaction-timestamp-equality fact `list_unaccounted_error_runs`
+        relies on in the real database.
+        """
+        row["updated_at"] = at if at is not None else datetime.now(UTC)
 
     def claim_job(self, *, lease_seconds=None, conn=None):
         """Mirror repo.claim_job: claims the first pending job (in-memory
@@ -1031,6 +1066,7 @@ class InMemoryRepo:
                     seconds=lease_seconds if lease_seconds is not None else 900
                 )
                 job["attempts"] += 1
+                self._touch_job(job)
                 return Job(
                     id=job["id"],
                     kind=JobKind(job["kind"]),
@@ -1051,6 +1087,7 @@ class InMemoryRepo:
             return False
         job["state"] = "done"
         job["lease_token"] = None
+        self._touch_job(job)
         return True
 
     def advance_existing_send_job_due_now(self, run_id, email_id, *, conn=None):
@@ -1174,6 +1211,7 @@ class InMemoryRepo:
             job["state"] = "dead"
         else:
             job["state"] = "pending"
+        self._touch_job(job)
         return JobState(job["state"])
 
     def enqueue_classified_retry(
@@ -1300,6 +1338,9 @@ class InMemoryRepo:
             if result.outcome is PipelineOutcome.RETRYABLE:
                 row["last_error"] = result.diagnostic_code
                 row["available_in_seconds"] = backoff_seconds
+                row["available_at"] = datetime.now(UTC) + timedelta(
+                    seconds=backoff_seconds
+                )
                 if row["attempts"] < row["max_attempts"]:
                     row["state"] = "pending"
                     outcome = SettlementOutcome.RETRIED
@@ -1313,6 +1354,7 @@ class InMemoryRepo:
                     row["last_error"] = result.diagnostic_code
             row["lease_token"] = None
             row["leased_until"] = None
+            self._touch_job(row)
             return outcome
         if job.run_id is None:
             return SettlementOutcome.FENCED
@@ -1322,15 +1364,19 @@ class InMemoryRepo:
         if result.outcome is PipelineOutcome.OK:
             row["state"] = "done"
             row["lease_token"] = None
+            self._touch_job(row)
             return SettlementOutcome.DONE
         if run["status"] != "extracting":
             return SettlementOutcome.FENCED
         if result.outcome is PipelineOutcome.RETRYABLE and row["attempts"] < row["max_attempts"]:
             run["status"] = "received"
+            run["updated_at"] = datetime.now(UTC)
             row["state"] = "pending"
             row["last_error"] = result.diagnostic_code
             row["lease_token"] = None
             row["available_in_seconds"] = backoff_seconds
+            row["available_at"] = datetime.now(UTC) + timedelta(seconds=backoff_seconds)
+            self._touch_job(row)
             return SettlementOutcome.RETRIED
         row["state"] = (
             "dead" if result.outcome is PipelineOutcome.RETRYABLE else "done"
@@ -1338,6 +1384,12 @@ class InMemoryRepo:
         row["last_error"] = result.diagnostic_code
         row["lease_token"] = None
         run["status"] = "error"
+        # job dead/done + run error, atomically, in this ONE call — exactly
+        # the shape list_unaccounted_error_runs must stay silent on.
+        run["_error_accounted"] = True
+        now = datetime.now(UTC)
+        run["updated_at"] = now
+        self._touch_job(row, at=now)
         if result.outcome is PipelineOutcome.RETRYABLE:
             run["error_reason"] = "RetryExhausted"
             run["error_detail"] = (
@@ -1811,6 +1863,11 @@ class InMemoryRepo:
         run["status"] = "error"
         run["error_reason"] = result.reason.value
         run["error_detail"] = result.diagnostic_code
+        run["updated_at"] = datetime.now(UTC)
+        # NO job at all settles here — the currently-dormant path's
+        # deliberate classification. list_unaccounted_error_runs must report
+        # this run, so the marker stays False (never set True).
+        run["_error_accounted"] = False
         return SettlementOutcome.DONE
 
     def settle_infrastructure_failure(
@@ -1975,9 +2032,11 @@ class InMemoryRepo:
                     else "ClarificationDeliveryReview"
                 )
                 run["error_detail"] = "delivery_review:final_attempt_lease_expired"
+                run["updated_at"] = datetime.now(UTC)
                 row["state"] = "dead"
                 row["lease_token"] = None
                 row["leased_until"] = None
+                self._touch_job(row)
                 return SettlementOutcome.REAPED_FINAL_LEASE
             run = self.runs.get(str(row["run_id"]))
             if run is None:
@@ -1990,11 +2049,22 @@ class InMemoryRepo:
                     "unknown:final_attempt_lease_expired;"
                     f"attempts={row['attempts']}/{row['max_attempts']}"
                 )[:200]
-            else:
-                assert run_status in _FINAL_LEASE_PRESERVE_STATUSES
+                # job dead + run error, atomically, in this one call —
+                # exactly the shape list_unaccounted_error_runs must stay
+                # silent on.
+                run["_error_accounted"] = True
+                now = datetime.now(UTC)
+                run["updated_at"] = now
+                row["state"] = "dead"
+                row["lease_token"] = None
+                row["leased_until"] = None
+                self._touch_job(row, at=now)
+                return SettlementOutcome.REAPED_FINAL_LEASE
+            assert run_status in _FINAL_LEASE_PRESERVE_STATUSES
             row["state"] = "dead"
             row["lease_token"] = None
             row["leased_until"] = None
+            self._touch_job(row)
             return SettlementOutcome.REAPED_FINAL_LEASE
         return None
 
@@ -2006,12 +2076,91 @@ class InMemoryRepo:
             if job["state"] == "leased" and job["lease_token"] in lease_tokens:
                 job["state"] = "pending"
                 job["lease_token"] = None
+                self._touch_job(job)
                 count += 1
         return count
 
     def get_job(self, job_id, conn=None):
         """Mirror repo.get_job: a plain single-row read."""
         return self.jobs.get(str(job_id))
+
+    # --- Queue-metric reads (mirror of app/db/repo/jobs.py's four ops-panel
+    # functions) + the unaccounted-error alarm predicate (job_settlement.py).
+    # All five derive simple deterministic values from the fake store's
+    # job/run state, so a test can drive them by mutating self.jobs / self.runs
+    # directly and observe the result, exactly like the rest of this class.
+
+    def count_jobs_by_state(self, conn=None):
+        """Mirror repo.count_jobs_by_state: open-backlog counts, both keys
+        always present."""
+        counts = {"pending": 0, "leased": 0}
+        for job in self.jobs.values():
+            if job["state"] in counts:
+                counts[job["state"]] += 1
+        return counts
+
+    def oldest_due_pending_age_seconds(self, conn=None):
+        """Mirror repo.oldest_due_pending_age_seconds: age of the oldest
+        pending job whose available_at has passed, or None if none is due."""
+        now = datetime.now(UTC)
+        ages = [
+            (now - job["available_at"]).total_seconds()
+            for job in self.jobs.values()
+            if job["state"] == "pending" and job["available_at"] <= now
+        ]
+        return max(ages) if ages else None
+
+    def attempts_distribution(self, conn=None):
+        """Mirror repo.attempts_distribution: [(attempts, count), ...] over
+        open jobs only, ascending by attempts."""
+        counts: dict[int, int] = {}
+        for job in self.jobs.values():
+            if job["state"] in ("pending", "leased"):
+                counts[job["attempts"]] = counts.get(job["attempts"], 0) + 1
+        return sorted(counts.items())
+
+    def list_dead_letter_jobs(self, limit=50, conn=None):
+        """Mirror repo.list_dead_letter_jobs: the bounded seven-column
+        projection, newest dead-letter first."""
+        rows = [
+            {
+                "id": job["id"],
+                "kind": job["kind"],
+                "run_id": job["run_id"],
+                "attempts": job["attempts"],
+                "max_attempts": job["max_attempts"],
+                "last_error": job["last_error"],
+                "updated_at": job["updated_at"],
+            }
+            for job in self.jobs.values()
+            if job["state"] == "dead"
+        ]
+        rows.sort(key=lambda row: row["updated_at"], reverse=True)
+        return rows[:limit]
+
+    def list_unaccounted_error_runs(self, limit=50, conn=None):
+        """Mirror repo.list_unaccounted_error_runs: runs in 'error' that no
+        atomic settlement accounted for. Driven by the `_error_accounted`
+        marker every status='error' writer in this class threads through —
+        see create_run's docstring comment for which writers set which value.
+        """
+        from app.models.status import RunStatus
+
+        rows = [
+            {
+                "id": run["id"],
+                "error_reason": run.get("error_reason"),
+                "updated_at": run.get("updated_at"),
+            }
+            for run in self.runs.values()
+            if run.get("status") == RunStatus.ERROR.value
+            and not run.get("_error_accounted")
+        ]
+        rows.sort(
+            key=lambda row: row["updated_at"] or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return rows[:limit]
 
     def get_record_only_flag(self, run_id, conn=None):
         """Return the record_only flag for a run (mirrors repo.get_record_only_flag).
@@ -2757,6 +2906,14 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "settle_background_terminal",
         "settle_infrastructure_failure",
         "reap_expired_final_attempt",
+        # Queue-metric reads + the unaccounted-error alarm predicate. A name
+        # missing from this tuple is the exact silent-corruption trap this
+        # comment block already warns about — see tests/test_fake_repo_pairing.py.
+        "count_jobs_by_state",
+        "oldest_due_pending_age_seconds",
+        "attempts_distribution",
+        "list_dead_letter_jobs",
+        "list_unaccounted_error_runs",
     ):
         if hasattr(store, name):
             monkeypatch.setattr(repo_mod, name, getattr(store, name), raising=False)
