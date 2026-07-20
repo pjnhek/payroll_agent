@@ -1460,6 +1460,113 @@ def test_paystub_pdf_content_disposition_sanitized(monkeypatch, bad_name):
     cd.encode("latin-1")
 
 
+def test_paystub_pdf_download_route_threads_ytd_from_prior_reconciled_runs(monkeypatch):
+    """Regression (dashboard/paystub YTD parity): the on-demand download route
+    (`GET /runs/{run_id}/pdf/{employee_id}`) must thread real YTD into the PDF, matching
+    the emailed confirmation PDF (app/pipeline/delivery.py:115). Spies on
+    app.pipeline.pdf.generate_paystub_pdf to capture the `ytd=` kwarg the route passed —
+    deterministic and glyph-free, no rendered-PDF text parsing. Asserts the captured
+    totals are STRICTLY GREATER than the current period's own figures, which can only
+    happen if a strictly-prior reconciled run's totals were summed in via
+    PaystubYtdTotals.from_prior. Fails RED if `ytd=` is dropped from the route.
+    """
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    from app.db import repo as _repo
+    from app.models.contracts import PaystubLineItem
+    from app.models.roster import Employee, Roster
+    from app.pipeline import pdf as pdf_module
+
+    run_id = uuid.uuid4()
+    business_id = uuid.uuid4()
+    emp = Employee(
+        id=uuid.uuid4(),
+        business_id=business_id,
+        full_name="Maria Chen",
+        known_aliases=[],
+        pay_type="hourly",
+        hourly_rate=Decimal("20.00"),
+        annual_salary=None,
+        retirement_contribution_pct=Decimal("0.00"),
+        filing_status="single",
+        step_2_checkbox=False,
+        step_3_dependents=Decimal("0"),
+        step_4a_other_income=Decimal("0"),
+        step_4b_deductions=Decimal("0"),
+        ytd_ss_wages=Decimal("0.00"),
+        pay_periods_per_year=52,
+    )
+    roster = Roster(business_id=business_id, employees=[emp])
+    # current-period line item (this pay period's own values)
+    item = PaystubLineItem(
+        id=uuid.uuid4(), run_id=run_id, employee_id=emp.id, submitted_name="Maria Chen",
+        hours_regular=Decimal("40"), hours_overtime=Decimal("0"), hours_vacation=Decimal("0"),
+        hours_sick=Decimal("0"), hours_holiday=Decimal("0"), gross_pay=Decimal("800.00"),
+        pretax_401k=Decimal("0"), fica_ss=Decimal("49.60"), fica_medicare=Decimal("11.60"),
+        federal_withholding=Decimal("30.00"), state_withholding=None, net_pay=Decimal("708.80"),
+        created_at=datetime.now(tz=UTC),
+    )
+    # a strictly-prior reconciled run's worth of totals for this same employee
+    prior = {
+        "gross_pay": Decimal("1200.00"),
+        "federal_withholding": Decimal("50.00"),
+        "fica_ss": Decimal("74.40"),
+        "fica_medicare": Decimal("17.40"),
+        "state_withholding": Decimal("20.00"),
+        "pretax_401k": Decimal("30.00"),
+        "net_pay": Decimal("1008.20"),
+    }
+
+    monkeypatch.setattr(_repo, "load_line_items", lambda rid, conn=None: [item])
+    monkeypatch.setattr(
+        _repo,
+        "load_run",
+        lambda rid, conn=None: {
+            "id": run_id,
+            "business_id": business_id,
+            "pay_period_start": date(2026, 7, 1),
+            "pay_period_end": date(2026, 7, 7),
+        },
+    )
+    monkeypatch.setattr(_repo, "load_roster_for_business", lambda bid, conn=None: roster)
+    monkeypatch.setattr(
+        _repo, "load_business_name", lambda bid, conn=None: "Coastal Cleaning Co."
+    )
+    monkeypatch.setattr(
+        _repo,
+        "load_prior_reconciled_paystub_totals",
+        lambda biz_id, employee_ids, pay_period_start, conn=None: (
+            {emp.id: prior} if employee_ids else {}
+        ),
+    )
+
+    captured_ytd: list[Any] = []
+    real_generate_paystub_pdf = pdf_module.generate_paystub_pdf
+
+    def _spy_generate_paystub_pdf(*args: Any, **kwargs: Any) -> bytes:
+        captured_ytd.append(kwargs.get("ytd"))
+        return real_generate_paystub_pdf(*args, **kwargs)
+
+    monkeypatch.setattr(pdf_module, "generate_paystub_pdf", _spy_generate_paystub_pdf)
+
+    response = client.get(f"/runs/{run_id}/pdf/{emp.id}")
+
+    assert response.status_code == 200
+    assert response.headers.get("content-type") == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+
+    assert len(captured_ytd) == 1, "generate_paystub_pdf must be called exactly once"
+    ytd = captured_ytd[0]
+    assert ytd is not None, "paystub_pdf must pass a populated ytd= to generate_paystub_pdf"
+    assert ytd.gross_pay == prior["gross_pay"] + item.gross_pay
+    assert ytd.net_pay == prior["net_pay"] + item.net_pay
+    # STRICTLY GREATER than the current period's own figures — can only happen if prior
+    # reconciled totals were summed in via PaystubYtdTotals.from_prior (regression lockout).
+    assert ytd.gross_pay > item.gross_pay
+    assert ytd.net_pay > item.net_pay
+
+
 def test_run_detail_inflight_poll_reloads_on_settle(monkeypatch):
     """UAT: when a run viewed mid-flight SETTLES, the detail page must reload once so
     the extracted-data + paystub columns (rendered server-side, empty at first load)

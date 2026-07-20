@@ -1233,7 +1233,7 @@ def run_detail(
 @router.get("/runs/{run_id}/pdf/{employee_id}")
 def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID) -> StreamingResponse:
     """HITL-03: Stream a per-employee paystub PDF. Generated in-memory; no disk write."""
-    from app.pipeline.pdf import generate_paystub_pdf
+    from app.pipeline.pdf import PaystubYtdTotals, generate_paystub_pdf
 
     paystubs = repo.load_line_items(run_id)
     item = next(
@@ -1250,6 +1250,15 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID) -> StreamingResponse:
     emp = next((e for e in roster.employees if e.id == employee_id), None)
     emp_name = emp.full_name if emp else item.submitted_name
 
+    # Mirror app/pipeline/delivery.py's YTD wiring (HITL-03 download-route parity):
+    # a plain read, no transaction context. load_prior_reconciled_paystub_totals
+    # returns {} when pay_period_start is None or the id list is empty.
+    prior_ytd = repo.load_prior_reconciled_paystub_totals(
+        run["business_id"],
+        [item.employee_id] if item.employee_id else [],
+        run.get("pay_period_start"),
+    )
+
     pdf_bytes = generate_paystub_pdf(
         item,
         emp_name,
@@ -1258,6 +1267,10 @@ def paystub_pdf(run_id: uuid.UUID, employee_id: uuid.UUID) -> StreamingResponse:
         business_name=repo.load_business_name(run["business_id"]),
         filing_status=emp.filing_status if emp else None,
         hourly_rate=emp.hourly_rate if emp else None,
+        ytd=PaystubYtdTotals.from_prior(
+            prior_ytd.get(item.employee_id) if item.employee_id else None,
+            item,
+        ),
     )
     # Sanitize the filename to a safe charset BEFORE embedding it in the Content-Disposition
     # header. emp_name can be an LLM-extracted submitted_name (when the matched employee was
