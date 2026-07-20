@@ -1,18 +1,21 @@
 ---
 phase: 21-durability-proofs-ops-view
-verified: 2026-07-20T00:00:00Z
-status: human_needed
-score: 5/6 must-haves verified (PROOF-01 through PROOF-05 verified; OPS-01 code-complete but not human-verified)
+verified: 2026-07-20T20:05:47Z
+status: passed
+score: 6/6 must-haves verified (PROOF-01 through PROOF-05 verified; OPS-01 code-complete and both human checkpoints closed via 21-UAT.md 2026-07-20)
 behavior_unverified: 0
 overrides_applied: 0
-human_verification:
+human_verification_resolved:
   - test: "Live alarm baseline disposition + drain-runs-while-firing proof (21-07 Task 3)"
-    expected: "repo.list_unaccounted_error_runs() queried against the LIVE database, every row dispositioned (retriggered / terminally settled / intentionally retained), and pump.yml manually triggered via workflow_dispatch with the real Actions log confirming the drain step executed and reported counts, the alarm step ran last and red, and the drain was not skipped or short-circuited by the alarm."
-    why_human: "Requires live Supabase access and a real GitHub Actions run; this is an operator judgment call (baseline disposition) that the phase's own design deliberately refuses to automate (D-16: no mute). Confirmed genuinely open via .planning/phases/21-durability-proofs-ops-view/21-UAT.md (status: testing, 0/2 passed) and 21-07-SUMMARY.md's own `requirements-completed: []`."
+    resolution: "CLOSED — PASS (21-UAT.md test 1, 2026-07-20). Prerequisite found during UAT: master was 94 commits ahead of origin/master (phase unpushed); pushed b50d982..eeb1c78, deploy-migrate CI green, Render redeployed (/ops + /health/queue → 200). repo.list_unaccounted_error_runs() vs LIVE Supabase = 0 rows; state clean (payroll_runs 0 error; jobs 25 all done); /health/queue = {\"status\":\"ok\"} 200. pump.yml dispatched (run 29773910333, green): drain step 3 (no `if:`), alarm step 6 (last) — recovery-first ordering proven live. Operator-accepted caveat: clean baseline means the alarm ran GREEN not RED; the RED path stays covered by hermetic tests (TestAlarmStepOrdering + test_ops_alarm_predicate.py 8/8), not re-proven against production."
   - test: "/ops legibility and published-evidence readability (21-11 Task 3)"
-    expected: "Each of the four /ops panels reads as a comparison, not a bare number; the as-of stamp is static; nav reads Pyrl | Runs | Eval | Ops with no dismiss control; a dead-letter/alarm row links to run detail; the page renders with JavaScript disabled; and one section of docs/DURABILITY-PROOFS.md read end-to-end is re-runnable as written."
-    why_human: "Legibility and 'does the evidence read as evidence' are judgment calls the plan itself routes to a human checkpoint; no deployed-service access exists in this verification session. Confirmed open via 21-UAT.md and 21-11-SUMMARY.md's own `requirements-completed: []`."
+    resolution: "CLOSED — PASS (21-UAT.md test 2, 2026-07-20). Verified against the LIVE deployed /ops (fetched via curl = JS-free, proving (e)): four comparison panels + both bound lines present; static as-of stamp; nav exactly Pyrl | Runs | Eval | Ops with 0 button/form/dismiss matches; rows link to /runs/{id}; README:37 → docs/DURABILITY-PROOFS.md with PROOF-01..05 + 'What is not guaranteed' + 'operational counterpart'. Re-runnability demonstrated end-to-end: ran the doc's PROOF-01 command verbatim (throwaway Postgres) → green; applied the doc's exact diff → RED at `assert claimed.attempts == 1` (assert 0 == 1); reverted byte-identical → green. Operator confirmed the subjective read."
 ---
+
+> **Canonicalized 2026-07-20T20:05:47Z:** status advanced `human_needed` → `passed`. Both
+> human-verification checkpoints below were closed PASS by the `/gsd-verify-work 21` session
+> recorded in `21-UAT.md` (2/2 passed, 0 issues). The pre-canonicalization `status: human_needed`
+> body text is retained verbatim for the audit trail; the frontmatter above is the current status.
 
 # Phase 21: Durability Proofs & Ops View Verification Report
 
