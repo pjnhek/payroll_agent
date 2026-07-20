@@ -159,3 +159,31 @@ jobs:
             echo "No queueproof test reported as passed — the marker selection or the live-DB guard is broken." >&2
             exit 1
           fi
+      - name: Verify every durability proof is registered exactly once (completeness gate)
+        # Closes the gap the step above names and does not close: it cannot detect a
+        # typo'd `queueproof` marker on ONE newly-added proof while the OTHER
+        # queueproof tests still pass — the log above would still say "N passed" and
+        # the new proof would silently never run. That gap lives at the SELECTION
+        # layer (which node ids pytest's `-m` expression actually picks up), not the
+        # execution layer, so no amount of watching pytest's exit code or "N passed"
+        # text in the step above can close it — an execution-layer "N passed" check
+        # can only see a proof that was already selected; it cannot see one that
+        # never was.
+        #
+        # scripts/check_proof_inventory.py runs the exact intersection selection CI
+        # executes above (`queueproof and proof(id='PROOF-0N')`) for each of the four
+        # canonical ids and asserts each resolves to exactly one node, that every
+        # `proof`-marked node is also selected by `queueproof`, and that no
+        # `proof`-marked node's id fails to match one of the four. The counting logic
+        # itself is a pure decision function already red-proofed hermetically in
+        # tests/test_proof_inventory.py — this step only invokes it, so a non-zero
+        # exit here reds the build without a second, unproven implementation of the
+        # same check living here in bash.
+        #
+        # The id is passed as a marker KEYWORD argument (`proof(id="PROOF-0N")`)
+        # rather than relied on as a naming convention because a keyword marker
+        # argument survives a test rename or a file move and is selectable by a
+        # marker expression — a positional argument or a bare function-name
+        # convention is neither.
+        shell: bash
+        run: uv run python -m scripts.check_proof_inventory
