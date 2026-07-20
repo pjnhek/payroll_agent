@@ -362,7 +362,30 @@ passing — and an operator can check "is the queue healthy" as a fact, not a vi
   5. All four proofs above are registered in `concurrency-proof.yml` and demonstrably run in CI against a real Postgres container — none are silently skipped by the workflow's hard-coded file list.
   6. An operator can view queue depth, oldest-pending-job age, attempts distribution, and the dead-letter list on one page, which surfaces an alarm when job success looks ~100% while `payroll_runs.status='error'` count is nonzero.
 
-**Plans**: TBD
+**Plans**: 11 plans
+
+> Planning note — two criteria above are stated against stale premises and are planned against the
+> corrections in `21-CONTEXT.md`, not their literal text. **Criterion 5**: the "hard-coded file
+> list" premise is stale — Phase 16's D-14 already added a marker-selected `-m queueproof` step, so
+> the real work is D-02's selection-layer completeness gate closing the marker-typo gap the
+> workflow documents in its own comment. **Criterion 6**: the literal alarm predicate ("success
+> ~100% while error count > 0") became a false-positive generator when Phase 18's D-16 made
+> "job `done` + run `error`" the normal shape of a correctly-handled terminal failure; D-13
+> supersedes it with "runs in `error` with no corresponding terminal/dead job settlement."
+
+Plans:
+- [ ] 21-01-PLAN.md — Proof identity substrate: register the `proof` marker and build the completeness checker's pure decision core with its synthetic red-proofs (PROOF-05)
+- [ ] 21-02-PLAN.md — Queue-metric reads and the D-13 unaccounted-error alarm predicate, proven against a real Postgres on both sides (OPS-01)
+- [ ] 21-03-PLAN.md — PROOF-01 promoted in place, plus the attempts-increment mutation executed live (PROOF-01)
+- [ ] 21-04-PLAN.md — PROOF-02 promoted in place with the pre-fetch key property asserted, plus the dedup-key mutation executed live (PROOF-02)
+- [ ] 21-05-PLAN.md — PROOF-03 built new: crash between provider-accept and the `sent` commit, byte-identical `message_id` (PROOF-03)
+- [ ] 21-06-PLAN.md — The `/ops` transport page: every metric beside its bound, alarm banner, fourth nav item (OPS-01)
+- [ ] 21-07-PLAN.md — `/health/queue` alarm endpoint wired last into `pump.yml`, with the D-15 recovery-first ordering pinned (OPS-01)
+- [ ] 21-08-PLAN.md — PROOF-04 rewritten as a genuine two-thread race, plus the reclaim-clause mutation executed live (PROOF-04)
+- [ ] 21-09-PLAN.md — The completeness gate wired into CI and falsified against a real marker typo (PROOF-05)
+- [ ] 21-10-PLAN.md — The AST-anchored mutation-target registry and its synthetic red-proofs (PROOF-01..04)
+- [ ] 21-11-PLAN.md — `docs/DURABILITY-PROOFS.md` published and linked, with the accepted residuals stated beside the claims (all)
+
 **UI hint**: yes
 
 ## Backlog
