@@ -202,3 +202,61 @@ under-paying.
 biweekly fixture with `hours_regular=78` does NOT flag; a semi-monthly/monthly fixture over 40/wk
 does NOT flag (documented limitation). Calc behavior (D-03) is unchanged — the catch is purely in
 validation, upstream of the workweek-agnostic calc.
+
+---
+
+## Silent stall: an approved payroll that never sends and never pages anyone
+
+**Found:** 2026-07-20, during Phase 21, by a peer review session. Reproduced independently
+before filing. **Not a Phase 21 requirement** — filed rather than absorbed, to keep that
+phase's scope honest.
+
+**The failure.** A worker that dies between `claim_job()` and
+`authorize_outbound_provider_handoff()` on a job's **final** attempt leaves:
+
+```
+run.status        : approved      run.error_reason : None
+job.state         : dead          job.last_error   : delivery:invalid_context
+open jobs for run : 0             delivery attempts: 0
+email send_state  : reserved      provider handoffs (this lease): 0
+```
+
+An approved payroll that never sends, never retries, and never reaches an operator.
+
+**The trigger is wider than it first looks — this is the important part.**
+`_lock_current_provider_handoff` (`app/db/repo/job_settlement.py:236-244`) matches on
+`job_id AND epoch AND lease_token AND released_at IS NULL`, and every claim mints a fresh
+token (`app/db/repo/jobs.py:433`, `lease_token = gen_random_uuid()`). So a handoff authorized
+under an earlier attempt's lease can **never** satisfy a later attempt's fence. The condition
+is therefore just: *the final attempt's lease has no handoff of its own.* One crash in that
+window on the last attempt is sufficient — not a crash-loop through all of them. Confirmed by
+repro B below, which authorizes a handoff on attempt 1 and still stalls.
+
+**Visibility today — mixed, and the bad half is the automated one:**
+- **`/health/queue` (D-13 alarm) is blind to it.** The predicate fires on runs in `error`;
+  this run sits at `approved`. The thing built to page someone stays silent.
+- **`/ops` dead-letter panel does list it** — the job is `dead` — and the row click-through
+  lands on the run detail where Retrigger lives. So it is discoverable, but only by a human
+  who proactively looks.
+
+**Mitigating facts:** `send_state` stays `reserved` and the payload snapshot is intact, so no
+data is lost and a manual retrigger can re-drive it. Nothing is corrupted; nothing is
+automatic either.
+
+**Explicitly NOT proven:** how often a real crash lands in that window. The repros
+fast-forward the lease clock rather than waiting. Reachability and terminal state are proven;
+operational likelihood is not.
+
+**Evidence:** `.planning/phases/21-durability-proofs-ops-view/evidence/prove_stall_natural.py`
+(natural queue mechanics, no SQL surgery on `attempts` — leases expire and `claim_job` burns
+the attempts itself) and `prove_stall_authorized_once.py` (authorizes on attempt 1, still
+stalls — the widened-trigger proof). Both self-contained: bootstrap, seed, run, print.
+
+**Three routes when this gets planned, cheapest first:**
+1. **Widen the alarm** — extend the D-13 predicate to also fire on a run in a non-terminal
+   status with zero open jobs. Closes the paging gap without touching settlement. Does not
+   fix the stall, but stops it being silent.
+2. **Fix the settlement path** — make a final attempt with no handoff of its own reach a
+   terminal, operator-visible state instead of stalling at `approved`. Money-adjacent; this
+   is the path all of Phase 20 was about, so it wants the same care.
+3. **Bound the likelihood first** — the one question the repros deliberately leave open.
