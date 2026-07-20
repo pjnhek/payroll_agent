@@ -74,7 +74,10 @@ while cycles < 25:
     cycles += 1
     job = repo.get_job(job_id)
     # The worker dies HERE -- after claim_job, before authorize_outbound_provider_handoff.
-    print(f"  cycle {cycles}: attempts={job['attempts']}/{job['max_attempts']} state={job['state']}")
+    print(
+        f"  cycle {cycles}: attempts={job['attempts']}/{job['max_attempts']}"
+        f" state={job['state']}"
+    )
     if job["attempts"] >= job["max_attempts"]:
         expire_lease(job_id)
         break

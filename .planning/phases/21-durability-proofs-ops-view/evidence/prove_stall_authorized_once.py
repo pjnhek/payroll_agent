@@ -75,7 +75,10 @@ while cycles < 25:
     job = repo.get_job(job_id)
     if cycles == 1:
         repo.authorize_outbound_provider_handoff(claimed)
-    print(f"  cycle {cycles}: attempts={job['attempts']}/{job['max_attempts']} state={job['state']}")
+    print(
+        f"  cycle {cycles}: attempts={job['attempts']}/{job['max_attempts']}"
+        f" state={job['state']}"
+    )
     if job["attempts"] >= job["max_attempts"]:
         expire_lease(job_id)
         break
