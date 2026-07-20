@@ -860,7 +860,7 @@ def test_invalid_context_settlement_retires_exact_leased_row(fake_conn) -> None:
         (1, 5, job.run_id, JobKind.SEND_OUTBOUND.value, job.email_id)
     )
     fake_conn.script_fetchone(
-        (uuid.uuid4(), datetime.now(UTC), "not-an-outbound-purpose", 0, "reserved", True)
+        (uuid.uuid4(), datetime.now(UTC), "not-an-outbound-purpose", 0, 0, "reserved", True)
     )
     fake_conn.script_fetchone((job.id,))
 
@@ -2074,17 +2074,17 @@ def test_provider_handoff_blocks_epoch_bump_before_gateway(
     from app.email import gateway
 
     monkeypatch.setattr(gateway, "send_reserved_outbound_snapshot", provider_spy)
-    worker = threading.Thread(target=run_handler, name="handoff-race-worker")
+    handler_thread = threading.Thread(target=run_handler, name="handoff-race-worker")
     retrigger = threading.Thread(
         target=retrigger_after_authorization, name="handoff-race-retrigger"
     )
-    worker.start()
+    handler_thread.start()
     retrigger.start()
-    worker.join(timeout=35)
+    handler_thread.join(timeout=35)
     retrigger.join(timeout=35)
     return_to_handler.set()
 
-    assert not worker.is_alive(), "worker did not leave its post-authorization pause"
+    assert not handler_thread.is_alive(), "worker did not leave its post-authorization pause"
     assert not retrigger.is_alive(), "retrigger did not leave its barrier/transaction"
     assert worker_errors == []
     assert retrigger_errors == []
@@ -2189,17 +2189,17 @@ def test_provider_handoff_race_control_observes_stale_gateway_when_fence_is_rele
     from app.email import gateway
 
     monkeypatch.setattr(gateway, "send_reserved_outbound_snapshot", provider_spy)
-    worker = threading.Thread(target=run_handler, name="handoff-control-worker")
+    handler_thread = threading.Thread(target=run_handler, name="handoff-control-worker")
     retrigger = threading.Thread(
         target=release_fence_then_retrigger, name="handoff-control-retrigger"
     )
-    worker.start()
+    handler_thread.start()
     retrigger.start()
-    worker.join(timeout=35)
+    handler_thread.join(timeout=35)
     retrigger.join(timeout=35)
     return_to_handler.set()
 
-    assert not worker.is_alive()
+    assert not handler_thread.is_alive()
     assert not retrigger.is_alive()
     assert worker_errors == []
     assert retrigger_errors == []
