@@ -34,7 +34,19 @@ import threading
 
 import pytest
 
-from tests.conftest import _SKIP_LIVE_DB
+from tests.conftest import _HAS_DB, _SKIP_LIVE_DB
+
+# Mirror image of _SKIP_LIVE_DB: the fail-fast guard below asserts what happens
+# under the hermetic *sentinel* DATABASE_URL, so it is only meaningful when no
+# real one is set. Without this, the test reds in every live-DB run — the
+# sentinel fixture correctly no-ops there, so get_pool() succeeds and the
+# pytest.raises finds nothing to catch. Frozen at import time for the same
+# reason _HAS_DB is (tests/conftest.py:122): a per-test monkeypatch.setenv must
+# not be able to flip a collection-time skip decision.
+_SKIP_WHEN_REAL_DB = pytest.mark.skipif(
+    _HAS_DB,
+    reason="hermetic-only: asserts the sentinel fail-fast path, which is inert when a real DATABASE_URL is set",
+)
 
 _RETIRED_RECOVERY_SYMBOLS = {
     "sweep_stranded_runs",
@@ -344,6 +356,7 @@ def test_the_leak_guard_is_wired_into_an_autouse_fixture() -> None:
 # ---------------------------------------------------------------------------
 
 
+@_SKIP_WHEN_REAL_DB
 def test_hermetic_pool_access_fails_fast() -> None:
     """Under the hermetic sentinel DATABASE_URL (this suite's default — every
     test here runs through the autouse `_stub_database_url_when_absent`
