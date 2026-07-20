@@ -34,7 +34,8 @@ flowchart TD
 The production path also verifies the Resend webhook signature, deduplicates inbound messages by
 RFC `Message-ID`, persists workflow state in Postgres, and resumes clarifications from the email
 thread. See the [detailed architecture diagram](docs/architecture.svg) for the implementation-level
-flow.
+flow, and [the durability proofs](docs/DURABILITY-PROOFS.md) for the mutation and the red pytest
+run behind each durability claim — plus what those claims deliberately do not cover.
 
 ## Demo story
 

@@ -114,6 +114,9 @@ tests/test_webhook_dedup_race.py:296: AssertionError
 =============================== 1 failed, 5 deselected, 1 warning in 0.58s ===============================
 ```
 
+**Named failing assertion:** `{result['status'] for result in results} == {'accepted', 'duplicate'}`
+— the response-status-set assertion.
+
 With a fresh random identity minted per delivery, both concurrent deliveries independently insert —
 the `ON CONFLICT (external_event_id)` arbiter never fires, so both responses come back `"accepted"`
 instead of one `"accepted"` and one `"duplicate"`.
@@ -163,11 +166,17 @@ the original result instead of sending a second email.
 
 **The mutation.** The version of the send path this proof falsifies is the one that existed before
 this exact-once mechanism landed: a freshly-minted, per-attempt idempotency key instead of the
-frozen `message_id`.
+frozen `message_id`, inside `send_reserved_outbound_snapshot` in `app/email/gateway.py` — the
+function that owns the actual call to the provider.
 
 ```diff
+--- a/app/email/gateway.py
++++ b/app/email/gateway.py
+@@ def send_reserved_outbound_snapshot(
+     try:
 -        resend.Emails.send(send_params, {"idempotency_key": message_id})
 +        resend.Emails.send(send_params, {"idempotency_key": str(uuid.uuid4())})
+     except Exception as exc:
 ```
 
 **The pasted red.** With the mutation in place, `tests/test_send_idempotency.py::test_crash_between_provider_accept_and_local_sent_commit_sends_no_second_email` fails at the **identical-Idempotency-Key assertion**:
@@ -182,6 +191,9 @@ E         + 72039660-c2b2-4818-a7e9-82f260abe8b6
 tests/test_send_idempotency.py:872: AssertionError
 ======================= 1 failed, 41 deselected in 0.43s =======================
 ```
+
+**Named failing assertion:** `provider_calls[0]['idempotency_key'] == captured_message_id` — the
+identical-Idempotency-Key assertion.
 
 **The revert.** `git diff --stat app/email/gateway.py app/db/repo/emails.py` produced no output
 after reverting. The proof passed again immediately after (`1 passed, 41 deselected`), against
