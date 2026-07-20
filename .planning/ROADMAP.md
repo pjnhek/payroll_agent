@@ -362,7 +362,7 @@ passing — and an operator can check "is the queue healthy" as a fact, not a vi
   5. All four proofs above are registered in `concurrency-proof.yml` and demonstrably run in CI against a real Postgres container — none are silently skipped by the workflow's hard-coded file list.
   6. An operator can view queue depth, oldest-pending-job age, attempts distribution, and the dead-letter list on one page, which surfaces an alarm when job success looks ~100% while `payroll_runs.status='error'` count is nonzero.
 
-**Plans**: 12/15 plans executed
+**Plans**: 14/15 plans executed
 
 > Planning note — two criteria above are stated against stale premises and are planned against the
 > corrections in `21-CONTEXT.md`, not their literal text. **Criterion 5**: the "hard-coded file
@@ -400,8 +400,8 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 21-09-PLAN.md — The completeness gate wired into CI and falsified against a real marker typo (PROOF-05)
-- [ ] 21-10-PLAN.md — The AST-anchored mutation-target registry and its synthetic red-proofs (PROOF-01..04)
+- [x] 21-09-PLAN.md — The completeness gate wired into CI and falsified against a real marker typo (PROOF-05)
+- [x] 21-10-PLAN.md — The AST-anchored mutation-target registry and its synthetic red-proofs (PROOF-01..04)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
@@ -447,4 +447,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 27/27 | Complete    | 2026-07-18 |
-| 21. Durability Proofs & Ops View | v4 | 12/15 | In Progress|  |
+| 21. Durability Proofs & Ops View | v4 | 14/15 | In Progress|  |
