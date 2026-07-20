@@ -362,7 +362,7 @@ passing — and an operator can check "is the queue healthy" as a fact, not a vi
   5. All four proofs above are registered in `concurrency-proof.yml` and demonstrably run in CI against a real Postgres container — none are silently skipped by the workflow's hard-coded file list.
   6. An operator can view queue depth, oldest-pending-job age, attempts distribution, and the dead-letter list on one page, which surfaces an alarm when job success looks ~100% while `payroll_runs.status='error'` count is nonzero.
 
-**Plans**: 6/15 plans executed
+**Plans**: 11/15 plans executed
 
 > Planning note — two criteria above are stated against stale premises and are planned against the
 > corrections in `21-CONTEXT.md`, not their literal text. **Criterion 5**: the "hard-coded file
@@ -388,11 +388,11 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 21-03-PLAN.md — PROOF-01 promoted in place, plus the attempts-increment mutation executed live (PROOF-01)
-- [ ] 21-04-PLAN.md — PROOF-02 promoted in place with the pre-fetch key property asserted, plus the dedup-key mutation executed live (PROOF-02)
-- [ ] 21-05-PLAN.md — PROOF-03 built new: crash between provider-accept and the `sent` commit, byte-identical `message_id` (PROOF-03)
-- [ ] 21-06-PLAN.md — The `/ops` transport page: every metric beside its bound, alarm banner, fourth nav item (OPS-01)
-- [ ] 21-07-PLAN.md — `/health/queue` alarm endpoint wired last into `pump.yml`, with the D-15 recovery-first ordering pinned (OPS-01)
+- [x] 21-03-PLAN.md — PROOF-01 promoted in place, plus the attempts-increment mutation executed live (PROOF-01)
+- [x] 21-04-PLAN.md — PROOF-02 promoted in place with the pre-fetch key property asserted, plus the dedup-key mutation executed live (PROOF-02)
+- [x] 21-05-PLAN.md — PROOF-03 built new: crash between provider-accept and the `sent` commit, byte-identical `message_id` (PROOF-03)
+- [x] 21-06-PLAN.md — The `/ops` transport page: every metric beside its bound, alarm banner, fourth nav item (OPS-01)
+- [x] 21-07-PLAN.md — `/health/queue` alarm endpoint wired last into `pump.yml`, with the D-15 recovery-first ordering pinned (OPS-01)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -447,4 +447,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 27/27 | Complete    | 2026-07-18 |
-| 21. Durability Proofs & Ops View | v4 | 6/15 | In Progress|  |
+| 21. Durability Proofs & Ops View | v4 | 11/15 | In Progress|  |
