@@ -64,6 +64,13 @@ jobs:
         # re-resolving -- a stale lockfile fails the job rather than merging green.
         run: uv sync --locked
 
+      # tests/test_pdf.py shells out to `pdftotext` (poppler-utils) to assert real
+      # extracted text from a generated paystub. Present on macOS dev machines but not
+      # on ubuntu-latest -- a runner-provided OS package, not an application dependency,
+      # so it is installed here rather than via uv/pyproject.toml.
+      - name: Install poppler-utils (pdftotext, for tests/test_pdf.py)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+
       # No DATABASE_URL / ALLOW_DB_RESET / ALLOW_LIVE_LLM set -- tests/conftest.py's
       # two-factor guards skip DB/live-LLM tests hermetically without either var.
       - name: Run test suite

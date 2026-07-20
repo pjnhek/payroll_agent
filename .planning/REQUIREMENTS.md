@@ -168,11 +168,11 @@ limitation honestly is itself the differentiator.
 | SEND-01 | Phase 20 | Complete |
 | SEND-02 | Phase 20 | Complete |
 | SEND-03 | Phase 20 | Complete |
-| PROOF-01 | Phase 21 | Complete |
+| PROOF-01 | Phase 21 | Pending |
 | PROOF-02 | Phase 21 | Pending |
 | PROOF-03 | Phase 21 | Pending |
-| PROOF-04 | Phase 21 | Complete |
-| PROOF-05 | Phase 21 | Complete |
+| PROOF-04 | Phase 21 | Pending |
+| PROOF-05 | Phase 21 | Pending |
 | OPS-01 | Phase 21 | Pending |
 
 **Coverage: 19/19 v4 requirements mapped, no orphans, no duplicates.**
