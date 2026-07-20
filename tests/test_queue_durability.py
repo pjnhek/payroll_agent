@@ -92,6 +92,12 @@ red run pasted into the plan's SUMMARY, then reverted):
       `_isolated_jobs` — the both-sides-of-the-yield wiring test must go red.
   (i) empty `fail_on_leaked_queue_workers()`'s body (tests/conftest.py) — the suite-
       wide leak guard's own test must go red.
+  (j) freeze claim_job's `attempts = j.attempts + 1` assignment to `attempts =
+      j.attempts` (the counter no longer advances at claim time) — PROOF-01
+      (test_retrigger_survives_worker_crash_mid_lease) must go red, and it reds
+      FIRST at the step-3 initial-claim assertion `assert claimed.attempts == 1`,
+      not at the step-6 post-reclaim assertion, because the very first claim
+      already reports the wrong value.
 """
 from __future__ import annotations
 
@@ -2909,6 +2915,7 @@ def test_every_worker_start_call_goes_through_the_live_worker_wrapper() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.proof(id="PROOF-01")
 def test_retrigger_survives_worker_crash_mid_lease(
     seeded_db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2917,6 +2924,26 @@ def test_retrigger_survives_worker_crash_mid_lease(
     16-VALIDATION.md's named vacuous twin: a test that never actually leases
     the job before "killing" the worker, so the reclaim path never fires and
     the first drain simply does the work on dumb luck).
+
+    PROOF-01 identity and ROADMAP criterion 1. This is the queue's durability
+    proof: a worker that dies mid-lease must have its job reclaimed AND the
+    reclaim must genuinely re-run the work. Both halves are asserted, each
+    depending on a specific line of `app/db/repo/jobs.py::claim_job`:
+      - "the reclaim path fired" is established by `assert final_row["state"]
+        == "done"` (step 6) together with `assert drain.drain_once() ==
+        DrainOutcome.DONE` (step 5), both of which depend on claim_job's
+        `OR (c.state = 'leased' AND c.leased_until < now())` WHERE clause —
+        without it the expired lease is never reclaimable and drain_once()
+        claims nothing.
+      - "attempts incremented" is established by TWO assertions against
+        claim_job's `attempts = j.attempts + 1` SET clause: the INITIAL-CLAIM
+        assertion `assert claimed.attempts == 1` (step 3) and the
+        POST-RECLAIM assertion `assert final_row["attempts"] == 2` (step 6,
+        the test's own named vacuity detector). Freezing that SET clause (see
+        this module's docstring, mutation (j)) makes the FIRST claim already
+        report the wrong value, so the initial-claim assertion in step 3 is
+        the one that reds first — execution never reaches step 6 under that
+        mutation.
 
     This test starts NO real worker. It drives `repo.claim_job()` and
     `drain.drain_once()` directly on the test thread, which is the only way
