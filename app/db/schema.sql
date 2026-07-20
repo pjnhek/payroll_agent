@@ -322,14 +322,18 @@ BEGIN
 END;
 $$;
 
--- Widen uq_email_run_purpose -> uq_email_run_purpose_round on a running DB.
--- Postgres does NOT support ADD CONSTRAINT IF NOT EXISTS, so a DO $$ pg_constraint
--- guard is the only correct idempotent pattern for adding a named constraint to an
--- existing table (same shape as the fk_payroll_runs_source_email block below).
--- The DROP of the old 2-column constraint and the ADD of the new 3-column one live in
--- ONE atomic DO-block: a failed ADD rolls back the DROP, so a live migration can never
--- end up with NEITHER constraint present — which would leave insert_email_message's
--- ON CONFLICT arbiter with no matching constraint, and every send would raise.
+-- Drop the legacy 2-column uq_email_run_purpose on a running DB. The 3-column
+-- uq_email_run_purpose_round successor that used to be (re-)added here is
+-- DELIBERATELY never created: this table is written under retrigger's epoch
+-- semantics (see the CONSTRAINT comment on the CREATE TABLE above), so a
+-- deployed database can already hold two rows sharing (run_id, purpose, round)
+-- that differ only in epoch. Re-adding the unguarded 3-column constraint against
+-- such a database raises UniqueViolation and aborts the ENTIRE schema apply —
+-- including every later migration block in this file. The very next
+-- block below adds the correct 4-column uq_email_run_purpose_round_epoch
+-- directly, which both a fresh DB and a legacy 2-column DB reach safely: with no
+-- 3-column constraint ever created, that block's own DROP IF EXISTS is a no-op
+-- and its ADD IF NOT EXISTS proceeds straight to the 4-column constraint.
 DO $$
 BEGIN
     IF EXISTS (
@@ -338,14 +342,6 @@ BEGIN
           AND conrelid = 'email_messages'::regclass
     ) THEN
         ALTER TABLE email_messages DROP CONSTRAINT uq_email_run_purpose;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'uq_email_run_purpose_round'
-          AND conrelid = 'email_messages'::regclass
-    ) THEN
-        ALTER TABLE email_messages
-            ADD CONSTRAINT uq_email_run_purpose_round UNIQUE (run_id, purpose, round);
     END IF;
 END;
 $$;
