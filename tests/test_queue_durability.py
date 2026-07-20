@@ -1793,18 +1793,12 @@ _DELIVERY_FAILURE_CATEGORIES = {
 }
 
 
-def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None:
-    """Non-reset bootstrap repairs a real legacy failure-category CHECK."""
+def _failure_category_constraint_names() -> list[str]:
+    """Return the CHECK constraint name(s) currently guarding failure_category."""
     from app.db import repo
-    from app.db.bootstrap import bootstrap
 
-    legacy_categories = _DELIVERY_FAILURE_CATEGORIES - {"authorization_expired"}
-    with repo.get_connection() as conn, conn.transaction():
-        # The seed can already contain post-upgrade evidence.  A deployed legacy
-        # CHECK cannot be installed while such a row exists, so clear only this
-        # resettable proof table before emulating the pre-upgrade vocabulary.
-        conn.execute("TRUNCATE outbound_delivery_attempts")
-        constraints = conn.execute(
+    with repo.get_connection() as conn:
+        rows = conn.execute(
             """
             SELECT c.conname
               FROM pg_constraint AS c
@@ -1818,63 +1812,174 @@ def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None
                ) = ARRAY['failure_category']
             """
         ).fetchall()
-        assert constraints
-        for (constraint_name,) in constraints:
+    return [str(row[0]) for row in rows]
+
+
+def _restore_modern_failure_category_check() -> None:
+    """Idempotently restore the modern failure_category CHECK constraint.
+
+    Runs unconditionally in the poisoner test's `finally`, on every path
+    including a raising `bootstrap(reset=False)`. Safe to call even when the
+    legacy swap never installed (or bootstrap already repaired it): if the
+    live constraint already matches the modern category set, this is a no-op.
+    """
+    from app.db import repo
+
+    with repo.get_connection() as conn, conn.transaction():
+        names = set(_failure_category_constraint_names())
+        if names == {"outbound_delivery_attempts_failure_category_check"}:
+            return
+        for constraint_name in names:
             conn.execute(
                 psycopg.sql.SQL(
                     "ALTER TABLE outbound_delivery_attempts DROP CONSTRAINT {}"
-                ).format(psycopg.sql.Identifier(str(constraint_name)))
+                ).format(psycopg.sql.Identifier(constraint_name))
             )
         conn.execute(
             psycopg.sql.SQL(
                 "ALTER TABLE outbound_delivery_attempts "
-                "ADD CONSTRAINT {} CHECK (failure_category IN ({}))"
+                "ADD CONSTRAINT outbound_delivery_attempts_failure_category_check "
+                "CHECK (failure_category IN ({}))"
             ).format(
-                psycopg.sql.Identifier(
-                    "legacy_outbound_delivery_failure_category_check"
-                ),
                 psycopg.sql.SQL(", ").join(
-                    psycopg.sql.Literal(category) for category in sorted(legacy_categories)
-                ),
+                    psycopg.sql.Literal(category)
+                    for category in sorted(_DELIVERY_FAILURE_CATEGORIES)
+                )
             )
         )
 
-    bootstrap(reset=False)
 
-    with repo.get_connection() as conn:
-        repaired = conn.execute(
-            """
-            SELECT c.conname, pg_get_constraintdef(c.oid)
-              FROM pg_constraint AS c
-             WHERE c.contype = 'c'
-               AND c.conrelid = 'outbound_delivery_attempts'::regclass
-               AND (
-                   SELECT array_agg(a.attname::text ORDER BY u.ord)
-                     FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
-                     JOIN pg_attribute AS a
-                       ON a.attrelid = c.conrelid AND a.attnum = u.attnum
-               ) = ARRAY['failure_category']
-            """
-        ).fetchall()
-    assert len(repaired) == 1
-    repaired_categories = set(re.findall(r"'([^']+)'", str(repaired[0][1])))
-    assert repaired_categories == _DELIVERY_FAILURE_CATEGORIES
+def _isolate_outbound_history_before_widening_migration() -> None:
+    """Clear the accumulated outbound audit trail before a live widening migration.
 
-    run_id, snapshot, _job = _seed_claimed_delivery(
-        purpose="confirmation", run_status=RunStatus.APPROVED
-    )
+    Earlier tests in this module leave behind an old-epoch row alongside a
+    current-epoch row for the same (run_id, purpose, round) -- exactly the
+    duplicate shape schema.sql's live `uq_email_run_purpose_round` widening
+    migration (the intermediate step on the way to
+    `uq_email_run_purpose_round_epoch`) cannot re-add once such rows exist.
+    That ADD CONSTRAINT is table-wide, so scoping a cleanup to only the
+    duplicate rows would still have to touch every earlier test's finished
+    data -- every one of those tests already made its own assertions and is
+    done with it, so this clears the whole outbound trail instead.
+
+    `outbound_email_snapshots` and `outbound_email_attachments` are
+    DB-enforced append-only (BEFORE UPDATE OR DELETE triggers reject row-level
+    mutation -- see schema.sql's `reject_outbound_delivery_evidence_mutation`).
+    TRUNCATE does not fire row-level triggers, so it is the only way to clear
+    them from a test; it must cover all three FK-linked tables together in one
+    statement. `email_messages` carries no such trigger, so its outbound rows
+    are cleared with a plain DELETE once dangling FK-references are gone.
+    `jobs` and `outbound_provider_handoffs` are already emptied by
+    `_isolated_jobs` around every test in this module, so no ordering hazard
+    there.
+    """
+    from app.db import repo
+
     with repo.get_connection() as conn, conn.transaction():
-        attempt = conn.execute(
-            """
-            INSERT INTO outbound_delivery_attempts (
-                snapshot_id, attempt_state, failure_category
-            ) VALUES (%s, 'needs_operator', 'authorization_expired')
-            RETURNING id
-            """,
-            (str(snapshot["snapshot_id"]),),
-        ).fetchone()
-    assert attempt is not None
-    assert repo.load_run(run_id) is not None
+        # outbound_provider_handoffs FK-references outbound_email_snapshots, so
+        # Postgres requires it in the same TRUNCATE even though _isolated_jobs
+        # already keeps it empty around every test in this module.
+        conn.execute(
+            "TRUNCATE outbound_delivery_attempts, outbound_email_attachments, "
+            "outbound_email_snapshots, outbound_provider_handoffs"
+        )
+        conn.execute("DELETE FROM email_messages WHERE direction = 'outbound'")
+
+
+def test_deployed_schema_repair_accepts_authorization_expired(seeded_db) -> None:
+    """Non-reset bootstrap repairs a real legacy failure-category CHECK."""
+    from app.db import repo
+    from app.db.bootstrap import bootstrap
+
+    legacy_categories = _DELIVERY_FAILURE_CATEGORIES - {"authorization_expired"}
+    try:
+        with repo.get_connection() as conn, conn.transaction():
+            # The seed can already contain post-upgrade evidence.  A deployed legacy
+            # CHECK cannot be installed while such a row exists, so clear only this
+            # resettable proof table before emulating the pre-upgrade vocabulary.
+            conn.execute("TRUNCATE outbound_delivery_attempts")
+            constraints = conn.execute(
+                """
+                SELECT c.conname
+                  FROM pg_constraint AS c
+                 WHERE c.contype = 'c'
+                   AND c.conrelid = 'outbound_delivery_attempts'::regclass
+                   AND (
+                       SELECT array_agg(a.attname::text ORDER BY u.ord)
+                         FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                         JOIN pg_attribute AS a
+                           ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+                   ) = ARRAY['failure_category']
+                """
+            ).fetchall()
+            assert constraints
+            for (constraint_name,) in constraints:
+                conn.execute(
+                    psycopg.sql.SQL(
+                        "ALTER TABLE outbound_delivery_attempts DROP CONSTRAINT {}"
+                    ).format(psycopg.sql.Identifier(str(constraint_name)))
+                )
+            conn.execute(
+                psycopg.sql.SQL(
+                    "ALTER TABLE outbound_delivery_attempts "
+                    "ADD CONSTRAINT {} CHECK (failure_category IN ({}))"
+                ).format(
+                    psycopg.sql.Identifier(
+                        "legacy_outbound_delivery_failure_category_check"
+                    ),
+                    psycopg.sql.SQL(", ").join(
+                        psycopg.sql.Literal(category) for category in sorted(legacy_categories)
+                    ),
+                )
+            )
+
+        # Isolate this test's data so the widening uq_email_run_purpose_round
+        # migration inside bootstrap(reset=False) below has no epoch-distinct
+        # rows to trip on -- see the helper's own docstring.
+        _isolate_outbound_history_before_widening_migration()
+
+        bootstrap(reset=False)
+
+        with repo.get_connection() as conn:
+            repaired = conn.execute(
+                """
+                SELECT c.conname, pg_get_constraintdef(c.oid)
+                  FROM pg_constraint AS c
+                 WHERE c.contype = 'c'
+                   AND c.conrelid = 'outbound_delivery_attempts'::regclass
+                   AND (
+                       SELECT array_agg(a.attname::text ORDER BY u.ord)
+                         FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                         JOIN pg_attribute AS a
+                           ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+                   ) = ARRAY['failure_category']
+                """
+            ).fetchall()
+        assert len(repaired) == 1
+        repaired_categories = set(re.findall(r"'([^']+)'", str(repaired[0][1])))
+        assert repaired_categories == _DELIVERY_FAILURE_CATEGORIES
+
+        run_id, snapshot, _job = _seed_claimed_delivery(
+            purpose="confirmation", run_status=RunStatus.APPROVED
+        )
+        with repo.get_connection() as conn, conn.transaction():
+            attempt = conn.execute(
+                """
+                INSERT INTO outbound_delivery_attempts (
+                    snapshot_id, attempt_state, failure_category
+                ) VALUES (%s, 'needs_operator', 'authorization_expired')
+                RETURNING id
+                """,
+                (str(snapshot["snapshot_id"]),),
+            ).fetchone()
+        assert attempt is not None
+        assert repo.load_run(run_id) is not None
+    finally:
+        # Unconditional, on every path including a raising bootstrap(reset=False)
+        # above -- this is the actual defect this task closes (truth #2). Without
+        # this, a legacy CHECK installed above and never repaired leaks into every
+        # later test in this module that inserts an 'authorization_expired' row.
+        _restore_modern_failure_category_check()
 
 
 @pytest.mark.parametrize(
