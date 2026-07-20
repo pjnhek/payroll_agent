@@ -43,6 +43,7 @@ markers = [
     "integration: marks tests as requiring a live database (deselect with -m 'not integration')",
     "live_llm: marks tests as hitting real DeepSeek/Kimi APIs (deselect with -m 'not live_llm')",
     "queueproof: a durability proof for the v4 job queue; MUST execute in CI against a real Postgres",
+    "proof: identifies a durability proof by a stable id, passed as the keyword argument `id` (e.g. @pytest.mark.proof(id='PROOF-01')) — the keyword spelling is load-bearing because pytest's -m marker-expression syntax only supports selecting on keyword marker arguments, never positional ones",
 ]
 
 [tool.ruff]
