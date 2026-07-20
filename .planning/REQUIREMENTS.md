@@ -115,7 +115,7 @@ constraint — and none could supply the failure contract, which is the actual w
 - [ ] **PROOF-04**: An expired lease is reclaimed by a second worker, and the zombie's write is fenced —
   including `mark_failed`/`reschedule`, which is the fence people forget (not just `mark_done`).
 
-- [ ] **PROOF-05**: Every new integration test is registered in `concurrency-proof.yml` — the **only** workflow
+- [x] **PROOF-05**: Every new integration test is registered in `concurrency-proof.yml` — the **only** workflow
   with a real Postgres, and it hard-codes its test files by name (`concurrency-proof.yml:89`). Three of the four
   proofs need a real database; land them outside that line and **they never run**. Races drive the **sync seam**
   under a `threading.Barrier`, never an HTTP route.
@@ -172,7 +172,7 @@ limitation honestly is itself the differentiator.
 | PROOF-02 | Phase 21 | Pending |
 | PROOF-03 | Phase 21 | Pending |
 | PROOF-04 | Phase 21 | Pending |
-| PROOF-05 | Phase 21 | Pending |
+| PROOF-05 | Phase 21 | Complete |
 | OPS-01 | Phase 21 | Pending |
 
 **Coverage: 19/19 v4 requirements mapped, no orphans, no duplicates.**
