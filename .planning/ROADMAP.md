@@ -447,4 +447,4 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 18. Failure Policy & Sweep Deletion | v4 | 14/14 | Complete    | 2026-07-16 |
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 27/27 | Complete    | 2026-07-18 |
-| 21. Durability Proofs & Ops View | v4 | 15/15 | Complete   | 2026-07-20 |
+| 21. Durability Proofs & Ops View | v4 | 16/16 | Complete    | 2026-07-20 |

@@ -86,6 +86,28 @@ dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
 
 ### Validated
 
+- **Phase 21 (Durability Proofs & Ops View), 2026-07-20:** Every durability and exactly-once claim from
+  Phases 16–20 is now demonstrated *able to fail*, not just shown passing, and an operator can read
+  "is the queue healthy" as a fact. **PROOF-01..04:** four falsification-backed proofs against real
+  Postgres — worker-killed-mid-run reclaim (attempts-increment mutation reds it), same-Svix redelivery
+  = exactly one job/run/email (dedup-key mutation reds it), crash-between-Resend-accept-and-`sent` sends
+  no second email (fresh-Idempotency-Key mutation reds it), and expired-lease reclaim with the zombie's
+  late `mark_failed`/reschedule fenced (genuine two-OS-thread race, `threading.Barrier`, both fences
+  named). **PROOF-05:** the completeness gate — a `proof` pytest marker + `check_proof_inventory.py` +
+  an AST-anchored `MUTATION_TARGETS` registry wired into `concurrency-proof.yml` at the *selection*
+  layer, so a proof can never silently stop running (the old hard-coded-file-list blind spot, and the
+  Phase-10-v2 vacuous-proof precedent, both closed). **OPS-01:** `GET /ops` (queue depth split
+  pending/leased, oldest-due-pending age vs the 30-min pump cadence, attempts vs max, dead-letter list)
+  and `GET /health/queue` (503 while a run sits `error` with no equality-correlated job settlement — an
+  anti-join, never a false-positive ratio), with `pump.yml`'s alarm step pinned last + `always()` and
+  the drain step pinned to carry no `if:` (recovery-first). Verification independently re-ran two of the
+  four mutations against a fresh local Postgres. **UAT this session against the LIVE deployed service:**
+  discovered the phase was unpushed (master 94 ahead), pushed + redeployed; live alarm baseline = 0
+  unaccounted error runs (clean); `pump.yml` dispatched (run 29773910333) proving drain-before-alarm
+  ordering live; `/ops` verified legible + JS-free; and the published `docs/DURABILITY-PROOFS.md`
+  re-run end-to-end (PROOF-01 green→apply doc's diff→red at `assert claimed.attempts == 1`→revert→green).
+  Verified 6/6, UAT 2/2, 0 issues. PROOF-01, PROOF-02, PROOF-03, PROOF-04, PROOF-05, OPS-01.
+
 - **Phase 19 (Webhook Cutover & Durable Ingest), 2026-07-17:** An authenticated inbound receipt now commits
   the bounded provider envelope and one identifier-only `INGEST` job atomically before HTTP 200; provider fetch,
   sender checks, RFC Message-ID dedup, run creation, and orchestration occur only in durable handlers. All eight
@@ -227,8 +249,8 @@ Prior milestones: **v1.0** (email-driven pipeline, archived in `milestones/v1.0-
 | **v2:** Round cap escalates to a first-class `needs_operator` status rather than spamming or silently stalling (Phase 11) | The real failure was a silent park at `awaiting_reply` with no email out (WR-05), not spam; a bounded machine with a human escape is the safe terminal | ✓ Good — round-aware idempotency + 3-round cap + operator resolve/resume shipped |
 | **v4:** `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine | A job row that also encodes "what payroll status comes next" creates two sources of truth for the same question — the classic way a queue corrupts a state machine it was added to protect | ✓ Good through Phase 19 — queue state remains a bounded secondary projection and never drives payroll status |
 | **v4:** An authenticated pump endpoint + frequent cron, not an internal timer loop | Render free wakes only on **inbound HTTP**; internal sleeps do not keep it alive. Without an external pump, a queue is durable *storage* and never durable *execution* — a job retried with a future `available_at` would sit forever | ✓ Good through Phase 19 — the pump drains all durable kinds and owns bounded terminal-event retention |
-| **v4:** Exactly-once send via Resend's `Idempotency-Key`, keyed on the existing pre-send reserved `message_id` | `gateway.py` already mints a durable unique synthetic `message_id` and writes a `reserved` row *before* calling Resend — it just discards it. Handing it to the provider (and reusing it on retry, never minting a fresh uuid4) closes the double-payroll-email window that retries would otherwise open | ⏳ v4 |
-| **v4:** Milestone scoped to durability, not throughput | At ~1 payroll email per client per week, fairness/priority/backpressure machinery is building for load that never arrives; durability is the claim that is both true and load-bearing for any future productization | ⏳ v4 |
+| **v4:** Exactly-once send via Resend's `Idempotency-Key`, keyed on the existing pre-send reserved `message_id` | `gateway.py` already mints a durable unique synthetic `message_id` and writes a `reserved` row *before* calling Resend — it just discards it. Handing it to the provider (and reusing it on retry, never minting a fresh uuid4) closes the double-payroll-email window that retries would otherwise open | ✓ Good — shipped Phase 20; PROOF-03 (Phase 21) demonstrates a crash between provider-accept and the local `sent` commit sends no second email, byte-identical `message_id` across attempts, and reds against a fresh-per-attempt key |
+| **v4:** Milestone scoped to durability, not throughput | At ~1 payroll email per client per week, fairness/priority/backpressure machinery is building for load that never arrives; durability is the claim that is both true and load-bearing for any future productization | ✓ Good — v4 shipped durability (proofs able-to-fail, ops view, best-effort recovery) with zero throughput machinery; the honest claim held end to end |
 
 ## Evolution
 
@@ -248,12 +270,19 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-17 — **v4 Phase 19 (Webhook Cutover & Durable Ingest) complete.** The webhook now
-commits an authenticated event plus `INGEST` job before 200, all eight historical in-process payroll producers
-are durable, and immutable operator generations preserve one commit-selected authority. Canonical verification
-passed 40/40, UAT passed 1/1, security threats open 0, and exact real-Postgres same-Svix concurrency passed in
-GitHub run `29589513220`. Phase 20 is next: make confirmation delivery exactly-once through provider idempotency.
-Prior: Milestone v4 started 2026-07-13; v3 — Production-Ready Codebase SHIPPED 2026-07-13.*
+*Last updated: 2026-07-20 — **v4 Phase 21 (Durability Proofs & Ops View) complete — MILESTONE v4 100%
+(all 6 phases 16–21 done).** Every durability/exactly-once claim from Phases 16–20 is now demonstrated
+able to fail (PROOF-01..04, each with an executed falsifying mutation against real Postgres), the
+completeness gate (PROOF-05) makes a proof unable to silently stop running, and an operator can read
+queue health as a fact via `GET /ops` + the `/health/queue` alarm (OPS-01). Verified 6/6; UAT 2/2 (0
+issues) against the LIVE deployed service — which surfaced that the phase was unpushed (master 94 ahead);
+pushed + redeployed, live alarm baseline clean (0 unaccounted error runs), drain-before-alarm ordering
+proven via a real `workflow_dispatch` run, and `docs/DURABILITY-PROOFS.md` re-run end-to-end (green →
+apply the doc's own diff → red → revert → green). Verification canonicalized `human_needed` → `passed`.
+Next: `/gsd-complete-milestone v4` to archive. Prior: v4 Phase 19 complete 2026-07-17; Milestone v4
+started 2026-07-13; v3 SHIPPED 2026-07-13.*
+
+<!-- Prior footer (v4 Phase 19): Last updated: 2026-07-17 — **v4 Phase 19 (Webhook Cutover & Durable Ingest) complete.** The webhook now commits an authenticated event plus `INGEST` job before 200, all eight historical in-process payroll producers are durable, and immutable operator generations preserve one commit-selected authority. Canonical verification passed 40/40, UAT passed 1/1, security threats open 0, and exact real-Postgres same-Svix concurrency passed in GitHub run `29589513220`. Phase 20 is next: make confirmation delivery exactly-once through provider idempotency. Prior: Milestone v4 started 2026-07-13; v3 — Production-Ready Codebase SHIPPED 2026-07-13. -->
 
 <!-- Prior footer (v4 start): Last updated: 2026-07-13 — Milestone v4 Durable Execution started. Scoped from an adversarial audit finding two independent break-under-pressure defects: in-memory BackgroundTask durability and synchronous webhook work blocking the event loop. Target features: durable handoff, authenticated external pump, explicit failure policy, exactly-once send, and durability proofs. Throughput machinery explicitly out of scope. Design: docs/superpowers/specs/2026-07-13-durable-execution-design.md. -->
 

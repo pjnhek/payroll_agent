@@ -3,41 +3,41 @@ gsd_state_version: 1.0
 milestone: v4
 milestone_name: — Durable Execution
 current_phase: 21
-current_phase_name: durability-proofs-ops-view
-status: executing
-stopped_at: "Phase 21 executed — 16/16 plans; 2 human-verify items open (21-UAT.md)"
-last_updated: "2026-07-20T15:34:31.169Z"
+status: milestone-complete
+stopped_at: "Milestone v4 complete — all 6 phases (16–21) done; ready for /gsd-complete-milestone v4"
+last_updated: "2026-07-20T20:07:01.794Z"
 last_activity: 2026-07-20
-last_activity_desc: "Phase 21 executed: 16 plans across 7 waves. Both CI gates were red on master since Phase 20 (40 test-side failures) — repaired in an unplanned wave 0. Four durability proofs landed, each falsification-proven. A live deploy-blocking schema defect (schema.sql re-adding an obsolete constraint, aborting every non-reset bootstrap once a run is retriggered) was found by a peer session, reproduced outside pytest, and fixed in 21-16. Awaiting 2 human verifications."
+last_activity_desc: "Phase 21 complete via /gsd-verify-work (UAT 2/2, verification canonicalized human_needed→passed) — MILESTONE v4 100%"
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 82
-  completed_plans: 68
-  percent: 83
+  completed_phases: 6
+  total_plans: 84
+  completed_plans: 84
+  percent: 100
+current_phase_name: durability-proofs-ops-view
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-17 — Phase 20 implementation complete; gap closure remains)
+See: .planning/PROJECT.md (updated 2026-07-20 — Phase 21 complete; Milestone v4 100%)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 makes the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** Phase 21 — durability-proofs-ops-view
+**Current focus:** Milestone v4 complete (all 6 phases 16–21 done) — ready to archive via /gsd-complete-milestone v4
 
 ## Current Position
 
-Phase: 21 (durability-proofs-ops-view) — EXECUTED, awaiting human verification
-Plan: 1 of 14
-Status: Executing Phase 21
-Last activity: 2026-07-20 — Phase 21 executed (16/16 plans); all automated gates green; 2 UAT items open
+Phase: 21 (durability-proofs-ops-view) — COMPLETE
+Plan: 16/16 complete
+Status: Milestone v4 complete — ready for /gsd-complete-milestone v4
+Last activity: 2026-07-20 — Phase 21 complete via /gsd-verify-work (UAT 2/2, verification passed); milestone v4 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 140
+- Total plans completed: 156
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -65,6 +65,7 @@ Last activity: 2026-07-20 — Phase 21 executed (16/16 plans); all automated gat
 | 18 | 14 | - | - |
 | 19 | 12 | - | - |
 | 20 | 27 | - | - |
+| 21 | 16 | - | - |
 
 **Recent Trend:**
 
@@ -349,10 +350,11 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-20T00:59:52.503Z
-Stopped at: Phase 21 context gathered
-Resume file: .planning/phases/21-durability-proofs-ops-view/21-CONTEXT.md
+Last session: 2026-07-20T20:07:01Z
+Stopped at: Phase 21 complete (UAT 2/2, verification passed) — Milestone v4 100%, all 6 phases done
+Resume file: None
 
 ## Operator Next Steps
 
-- Verify Phase 20 with `/gsd-verify-work 20`, then plan Phase 21 with `/gsd-plan-phase 21`.
+- Milestone v4 is complete. Run `/gsd-complete-milestone v4` to archive it and prepare the next milestone.
+- Note: this session pushed 94 local commits to `origin/master` (`b50d982..eeb1c78`) and the phase-close commits; the deployed Render service now serves `/ops` and `/health/queue`. Nothing left unpushed for Phase 21.

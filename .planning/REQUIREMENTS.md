@@ -120,7 +120,7 @@ constraint — and none could supply the failure contract, which is the actual w
   proofs need a real database; land them outside that line and **they never run**. Races drive the **sync seam**
   under a `threading.Barrier`, never an HTTP route.
 
-- [ ] **OPS-01**: An ops view surfaces queue depth, oldest-pending age, attempts, and the dead-letter list —
+- [x] **OPS-01**: An ops view surfaces queue depth, oldest-pending age, attempts, and the dead-letter list —
   making "it's healthy" a checkable claim rather than a vibe. Includes the alarm for the swallowing bug:
   *job success ≈100% while `status='error' > 0`.*
 
@@ -173,7 +173,7 @@ limitation honestly is itself the differentiator.
 | PROOF-03 | Phase 21 | Complete |
 | PROOF-04 | Phase 21 | Complete |
 | PROOF-05 | Phase 21 | Complete |
-| OPS-01 | Phase 21 | Pending |
+| OPS-01 | Phase 21 | Complete |
 
 **Coverage: 19/19 v4 requirements mapped, no orphans, no duplicates.**
 
