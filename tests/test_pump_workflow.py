@@ -33,6 +33,7 @@ Two deliberate landmines this scanner avoids:
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
 import yaml
 
@@ -138,7 +139,7 @@ class TestAlarmStepOrdering:
     silently lie."""
 
     @staticmethod
-    def _steps() -> list[dict]:
+    def _steps() -> list[dict[str, Any]]:
         parsed = yaml.safe_load(PUMP_WORKFLOW.read_text(encoding="utf-8"))
         return [
             step
@@ -147,7 +148,7 @@ class TestAlarmStepOrdering:
         ]
 
     @classmethod
-    def _drain_index(cls, steps: list[dict]) -> int:
+    def _drain_index(cls, steps: list[dict[str, Any]]) -> int:
         drain_indices = [
             i for i, step in enumerate(steps) if "Drain" in step.get("name", "")
         ]
@@ -157,7 +158,7 @@ class TestAlarmStepOrdering:
         return drain_indices[0]
 
     @classmethod
-    def _alarm_index(cls, steps: list[dict]) -> int:
+    def _alarm_index(cls, steps: list[dict[str, Any]]) -> int:
         alarm_indices = [
             i
             for i, step in enumerate(steps)

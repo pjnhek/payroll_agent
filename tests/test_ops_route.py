@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import pathlib
 import re
+from collections.abc import Iterable, Iterator
+from typing import Any
 
 import yaml
 from fastapi.testclient import TestClient
@@ -77,7 +79,7 @@ def _raise_if_called(name: str):
     return _fn
 
 
-def _flatten_routes(routes):
+def _flatten_routes(routes: Iterable[Any]) -> Iterator[Any]:
     """FastAPI wraps each included router in a lazy container whose concrete
     routes live on `.original_router.routes` rather than directly on
     `app.routes`; walk through that indirection to reach real endpoints."""

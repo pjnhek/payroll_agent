@@ -109,7 +109,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -2487,7 +2487,7 @@ def test_expired_lease_is_reclaimed_by_a_second_worker_and_zombie_is_fenced_on_b
     # companion test below.
     assert connection_ids["thread_a"] != connection_ids["thread_b"]
 
-    reclaimed = results["reclaimed"]
+    reclaimed = cast("Job | None", results["reclaimed"])
     assert reclaimed is not None, "worker B must have reclaimed the expired lease"
     assert reclaimed.id == enqueued_id
     assert reclaimed.lease_token != token_a, "the reclaim must mint a new lease token"
@@ -2617,7 +2617,7 @@ def test_expired_lease_reclaim_and_zombie_write_genuinely_race(seeded_db) -> Non
         "deliberately reintroduced ordering)."
     )
 
-    reclaimed = outcomes["reclaim"]
+    reclaimed = cast("Job | None", outcomes["reclaim"])
     zombie_completed = outcomes["zombie"]
     row = repo.get_job(enqueued_id)
     assert row is not None

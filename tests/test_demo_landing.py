@@ -1223,7 +1223,7 @@ def test_run_detail_alias_rationale_rendered(monkeypatch):
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
     emp_id = uuid.UUID("e0000001-0000-0000-0000-000000000001")
 
-    run = {
+    run: dict[str, Any] = {
         "id": run_id, "business_id": biz_id, "status": "computed",
         "extracted_data": None,
         "decision": {
@@ -1309,7 +1309,7 @@ def test_run_detail_alias_rationale_absent_for_exact(monkeypatch):
     biz_id = uuid.UUID("b0000001-0000-0000-0000-000000000001")
     emp_id = uuid.UUID("e0000001-0000-0000-0000-000000000001")
 
-    run = {
+    run: dict[str, Any] = {
         "id": run_id, "business_id": biz_id, "status": "computed",
         "extracted_data": None,
         "decision": {

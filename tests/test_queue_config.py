@@ -24,6 +24,7 @@ Hermetic — no DB, no `integration`/`queueproof` marker. Pins:
 from __future__ import annotations
 
 import pathlib
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -176,12 +177,12 @@ class TestProofMarkerRegistered:
         )
 
 
-def _workflow_steps() -> list[dict]:
+def _workflow_steps() -> list[dict[str, Any]]:
     parsed = yaml.safe_load(_WORKFLOW_YML.read_text())
-    return list(parsed["jobs"].values())[0]["steps"]
+    return cast("list[dict[str, Any]]", list(parsed["jobs"].values())[0]["steps"])
 
 
-def _proof_running_steps(steps: list[dict]) -> list[dict]:
+def _proof_running_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Steps whose `run` block invokes pytest or the completeness checker.
 
     Deliberately excludes non-proof `run:` steps (checkout's `uses:`-only

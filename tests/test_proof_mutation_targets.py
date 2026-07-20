@@ -214,7 +214,7 @@ def _resolve_assignment(
     for node in ast.walk(fn):
         if isinstance(node, ast.Assign):
             targets = node.targets
-            value = node.value
+            value: ast.expr | None = node.value
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
