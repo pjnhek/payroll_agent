@@ -14,7 +14,12 @@ same class of defect as a proof that reds for the wrong reason.
 
 from __future__ import annotations
 
-from scripts.check_proof_inventory import EXPECTED_PROOF_IDS, NODE_ID_PATTERN, evaluate_inventory
+from scripts.check_proof_inventory import (
+    EXPECTED_PROOF_IDS,
+    NODE_ID_PATTERN,
+    collect_inventory,
+    evaluate_inventory,
+)
 
 
 def _node(proof_id: str) -> str:
@@ -164,3 +169,87 @@ class TestNodeIdPattern:
         assert NODE_ID_PATTERN.match("11 tests collected in 0.04s") is None
         assert NODE_ID_PATTERN.match("63/1289 tests collected (1226 deselected) in 0.74s") is None
         assert NODE_ID_PATTERN.match("tests/") is None
+
+
+# The node id recorded in each proof's own SUMMARY at the moment it was tagged.
+# Pinned here so a proof silently migrating to a different test (renamed, moved,
+# or swapped for a different implementation while keeping the same id) also
+# reds — not merely that "some test somewhere carries this id".
+_EXPECTED_NODE_IDS: dict[str, str] = {
+    "PROOF-01": (
+        "tests/test_queue_durability.py::test_retrigger_survives_worker_crash_mid_lease"
+    ),
+    "PROOF-02": (
+        "tests/test_webhook_dedup_race.py::"
+        "test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run"
+    ),
+    "PROOF-03": (
+        "tests/test_send_idempotency.py::"
+        "test_crash_between_provider_accept_and_local_sent_commit_sends_no_second_email"
+    ),
+    "PROOF-04": (
+        "tests/test_queue_durability.py::"
+        "test_expired_lease_is_reclaimed_by_a_second_worker_and_zombie_is_fenced_on_both_writes"
+    ),
+}
+
+
+class TestLiveRepositoryInventory:
+    """The no-false-positive half: `evaluate_inventory` against the REAL repository.
+
+    Every class above proves the detector reds on a synthetic bad input. That is
+    necessary but not sufficient — a decision function that reds on everything,
+    including a perfectly conforming repository, would still pass every one of
+    those tests while being useless as a CI gate. This class proves the other
+    half: the live repository, as it actually exists, produces zero violations.
+
+    Runs pytest collection in a subprocess via `collect_inventory` and needs no
+    database: none of the four proof modules skips at import time, so collection
+    succeeds with `DATABASE_URL` unset (confirmed by running this test itself
+    with the variable unset before committing it). Deliberately outside the
+    `proof` and `queueproof` marker selections — it is a guard OVER the
+    inventory, not a durability proof itself, and tagging it would corrupt the
+    very inventory it checks.
+    """
+
+    def test_no_violations_against_the_real_repository(self) -> None:
+        per_id, all_marked, queueproof_marked = collect_inventory(EXPECTED_PROOF_IDS)
+
+        violations = evaluate_inventory(
+            per_id, all_marked, queueproof_marked, EXPECTED_PROOF_IDS
+        )
+
+        assert violations == [], (
+            f"the live repository has completeness-gate violations: {violations}"
+        )
+
+    def test_each_id_maps_to_the_node_id_recorded_in_its_summary(self) -> None:
+        per_id, _, _ = collect_inventory(EXPECTED_PROOF_IDS)
+
+        for proof_id, expected_node in _EXPECTED_NODE_IDS.items():
+            nodes = per_id.get(proof_id, [])
+            assert nodes == [expected_node], (
+                f"{proof_id} resolved to {nodes!r}, expected exactly "
+                f"[{expected_node!r}] — a proof silently migrated to a different "
+                "test, or the id recorded here is stale"
+            )
+
+    def test_proof_and_queueproof_selections_agree_on_all_four_node_ids(self) -> None:
+        """The property that makes the inventory mean what it appears to mean.
+
+        `proof` and `queueproof` are two independent registered markers. Without
+        this check, the gate could certify that a proof EXISTS (bare `proof`
+        selection) while CI never RUNS it (bare `queueproof` selection, the
+        marker CI's queue-durability step actually executes) — nothing else
+        ties the two selections together.
+        """
+        _, all_marked, queueproof_marked = collect_inventory(EXPECTED_PROOF_IDS)
+
+        queueproof_set = set(queueproof_marked)
+        missing = [node for node in all_marked if node not in queueproof_set]
+
+        assert missing == [], (
+            f"proof-marked node(s) absent from the queueproof selection: {missing} "
+            "— registered as a proof but CI's queueproof-marker step will never "
+            "run it"
+        )
