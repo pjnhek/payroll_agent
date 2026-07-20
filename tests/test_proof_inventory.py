@@ -106,9 +106,13 @@ class TestMissingQueueproofMarker:
 
         violations = evaluate_inventory(per_id, all_marked, queueproof_marked, EXPECTED_PROOF_IDS)
 
-        queueproof_violations = [v for v in violations if "queueproof" in v]
-        assert len(queueproof_violations) == 1
-        assert unselected_node in queueproof_violations[0]
+        # The node id is only mentioned by the missing-queueproof-shape violation
+        # (the missing-id-shape violation names the proof id, not the node id), so
+        # filtering on the node id isolates the shape this test targets even though
+        # both violations happen to also contain the substring "queueproof".
+        node_violations = [v for v in violations if unselected_node in v]
+        assert len(node_violations) == 1
+        assert "queueproof" in node_violations[0]
 
 
 class TestAllFourShapesSimultaneously:
