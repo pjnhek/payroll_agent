@@ -45,7 +45,10 @@ from tests.conftest import _HAS_DB, _SKIP_LIVE_DB
 # not be able to flip a collection-time skip decision.
 _SKIP_WHEN_REAL_DB = pytest.mark.skipif(
     _HAS_DB,
-    reason="hermetic-only: asserts the sentinel fail-fast path, which is inert when a real DATABASE_URL is set",
+    reason=(
+        "hermetic-only: asserts the sentinel fail-fast path, "
+        "which is inert when a real DATABASE_URL is set"
+    ),
 )
 
 _RETIRED_RECOVERY_SYMBOLS = {
