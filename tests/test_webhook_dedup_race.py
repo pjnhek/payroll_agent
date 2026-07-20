@@ -5,7 +5,13 @@ Two more barrier-released threads then drive the committed event identifiers thr
 the real delayed-ingest handler against Postgres. Exactly one email, run, and downstream
 RUN_PIPELINE job may survive the RFC-identity race.
 
-Skip-guarded on DATABASE_URL (matches test_claim_status.py's exact skip shape).
+Skip-guarded on DATABASE_URL, evaluated once at import time (matches the
+`_HAS_DB` pattern several other test modules define locally) rather than
+re-checked inside the test body: a suite-wide fixture may stub DATABASE_URL
+in os.environ for tests that lack a real DSN, and a runtime re-check of the
+raw environment variable would see that stub and wrongly proceed to run
+live-DB logic against a fake host. An import-time constant is captured
+before any fixture runs, so it cannot be affected by one.
 This is a SEPARATE test module from tests/test_webhook.py and does NOT inherit
 that module's client fixture's env setup — pytest does not share monkeypatch
 state across test modules, so this module sets ALLOW_UNSIGNED_FIXTURES=true
@@ -23,11 +29,13 @@ from typing import Any
 
 import pytest
 
+_HAS_DB = bool(os.environ.get("DATABASE_URL"))
+
 
 @pytest.mark.integration
 def test_duplicate_webhook_delivery_creates_exactly_one_run(monkeypatch):
     """Distinct transport events with one RFC identity create exactly one run."""
-    if not os.environ.get("DATABASE_URL"):
+    if not _HAS_DB:
         pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
 
     from app.config import get_settings
@@ -195,7 +203,7 @@ def test_same_svix_redelivery_creates_one_event_one_ingest_job_and_one_run(
     seeded_db: None,
 ):
     """One authenticated transport identity stays singular across a DB race."""
-    if not os.environ.get("DATABASE_URL"):
+    if not _HAS_DB:
         pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
 
     from fastapi.testclient import TestClient

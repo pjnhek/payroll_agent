@@ -129,6 +129,63 @@ _SKIP_LIVE_DB = pytest.mark.skipif(
 )
 
 
+# ---------------------------------------------------------------------------
+# 0b. Suite-wide DATABASE_URL stub — inert whenever a real DSN is present
+#
+# app/config.py declares `database_url: str` with NO default (fails fast if
+# unset), loaded via a `.env` file relative to cwd. A worktree or bare CI
+# checkout has no `.env` and sets no DATABASE_URL, so any test that reaches
+# get_settings() without its own stub raises pydantic_core.ValidationError.
+# mock_llm and several individual tests in tests/test_gateway.py already
+# work around this per-test; this autouse fixture is the ONE suite-wide net
+# so future tests don't need to rediscover the same workaround.
+#
+# Safety argument:
+#   - This ONLY ever sets the var when it is absent (`if not
+#     os.environ.get("DATABASE_URL")`) — it can never override a real DSN a
+#     developer or CI has actually set, so the live-DB suite always connects
+#     to the real database, never the sentinel.
+#   - `_HAS_DB` / `_SKIP_LIVE_DB` above, and the identical pattern several
+#     other test modules define locally, are evaluated ONCE at import time,
+#     which happens before pytest invokes any fixture. A test collected
+#     under one of those collection-time skipif guards is already marked
+#     skipped before this fixture ever runs, so it cannot be retroactively
+#     un-skipped. A test that instead re-checks `os.environ.get(...)` at
+#     RUN time (inside its own body, after this fixture's setup has already
+#     executed) is a different, narrower hazard this stub could otherwise
+#     create — closed by keeping those specific checks on the same
+#     import-time constant the rest of the suite uses, not by a workaround
+#     here (see tests/test_webhook_dedup_race.py).
+#
+# The sentinel value follows the existing `postgresql://mock-test-stub/mockdb`
+# naming precedent (mock_llm) — obviously fake, and fails loudly (connection
+# refused/DNS error) if anything ever actually tries to connect through it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stub_database_url_when_absent(monkeypatch):
+    """Autouse suite-wide net: stub DATABASE_URL only when no real one is set.
+
+    Clears the lru_cache on get_settings() before and after regardless of
+    whether the stub was applied, mirroring mock_llm's handling — a stale
+    cached Settings instance from an earlier test (real or stubbed) must
+    never leak into this test. Several tests clear this same cache
+    themselves mid-test (to pick up their own monkeypatch.setenv calls for
+    other fields) and expect DATABASE_URL to still be resolvable from the
+    environment afterward — so, unlike a one-shot cache-priming approach,
+    this fixture leaves the sentinel set in os.environ for the duration of
+    the test whenever it applies one.
+    """
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    if not os.environ.get("DATABASE_URL"):
+        monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture(scope="module")
 def seeded_db():
     """Module-scoped fixture: reset DB, apply schema, seed once.
