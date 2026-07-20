@@ -159,3 +159,13 @@ None - no external service configuration required.
 ---
 *Phase: 21-durability-proofs-ops-view*
 *Completed: 2026-07-20*
+
+## Self-Check: PASSED
+
+- FOUND: tests/conftest.py
+- FOUND: tests/test_webhook_dedup_race.py
+- FOUND: .github/workflows/ci.yml
+- FOUND: .planning/phases/21-durability-proofs-ops-view/21-12-SUMMARY.md
+- FOUND commit: 712e9fb (task 1)
+- FOUND commit: 21a59bf (task 2)
+- FOUND commit: 71e98ab (plan metadata)
