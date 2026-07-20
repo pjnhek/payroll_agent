@@ -119,7 +119,7 @@ def _stub_pipeline_and_send(
     deliver_calls: list[uuid.UUID] = []
     monkeypatch.setattr(
         "app.pipeline.delivery.deliver",
-        lambda rid, run: deliver_calls.append(rid),
+        lambda rid, run, *, conn=None: deliver_calls.append(rid),
     )
 
     # Belt-and-suspenders no-op (tests/conftest.py resend pattern) — guarantees
