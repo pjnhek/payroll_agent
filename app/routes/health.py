@@ -1,4 +1,4 @@
-"""GET /health/live, /health/ready, /health/schema — health probes."""
+"""GET /health/live, /health/ready, /health/schema, /health/queue — health probes."""
 from __future__ import annotations
 
 import logging
@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
+from app.db import repo
 from app.db.schema_introspect import diff_against_live
 from app.db.supabase import get_connection
 
@@ -69,5 +70,53 @@ def health_schema() -> JSONResponse:
         return JSONResponse({"status": "in_sync"})
     return JSONResponse(
         {"status": "drift", "missing": diff.as_missing_dict()},
+        status_code=503,
+    )
+
+
+@router.get("/health/queue")
+def health_queue() -> JSONResponse:
+    """The swallowing-bug alarm, as a cron-checkable endpoint.
+
+    200 {"status":"ok"}                       — no unaccounted error runs
+    503 {"status":"unaccounted_errors","count":N} — N runs in `error` with no
+                                                     corresponding terminal/dead
+                                                     job settlement
+    503 {"detail":"queue check unavailable"}  — DB unreachable / query error
+
+    A new route rather than extending `/health/ready` or `/health/schema`:
+    `pump.yml` already depends on those two carrying distinct, non-overlapping
+    meanings (DB-reachable vs. schema-in-sync). Folding a third condition into
+    either would make one red signal ambiguous about which of two unrelated
+    problems fired. A fourth, independent probe keeps each `curl -f` step
+    diagnostic on its own.
+
+    This endpoint adds no logic of its own — it surfaces
+    `repo.list_unaccounted_error_runs` (a run in `error` that no job's
+    terminal/dead settlement accounts for, correlated by transaction-timestamp
+    EQUALITY, never `>=`) wholesale, and inherits that predicate's correctness
+    entirely.
+
+    Disclosure discipline, matching the sibling probes: the body carries a
+    `status` and, in the firing case, a bare `count` — never a run id, an
+    `error_reason`, an `error_detail`, a connection string, or a stack trace.
+    This route is unauthenticated like every other health probe, so its body
+    is public; an operator gets the actionable, linked list from `/ops`.
+
+    The alarm is purely derived: there is no acknowledge action, no mute
+    state, and no time-boxed auto-clear — this endpoint returns to 200 on its
+    own once every unaccounted error run is retriggered or settled. A
+    lookback window was considered and rejected: a window is a time-boxed
+    auto-clear by another name.
+    """
+    try:
+        rows = repo.list_unaccounted_error_runs()
+    except Exception as exc:  # noqa: BLE001 — probe must not leak internals
+        logger.error("queue alarm probe failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="queue check unavailable") from exc
+    if not rows:
+        return JSONResponse({"status": "ok"})
+    return JSONResponse(
+        {"status": "unaccounted_errors", "count": len(rows)},
         status_code=503,
     )

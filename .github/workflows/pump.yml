@@ -125,3 +125,23 @@ jobs:
         run: curl -f --max-time 90 "$RENDER_URL/health/schema"
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
+
+      - name: Check /health/queue (unaccounted-for error alarm — never gates recovery)
+        # always(): run even if an earlier step went RED, so a pump-route regression
+        # cannot suppress this alarm either. The job still fails overall if any step
+        # fails — four independent RED signals.
+        if: ${{ always() }}
+        # RECOVERY FIRST, REPORTING SECOND. This step is deliberately LAST in the
+        # steps list, after the unconditional drain step above (which carries no
+        # `if:` key at all — never add one). Placing an alarm ahead of the drain
+        # would turn "something went wrong" into "and now nothing recovers"; this
+        # workflow has already been bitten once by an `if:`-guard gap that made a
+        # step silently skip. /health/queue returns 503 while a run sits in `error`
+        # with no job ever having taken terminal responsibility for it — the
+        # failure a healthy job-success rate would otherwise hide. -f makes curl
+        # exit non-zero on that 503, so this scheduled run goes RED and the
+        # operator is notified, without ever preventing the drain above from
+        # running.
+        run: curl -f --max-time 90 "$RENDER_URL/health/queue"
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
