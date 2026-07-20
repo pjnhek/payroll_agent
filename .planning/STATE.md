@@ -1,20 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v4
-milestone_name: — Durable Execution
-status: Awaiting next milestone
-stopped_at: Phase 21 complete (UAT 2/2, verification passed) — Milestone v4 100%, all 6 phases done
-last_updated: "2026-07-20T21:14:50.053Z"
+milestone: v4.1
+milestone_name: Demo Polish & Run-Detail UI
+status: planning
+last_updated: "2026-07-20T21:46:33.301Z"
 last_activity: 2026-07-20
-last_activity_desc: Milestone v4 completed and archived
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 84
-  completed_plans: 84
-  percent: 100
-current_phase: 21
-current_phase_name: durability-proofs-ops-view
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -28,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution
 
 ## Current Position
 
-Phase: Milestone v4 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-20 — Milestone v4 completed and archived
+Status: Defining requirements
+Last activity: 2026-07-20 — Milestone v4.1 started
 
 ## Performance Metrics
 

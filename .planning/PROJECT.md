@@ -179,30 +179,38 @@ dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
 
 - **Phase 11 (Clarification Round Machine & Alias Learning), 2026-07-07:** The multi-round clarification state machine is correct and unstrandable, and the alias-learning loop actually learns. **CLAR2-01:** `_clarify`'s idempotency guard re-keyed from purpose-only to `(purpose, round)` via `get_outbound_for_round`, so a genuinely-new round-2+ question always sends (no run silently parks at `awaiting_reply` with no email out) while a true re-trigger stays suppressed. **CLAR2-02:** a 3-round cap escalates to a first-class `needs_operator` status/badge with an operator resolve+resume surface (server-side roster validation) or reject. **CLAR2-03/05:** `resume_pipeline` writes the consumed marker at its own CAS claim and `_combined_context_email` accumulates ORIGINAL + all consumed replies in round order behind a code-owned "questions we asked" anchor — the known-edge fixture flips from documenting a silent-mispay to asserting it closed (Round-1 "30, not 40" pays 30). **CLAR2-04:** the unreachable count-diff alias bind is replaced with deterministic bind-on-confirmation against a persisted `{suggested, bound}` candidate shape, requiring same-record evidence (`_bind_evidence_for_token`) so the misname guard's never-learn-from-inference intent survives; a full-loop hermetic test drives REAL name resolution and proves the system stops asking. **CLAR2-06/07:** a redelivered/stranded unconsumed reply re-drives the CAS-gated resume (no permanently-dropped replies), and a per-run `reply_epoch` counter + retrigger context-wipe ensure no provenance badge outlives its data — without ever mutating the append-only `email_messages` audit log. Cross-AI review (Codex + internal) of the initially-passing phase found 5 CONFIRMED critical money/security bugs; all 5 + a warning were fixed via gap plans 11-06/07/09/10 and re-verified (exploits traced dead in merged source). Verified 9/9; full suite 596 passing, 0 regressions. CLAR2-01…CLAR2-07.
 
-## Next Milestone: Demo Polish & Run-Detail UI (mini)
+## Current Milestone: v4.1 — Demo Polish & Run-Detail UI (mini)
 
-**v4 — Durable Execution — SHIPPED 2026-07-20** (full scope archived in `milestones/v4-ROADMAP.md` +
-`milestones/v4-REQUIREMENTS.md`; the durable-handoff / pump / failure-policy / exactly-once-send / proofs
-target features all landed). The next milestone is a small, demo-facing polish pass, to be formalized via
-`/gsd-new-milestone`. Its scope is the four items reclassified from open todos / quick-tasks at v4 close,
-preserved in full in `backlog.md` → "Next milestone (mini)":
+**Goal:** Make the running system *read* as polished for a hiring-manager / recruiter audience — with **no
+money behavior changed** — by reworking the run-detail page into a legible top-to-bottom email conversation
+and cleaning up the demo-facing surfaces (progressive-enhancement status poll, paystub YTD columns, on-brand
+eval chart).
 
-1. **Run-detail page → chronological email conversation** — collapse the three-column debug view into one
-   top-to-bottom email exchange (inbound first), demote extraction/paystub tables to a collapsed "Payroll
-   details", single reply composer last; all Phase-20 delivery-review safety contracts unchanged. (Full plan
-   preserved in backlog — was quick-task `260718-hie`, previously untracked.)
-2. **Frontend progressive enhancement (no build step)** — optional ~30-line vanilla-JS status poll to replace
-   the `<meta refresh>`; no SPA / bundler / TypeScript.
-3. **Paystub YTD columns** — add per-category YTD accumulation (sum prior `reconciled` runs) so the stub can
-   carry the standard Current | YTD layout; `generate_paystub_pdf` takes optional YTD params.
-4. **Eval chart restyle** — bring `eval/chart.svg` onto the dashboard palette, or replace it with an inline
-   HTML/CSS bar chart (no serve-time matplotlib).
+**Target features:**
+- **Run-detail page → chronological email conversation** — collapse the three-column debug view into one
+  top-to-bottom email exchange (inbound first), demote extraction/paystub tables to a collapsed "Payroll
+  details", single reply composer last; all Phase-20 delivery-review safety contracts unchanged. (Full task
+  plan preserved in `backlog.md` → "Next milestone (mini)" — was quick-task `260718-hie`, previously untracked.)
+- **Frontend progressive enhancement (no build step)** — a ~30-line vanilla-JS status poll + a tiny
+  `GET /runs/{id}/status` JSON endpoint to replace the `<meta refresh>`; no SPA / bundler / TypeScript.
+- **Paystub YTD columns** — add per-category YTD accumulation (sum prior `reconciled` runs) so the stub can
+  carry the standard Current | YTD layout; `generate_paystub_pdf` takes optional YTD params.
+- **Eval chart restyle** — bring `eval/chart.svg` onto the dashboard palette, or replace it with an inline
+  HTML/CSS bar chart (no serve-time matplotlib).
+
+**Key context:** UI-only / demo-facing; the locked stack constraints hold (Jinja2 + vanilla JS, no SPA, slim
+Docker on Render free, Jinja-autoescape everywhere, no provider diagnostics on page). A **mini** milestone —
+small, cohesive, no new domain. Phase numbering continues from v4 (Phase 21 → this milestone starts at Phase 22).
+
+**Prior milestone:** v4 — Durable Execution — SHIPPED 2026-07-20 (full scope archived in
+`milestones/v4-ROADMAP.md` + `milestones/v4-REQUIREMENTS.md`; the durable-handoff / pump / failure-policy /
+exactly-once-send / proofs target features all landed).
 
 ### Active
 
-Next-milestone requirements will be defined by `/gsd-new-milestone` from the four backlog items above. The v4
-`REQUIREMENTS.md` was archived to `milestones/v4-REQUIREMENTS.md` and removed at close (fresh one created for
-the next milestone).
+Milestone v4.1 requirements are being defined by `/gsd-new-milestone` from the four target features above. The
+v4 `REQUIREMENTS.md` was archived to `milestones/v4-REQUIREMENTS.md` and removed at close (a fresh one is
+created for v4.1).
 
 Prior milestones: **v1.0** (email-driven pipeline, `milestones/v1.0-REQUIREMENTS.md`), **v2 Production
 Hardening** (16 reqs: MONEY/OPS2/DATA/CLAR2, `milestones/v2-REQUIREMENTS.md`), **v3 Production-Ready Codebase**
@@ -294,7 +302,14 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-20 after the **v4 — Durable Execution milestone** shipped (Phases 16–21; all 19
+*Last updated: 2026-07-20 — **Milestone v4.1 (Demo Polish & Run-Detail UI, mini) started.** Formalized from
+the four demo/UI-polish items bundled in `backlog.md` → "Next milestone (mini)" at v4 close: run-detail →
+chronological email conversation, frontend progressive enhancement (no build step), paystub YTD columns, and
+eval-chart restyle. UI-only, no money behavior changed; locked stack constraints hold (Jinja2 + vanilla JS,
+no SPA, slim Docker on Render free). Phase numbering continues from Phase 21. Research pass requested; then
+requirements → roadmap. Prior milestone: v4 — Durable Execution SHIPPED 2026-07-20 (below).*
+
+<!-- Prior footer (v4 milestone close): Last updated: 2026-07-20 after the **v4 — Durable Execution milestone** shipped (Phases 16–21; all 19
 requirements validated). v4 made the payroll pipeline durable end-to-end: a non-blocking webhook + durable
 `jobs` queue (QUEUE-01..05), a shared-`drain_once()` worker pool + authenticated `/internal/pump` cron
 (PUMP-01/02), an explicit `ok`/`retryable`/`terminal` failure policy with backoff + dead-letter and the
@@ -305,7 +320,7 @@ observability with `docs/DURABILITY-PROOFS.md` (PROOF-01..05, OPS-01). Milestone
 6/6 phases, 6/6 cross-phase seams; OPS-01 live UAT 2/2). At close, 6 open artifacts were resolved (2 stale
 status flags) and 4 demo/UI-polish items reclassified to `backlog.md` as the next mini-milestone scope.
 Prior milestone: v3 — Production-Ready Codebase SHIPPED 2026-07-13. Next: `/gsd-new-milestone` (mini —
-demo polish & run-detail UI). Full history below.*
+demo polish & run-detail UI). Full history below. -->
 
 <!-- Prior footer (v4 Phase 21): Last updated: 2026-07-20 — **v4 Phase 21 (Durability Proofs & Ops View) complete — MILESTONE v4 100% (all 6 phases 16–21 done).** Every durability/exactly-once claim from Phases 16–20 is now demonstrated able to fail (PROOF-01..04, each with an executed falsifying mutation against real Postgres), the completeness gate (PROOF-05) makes a proof unable to silently stop running, and an operator can read queue health as a fact via `GET /ops` + the `/health/queue` alarm (OPS-01). Verified 6/6; UAT 2/2 (0 issues) against the LIVE deployed service — which surfaced that the phase was unpushed (master 94 ahead); pushed + redeployed, live alarm baseline clean (0 unaccounted error runs), drain-before-alarm ordering proven via a real `workflow_dispatch` run, and `docs/DURABILITY-PROOFS.md` re-run end-to-end (green → apply the doc's own diff → red → revert → green). Verification canonicalized `human_needed` → `passed`. Next: `/gsd-complete-milestone v4` to archive. Prior: v4 Phase 19 complete 2026-07-17; Milestone v4 started 2026-07-13; v3 SHIPPED 2026-07-13. -->
 
