@@ -846,6 +846,25 @@ def test_bind_route_not_on_landing_page(client):
     assert b"demo/compose" in resp.content
 
 
+def test_landing_subject_default_complete_and_queue_error_actionable(client):
+    """Subject default is a complete string; the queue-error callout is actionable and safe."""
+    plain_resp = client.get("/")
+    assert plain_resp.status_code == 200
+    assert b'value="Payroll submission"' in plain_resp.content
+    assert b"week of" not in plain_resp.content
+
+    error_resp = client.get("/?demo_queue_error=1")
+    assert error_resp.status_code == 200
+    assert b"Couldn't start this payroll run" in error_resp.content
+    assert b"sleeps after 15 idle minutes" in error_resp.content
+    assert b'href="/runs"' in error_resp.content
+
+    hostile = "<script>alert(1)</script>"
+    hostile_resp = client.get("/", params={"demo_queue_error": hostile})
+    assert hostile_resp.status_code == 200
+    assert hostile.encode() not in hostile_resp.content
+
+
 def test_compose_rejects_unknown_business(monkeypatch):
     """POST /demo/compose with unknown business_name is rejected; create_run not called."""
     import app.db.repo as repo_mod
@@ -1503,7 +1522,7 @@ def test_demo_compose_rolls_back_every_write_failure_and_renders_bounded_notice(
     assert store.events[-1] == "transaction:rollback"
     assert "wake" not in store.events
     assert notice.status_code == 200
-    assert notice.text.count("We couldn't queue this demo run. Please try again.") == 1
+    assert notice.text.count("Couldn't start this payroll run.") == 1
     for forbidden in (
         "secret email insert failure",
         "secret run insert failure",

@@ -55,7 +55,13 @@
   <p class="column-label">Compose a payroll email</p>
   {% if demo_queue_error %}
   <div class="callout callout-error" role="alert">
-    <p>We couldn't queue this demo run. Please try again.</p>
+    <p>
+      <strong>Couldn't start this payroll run.</strong>
+      Pyrl's free hosting sleeps after 15 idle minutes and can take up to a minute to wake, so a
+      first attempt right after arriving can fail. Wait a moment and submit again — if it fails
+      again, check <a href="/runs">the runs list</a> to see whether the run was recorded, or
+      watch the recorded walkthrough further down this page.
+    </p>
   </div>
   {% endif %}
   <form method="post" action="/demo/compose" class="composer">
@@ -64,7 +70,7 @@
     <div class="form-field">
       <label class="form-label">Subject (max 200 chars)</label>
       <input type="text" name="subject" maxlength="200" class="input"
-             value="Payroll submission — week of {{ '' }}">
+             value="Payroll submission">
     </div>
     <div class="form-field">
       <label class="form-label">Email body (max 4000 chars)</label>

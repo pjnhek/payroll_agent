@@ -708,6 +708,10 @@ td a:hover {
   font-size: 14px;
 }
 
+.callout-error a {
+  color: var(--danger-hover);
+}
+
 /* --- Cards --- */
 .card {
   background: var(--surface);
