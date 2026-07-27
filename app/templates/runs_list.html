@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block title %}Payroll runs · Pyrl{% endblock %}
 {% block content %}
 {# Vanilla-JS per-row status poll — replaces a blunt meta-refresh, which would reset
    the demo-business <select> and the scroll position on every tick.
@@ -20,9 +21,9 @@
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
           if (!data) { return; }
-          var badge = document.querySelector('[data-run-id="' + runId + '"] .status-badge');
+          var badge = document.querySelector('[data-run-id="' + runId + '"] .js-status-badge');
           if (badge) {
-            badge.className = 'badge badge-' + data.badge_class + ' status-badge';
+            badge.className = 'badge badge-' + data.badge_class + ' js-status-badge';
             badge.textContent = data.badge_label;
           }
           var queueBadge = document.querySelector('[data-run-id="' + runId + '"] .queue-badge');
@@ -31,12 +32,12 @@
             queueBadge.textContent = data.queue_label || '';
             queueBadge.hidden = !data.has_open_job;
           }
-          var secondary = document.querySelector('[data-run-id="' + runId + '"] .failure-secondary');
+          var secondary = document.querySelector('[data-run-id="' + runId + '"] .js-failure-secondary');
           if (secondary) {
             secondary.textContent = data.failure.secondary_label || '';
             secondary.hidden = !data.failure.secondary_label;
           }
-          var failureSummary = document.querySelector('[data-run-id="' + runId + '"] .failure-summary');
+          var failureSummary = document.querySelector('[data-run-id="' + runId + '"] .js-failure-summary');
           if (failureSummary) {
             var parts = [data.failure.stage, data.failure.reason, data.failure.attempts].filter(Boolean);
             failureSummary.textContent = parts.join(' · ');
@@ -82,15 +83,15 @@
       <td>{{ run.business_name }}</td>
       <td>
         <span class="status-cluster">
-          <span class="badge badge-{{ run.status | badge_class }} status-badge">{{ run.status | badge_label }}</span>
+          <span class="badge badge-{{ run.status | badge_class }} js-status-badge">{{ run.status | badge_label }}</span>
           <span class="badge badge-{{ run.queue_badge_class }} queue-badge"
                 aria-live="polite" {% if not run.has_open_job %}hidden{% endif %}>{{ run.queue_label or '' }}</span>
         </span>
-        <span class="badge badge-neutral failure-secondary" {% if not run.failure.secondary_label %}hidden{% endif %}>{{ run.failure.secondary_label or '' }}</span>
+        <span class="badge badge-neutral js-failure-secondary" {% if not run.failure.secondary_label %}hidden{% endif %}>{{ run.failure.secondary_label or '' }}</span>
       </td>
       <td class="text-muted">
         {% if run.failure.stage or run.failure.reason or run.failure.attempts %}
-          <span class="failure-summary">{{ [run.failure.stage, run.failure.reason, run.failure.attempts] | select | join(' · ') }}</span>
+          <span class="js-failure-summary">{{ [run.failure.stage, run.failure.reason, run.failure.attempts] | select | join(' · ') }}</span>
         {% elif run.summary_gate_reason %}
           {{ run.summary_gate_reason }}
         {% elif run.employee_count %}
@@ -119,14 +120,14 @@
     <p>We couldn't queue this demo run. Please try again.</p>
   </div>
   {% endif %}
-  <form method="post" action="/demo/send-test" class="form-inline" style="margin-bottom: 0;">
+  <form method="post" action="/demo/send-test" class="form-inline form-inline--flush">
     <label for="fixture_key_runs" class="form-help" style="font-weight: 600;">Demo scenario</label>
     <select id="fixture_key_runs" name="fixture_key" class="demo-select">
       {% for key, meta in demo_fixtures.items() %}
       <option value="{{ key }}">{{ meta.label }}</option>
       {% endfor %}
     </select>
-    <button type="submit" class="btn-approve">Send Test Email</button>
+    <button type="submit" class="btn btn-accent">Send Test Email</button>
   </form>
 </div>
 {% endblock %}

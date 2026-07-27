@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block title %}Pyrl · Deterministic payroll decisioning{% endblock %}
 {% block content %}
 <h1>The LLM reads. Deterministic code decides.</h1>
 <p class="lede">
@@ -22,7 +23,7 @@
   {% if gate_fixture_body %}<pre class="raw-email raw-email--nested">{{ gate_fixture_body | e }}</pre>{% endif %}
   <form method="post" action="/demo/send-test">
     <input type="hidden" name="fixture_key" value="{{ gate_fixture_key | e }}">
-    <button type="submit" class="btn-approve">Run this email through the pipeline</button>
+    <button type="submit" class="btn btn-accent">Run this email through the pipeline</button>
   </form>
   <p class="form-help">
     Runs the real extraction and decision code against the email above, then opens the run it creates.
@@ -38,8 +39,8 @@
 
   {# ── Business picker (GET reload) ── #}
   <form method="get" action="/" class="form-inline">
-    <label for="business-picker" class="form-label" style="margin-bottom: 0;">Client business</label>
-    <select id="business-picker" name="business" class="select" style="width: auto; min-width: 240px;"
+    <label for="business-picker" class="form-label form-label--flush">Client business</label>
+    <select id="business-picker" name="business" class="select select-inline"
             onchange="this.form.submit()">
       {% for biz in businesses %}
       <option value="{{ biz.name | e }}"
@@ -48,7 +49,7 @@
       </option>
       {% endfor %}
     </select>
-    <noscript><button type="submit" class="btn-retrigger">Show roster</button></noscript>
+    <noscript><button type="submit" class="btn btn-retrigger">Show roster</button></noscript>
   </form>
 
   {# ── Roster table — nested in the card, so it drops its own shadow ── #}
@@ -106,8 +107,8 @@ James 40 regular, 3 overtime.
 
 Thanks!</textarea>
     </div>
-    <div class="form-inline" style="margin-bottom: 0;">
-      <button type="submit" class="btn-retrigger">Run pipeline</button>
+    <div class="form-inline form-inline--flush">
+      <button type="submit" class="btn btn-retrigger">Run pipeline</button>
       <span class="form-help">
         Fires the REAL extraction + decisioning pipeline against the selected business's roster.
         No email client needed.
@@ -136,7 +137,7 @@ Thanks!</textarea>
 {% set walkthrough_url = "https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4" %}
 <div class="section landing-panel">
   <h2>The recorded email round-trip</h2>
-  <p class="form-help" style="margin: 0 0 8px 0;">
+  <p class="form-help form-help--stacked">
     <strong>payroll@jiodnel.resend.app</strong> is a real Resend inbound address.
     The operator sends from Gmail; the pipeline processes the run end-to-end and returns
     a payroll confirmation email. The recording also stands in for a live round-trip while
