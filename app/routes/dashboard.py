@@ -24,6 +24,39 @@ router = APIRouter()
 EVAL_SUMMARY_PATH = Path("eval/summary.json")
 EVAL_FIXTURES_DIR = Path("eval/fixtures")
 
+# The landing page's primary action fires this fixture through /demo/send-test. Named as
+# a module constant rather than a template literal because /demo/send-test:267-269
+# silently falls back to DEMO_FIXTURE_DEFAULT_KEY (coastal_exact, a clean exact-match
+# run) on any key not present in DEMO_FIXTURES — a rename inside that allowlist would
+# therefore swap the page's demonstrated refusal for its exact opposite with nothing
+# failing anywhere. A test pins this key to the allowlist and to the fixture's own
+# expected.decision.final_action == "request_clarification".
+LANDING_GATE_FIXTURE_KEY = "unknown_shorthand_metro"
+
+
+def _gate_fixture_body() -> str:
+    """Read the gate fixture's own email body verbatim, for the landing page's proof section.
+
+    Total: a missing key, an OSError, a malformed/non-dict JSON payload, or a non-string
+    body_text all return the empty string rather than raising, because this runs on the
+    route an evaluator hits first and a broken fixture must cost the page its evidence
+    block, not its response. The path is resolved from DEMO_FIXTURES[LANDING_GATE_FIXTURE_KEY]
+    — a server-owned constant — and never from a request value, so no query parameter or
+    form field can steer this read.
+    """
+    try:
+        fixture_meta = DEMO_FIXTURES[LANDING_GATE_FIXTURE_KEY]
+        fixture_path = Path(fixture_meta["path"])
+        raw = json.loads(fixture_path.read_text())
+    except (KeyError, OSError, ValueError):
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    body_text = raw.get("body_text")
+    if not isinstance(body_text, str):
+        return ""
+    return body_text
+
 
 # ---------------------------------------------------------------------------
 # GET / — recruiter landing page (self-serve demo, Path-1 in-app composer)
@@ -103,6 +136,8 @@ def landing(
             "bound": bound,
             "demo_queue_error": demo_queue_error == "1",
             "demo_operator_email": DEMO_OPERATOR_EMAIL,
+            "gate_fixture_key": LANDING_GATE_FIXTURE_KEY,
+            "gate_fixture_body": _gate_fixture_body(),
         },
     )
 
