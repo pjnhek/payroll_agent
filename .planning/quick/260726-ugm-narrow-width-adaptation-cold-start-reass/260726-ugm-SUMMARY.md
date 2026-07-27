@@ -215,3 +215,32 @@ All three task commits (`c878af9`, `cfc12cf`, `727d9c6`) verified present in `gi
 All 12 modified files verified present on disk (style.css, base.html, index.html, runs_list.html,
 run_detail.html, eval.html, ops.html, test_design_tokens.py, test_demo_landing.py, test_dashboard.py,
 DESIGN.md, .impeccable/design.json). No missing items.
+
+## Post-execution verification (2026-07-27)
+
+The `NOT VERIFIED` statement above was accurate at execution time and is now **closed**. The Chrome
+extension was connected afterwards and the work was verified against a real render.
+
+Method: app run locally with `WORKER_COUNT=0` so no worker threads spawned (no queue drain, no
+outbound email); only read-only `GET`s were issued; the server log recorded 0 POSTs. A same-origin
+iframe was used to obtain a true narrow viewport, since macOS Chrome will not size a window below
+roughly 945px.
+
+Results at a real 375px viewport:
+
+- Horizontal page overflow: **0px**. Elements wider than the viewport: **none**.
+- `nav` and `.page-wrapper` horizontal padding collapsed 64px -> 16px as designed.
+- The business picker's 240px `min-width` is unpinned (computed `0px`); the control renders 293px
+  inside 375px.
+- `/eval`'s 1024px table overflows *inside* its `.table-scroll` region (`overflow-x: auto`,
+  `tabIndex=0`, `scrollWidth > clientWidth`) while the page itself does not overflow — the intended
+  behavior, and keyboard-reachable.
+- `/ops` and `/runs` required no scroll region and showed no overflow.
+
+Live computed contrast (measured, not derived): white-on-accent **7.469:1**, `.form-help` and
+`.column-label` **4.834:1**, `.lede` **4.550:1** (the marginal pair, confirmed to clear 4.5:1),
+disclaimer and `h1` **15.916:1**, nav links **16.913:1**.
+
+Per-page `<title>` and nav `aria-current="page"` confirmed correct on `/`, `/runs`, `/eval`, `/ops`.
+
+Body font resolved to the native stack with no Inter and no third-party font request.
