@@ -1,6 +1,7 @@
 /* Pyrl — single stylesheet (no build step, no framework).
-   Linear/Stripe-style SaaS design system: Inter type, indigo accent, soft
-   surfaces with subtle elevation, 8px radius, consistent token-driven spacing. */
+   A cool-neutral audit surface on a native platform sans, no font downloads,
+   one deep-teal accent reserved for the next action, soft surfaces with
+   subtle elevation, 8px radius, consistent token-driven spacing. */
 
 /* --- Design tokens --- */
 :root {
@@ -23,11 +24,19 @@
   --text-muted: #6B7280;
   --text-subtle: #9CA3AF;
 
-  /* Accent (indigo) */
-  --accent: #4F46E5;
-  --accent-hover: #4338CA;
-  --accent-soft: #EEF0FE;
-  --accent-ring: rgba(79, 70, 229, 0.18);
+  /* Accent (deep teal) */
+  --accent: #0F5F5C;
+  --accent-hover: #0B4A48;
+  --accent-ring: rgba(15, 95, 92, 0.18);
+
+  /* Waiting-status family (indigo). Named tokens, not accent borrowings: a badge
+     that appears on every row must never wear the accent, or the accent stops
+     being a pointer. This family is exclusively pending/running's; nothing else
+     may use it. */
+  --state-pending-fg: #3730A3;
+  --state-pending-bg: #EEF0FE;
+  --state-pending-edge: #C7D2FE;
+  --state-pending-edge-strong: #A5B4FC;
 
   /* Semantic */
   --danger: #DC2626;
@@ -46,7 +55,7 @@
   --transition: 150ms ease;
 
   /* Type */
-  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
@@ -272,8 +281,8 @@ td a:hover {
 }
 
 .badge-pending {
-  color: #3730A3;
-  background: var(--accent-soft);
+  color: var(--state-pending-fg);
+  background: var(--state-pending-bg);
 }
 
 .badge-good {
@@ -314,8 +323,8 @@ td a:hover {
 }
 
 .badge-running {
-  color: #3730A3;
-  background: var(--accent-soft);
+  color: var(--state-pending-fg);
+  background: var(--state-pending-bg);
 }
 
 .durability-note {
@@ -333,8 +342,8 @@ td a:hover {
 }
 
 .delivery-review-card--clarification {
-  background: #EEF2FF;
-  border-color: #A5B4FC;
+  background: var(--state-pending-bg);
+  border-color: var(--state-pending-edge-strong);
 }
 
 .delivery-review-header {
@@ -719,9 +728,9 @@ td a:hover {
 }
 
 .callout-info {
-  background: var(--accent-soft);
-  border-color: #C7D2FE;
-  color: #3730A3;
+  background: var(--state-pending-bg);
+  border-color: var(--state-pending-edge);
+  color: var(--state-pending-fg);
 }
 
 .callout-error {
