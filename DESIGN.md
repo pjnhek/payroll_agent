@@ -2,9 +2,8 @@
 name: Pyrl
 description: A cool-neutral audit surface where tabular figures carry the weight, one accent marks the single next action, and depth never exceeds two steps.
 colors:
-  accent: "#4F46E5"
-  accent-hover: "#4338CA"
-  accent-soft: "#EEF0FE"
+  accent: "#0F5F5C"
+  accent-hover: "#0B4A48"
   page-ground: "#F7F8FA"
   surface: "#FFFFFF"
   surface-subtle: "#F9FAFB"
@@ -21,6 +20,8 @@ colors:
   state-bad-bg: "#FEE2E2"
   state-pending-fg: "#3730A3"
   state-pending-bg: "#EEF0FE"
+  state-pending-edge: "#C7D2FE"
+  state-pending-edge-strong: "#A5B4FC"
   state-escalate-fg: "#9A3412"
   state-escalate-bg: "#FFEDD5"
   state-neutral-fg: "#4B5563"
@@ -37,38 +38,38 @@ colors:
   thread-inbound-edge: "#94A3B8"
 typography:
   display:
-    fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica Neue, Arial, sans-serif"
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
     fontSize: "30px"
     fontWeight: 600
     lineHeight: 1.1
     letterSpacing: "-0.02em"
     fontVariation: "tabular-nums"
   headline:
-    fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica Neue, Arial, sans-serif"
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
     fontSize: "24px"
     fontWeight: 600
     lineHeight: 1.2
     letterSpacing: "-0.02em"
   title:
-    fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica Neue, Arial, sans-serif"
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
     fontSize: "18px"
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "-0.01em"
   lede:
-    fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica Neue, Arial, sans-serif"
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
     fontSize: "15px"
     fontWeight: 400
     lineHeight: 1.55
     letterSpacing: "normal"
   body:
-    fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica Neue, Arial, sans-serif"
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.55
     letterSpacing: "normal"
   label:
-    fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica Neue, Arial, sans-serif"
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
     fontSize: "11px"
     fontWeight: 600
     lineHeight: 1.3
@@ -195,9 +196,10 @@ components:
 
 # Design System: Pyrl
 
-<!-- Captured by scan from app/static/style.css and app/templates/*.html. One value is
-     deliberately provisional: colors.accent (#4F46E5) is confirmed to be replaced with a
-     non-AI accent. The token is normative; its current value is not. See Colors. -->
+<!-- Captured by scan from app/static/style.css and app/templates/*.html. The accent was
+     replaced (indigo #4F46E5 -> Ledger Teal #0F5F5C) and, at the same time, the waiting-status
+     family was moved off the accent onto its own state-pending-* tokens so it no longer borrows
+     what it merely shares a hue lineage with. See Colors. -->
 
 ## Overview
 
@@ -207,7 +209,7 @@ Every screen exists to make a claim checkable. Evidence sits beside conclusion r
 
 The system is cool, quiet, and dense-but-breathing. Neutrals do almost all the work: a faint blue-grey page ground with pure white surfaces lifted just off it, hairline borders instead of heavy rules, and near-black text at a comfortable 14px. Exactly one accent exists, and it marks the single next action or the one thing to follow. Color is otherwise reserved entirely for state, where it is doing real work: telling an operator whether a run is waiting, escalated, or wrong.
 
-Two anti-references are confirmed and binding. The first is **AI-product atmosphere**: dark surfaces, violet glow, orbs, shimmer, gradient mesh, intelligence signaled through mood. This product's entire thesis is that it does not guess, so borrowing the visual language of vibes-based software actively undermines the claim. The second is **generic AI-generated SaaS**: the default indigo-on-white card dashboard that is competent and completely forgettable. This one requires honesty. Parts of the current implementation sit inside that anti-reference rather than outside it, which is why the accent is being replaced and why distinctiveness has to be earned through typography, tabular rigor, measure, and the signature components below rather than through hue. Treat the token layer as sound and the current character as unfinished.
+Two anti-references are confirmed and binding. The first is **AI-product atmosphere**: dark surfaces, violet glow, orbs, shimmer, gradient mesh, intelligence signaled through mood. This product's entire thesis is that it does not guess, so borrowing the visual language of vibes-based software actively undermines the claim. The second is **generic AI-generated SaaS**: the default indigo-on-white card dashboard that is competent and completely forgettable. The current implementation sat inside that anti-reference rather than outside it: the accent has been replaced (indigo -> deep teal) and the render-blocking third-party webfont request has been dropped for a native platform stack, closing both the hue and the "fetches from a font CDN" tells at once. Hue and a native stack alone do not finish the job, though: distinctiveness still has to be earned through typography, tabular rigor, measure, and the signature components below.
 
 **Key Characteristics:**
 
@@ -225,9 +227,9 @@ A cool blue-grey neutral field carrying one accent and two parallel status palet
 
 ### Primary
 
-- **Signal Indigo** (`{colors.accent}`): The single next action and the single thing to follow. It appears on the primary button, on links inside tables and page footers, on the focus ring, on the outbound stripe of a thread message, and on the disclosure marker. It never fills a large surface.
+- **Ledger Teal** (`{colors.accent}`): The single next action and the single thing to follow. It appears on the primary button, on links inside tables and page footers, on the focus ring, on the outbound stripe of a thread message, and on the disclosure marker. It never fills a large surface.
 
-> **Provisional value.** The accent slot is normative; `#4F46E5` is not. It has been confirmed for replacement with a hue that reads accounting rather than machine learning. Until that replacement is chosen, do not add new hard-coded indigo values anywhere, and reference the token so the swap stays a one-line change. The five status families below are tuned against this indigo and will need re-checking when it moves.
+The accent was swapped from indigo (`#4F46E5`) to teal (`#0F5F5C`) in the same change that moved the waiting-status family off the accent and onto its own `state-pending-*` tokens: all five status families were re-checked against the new accent, and none of them read as borrowing it. Every accent-bearing pair clears WCAG AA 4.5:1 against the new value, improving on the indigo it replaced (lowest ratio 7.03:1, vs. 5.92:1 before).
 
 ### Neutral
 
@@ -244,7 +246,7 @@ A cool blue-grey neutral field carrying one accent and two parallel status palet
 
 Two parallel status palettes exist, and the distinction is deliberate and load-bearing.
 
-- **Badge palette** (saturated fill, `state-*`): high-contrast, small-area. Five families map to run state: neutral (inert), pending (`awaiting_approval`, running), good (processed, sent, reconciled), bad (rejected, error), escalate (`needs_operator`). Escalate is its own family on purpose: an escalation is neither routine-pending nor a failure.
+- **Badge palette** (saturated fill, `state-*`): high-contrast, small-area. Five families map to run state: neutral (inert), pending (`awaiting_approval`, running), good (processed, sent, reconciled), bad (rejected, error), escalate (`needs_operator`). Escalate is its own family on purpose: an escalation is neither routine-pending nor a failure. Indigo is now the pending family's exclusively (it no longer shares its hue with the accent), so a busy `awaiting_approval`/`running` row never reads as the accent's pointer.
 - **Banner palette** (tinted wash, `banner-*`): low-contrast, large-area, always paired with a matching hairline edge. Three families: process, clarify/awaiting, error.
 - **Danger** (`{colors.danger}` / `{colors.danger-hover}`): destructive intent on controls, and the ops alarm border. Never used as a status fill.
 - **Inbound Slate** (`{colors.thread-inbound-edge}`): the 4px left stripe on a message from the client, opposite the accent stripe on a message from the system. Direction is readable without reading a word.
@@ -255,15 +257,15 @@ Two parallel status palettes exist, and the distinction is deliberate and load-b
 
 **The Accent Is A Pointer Rule.** The accent marks what to do next or what to follow. It is never a background for content, never a decorative panel, and never more than a small fraction of any screen. Its scarcity is what makes it readable.
 
-**The Token-First Rule.** Every status color currently lives as a literal hex inside its component rule rather than in `:root`. That is the system's main drift risk and the reason the accent replacement is more expensive than it should be. New state colors are declared as custom properties first and referenced second.
+**The Token-First Rule.** The waiting family (`state-pending-fg`, `state-pending-bg`, `state-pending-edge`, `state-pending-edge-strong`) has been promoted from four scattered literals into named `:root` tokens. The good, bad, escalate, and banner families have not yet made that move and still live as literal hexes inside their component rules, and that remaining literal surface is the system's main drift risk. New state colors are declared as custom properties first and referenced second.
 
 ## Typography
 
-**Display Font:** Inter (with `system-ui`, `-apple-system`, `BlinkMacSystemFont`, `Segoe UI`, `Helvetica Neue`, Arial, sans-serif)
-**Body Font:** Inter (same stack; one family carries the whole interface)
+**Display Font:** the platform native UI stack (`system-ui`, `-apple-system`, `BlinkMacSystemFont`, `Segoe UI`, Roboto, `Helvetica Neue`, Arial, sans-serif; no webfont, no download)
+**Body Font:** the same native stack (one family carries the whole interface)
 **Label/Mono Font:** the platform mono stack (`ui-monospace`, SF Mono, JetBrains Mono, Consolas, Liberation Mono, Menlo)
 
-**Character:** One neutral grotesque doing everything, tightened at the top of the scale and never pushed heavy. Only three weights exist in the entire system (400, 500, 600), and the webfont request loads exactly those three: nothing is faked and nothing is loaded unused. Monospace is not a stylistic choice here; it marks machine-verbatim content, meaning anything a human must read exactly as the machine received or produced it.
+**Character:** Whichever grotesque the platform ships, doing everything, tightened at the top of the scale and never pushed heavy. Only three weights are used in the entire system (400, 500, 600); there is no webfont request to keep in sync with them, since the platform stack ships its own weights. Monospace is not a stylistic choice here; it marks machine-verbatim content, meaning anything a human must read exactly as the machine received or produced it.
 
 ### Hierarchy
 
@@ -312,7 +314,7 @@ The evidence that this is considered rather than sprayed: nested tables explicit
 
 - **Resting lift** (`box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06)`): every container at rest, including cards, tables, code-face panels, thread messages, the payroll disclosure, the nav bar, and the demo thumbnail.
 - **Hover lift** (`box-shadow: 0 2px 4px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.07)`): the primary button and the demo thumbnail on hover. Nothing else.
-- **Focus ring** (`box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18)`): a 3px accent-tinted ring replacing the native outline on every control. The destructive button uses a danger-tinted ring at the same geometry.
+- **Focus ring** (`box-shadow: 0 0 0 3px rgba(15, 95, 92, 0.18)`): a 3px accent-tinted ring replacing the native outline on every control. The destructive button uses a danger-tinted ring at the same geometry.
 
 ### Named Rules
 
@@ -419,7 +421,7 @@ Three equal columns, 32px gutters, each an 11px uppercase muted eyebrow above a 
 - **Don't** introduce a third elevation. Two exist; restructure instead.
 - **Don't** clone the button base into a new class, as the three current variants do.
 - **Don't** hard-code a new status hex inline. The existing literals are the system's main drift risk, not its pattern.
-- **Don't** add another indigo literal anywhere while the accent is pending replacement.
+- **Don't** treat the waiting indigo family as a second accent. It is a status family, exclusive to pending/running; nothing outside those two states may use it.
 - **Don't** use the accent as a large fill or a decorative panel background.
 - **Don't** cross the two status palettes: no banner wash on a badge, no badge fill on a banner.
 - **Don't** ship a class name with no CSS behind it. Four already exist (`status-badge`, `mt-md`, `failure-summary`, `failure-secondary`) and each is either dead markup or a silently missing style.
@@ -427,4 +429,4 @@ Three equal columns, 32px gutters, each an 11px uppercase muted eyebrow above a 
 - **Don't** reach for dark surfaces, glow, gradient mesh, shimmer, or orbs. AI-product atmosphere is a confirmed anti-reference and it contradicts the product's core claim.
 - **Don't** settle for the default indigo-on-white card dashboard. Generic AI-generated SaaS is a confirmed anti-reference, and the current implementation is close enough to it that new work must actively earn distinction through type, measure, and tabular rigor.
 - **Don't** add a build step, bundler, or client framework to achieve a visual effect. Server-rendered with one hand-authored stylesheet is a binding product constraint.
-- **Don't** add a font weight outside 400, 500, and 600, or the webfont request stops matching what is used.
+- **Don't** add a font weight outside 400, 500, and 600. Platform stacks vary in which weights they actually ship, and a fourth weight risks a browser-synthesized fake rather than a real one.

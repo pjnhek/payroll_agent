@@ -94,8 +94,8 @@ at-most-once confirmation delivery; a committed offline eval with a per-category
   hand-authored CSS and server-rendered HTML, or it is not the design.
 - **One stylesheet:** `app/static/style.css`, token-driven (spacing, surfaces, text, accent,
   semantic, radius, elevation, motion, type all declared as custom properties on `:root`).
-- **Inter is currently fetched from the Google Fonts CDN** at `app/templates/base.html:9-10` — a
-  runtime third-party request on every page load. Recorded as a fact, not a commitment.
+- **The interface uses the platform's native UI stack and issues no third-party font request.**
+  First paint carries no render-blocking dependency on a service that is not this app.
 - **Ephemeral filesystem.** Nothing written to disk survives a restart or spin-down. PDFs are
   generated in memory on demand; there is no storage bucket.
 - **Nothing heavy at serve time.** matplotlib is a dev-group-only dependency; `eval/chart.svg` is
