@@ -777,15 +777,65 @@ def client(monkeypatch):
 
 
 def test_landing_get_returns_200_no_bind_form(client):
-    """GET / returns 200 with composer form but NO /demo/bind form."""
+    """GET / returns 200 with the product claim AND the composer — both must be present."""
     resp = client.get("/")
     assert resp.status_code == 200
-    assert b"Try it live" in resp.content or b"demo/compose" in resp.content, (
-        "Landing page must render composer or 'Try it live'"
+    assert b"The LLM reads. Deterministic code decides." in resp.content, (
+        "Landing page must state the differentiating claim"
+    )
+    assert b"demo/compose" in resp.content, (
+        "Landing page must render the composer"
     )
     assert b'action="/demo/bind"' not in resp.content, (
         "Bind form must NOT appear on landing page"
     )
+
+
+def test_landing_get_states_product_claim_with_disclaimer(client):
+    """GET / opens with the code-owned-decision claim, its disclaimer, and the composer."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"The LLM reads. Deterministic code decides." in resp.content
+    assert b"owns employee resolution and the process-or-clarify decision" in resp.content
+    assert b"not tax-compliant payroll software" in resp.content
+    assert b"demo/compose" in resp.content
+
+
+def test_landing_binding_state_gated_on_bound_query_param(client, monkeypatch):
+    """Operator binding state renders ONLY on GET /?bound=1, never on a plain GET /.
+
+    Covers all three locked behaviors in one test: an absence-only assertion would
+    also pass if the confirmation were deleted outright, silently breaking the
+    /demo/bind operator flow, so the plain-GET absence and the ?bound=1 presence
+    (both with a resolvable binding and with an unresolvable one) are asserted together.
+    """
+    import app.db.repo as repo_mod
+
+    metro_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    # Re-apply AFTER the client fixture: the route resolves get_demo_binding at
+    # request time, so this late patch takes effect on every subsequent .get() call.
+    monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: metro_id, raising=False)
+
+    # Plain GET / must render none of the binding-state markers, even though the
+    # underlying repo call would return a real bound business.
+    plain_resp = client.get("/")
+    assert plain_resp.status_code == 200
+    assert b"processed as a run for" not in plain_resp.content
+    assert b"Path-2" not in plain_resp.content
+    assert b"armed for" not in plain_resp.content
+
+    # GET /?bound=1 with the same binding names the bound business by the full
+    # sentence fragment, not the bare name (which also appears in the picker options).
+    bound_resp = client.get("/?bound=1")
+    assert bound_resp.status_code == 200
+    assert b"processed as a run for Metro Deli Group" in bound_resp.content
+
+    # GET /?bound=1 with an unresolvable binding still confirms, with no raw UUID.
+    monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
+    unresolved_resp = client.get("/?bound=1")
+    assert unresolved_resp.status_code == 200
+    assert b"processed as a run for" in unresolved_resp.content
+    assert b"b0000002-0000-0000-0000-000000000002" not in unresolved_resp.content
 
 
 def test_bind_route_not_on_landing_page(client):
@@ -794,6 +844,25 @@ def test_bind_route_not_on_landing_page(client):
     assert resp.status_code == 200
     assert b'action="/demo/bind"' not in resp.content
     assert b"demo/compose" in resp.content
+
+
+def test_landing_subject_default_complete_and_queue_error_actionable(client):
+    """Subject default is a complete string; the queue-error callout is actionable and safe."""
+    plain_resp = client.get("/")
+    assert plain_resp.status_code == 200
+    assert b'value="Payroll submission"' in plain_resp.content
+    assert b"week of" not in plain_resp.content
+
+    error_resp = client.get("/?demo_queue_error=1")
+    assert error_resp.status_code == 200
+    assert b"Couldn't start this payroll run" in error_resp.content
+    assert b"sleeps after 15 idle minutes" in error_resp.content
+    assert b'href="/runs"' in error_resp.content
+
+    hostile = "<script>alert(1)</script>"
+    hostile_resp = client.get("/", params={"demo_queue_error": hostile})
+    assert hostile_resp.status_code == 200
+    assert hostile.encode() not in hostile_resp.content
 
 
 def test_compose_rejects_unknown_business(monkeypatch):
@@ -1453,7 +1522,7 @@ def test_demo_compose_rolls_back_every_write_failure_and_renders_bounded_notice(
     assert store.events[-1] == "transaction:rollback"
     assert "wake" not in store.events
     assert notice.status_code == 200
-    assert notice.text.count("We couldn't queue this demo run. Please try again.") == 1
+    assert notice.text.count("Couldn't start this payroll run.") == 1
     for forbidden in (
         "secret email insert failure",
         "secret run insert failure",

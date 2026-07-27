@@ -69,22 +69,27 @@ def landing(
         except Exception:
             logger.debug("load_roster_for_business unavailable for %s", selected_business_name)
 
-    # Read-only armed business display (Path-2 state).
-    try:
-        armed_business_id = repo.get_demo_binding(DEMO_OPERATOR_EMAIL)
-    except Exception:
-        armed_business_id = None
-
-    # Resolve the armed business_id to its human name HERE (not in the template): a
-    # Jinja `{% set %}` inside a `{% for %}` does not escape the loop scope, so the
-    # template's match always fell back to showing the raw UUID. Match in Python so the
-    # landing page shows "Metro Deli Group", not "b0000002-…".
+    # Read-only armed business display (Path-2 state), gated on bound == "1" so the
+    # get_demo_binding lookup — and the operator confirmation it feeds — never reaches
+    # a plain visitor. Only the /demo/bind redirect (GET /?bound=1) triggers this read,
+    # which also drops one DB round-trip from every other landing render.
+    armed_business_id = None
     armed_business_name = None
-    if armed_business_id is not None:
-        armed_business_name = next(
-            (b["name"] for b in businesses if str(b["id"]) == str(armed_business_id)),
-            None,
-        )
+    if bound == "1":
+        try:
+            armed_business_id = repo.get_demo_binding(DEMO_OPERATOR_EMAIL)
+        except Exception:
+            armed_business_id = None
+
+        # Resolve the armed business_id to its human name HERE (not in the template): a
+        # Jinja `{% set %}` inside a `{% for %}` does not escape the loop scope, so the
+        # template's match always fell back to showing the raw UUID. Match in Python so
+        # the landing page shows "Metro Deli Group", not "b0000002-…".
+        if armed_business_id is not None:
+            armed_business_name = next(
+                (b["name"] for b in businesses if str(b["id"]) == str(armed_business_id)),
+                None,
+            )
 
     return templates.TemplateResponse(
         request,

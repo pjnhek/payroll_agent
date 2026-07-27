@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Try it live</h1>
+<h1>The LLM reads. Deterministic code decides.</h1>
 <p class="lede">
-  Select a client business and compose a payroll email — the full extraction, name-resolution,
-  decisioning, and (if needed) clarification pipeline runs in real time. No email client needed.
+  A client business emails its employees' hours; the pipeline reads the email, calculates the
+  payroll, and pauses for one human approval before the confirmation goes back. Deterministic code
+  owns employee resolution and the process-or-clarify decision, and unresolved names, alias
+  collisions, and missing required fields cannot silently advance to payroll calculation.
+</p>
+<p class="form-help" style="max-width: 640px;">
+  Educational portfolio project, not tax-compliant payroll software, not for paying real employees.
 </p>
 
 {# ── Business picker (GET reload) ── #}
@@ -50,7 +55,13 @@
   <p class="column-label">Compose a payroll email</p>
   {% if demo_queue_error %}
   <div class="callout callout-error" role="alert">
-    <p>We couldn't queue this demo run. Please try again.</p>
+    <p>
+      <strong>Couldn't start this payroll run.</strong>
+      Pyrl's free hosting sleeps after 15 idle minutes and can take up to a minute to wake, so a
+      first attempt right after arriving can fail. Wait a moment and submit again — if it fails
+      again, check <a href="/runs">the runs list</a> to see whether the run was recorded, or
+      watch the recorded walkthrough further down this page.
+    </p>
   </div>
   {% endif %}
   <form method="post" action="/demo/compose" class="composer">
@@ -59,7 +70,7 @@
     <div class="form-field">
       <label class="form-label">Subject (max 200 chars)</label>
       <input type="text" name="subject" maxlength="200" class="input"
-             value="Payroll submission — week of {{ '' }}">
+             value="Payroll submission">
     </div>
     <div class="form-field">
       <label class="form-label">Email body (max 4000 chars)</label>
@@ -74,27 +85,24 @@ Thanks!</textarea>
       <button type="submit" class="btn-approve">Run pipeline</button>
       <span class="form-help">
         Fires the REAL extraction + decisioning pipeline against the selected business's roster.
+        No email client needed.
       </span>
     </div>
   </form>
 </div>
 
-{# ── Operator armed-business display (read-only, NOT a form) ── #}
-{% if armed_business_id %}
-<div class="callout callout-success">
-  <p>
-    <strong>Operator Path-2 armed for:</strong>
-    {{ (armed_business_name or (armed_business_id | string)) | e }}
-    — send from the operator Gmail to trigger a live run.
-  </p>
-</div>
-{% endif %}
-
-{# ── Bound confirmation ── #}
+{# ── Bound confirmation — the ONLY surface that renders operator binding state, and
+     only reachable via the /demo/bind redirect to /?bound=1. A plain GET / never
+     reads or renders this. ── #}
 {% if bound == "1" %}
 <div class="callout callout-info">
   <p>
-    <strong>Binding updated.</strong> The operator Gmail is now armed for Path-2 routing.
+    <strong>Operator routing updated.</strong>
+    {% if armed_business_name -%}
+    Payroll email sent from the operator's own mailbox will now be processed as a run for {{ armed_business_name | e }}.
+    {%- else -%}
+    Payroll email sent from the operator's own mailbox will now be processed as a run for the bound client business.
+    {%- endif %}
   </p>
 </div>
 {% endif %}
