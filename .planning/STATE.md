@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution
 Phase: Milestone v4 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-07-26 — Completed quick task 260726-rtt: landing-page claim, operator-state leak, subject and queue-error copy
+Last activity: 2026-07-26 — Completed quick task 260726-sje: landing page restructured as a proof surface (group 2 of 3)
 
 ## Performance Metrics
 
@@ -320,6 +320,7 @@ Open items surfaced by v4 research, to resolve during phase planning (not blocki
 | 260720-ie3 | Fix 19 mypy --strict test-file type errors failing the ci workflow (red since Phase 20; Phase 21 added to it) — annotations/casts only, 0 behavior change | 2026-07-20 | 2335a0c | [260720-ie3-fix-mypy-strict-test-file-type-errors-fa](./quick/260720-ie3-fix-mypy-strict-test-file-type-errors-fa/) |
 | 260720-lba | Thread YTD into the on-demand dashboard paystub download route (paystub_pdf) so an operator's manual PDF matches the emailed confirmation PDF — display-only parity fix + hermetic regression test (RED→GREEN proven) | 2026-07-20 | 25e2582 | [260720-lba-dashboard-paystub-ytd](./quick/260720-lba-dashboard-paystub-ytd/) |
 | 260726-rtt | Landing page (/): state the deterministic-decisioning claim as the h1 with the PRODUCT.md-required standing disclaimer, stop leaking operator binding state to every visitor (route-level gate on ?bound=1, skips the get_demo_binding read entirely on plain GET), complete the dangling subject default, and make the queue-error callout honest + actionable (must not claim nothing was recorded — wake() failures land there post-commit) — display/copy only, 0 pipeline change; group 1 of 3 from the /impeccable critique of index.html | 2026-07-26 | 88a4c5f | [260726-rtt-landing-page-state-the-product-claim-rem](./quick/260726-rtt-landing-page-state-the-product-claim-rem/) |
+| 260726-sje | Landing page (/): restructure as a proof surface — lead with the gate-tripping `unknown_shorthand_metro` fixture behind a named `LANDING_GATE_FIXTURE_KEY` constant (pinned by test to the allowlist AND to the fixture's own request_clarification expectation, closing a silent-fallback trap where a rename would flip the demo into its opposite), render the fixture's actual email escaped via the server-side allowlist, card the roster + composer, cut eyebrows 3→1, remove the accent play-circle so exactly one accent CTA remains, and add a `<noscript>` submit fixing a pre-existing JS-off failure in the business picker — display only, 0 pipeline change; group 2 of 3 from the /impeccable critique | 2026-07-26 | 28cd06c | [260726-sje-landing-page-restructure-as-a-proof-surf](./quick/260726-sje-landing-page-restructure-as-a-proof-surf/) |
 
 ### Build-time guidance (author review at roadmap lock — pull these forward, do not let them sit in the last phase)
 
