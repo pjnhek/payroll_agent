@@ -605,6 +605,13 @@ td a:hover {
   max-width: 560px;
 }
 
+/* Shared 640px measure for the landing page's cards and walkthrough section: The
+   Measure Rule caps prose near 640px, and inside a 32px-padded card the controls land
+   near 576px, comfortably inside the form measure. */
+.landing-panel {
+  max-width: 640px;
+}
+
 /* --- Column / section labels --- */
 .column-label {
   font-size: 11px;
@@ -630,6 +637,15 @@ td a:hover {
   max-height: 600px;
   overflow-y: auto;
   margin: 0;
+}
+
+/* Nested inside a card: drop the shadow (The No Double Frame Rule) and wrap rather than
+   scroll sideways at the card's measure — evidence content is never truncated. */
+.raw-email--nested {
+  box-shadow: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-bottom: var(--space-md);
 }
 
 /* --- Decision banners --- */

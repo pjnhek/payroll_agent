@@ -11,6 +11,24 @@
   Educational portfolio project, not tax-compliant payroll software, not for paying real employees.
 </p>
 
+{# ── Path-1 PROOF: the gate-tripping fixture, one click from the page's first action ── #}
+<div class="card card-pad landing-panel section">
+  <h2>Watch the gate refuse to guess</h2>
+  <p>
+    A client sends hours for a name that is not on its roster. No employee resolves, so
+    deterministic code refuses to calculate payroll and asks the client who was meant — the
+    LLM only suggests the likely employee for that question, it never makes the call.
+  </p>
+  {% if gate_fixture_body %}<pre class="raw-email raw-email--nested">{{ gate_fixture_body | e }}</pre>{% endif %}
+  <form method="post" action="/demo/send-test">
+    <input type="hidden" name="fixture_key" value="{{ gate_fixture_key | e }}">
+    <button type="submit" class="btn-approve">Run this email through the pipeline</button>
+  </form>
+  <p class="form-help">
+    Runs the real extraction and decision code against the email above, then opens the run it creates.
+  </p>
+</div>
+
 {# ── Business picker (GET reload) ── #}
 <form method="get" action="/" class="form-inline">
   <label for="business-picker" class="form-label" style="margin-bottom: 0;">Client business</label>

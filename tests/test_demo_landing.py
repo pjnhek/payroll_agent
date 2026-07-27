@@ -865,6 +865,72 @@ def test_landing_subject_default_complete_and_queue_error_actionable(client):
     assert hostile.encode() not in hostile_resp.content
 
 
+def test_landing_gate_fixture_key_is_valid_and_forces_clarification():
+    """LANDING_GATE_FIXTURE_KEY is a real allowlist member, differs from the default key,
+    and its own fixture expects request_clarification.
+
+    /demo/send-test silently falls back to DEMO_FIXTURE_DEFAULT_KEY (a clean exact-match
+    run) on any key not present in DEMO_FIXTURES, with nothing raised anywhere. Pinning
+    all three facts here means a rename inside DEMO_FIXTURES, or a fixture edit that drops
+    the clarification expectation, fails this test loudly instead of silently swapping the
+    landing page's demonstrated refusal for its exact opposite.
+    """
+    import json
+    from pathlib import Path
+
+    from app.routes.dashboard import LANDING_GATE_FIXTURE_KEY
+    from app.routes.demo import DEMO_FIXTURE_DEFAULT_KEY, DEMO_FIXTURES
+
+    assert LANDING_GATE_FIXTURE_KEY in DEMO_FIXTURES, (
+        "LANDING_GATE_FIXTURE_KEY must be a real DEMO_FIXTURES allowlist member"
+    )
+    assert LANDING_GATE_FIXTURE_KEY != DEMO_FIXTURE_DEFAULT_KEY, (
+        "the gate fixture key must differ from the default, or an unknown-key fallback "
+        "would silently swap the demonstrated refusal for a clean process run"
+    )
+
+    fixture_path = Path(DEMO_FIXTURES[LANDING_GATE_FIXTURE_KEY]["path"])
+    fixture_data = json.loads(fixture_path.read_text())
+    assert fixture_data["expected"]["decision"]["final_action"] == "request_clarification", (
+        "the gate fixture must itself expect request_clarification, or the page's claim "
+        "to demonstrate a refusal would be false"
+    )
+
+
+def test_landing_gate_proof_renders_verbatim_before_composer(client):
+    """GET / renders the gate fixture's hidden key, its own body verbatim, and the
+    /demo/send-test form before the /demo/compose form — proof outranks composer."""
+    import json
+    from pathlib import Path
+
+    import markupsafe
+
+    from app.routes.dashboard import LANDING_GATE_FIXTURE_KEY
+    from app.routes.demo import DEMO_FIXTURES
+
+    fixture_path = Path(DEMO_FIXTURES[LANDING_GATE_FIXTURE_KEY]["path"])
+    fixture_data = json.loads(fixture_path.read_text())
+    expected_body = str(markupsafe.escape(fixture_data["body_text"]))
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    body_text = resp.text
+
+    assert f'value="{LANDING_GATE_FIXTURE_KEY}"' in body_text, (
+        "the hidden fixture_key field must carry the gate fixture's key"
+    )
+    assert expected_body in body_text, (
+        "the gate fixture's own email body must render verbatim (HTML-escaped) so the "
+        "evaluator sees the input before the claim is tested"
+    )
+
+    send_test_pos = body_text.index('action="/demo/send-test"')
+    compose_pos = body_text.index('action="/demo/compose"')
+    assert send_test_pos < compose_pos, (
+        "the gate CTA (proof) must render before the composer form: proof outranks composer"
+    )
+
+
 def test_compose_rejects_unknown_business(monkeypatch):
     """POST /demo/compose with unknown business_name is rejected; create_run not called."""
     import app.db.repo as repo_mod
