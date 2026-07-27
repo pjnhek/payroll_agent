@@ -25,7 +25,7 @@ _APP_DIR = _REPO_ROOT / "app"
 _STYLE_CSS = _STYLE_PATH.read_text()
 _BASE_HTML = _BASE_HTML_PATH.read_text()
 
-# The new, post-swap values (D-02). Kept as module constants so every test that
+# The new, post-swap accent values. Kept as module constants so every test that
 # needs "the new accent" reads the same source of truth instead of retyping hex.
 _NEW_ACCENT = "#0F5F5C"
 _NEW_ACCENT_HOVER = "#0B4A48"
