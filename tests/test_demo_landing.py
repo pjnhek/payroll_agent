@@ -933,7 +933,11 @@ def test_landing_gate_proof_renders_verbatim_before_composer(client):
 
 def test_landing_structural_counts_headings_and_accent_button(client):
     """GET / renders one h1, at least three h2, at most one column-label, and exactly
-    one accent-weighted button (btn-approve) — the Accent Is A Pointer Rule."""
+    one accent-weighted button (btn-accent) — the Accent Is A Pointer Rule. The
+    money-gate modifier (btn-approve) is a stricter, additional pin: it must be
+    ABSENT from the landing page entirely, since Approve & Send only ever renders
+    on /runs/{id} — a landing page that carried the money gate would be a bug, not
+    a stronger claim."""
     resp = client.get("/")
     assert resp.status_code == 200
     body_text = resp.text
@@ -945,8 +949,12 @@ def test_landing_structural_counts_headings_and_accent_button(client):
     assert body_text.count('class="column-label"') <= 1, (
         "at most one eyebrow survives; each region carries a real heading instead"
     )
-    assert body_text.count("btn-approve") == 1, (
+    assert body_text.count("btn-accent") == 1, (
         "exactly one accent-weighted call to action must remain on the page"
+    )
+    assert "btn-approve" not in body_text, (
+        "the money-gate button class must never render on the landing page — it "
+        "belongs to exactly one site, Approve & Send on /runs/{id}"
     )
 
 

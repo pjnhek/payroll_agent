@@ -119,6 +119,14 @@ nav a:hover {
   text-decoration: none;
 }
 
+/* Current-page indicator: ink + weight only (no JavaScript, no underline — the
+   design record forbids underline for nav state; the accent marks the next
+   action, not the current location). aria-current carries the non-visual half. */
+nav a[aria-current="page"] {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* --- Page wrapper --- */
 .page-wrapper {
   max-width: 1280px;
@@ -233,6 +241,22 @@ td.cell-time {
 .subtable {
   margin-bottom: var(--space-md);
   box-shadow: none;
+}
+
+/* Scroll wrapper for a wide table that would otherwise crush its columns at a
+   narrow viewport. role="region" + aria-label + tabindex="0" is the standard
+   treatment for a scrollable region so a keyboard-only user can reach the
+   overflowed columns. */
+.table-scroll {
+  overflow-x: auto;
+  /* Room so the table's resting shadow is not clipped by the scroll box. */
+  padding-bottom: 4px;
+}
+
+.table-scroll:focus-visible {
+  outline: none;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* In-table action links */
@@ -423,7 +447,12 @@ td a:hover {
   gap: var(--space-sm);
 }
 
-/* --- Buttons --- */
+/* --- Buttons ---
+   One base (.btn) carries every shared property. Each modifier below declares
+   ONLY its deltas — background, label color, border-color, and hover/focus
+   deltas — so no modifier re-declares a base property. The money-gate modifier
+   (.btn-approve) is the sole allowlisted exception: it legitimately overrides
+   padding and font-weight, see its comment below. */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -448,47 +477,34 @@ td a:hover {
   transform: translateY(0.5px);
 }
 
-/* Primary (indigo) */
-.btn-approve {
+/* Primary (accent fill) */
+.btn-accent {
   background: var(--accent);
   color: #FFFFFF;
-  padding: 8px 18px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 500;
-  border: 1px solid transparent;
-  cursor: pointer;
   box-shadow: var(--shadow-sm);
-  transition: background var(--transition), box-shadow var(--transition), transform var(--transition);
 }
 
-.btn-approve:hover {
+.btn-accent:hover {
   background: var(--accent-hover);
   box-shadow: var(--shadow-md);
 }
 
-.btn-approve:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-.btn-approve:active {
-  transform: translateY(0.5px);
+/* Money gate: the ONE site this composes at is Approve & Send on /runs/{id} —
+   the single irreversible action that releases a payroll to a client. Composes
+   .btn .btn-accent .btn-approve. Allowlisted override: padding and font-weight
+   are a real visual delta, not a cloned base, so the button that spends money
+   is never the same size as a demo trigger. 600 is inside the system's three
+   permitted weights. */
+.btn-approve {
+  padding: 10px 22px;
+  font-weight: 600;
 }
 
 /* Secondary / destructive — outline, not a loud fill */
 .btn-reject {
   background: var(--surface);
   color: var(--danger);
-  padding: 8px 18px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 500;
-  border: 1px solid var(--border-strong);
-  cursor: pointer;
-  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  border-color: var(--border-strong);
 }
 
 .btn-reject:hover {
@@ -506,24 +522,12 @@ td a:hover {
 .btn-retrigger {
   background: var(--surface);
   color: var(--text);
-  padding: 8px 18px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 500;
-  border: 1px solid var(--border-strong);
-  cursor: pointer;
-  transition: background var(--transition), border-color var(--transition);
+  border-color: var(--border-strong);
 }
 
 .btn-retrigger:hover {
   background: var(--surface-subtle);
   border-color: var(--text-subtle);
-}
-
-.btn-retrigger:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* --- Forms --- */
@@ -588,9 +592,29 @@ td a:hover {
   margin-bottom: var(--space-md);
 }
 
+.form-inline--flush {
+  margin-bottom: 0;
+}
+
 .form-help {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.form-help--stacked {
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.form-label--flush {
+  margin-bottom: 0;
+}
+
+/* A select that should size to its content rather than fill its row, with a
+   floor so its label stays readable. Unpinned at narrow widths — see the
+   @media (max-width: 700px) block. */
+.select-inline {
+  width: auto;
+  min-width: 240px;
 }
 
 /* Composer (landing-page payroll email form) */
@@ -800,6 +824,13 @@ td a:hover {
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-xl);
   margin: 0 0 var(--space-md) 0;
+}
+
+/* Two-column variant (ops queue-depth panel). A class, not an inline
+   declaration — an inline grid-template-columns would outrank the narrow-width
+   media query below and silently defeat its stacking rule. */
+.metric-strip--pair {
+  grid-template-columns: repeat(2, 1fr);
 }
 
 .metric-strip dt,
@@ -1098,6 +1129,10 @@ td a:hover {
 }
 
 /* --- Generic spacing helpers used by a few templates --- */
+.mt-md {
+  margin-top: var(--space-md);
+}
+
 .mt-lg {
   margin-top: var(--space-lg);
 }
@@ -1116,7 +1151,44 @@ td a:hover {
   margin-top: var(--space-md);
 }
 
+/* At 390px, the shell's 64px insets (nav + .page-wrapper, each side) leave
+   roughly 262px for content — not enough room for a 240-260px-minimum select
+   plus its label and helper text. The rules below are CSS arithmetic against
+   those numbers, not an observed render: browser automation was unavailable
+   this session, so the result at 390px, 700px, or any width between is
+   UNVERIFIED visually. See the quick-task SUMMARY for the full statement. */
 @media (max-width: 700px) {
+  nav,
+  .page-wrapper {
+    padding-left: var(--space-md);
+    padding-right: var(--space-md);
+  }
+
+  .card-pad {
+    padding: var(--space-lg);
+  }
+
+  .form-inline {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .select-inline,
+  .demo-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .ops-panels,
+  .metric-strip,
+  .metric-strip--pair {
+    grid-template-columns: 1fr;
+  }
+
+  .table-scroll > table {
+    min-width: 560px;
+  }
+
   .conversation-heading,
   .payroll-details summary {
     align-items: flex-start;

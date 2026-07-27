@@ -524,6 +524,12 @@ def test_run_detail_never_renders_raw_error_detail(fake_conn, monkeypatch):
     assert "maria@example.test" not in response.text
     assert "provider said" not in response.text
     assert "Error" in response.text
+    assert f'/runs/{run_id}/retrigger' in response.text, (
+        "an error-status run must offer the operator a way out: the Re-trigger "
+        "affordance must render (the post-redirect failure path is already covered "
+        "by this test's PII-safe-reduction assertions above; this pins the recovery "
+        "affordance the operator needs after seeing it)"
+    )
 
     # Falsification (Truth #2 — negative-assertion tests are the most likely
     # to pass vacuously on an error/fallback page that simply never rendered
@@ -556,6 +562,25 @@ def test_run_detail_never_renders_raw_error_detail(fake_conn, monkeypatch):
         "content must actually leak through — otherwise the negative "
         "assertions above would pass even if redaction were silently removed"
     )
+
+
+# ---------------------------------------------------------------------------
+# Nav current-page mechanism — request.url.path -> base.html -> aria-current
+# ---------------------------------------------------------------------------
+
+
+def test_nav_marks_current_page_with_aria_current() -> None:
+    """`aria-current="page"` appears exactly once on each of /, /runs, and /eval —
+    proof that `request.url.path` resolves through base.html on real routes, not
+    just in template source. Three routes is enough to prove the mechanism; /ops
+    and /runs/{id} share the identical `{% set nav_path %}` wiring."""
+    for path in ("/", "/runs", "/eval"):
+        response = client.get(path)
+        assert response.status_code == 200, f"GET {path} must return 200"
+        count = response.text.count('aria-current="page"')
+        assert count == 1, (
+            f'GET {path} must mark exactly one nav item aria-current="page"; found {count}'
+        )
 
 
 def test_retry_exhausted_diagnostics_are_bounded_across_html_and_polling(monkeypatch):

@@ -3,15 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pyrl</title>
+  <title>{% block title %}Pyrl{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  {% set nav_path = request.url.path %}
   <nav>
-    <a href="/" class="nav-brand">Pyrl</a>
-    <a href="/runs">Runs</a>
-    <a href="/eval">Eval</a>
-    <a href="/ops">Ops</a>
+    <a href="/" class="nav-brand"{% if nav_path == '/' %} aria-current="page"{% endif %}>Pyrl</a>
+    <a href="/runs"{% if nav_path == '/runs' or nav_path.startswith('/runs/') %} aria-current="page"{% endif %}>Runs</a>
+    <a href="/eval"{% if nav_path.startswith('/eval') %} aria-current="page"{% endif %}>Eval</a>
+    <a href="/ops"{% if nav_path.startswith('/ops') %} aria-current="page"{% endif %}>Ops</a>
   </nav>
   <div class="page-wrapper">
     {% block content %}{% endblock %}

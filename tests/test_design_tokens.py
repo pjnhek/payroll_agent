@@ -52,6 +52,47 @@ def _extract_root_block(css: str) -> str:
     return match.group(1)
 
 
+def _extract_media_block(css: str, media_query: str) -> str:
+    """Return the contents of the first `@media (<media_query>) { ... }` block.
+
+    Brace-balanced rather than a lazy-`.*?` regex, since the block contains
+    nested rule bodies with their own `{`/`}` pairs.
+    """
+    pattern = re.escape(f"@media ({media_query})") + r"\s*\{"
+    match = re.search(pattern, css)
+    assert match is not None, f"no @media ({media_query}) block found in style.css"
+    body = css[match.end() :]
+    depth = 1
+    for i, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return body[:i]
+    raise AssertionError(f"@media ({media_query}) block in style.css never closes")
+
+
+def _extract_rule_body(css: str, selector: str) -> str:
+    """Return the body of the first exact-selector CSS rule (e.g. `.btn-accent`)."""
+    pattern = re.escape(selector) + r"\s*\{([^}]*)\}"
+    match = re.search(pattern, css)
+    assert match is not None, f"no {selector} {{ ... }} rule found in style.css"
+    return match.group(1)
+
+
+def _declared_properties(rule_body: str) -> set[str]:
+    """Property names declared directly in a CSS rule body (not comments)."""
+    props: set[str] = set()
+    for line in rule_body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("/*") or stripped.startswith("*"):
+            continue
+        if ":" in stripped:
+            props.add(stripped.split(":", 1)[0].strip())
+    return props
+
+
 def _parse_custom_properties(root_block: str) -> dict[str, str]:
     """Parse `--name: value;` declarations out of a `:root` block body."""
     tokens: dict[str, str] = {}
@@ -201,3 +242,135 @@ def test_accent_and_pending_contrast_clears_aa() -> None:
         assert ratio >= 4.5, (
             f"{label}: {fg} on {bg_color} measures {ratio:.2f}:1, below WCAG AA 4.5:1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Narrow-width adaptation (group 3b, Task 1f) — parse-level breakpoint guard.
+# ---------------------------------------------------------------------------
+
+_NARROW_BREAKPOINT = _extract_media_block(_STYLE_CSS, "max-width: 700px")
+
+
+def test_narrow_breakpoint_adjusts_shell_and_controls() -> None:
+    """The single @media (max-width: 700px) block now reaches the shell inset, the
+    inline-form wrap, and both fixed-width selects — not just the two rules
+    (conversation heading, disclosure summary) it adjusted before this change."""
+    for selector in ("nav", ".page-wrapper", ".form-inline", ".demo-select"):
+        assert selector in _NARROW_BREAKPOINT, (
+            f"{selector} is not adjusted inside the @media (max-width: 700px) block"
+        )
+    assert "var(--space-3xl)" not in _NARROW_BREAKPOINT, (
+        "the 64px shell-inset token must not survive inside the narrow breakpoint"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Muted-ink contrast cluster (group 3b, Task 3a).
+# ---------------------------------------------------------------------------
+
+
+def test_muted_ink_contrast_clears_aa() -> None:
+    """Muted ink clears WCAG AA 4.5:1 against every surface it renders on.
+
+    The page-ground pair is the tight one (~4.55:1, clearing AA by 0.05) and is
+    what `.lede`, `.form-help`, and `.column-label` all render on at some point
+    in the interface. Ratios are recomputed from the live :root block, so this
+    gate can never drift from the stylesheet it is guarding.
+    """
+    ink_muted = _ROOT_TOKENS["--text-muted"]
+    bg = _ROOT_TOKENS["--bg"]
+    surface = _ROOT_TOKENS["--surface"]
+    surface_subtle = _ROOT_TOKENS["--surface-subtle"]
+
+    pairs = {
+        "muted-ink-on-page-ground (.lede, .form-help, .column-label)": (ink_muted, bg),
+        "muted-ink-on-surface (.form-help, .column-label on a card)": (ink_muted, surface),
+        "muted-ink-on-surface-subtle (.column-label in a table header)": (
+            ink_muted,
+            surface_subtle,
+        ),
+    }
+    for label, (fg, bg_color) in pairs.items():
+        ratio = _contrast_ratio(fg, bg_color)
+        assert ratio >= 4.5, (
+            f"{label}: {fg} on {bg_color} measures {ratio:.2f}:1, below WCAG AA 4.5:1"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Button composition (group 3b, Task 3b) — one base, non-cloning modifiers.
+# ---------------------------------------------------------------------------
+
+_BUTTON_BASE_PROPERTIES = frozenset(
+    {"display", "font-family", "font-size", "font-weight", "cursor", "border-radius", "padding"}
+)
+_BUTTON_MODIFIERS = (".btn-accent", ".btn-reject", ".btn-retrigger")
+# .btn-approve is the money gate: allowlisted by name to override `padding` and
+# `font-weight` ONLY — a real visual delta (see the comment beside the rule in
+# style.css) so the button that spends money is never the same size as a demo
+# trigger. No other base property may appear here either.
+_BTN_APPROVE_ALLOWLIST = frozenset({"padding", "font-weight"})
+
+
+def test_button_modifiers_do_not_redeclare_base_properties() -> None:
+    """Each button modifier declares only its color/border deltas, never a base
+    `.btn` property. `.btn-approve` is the sole allowlisted exception (padding,
+    font-weight — the money gate's real size delta)."""
+    for selector in _BUTTON_MODIFIERS:
+        declared = _declared_properties(_extract_rule_body(_STYLE_CSS, selector))
+        overlap = declared & _BUTTON_BASE_PROPERTIES
+        assert not overlap, f"{selector} redeclares base .btn properties: {overlap}"
+
+    approve_declared = _declared_properties(_extract_rule_body(_STYLE_CSS, ".btn-approve"))
+    disallowed = (approve_declared & _BUTTON_BASE_PROPERTIES) - _BTN_APPROVE_ALLOWLIST
+    assert not disallowed, (
+        f".btn-approve redeclares base .btn properties outside its allowlist: {disallowed}"
+    )
+
+
+_BUTTON_MODIFIER_TOKENS = ("btn-accent", "btn-approve", "btn-reject", "btn-retrigger")
+
+
+def test_button_modifier_classes_always_compose_the_base() -> None:
+    """Every template `class` attribute carrying a button modifier also carries the
+    bare `btn` base class — the composition rule made enforceable."""
+    for path in _REPO_ROOT.glob("app/templates/*.html"):
+        html = path.read_text()
+        for class_attr in re.findall(r'class="([^"]*)"', html):
+            tokens = class_attr.split()
+            if any(tok in _BUTTON_MODIFIER_TOKENS for tok in tokens):
+                assert "btn" in tokens, (
+                    f'{path.name}: class="{class_attr}" carries a button modifier '
+                    "without the base 'btn' class"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Class hygiene (group 3b, Task 3c) — js- prefix convention, and the mt-md fix.
+# ---------------------------------------------------------------------------
+
+_RUNS_LIST_HTML = (_REPO_ROOT / "app" / "templates" / "runs_list.html").read_text()
+
+
+def test_script_hook_classes_carry_js_prefix_and_stay_out_of_css() -> None:
+    """The three renamed script hooks appear in runs_list.html under their `js-`
+    prefix and appear nowhere in style.css (a class that exists only as a script
+    query hook must never grow a style rule). Their unprefixed former names
+    appear in neither file. The spacing helper that was missing (`mt-md`) now
+    has a real rule."""
+    for hook in ("js-status-badge", "js-failure-summary", "js-failure-secondary"):
+        assert hook in _RUNS_LIST_HTML, f"{hook} missing from runs_list.html"
+        assert hook not in _STYLE_CSS, (
+            f"{hook} is a script hook and must never appear in style.css"
+        )
+
+    for former_name in ("status-badge", "failure-summary", "failure-secondary"):
+        unprefixed = re.compile(r"(?<!js-)" + re.escape(former_name))
+        assert not unprefixed.search(_RUNS_LIST_HTML), (
+            f"unprefixed {former_name} still present in runs_list.html"
+        )
+        assert not unprefixed.search(_STYLE_CSS), (
+            f"unprefixed {former_name} still present in style.css"
+        )
+
+    assert re.search(r"\.mt-md\s*\{", _STYLE_CSS), "`.mt-md` must have a CSS rule"
