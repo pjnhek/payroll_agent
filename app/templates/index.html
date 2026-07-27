@@ -85,22 +85,18 @@ Thanks!</textarea>
   </form>
 </div>
 
-{# ── Operator armed-business display (read-only, NOT a form) ── #}
-{% if armed_business_id %}
-<div class="callout callout-success">
-  <p>
-    <strong>Operator Path-2 armed for:</strong>
-    {{ (armed_business_name or (armed_business_id | string)) | e }}
-    — send from the operator Gmail to trigger a live run.
-  </p>
-</div>
-{% endif %}
-
-{# ── Bound confirmation ── #}
+{# ── Bound confirmation — the ONLY surface that renders operator binding state, and
+     only reachable via the /demo/bind redirect to /?bound=1. A plain GET / never
+     reads or renders this. ── #}
 {% if bound == "1" %}
 <div class="callout callout-info">
   <p>
-    <strong>Binding updated.</strong> The operator Gmail is now armed for Path-2 routing.
+    <strong>Operator routing updated.</strong>
+    {% if armed_business_name -%}
+    Payroll email sent from the operator's own mailbox will now be processed as a run for {{ armed_business_name | e }}.
+    {%- else -%}
+    Payroll email sent from the operator's own mailbox will now be processed as a run for the bound client business.
+    {%- endif %}
   </p>
 </div>
 {% endif %}

@@ -801,6 +801,43 @@ def test_landing_get_states_product_claim_with_disclaimer(client):
     assert b"demo/compose" in resp.content
 
 
+def test_landing_binding_state_gated_on_bound_query_param(client, monkeypatch):
+    """Operator binding state renders ONLY on GET /?bound=1, never on a plain GET /.
+
+    Covers all three locked behaviors in one test: an absence-only assertion would
+    also pass if the confirmation were deleted outright, silently breaking the
+    /demo/bind operator flow, so the plain-GET absence and the ?bound=1 presence
+    (both with a resolvable binding and with an unresolvable one) are asserted together.
+    """
+    import app.db.repo as repo_mod
+
+    metro_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
+    # Re-apply AFTER the client fixture: the route resolves get_demo_binding at
+    # request time, so this late patch takes effect on every subsequent .get() call.
+    monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: metro_id, raising=False)
+
+    # Plain GET / must render none of the binding-state markers, even though the
+    # underlying repo call would return a real bound business.
+    plain_resp = client.get("/")
+    assert plain_resp.status_code == 200
+    assert b"processed as a run for" not in plain_resp.content
+    assert b"Path-2" not in plain_resp.content
+    assert b"armed for" not in plain_resp.content
+
+    # GET /?bound=1 with the same binding names the bound business by the full
+    # sentence fragment, not the bare name (which also appears in the picker options).
+    bound_resp = client.get("/?bound=1")
+    assert bound_resp.status_code == 200
+    assert b"processed as a run for Metro Deli Group" in bound_resp.content
+
+    # GET /?bound=1 with an unresolvable binding still confirms, with no raw UUID.
+    monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
+    unresolved_resp = client.get("/?bound=1")
+    assert unresolved_resp.status_code == 200
+    assert b"processed as a run for" in unresolved_resp.content
+    assert b"b0000002-0000-0000-0000-000000000002" not in unresolved_resp.content
+
+
 def test_bind_route_not_on_landing_page(client):
     """GET / must not contain action=/demo/bind but must contain demo/compose."""
     resp = client.get("/")
