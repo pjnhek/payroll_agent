@@ -143,10 +143,15 @@ CHART_PATH = pathlib.Path(__file__).resolve().parent / "chart.svg"
 
 # Dashboard-aligned SVG styling. These are presentation tokens only: the scorer,
 # fixture interpretation, and aggregate metric shapes remain intentionally separate.
+# "accent_light" is the lighter partner of "accent", used for the second series of
+# a grouped bar pair (subplot 1's F1 bars) — not named after a stylesheet token,
+# because the dashboard accent no longer has a soft member (--accent-soft was
+# deleted, not retinted: a pale accent wash is a thing the accent must never be).
 CHART_PALETTE: dict[str, str] = {
     "primary": "#1E3A5F",
     "secondary": "#6B7280",
-    "accent": "#4F46E5",
+    "accent": "#0F5F5C",
+    "accent_light": "#7FBFB9",
     "surface": "#FFFFFF",
     "background": "#F7F8FA",
     "border": "#E8EAED",
@@ -942,7 +947,7 @@ def _write_svg_chart(
         y + h / 2,
         f1_values,
         height=h,
-        color="#A5B4FC",
+        color=palette["accent_light"],
         label="employee-set F1",
     )
 

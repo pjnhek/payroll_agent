@@ -37,7 +37,8 @@ def test_chart_style_metadata_matches_dashboard_tokens() -> None:
     assert run_eval.CHART_PALETTE == {
         "primary": "#1E3A5F",
         "secondary": "#6B7280",
-        "accent": "#4F46E5",
+        "accent": "#0F5F5C",
+        "accent_light": "#7FBFB9",
         "surface": "#FFFFFF",
         "background": "#F7F8FA",
         "border": "#E8EAED",
@@ -59,6 +60,10 @@ def test_chart_svg_is_styled_aggregate_only_and_does_not_mutate_summary(
     assert "#1e3a5f" in lowered
     assert "#6b7280" in lowered
     assert "#e8eaed" in lowered
+    assert "#0f5f5c" in lowered
+    assert "#7fbfb9" in lowered
+    assert "#4f46e5" not in lowered
+    assert "#a5b4fc" not in lowered
     assert "#4682b4" not in lowered
     assert "#2e8b57" not in lowered
     assert "stroke: #000000" not in lowered
@@ -77,6 +82,10 @@ def test_committed_chart_is_the_styled_aggregate_artifact() -> None:
     assert "#1e3a5f" in lowered
     assert "#6b7280" in lowered
     assert "#e8eaed" in lowered
+    assert "#0f5f5c" in lowered
+    assert "#7fbfb9" in lowered
+    assert "#4f46e5" not in lowered
+    assert "#a5b4fc" not in lowered
     assert "#4682b4" not in lowered
     assert "#2e8b57" not in lowered
     assert "stroke: #000000" not in lowered
