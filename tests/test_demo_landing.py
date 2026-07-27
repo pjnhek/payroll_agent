@@ -777,15 +777,28 @@ def client(monkeypatch):
 
 
 def test_landing_get_returns_200_no_bind_form(client):
-    """GET / returns 200 with composer form but NO /demo/bind form."""
+    """GET / returns 200 with the product claim AND the composer — both must be present."""
     resp = client.get("/")
     assert resp.status_code == 200
-    assert b"Try it live" in resp.content or b"demo/compose" in resp.content, (
-        "Landing page must render composer or 'Try it live'"
+    assert b"The LLM reads. Deterministic code decides." in resp.content, (
+        "Landing page must state the differentiating claim"
+    )
+    assert b"demo/compose" in resp.content, (
+        "Landing page must render the composer"
     )
     assert b'action="/demo/bind"' not in resp.content, (
         "Bind form must NOT appear on landing page"
     )
+
+
+def test_landing_get_states_product_claim_with_disclaimer(client):
+    """GET / opens with the code-owned-decision claim, its disclaimer, and the composer."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"The LLM reads. Deterministic code decides." in resp.content
+    assert b"owns employee resolution and the process-or-clarify decision" in resp.content
+    assert b"not tax-compliant payroll software" in resp.content
+    assert b"demo/compose" in resp.content
 
 
 def test_bind_route_not_on_landing_page(client):

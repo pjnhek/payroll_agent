@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Try it live</h1>
+<h1>The LLM reads. Deterministic code decides.</h1>
 <p class="lede">
-  Select a client business and compose a payroll email — the full extraction, name-resolution,
-  decisioning, and (if needed) clarification pipeline runs in real time. No email client needed.
+  A client business emails its employees' hours; the pipeline reads the email, calculates the
+  payroll, and pauses for one human approval before the confirmation goes back. Deterministic code
+  owns employee resolution and the process-or-clarify decision, and unresolved names, alias
+  collisions, and missing required fields cannot silently advance to payroll calculation.
+</p>
+<p class="form-help" style="max-width: 640px;">
+  Educational portfolio project, not tax-compliant payroll software, not for paying real employees.
 </p>
 
 {# ── Business picker (GET reload) ── #}
@@ -74,6 +79,7 @@ Thanks!</textarea>
       <button type="submit" class="btn-approve">Run pipeline</button>
       <span class="form-help">
         Fires the REAL extraction + decisioning pipeline against the selected business's roster.
+        No email client needed.
       </span>
     </div>
   </form>
