@@ -32,7 +32,7 @@
   {# Queue depth: pending vs leased, kept as two figures — not a combined total. #}
   <div class="card card-pad">
     <h2>Queue depth</h2>
-    <dl class="metric-strip" style="grid-template-columns: repeat(2, 1fr);">
+    <dl class="metric-strip metric-strip--pair">
       <div>
         <dt class="metric-label">Pending</dt>
         <dd class="metric-value">{{ pending_count }}</dd>
@@ -65,6 +65,7 @@
   <div class="card card-pad">
     <h2>Attempts distribution</h2>
     {% if attempts_rows %}
+    <div class="table-scroll" role="region" tabindex="0" aria-label="Attempts distribution">
     <table>
       <thead>
         <tr><th>Attempts</th><th>Count</th></tr>
@@ -78,6 +79,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted">No open jobs.</p>
     {% endif %}
@@ -88,6 +90,7 @@
   <div class="card card-pad">
     <h2>Dead letter</h2>
     {% if dead_letter_rows %}
+    <div class="table-scroll" role="region" tabindex="0" aria-label="Dead letter">
     <table>
       <thead>
         <tr><th>Kind</th><th>Attempts</th><th>Last error</th><th>Settled</th><th>Run</th></tr>
@@ -106,6 +109,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted">No dead-lettered jobs.</p>
     {% endif %}

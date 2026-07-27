@@ -235,6 +235,22 @@ td.cell-time {
   box-shadow: none;
 }
 
+/* Scroll wrapper for a wide table that would otherwise crush its columns at a
+   narrow viewport. role="region" + aria-label + tabindex="0" is the standard
+   treatment for a scrollable region so a keyboard-only user can reach the
+   overflowed columns. */
+.table-scroll {
+  overflow-x: auto;
+  /* Room so the table's resting shadow is not clipped by the scroll box. */
+  padding-bottom: 4px;
+}
+
+.table-scroll:focus-visible {
+  outline: none;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 /* In-table action links */
 td a {
   color: var(--accent);
@@ -588,9 +604,29 @@ td a:hover {
   margin-bottom: var(--space-md);
 }
 
+.form-inline--flush {
+  margin-bottom: 0;
+}
+
 .form-help {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.form-help--stacked {
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.form-label--flush {
+  margin-bottom: 0;
+}
+
+/* A select that should size to its content rather than fill its row, with a
+   floor so its label stays readable. Unpinned at narrow widths — see the
+   @media (max-width: 700px) block. */
+.select-inline {
+  width: auto;
+  min-width: 240px;
 }
 
 /* Composer (landing-page payroll email form) */
@@ -800,6 +836,13 @@ td a:hover {
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-xl);
   margin: 0 0 var(--space-md) 0;
+}
+
+/* Two-column variant (ops queue-depth panel). A class, not an inline
+   declaration — an inline grid-template-columns would outrank the narrow-width
+   media query below and silently defeat its stacking rule. */
+.metric-strip--pair {
+  grid-template-columns: repeat(2, 1fr);
 }
 
 .metric-strip dt,
@@ -1116,7 +1159,44 @@ td a:hover {
   margin-top: var(--space-md);
 }
 
+/* At 390px, the shell's 64px insets (nav + .page-wrapper, each side) leave
+   roughly 262px for content — not enough room for a 240-260px-minimum select
+   plus its label and helper text. The rules below are CSS arithmetic against
+   those numbers, not an observed render: browser automation was unavailable
+   this session, so the result at 390px, 700px, or any width between is
+   UNVERIFIED visually. See the quick-task SUMMARY for the full statement. */
 @media (max-width: 700px) {
+  nav,
+  .page-wrapper {
+    padding-left: var(--space-md);
+    padding-right: var(--space-md);
+  }
+
+  .card-pad {
+    padding: var(--space-lg);
+  }
+
+  .form-inline {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .select-inline,
+  .demo-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .ops-panels,
+  .metric-strip,
+  .metric-strip--pair {
+    grid-template-columns: 1fr;
+  }
+
+  .table-scroll > table {
+    min-width: 560px;
+  }
+
   .conversation-heading,
   .payroll-details summary {
     align-items: flex-start;

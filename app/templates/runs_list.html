@@ -60,6 +60,7 @@
 <h1>Payroll Runs</h1>
 
 {% if runs %}
+<div class="table-scroll" role="region" tabindex="0" aria-label="Payroll runs">
 <table>
   <thead>
     <tr>
@@ -103,6 +104,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="empty-state">
   <p class="empty-state__title">No payroll runs yet</p>
