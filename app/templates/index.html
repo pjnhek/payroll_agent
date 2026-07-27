@@ -7,7 +7,7 @@
   owns employee resolution and the process-or-clarify decision, and unresolved names, alias
   collisions, and missing required fields cannot silently advance to payroll calculation.
 </p>
-<p class="form-help" style="max-width: 640px;">
+<p class="page-disclaimer">
   Educational portfolio project, not tax-compliant payroll software, not for paying real employees.
 </p>
 
@@ -29,48 +29,53 @@
   </p>
 </div>
 
-{# ── Business picker (GET reload) ── #}
-<form method="get" action="/" class="form-inline">
-  <label for="business-picker" class="form-label" style="margin-bottom: 0;">Client business</label>
-  <select id="business-picker" name="business" class="select" style="width: auto; min-width: 240px;"
-          onchange="this.form.submit()">
-    {% for biz in businesses %}
-    <option value="{{ biz.name | e }}"
-      {% if biz.name == selected_business_name %}selected{% endif %}>
-      {{ biz.name | e }}
-    </option>
-    {% endfor %}
-  </select>
-</form>
+{# ── Composer card: business picker, roster, and the free-form compose form share
+     ONE card — the picker drives both the roster and the composer's hidden
+     business_name, so splitting them would put a control in one container and its
+     two effects in another. ── #}
+<div class="card card-pad landing-panel section">
+  <h2>Write your own payroll email</h2>
 
-{# ── Roster table ── #}
-{% if employees %}
-<div class="field-group stack-roster">
-  <p class="column-label">{{ selected_business_name | e }} — roster</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Pay Type</th>
-        <th>Filing Status</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for emp in employees %}
-      <tr>
-        <td>{{ emp.full_name | e }}</td>
-        <td>{{ emp.pay_type | e }}</td>
-        <td>{{ (emp.filing_status or '') | replace('_', ' ') | e }}</td>
-      </tr>
+  {# ── Business picker (GET reload) ── #}
+  <form method="get" action="/" class="form-inline">
+    <label for="business-picker" class="form-label" style="margin-bottom: 0;">Client business</label>
+    <select id="business-picker" name="business" class="select" style="width: auto; min-width: 240px;"
+            onchange="this.form.submit()">
+      {% for biz in businesses %}
+      <option value="{{ biz.name | e }}"
+        {% if biz.name == selected_business_name %}selected{% endif %}>
+        {{ biz.name | e }}
+      </option>
       {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
+    </select>
+    <noscript><button type="submit" class="btn-retrigger">Show roster</button></noscript>
+  </form>
 
-{# ── Composer form (POST /demo/compose) — separate from the picker GET ── #}
-<div class="section">
-  <p class="column-label">Compose a payroll email</p>
+  {# ── Roster table — nested in the card, so it drops its own shadow ── #}
+  {% if employees %}
+  <div class="field-group">
+    <p class="column-label">{{ selected_business_name | e }} — roster</p>
+    <table class="subtable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Pay Type</th>
+          <th>Filing Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for emp in employees %}
+        <tr>
+          <td>{{ emp.full_name | e }}</td>
+          <td>{{ emp.pay_type | e }}</td>
+          <td>{{ (emp.filing_status or '') | replace('_', ' ') | e }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {% if demo_queue_error %}
   <div class="callout callout-error" role="alert">
     <p>
@@ -82,6 +87,8 @@
     </p>
   </div>
   {% endif %}
+
+  {# ── Compose form (POST /demo/compose) — separate from the picker GET ── #}
   <form method="post" action="/demo/compose" class="composer">
     {# Hidden: carries the selected business_name into the POST #}
     <input type="hidden" name="business_name" value="{{ selected_business_name | e }}">
@@ -100,7 +107,7 @@ James 40 regular, 3 overtime.
 Thanks!</textarea>
     </div>
     <div class="form-inline" style="margin-bottom: 0;">
-      <button type="submit" class="btn-approve">Run pipeline</button>
+      <button type="submit" class="btn-retrigger">Run pipeline</button>
       <span class="form-help">
         Fires the REAL extraction + decisioning pipeline against the selected business's roster.
         No email client needed.
@@ -126,18 +133,20 @@ Thanks!</textarea>
 {% endif %}
 
 {# ── Path-2 PROOF section (recorded demo) ── #}
-<div class="section" style="max-width: 640px;">
-  <p class="column-label">Real email round-trip (recorded)</p>
+{% set walkthrough_url = "https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4" %}
+<div class="section landing-panel">
+  <h2>The recorded email round-trip</h2>
   <p class="form-help" style="margin: 0 0 8px 0;">
     <strong>payroll@jiodnel.resend.app</strong> is a real Resend inbound address.
     The operator sends from Gmail; the pipeline processes the run end-to-end and returns
-    a payroll confirmation email. The video below shows the full round-trip.
+    a payroll confirmation email. The recording also stands in for a live round-trip while
+    Pyrl's free hosting is still waking up. The video below shows the full round-trip.
   </p>
-  <a class="demo-thumb" href="https://www.loom.com/share/b844c3e0a3364a91b114ab892cc41db4"
-     target="_blank" rel="noopener" aria-label="Watch the demo on Loom">
+  <a class="demo-thumb" href="{{ walkthrough_url }}"
+     target="_blank" rel="noopener" aria-label="Watch the recorded walkthrough">
     <img src="/static/demo-thumbnail.gif" alt="Pyrl demo — full payroll round-trip">
-    <span class="demo-thumb__play" aria-hidden="true">▶</span>
   </a>
+  <p class="page-links"><a href="{{ walkthrough_url }}" target="_blank" rel="noopener">Watch the recorded walkthrough &rarr;</a></p>
 </div>
 
 {# ── Navigation ── #}

@@ -931,6 +931,93 @@ def test_landing_gate_proof_renders_verbatim_before_composer(client):
     )
 
 
+def test_landing_structural_counts_headings_and_accent_button(client):
+    """GET / renders one h1, at least three h2, at most one column-label, and exactly
+    one accent-weighted button (btn-approve) — the Accent Is A Pointer Rule."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    body_text = resp.text
+
+    assert body_text.count("<h1") == 1, "exactly one h1 (Headline is one per page)"
+    assert body_text.count("<h2") >= 3, (
+        "the proof, composer, and walkthrough sections must each carry a real h2"
+    )
+    assert body_text.count('class="column-label"') <= 1, (
+        "at most one eyebrow survives; each region carries a real heading instead"
+    )
+    assert body_text.count("btn-approve") == 1, (
+        "exactly one accent-weighted call to action must remain on the page"
+    )
+
+
+def test_landing_roster_renders_carded_with_subtable_and_eyebrow(monkeypatch):
+    """With a non-empty roster, GET / renders the roster table with the subtable class
+    inside card markup, and the eyebrow still names the selected business."""
+    from types import SimpleNamespace
+
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(
+        repo_mod,
+        "list_businesses",
+        lambda **kw: [
+            {
+                "id": str(uuid.UUID("b0000002-0000-0000-0000-000000000002")),
+                "name": "Metro Deli Group",
+                "contact_email": "hr@metrodeli.example",
+            },
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(repo_mod, "get_demo_binding", lambda *a, **kw: None, raising=False)
+
+    employees = [
+        SimpleNamespace(full_name="Maria Chen", pay_type="hourly", filing_status="single"),
+        SimpleNamespace(
+            full_name="James Diaz", pay_type="salaried", filing_status="married_filing_jointly"
+        ),
+    ]
+    monkeypatch.setattr(
+        repo_mod,
+        "load_roster_for_business",
+        lambda *a, **kw: SimpleNamespace(employees=employees),
+        raising=False,
+    )
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app as fastapi_app
+
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        resp = tc.get("/", params={"business": "Metro Deli Group"})
+
+    assert resp.status_code == 200
+    body_text = resp.text
+    assert 'class="subtable"' in body_text, "the roster table must carry the subtable class"
+    assert "Metro Deli Group — roster" in body_text, (
+        "the eyebrow must still name the selected business"
+    )
+    assert body_text.count('class="card card-pad landing-panel section"') == 2, (
+        "the proof card and the composer card (holding the roster) must both use card markup"
+    )
+    assert "Maria Chen" in body_text
+
+
+def test_landing_disclaimer_uses_class_not_inline_style(client):
+    """The disclaimer renders through page-disclaimer with no inline max-width style,
+    pinned against both the rendered response and the template source on disk."""
+    from pathlib import Path
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'class="page-disclaimer"' in resp.text
+
+    template_source = Path("app/templates/index.html").read_text()
+    assert 'style="max-width: 640px;"' not in template_source, (
+        "the disclaimer's inline max-width style must be gone from the template source"
+    )
+
+
 def test_compose_rejects_unknown_business(monkeypatch):
     """POST /demo/compose with unknown business_name is rejected; create_run not called."""
     import app.db.repo as repo_mod

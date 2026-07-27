@@ -601,15 +601,22 @@ td a:hover {
   margin-bottom: var(--space-xl);
 }
 
-.stack-roster {
-  max-width: 560px;
-}
-
 /* Shared 640px measure for the landing page's cards and walkthrough section: The
    Measure Rule caps prose near 640px, and inside a 32px-padded card the controls land
    near 576px, comfortably inside the form measure. */
 .landing-panel {
   max-width: 640px;
+}
+
+/* The standing disclaimer renders in ink, not muted text: a prominent claim paired
+   with a whisper-quiet limit is a subtler form of the overclaiming failure PRODUCT.md
+   says this product cannot afford. Ink on the page ground is roughly 15:1 contrast. */
+.page-disclaimer {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  max-width: 640px;
+  margin: 0 0 var(--space-lg) 0;
 }
 
 /* --- Column / section labels --- */
@@ -1056,34 +1063,9 @@ td a:hover {
   height: auto;
 }
 
-/* Play-button overlay, centered */
-.demo-thumb__play {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 56px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(79, 70, 229, 0.92);
-  color: #FFFFFF;
-  font-size: 20px;
-  padding-left: 3px;
-  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.25);
-  transition: background var(--transition), transform var(--transition);
-}
-
 .demo-thumb:hover {
   box-shadow: var(--shadow-md);
   transform: translateY(-1px);
-}
-
-.demo-thumb:hover .demo-thumb__play {
-  background: var(--accent);
-  transform: translate(-50%, -50%) scale(1.06);
 }
 
 /* --- Page-bottom nav links --- */
