@@ -1018,6 +1018,28 @@ def test_landing_disclaimer_uses_class_not_inline_style(client):
     )
 
 
+def test_landing_removed_classes_stay_removed_from_stylesheet_and_template():
+    """The overlay and the orphaned roster-measure rule stayed removed.
+
+    Source-text test rather than a shell grep, so it runs inside the same suite CI
+    already gates on: neither app/static/style.css nor app/templates/index.html
+    contains demo-thumb__play (the deleted play-overlay) or stack-roster (the rule
+    orphaned the moment the roster left its own container).
+    """
+    from pathlib import Path
+
+    style_source = Path("app/static/style.css").read_text()
+    template_source = Path("app/templates/index.html").read_text()
+
+    for removed_class in ("demo-thumb__play", "stack-roster"):
+        assert removed_class not in style_source, (
+            f"{removed_class!r} must be gone from app/static/style.css"
+        )
+        assert removed_class not in template_source, (
+            f"{removed_class!r} must be gone from app/templates/index.html"
+        )
+
+
 def test_compose_rejects_unknown_business(monkeypatch):
     """POST /demo/compose with unknown business_name is rejected; create_run not called."""
     import app.db.repo as repo_mod
