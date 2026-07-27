@@ -1,0 +1,330 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-27T01:57:35Z",
+  "title": "Design System: Pyrl",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Signal Indigo",
+        "canonical": "#4F46E5",
+        "note": "PROVISIONAL. Confirmed for replacement with a non-AI accent; the token is normative, this value is not.",
+        "tonalRamp": [
+          "oklch(15% 0.24 275)",
+          "oklch(26% 0.24 275)",
+          "oklch(37% 0.24 275)",
+          "oklch(48% 0.24 275)",
+          "oklch(59% 0.24 275)",
+          "oklch(70% 0.24 275)",
+          "oklch(82% 0.24 275)",
+          "oklch(95% 0.24 275)"
+        ]
+      },
+      "accent-hover": { "role": "primary", "displayName": "Signal Indigo Deep", "canonical": "#4338CA" },
+      "accent-soft": { "role": "primary", "displayName": "Indigo Wash", "canonical": "#EEF0FE" },
+      "page-ground": {
+        "role": "neutral",
+        "displayName": "Cool Paper",
+        "canonical": "#F7F8FA",
+        "tonalRamp": [
+          "oklch(15% 0.006 250)",
+          "oklch(26% 0.006 250)",
+          "oklch(37% 0.006 250)",
+          "oklch(48% 0.006 250)",
+          "oklch(59% 0.006 250)",
+          "oklch(70% 0.006 250)",
+          "oklch(82% 0.006 250)",
+          "oklch(95% 0.006 250)"
+        ]
+      },
+      "surface": { "role": "neutral", "displayName": "Surface White", "canonical": "#FFFFFF" },
+      "surface-subtle": { "role": "neutral", "displayName": "Recessed White", "canonical": "#F9FAFB" },
+      "border": { "role": "neutral", "displayName": "Hairline", "canonical": "#E8EAED" },
+      "border-strong": { "role": "neutral", "displayName": "Stated Edge", "canonical": "#D6DAE0" },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Near-Black Ink",
+        "canonical": "#1A1D21",
+        "tonalRamp": [
+          "oklch(15% 0.012 250)",
+          "oklch(26% 0.012 250)",
+          "oklch(37% 0.012 250)",
+          "oklch(48% 0.012 250)",
+          "oklch(59% 0.012 250)",
+          "oklch(70% 0.012 250)",
+          "oklch(82% 0.012 250)",
+          "oklch(95% 0.012 250)"
+        ]
+      },
+      "ink-muted": { "role": "neutral", "displayName": "Muted Ink", "canonical": "#6B7280" },
+      "ink-subtle": { "role": "neutral", "displayName": "Subtle Ink", "canonical": "#9CA3AF" },
+      "danger": {
+        "role": "secondary",
+        "displayName": "Danger Red",
+        "canonical": "#DC2626",
+        "tonalRamp": [
+          "oklch(15% 0.22 27)",
+          "oklch(26% 0.22 27)",
+          "oklch(37% 0.22 27)",
+          "oklch(48% 0.22 27)",
+          "oklch(59% 0.22 27)",
+          "oklch(70% 0.22 27)",
+          "oklch(82% 0.22 27)",
+          "oklch(95% 0.22 27)"
+        ]
+      },
+      "danger-hover": { "role": "secondary", "displayName": "Danger Red Deep", "canonical": "#B91C1C" },
+      "state-good-fg": { "role": "tertiary", "displayName": "Processed Green", "canonical": "#15803D" },
+      "state-good-bg": { "role": "tertiary", "displayName": "Processed Green Fill", "canonical": "#DCFCE7" },
+      "state-bad-fg": { "role": "tertiary", "displayName": "Failed Red", "canonical": "#B91C1C" },
+      "state-bad-bg": { "role": "tertiary", "displayName": "Failed Red Fill", "canonical": "#FEE2E2" },
+      "state-pending-fg": { "role": "tertiary", "displayName": "Waiting Indigo", "canonical": "#3730A3" },
+      "state-pending-bg": { "role": "tertiary", "displayName": "Waiting Indigo Fill", "canonical": "#EEF0FE" },
+      "state-escalate-fg": { "role": "tertiary", "displayName": "Escalation Rust", "canonical": "#9A3412" },
+      "state-escalate-bg": { "role": "tertiary", "displayName": "Escalation Rust Fill", "canonical": "#FFEDD5" },
+      "state-neutral-fg": { "role": "tertiary", "displayName": "Inert Slate", "canonical": "#4B5563" },
+      "state-neutral-bg": { "role": "tertiary", "displayName": "Inert Slate Fill", "canonical": "#F3F4F6" },
+      "banner-process-fg": { "role": "tertiary", "displayName": "Process Green Ink", "canonical": "#166534" },
+      "banner-process-bg": { "role": "tertiary", "displayName": "Process Green Wash", "canonical": "#F0FDF4" },
+      "banner-process-edge": { "role": "tertiary", "displayName": "Process Green Edge", "canonical": "#BBF7D0" },
+      "banner-clarify-fg": { "role": "tertiary", "displayName": "Clarify Amber Ink", "canonical": "#92400E" },
+      "banner-clarify-bg": { "role": "tertiary", "displayName": "Clarify Amber Wash", "canonical": "#FFFBEB" },
+      "banner-clarify-edge": { "role": "tertiary", "displayName": "Clarify Amber Edge", "canonical": "#FDE68A" },
+      "banner-error-fg": { "role": "tertiary", "displayName": "Error Red Ink", "canonical": "#991B1B" },
+      "banner-error-bg": { "role": "tertiary", "displayName": "Error Red Wash", "canonical": "#FFF1F2" },
+      "banner-error-edge": { "role": "tertiary", "displayName": "Error Red Edge", "canonical": "#FECDD3" },
+      "thread-inbound-edge": { "role": "neutral", "displayName": "Inbound Slate", "canonical": "#94A3B8" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Eval metric values only. The largest type in the product is a number." },
+      "headline": { "displayName": "Headline", "purpose": "The page h1. One per page." },
+      "title": { "displayName": "Title", "purpose": "Section headings, empty-state titles, disclosure summaries." },
+      "lede": { "displayName": "Lede", "purpose": "The single orienting paragraph under a page headline. Caps at 640px." },
+      "body": { "displayName": "Body", "purpose": "Table cells, form controls, banners, paragraph text." },
+      "label": { "displayName": "Eyebrow Label", "purpose": "Uppercase region label. Names a region above the thing it names; never a heading." },
+      "mono": { "displayName": "Verbatim Mono", "purpose": "Content the machine received or produced exactly as shown: raw email, thread bodies, provider keys." }
+    },
+    "shadows": [
+      {
+        "name": "resting-lift",
+        "value": "0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06)",
+        "purpose": "Every container at rest: cards, tables, code panels, thread messages, nav, disclosure, demo thumbnail."
+      },
+      {
+        "name": "hover-lift",
+        "value": "0 2px 4px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.07)",
+        "purpose": "The second and final elevation. Primary button and demo thumbnail on hover. Nothing else."
+      },
+      {
+        "name": "focus-ring-accent",
+        "value": "0 0 0 3px rgba(79, 70, 229, 0.18)",
+        "purpose": "Replaces the native outline on every control. Never remove an outline without this."
+      },
+      {
+        "name": "focus-ring-danger",
+        "value": "0 0 0 3px rgba(220, 38, 38, 0.16)",
+        "purpose": "Same geometry as the accent ring, for the destructive button."
+      },
+      {
+        "name": "play-overlay",
+        "value": "0 4px 14px rgba(16, 24, 40, 0.25)",
+        "purpose": "One-off on the demo thumbnail play button. Not part of the two-step system."
+      }
+    ],
+    "motion": [
+      {
+        "name": "transition-standard",
+        "value": "150ms ease",
+        "purpose": "The only duration in the system. Applies to color, background, border-color, box-shadow, and transform."
+      },
+      {
+        "name": "press",
+        "value": "translateY(0.5px)",
+        "purpose": "Active state on buttons. A half pixel, felt rather than seen."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "700px",
+        "purpose": "The only breakpoint. Stacks the conversation heading and disclosure summary. Coverage is thin, not deliberate minimalism."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The run's single next action. One per view.",
+      "html": "<button class=\"ds-btn-primary\">Approve &amp; Send</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; background: var(--accent, #4F46E5); color: #FFFFFF; font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 14px; font-weight: 500; padding: 8px 18px; border: 1px solid transparent; border-radius: var(--radius-sm, 6px); cursor: pointer; box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06); transition: background 150ms ease, box-shadow 150ms ease, transform 150ms ease; } .ds-btn-primary:hover { background: var(--accent-hover, #4338CA); box-shadow: 0 2px 4px rgba(16,24,40,0.04), 0 4px 12px rgba(16,24,40,0.07); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(79,70,229,0.18); } .ds-btn-primary:active { transform: translateY(0.5px); }"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Outlined rather than filled, so the loud option is not the visually loudest one.",
+      "html": "<button class=\"ds-btn-danger\">Reject</button>",
+      "css": ".ds-btn-danger { display: inline-flex; align-items: center; justify-content: center; background: var(--surface, #FFFFFF); color: var(--danger, #DC2626); font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 14px; font-weight: 500; padding: 8px 18px; border: 1px solid var(--border-strong, #D6DAE0); border-radius: var(--radius-sm, 6px); cursor: pointer; transition: background 150ms ease, border-color 150ms ease, color 150ms ease; } .ds-btn-danger:hover { background: #FEF2F2; border-color: #FECACA; color: var(--danger-hover, #B91C1C); } .ds-btn-danger:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(220,38,38,0.16); }"
+    },
+    {
+      "name": "Neutral Button",
+      "kind": "button",
+      "refersTo": "button-neutral",
+      "description": "Tertiary action such as re-trigger. Recedes furthest of the three.",
+      "html": "<button class=\"ds-btn-neutral\">Re-trigger from Start</button>",
+      "css": ".ds-btn-neutral { display: inline-flex; align-items: center; justify-content: center; background: var(--surface, #FFFFFF); color: var(--text, #1A1D21); font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 14px; font-weight: 500; padding: 8px 18px; border: 1px solid var(--border-strong, #D6DAE0); border-radius: var(--radius-sm, 6px); cursor: pointer; transition: background 150ms ease, border-color 150ms ease; } .ds-btn-neutral:hover { background: var(--surface-subtle, #F9FAFB); border-color: var(--text-subtle, #9CA3AF); } .ds-btn-neutral:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(79,70,229,0.18); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "White fill, stated edge, accent ring on focus with no layout shift.",
+      "html": "<input class=\"ds-input\" type=\"text\" value=\"AUTHORIZE A NEW CONFIRMATION\">",
+      "css": ".ds-input { width: 100%; font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 14px; color: var(--text, #1A1D21); background: var(--surface, #FFFFFF); border: 1px solid var(--border-strong, #D6DAE0); border-radius: var(--radius-sm, 6px); padding: 8px 11px; transition: border-color 150ms ease, box-shadow 150ms ease; } .ds-input:focus { outline: none; border-color: var(--accent, #4F46E5); box-shadow: 0 0 0 3px rgba(79,70,229,0.18); }"
+    },
+    {
+      "name": "Select",
+      "kind": "input",
+      "refersTo": "select",
+      "description": "Appearance stripped, with an inline data-URI chevron stroked to muted ink. No icon font, no network request.",
+      "html": "<select class=\"ds-select\"><option>Northwind Bakery</option><option>Harbor Logistics</option></select>",
+      "css": ".ds-select { width: 100%; font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 14px; color: var(--text, #1A1D21); background-color: var(--surface, #FFFFFF); border: 1px solid var(--border-strong, #D6DAE0); border-radius: var(--radius-sm, 6px); padding: 8px 30px 8px 11px; cursor: pointer; appearance: none; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%236B7280' stroke-width='1.5' d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E\"); background-repeat: no-repeat; background-position: right 10px center; transition: border-color 150ms ease, box-shadow 150ms ease; } .ds-select:focus { outline: none; border-color: var(--accent, #4F46E5); box-shadow: 0 0 0 3px rgba(79,70,229,0.18); }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge-pending",
+      "description": "One structural rule, five palettes. The 6px dot is drawn from currentColor, so a new family needs only two color values.",
+      "html": "<span class=\"ds-badge ds-badge-pending\">awaiting approval</span> <span class=\"ds-badge ds-badge-escalate\">needs operator</span> <span class=\"ds-badge ds-badge-good\">reconciled</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 12px; font-weight: 500; line-height: 1.4; border-radius: var(--radius-pill, 999px); } .ds-badge::before { content: \"\"; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.9; } .ds-badge-pending { color: #3730A3; background: #EEF0FE; } .ds-badge-escalate { color: #9A3412; background: #FFEDD5; } .ds-badge-good { color: #15803D; background: #DCFCE7; }"
+    },
+    {
+      "name": "Data Table",
+      "kind": "card",
+      "refersTo": "table-cell",
+      "description": "Separated borders with clipped 8px corners so the header fill respects the radius. Numeric cells are right-aligned and tabular.",
+      "html": "<table class=\"ds-table\"><thead><tr><th>Employee</th><th>Hours</th><th class=\"ds-num\">Net Pay</th></tr></thead><tbody><tr><td>David Reyes</td><td>40.00</td><td class=\"ds-num\">1,284.19</td></tr><tr><td>Daniel Reyes</td><td>37.50</td><td class=\"ds-num\">1,109.05</td></tr></tbody></table>",
+      "css": ".ds-table { border-collapse: separate; border-spacing: 0; width: 100%; background: var(--surface, #FFFFFF); border: 1px solid var(--border, #E8EAED); border-radius: var(--radius-md, 8px); overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06); font-family: var(--font-sans, Inter, system-ui, sans-serif); } .ds-table thead th { font-size: 11px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; background: var(--surface-subtle, #F9FAFB); padding: 10px 14px; text-align: left; color: var(--text-muted, #6B7280); border-bottom: 1px solid var(--border, #E8EAED); } .ds-table td { font-size: 14px; padding: 12px 14px; border-bottom: 1px solid var(--border, #E8EAED); color: var(--text, #1A1D21); } .ds-table tbody tr { transition: background 150ms ease; } .ds-table tbody tr:hover { background: var(--surface-subtle, #F9FAFB); } .ds-table tbody tr:last-child td { border-bottom: none; } .ds-table .ds-num { text-align: right; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Thread Message",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "The signature component. A 4px left stripe encodes direction (accent outbound, slate inbound); the mono body wraps rather than truncating, because hidden evidence defeats the page.",
+      "html": "<div class=\"ds-msg ds-msg-inbound\"><div class=\"ds-msg__meta\"><span class=\"ds-badge ds-badge-neutral\">inbound</span><span class=\"ds-msg__time\">Jul 24, 09:14</span></div><h3 class=\"ds-msg__subject\">Re: Payroll submission</h3><pre class=\"ds-msg__body\">Sorry, that was David Reyes, not David Reyez.\nAlso he had 3 overtime hours.</pre></div>",
+      "css": ".ds-msg { background: var(--surface, #FFFFFF); border: 1px solid var(--border, #E8EAED); border-radius: var(--radius-md, 8px); box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06); overflow: hidden; font-family: var(--font-sans, Inter, system-ui, sans-serif); } .ds-msg-inbound { border-left: 4px solid #94A3B8; } .ds-msg-outbound { border-left: 4px solid var(--accent, #4F46E5); } .ds-msg__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border, #E8EAED); background: var(--surface-subtle, #F9FAFB); } .ds-msg__time { font-size: 12px; color: var(--text-muted, #6B7280); margin-left: auto; font-variant-numeric: tabular-nums; } .ds-msg__subject { font-size: 15px; font-weight: 600; color: var(--text, #1A1D21); margin: 16px 16px 8px; } .ds-msg__body { font-family: var(--font-mono, ui-monospace, SF Mono, Menlo, monospace); font-size: 12px; line-height: 1.6; color: var(--text, #1A1D21); margin: 0; padding: 16px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; } .ds-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 999px; } .ds-badge::before { content: \"\"; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.9; } .ds-badge-neutral { color: #4B5563; background: #F3F4F6; }"
+    },
+    {
+      "name": "Metric Strip",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Three equal columns of eyebrow label over a 30px tabular figure. No cards, no borders, no color; the restraint is what makes it land.",
+      "html": "<dl class=\"ds-metrics\"><div><dt>Extraction F1</dt><dd>0.98</dd></div><div><dt>Reconciliation</dt><dd>1.00</dd></div><div><dt>False Process</dt><dd>0</dd></div></dl>",
+      "css": ".ds-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin: 0; font-family: var(--font-sans, Inter, system-ui, sans-serif); } .ds-metrics dt { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted, #6B7280); margin: 0 0 4px 0; } .ds-metrics dd { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; color: var(--text, #1A1D21); margin: 0; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Decision Banner",
+      "kind": "custom",
+      "refersTo": "banner-clarify",
+      "description": "The code-owned decision, stated in a tinted large-area wash with a matching hairline edge. Never uses a badge fill.",
+      "html": "<div class=\"ds-banner ds-banner-clarify\"><strong>Clarification required.</strong><ul><li>Submitted name &ldquo;David Reyez&rdquo; did not resolve against the roster.</li><li>Alias &ldquo;D. Reyes&rdquo; matches two employees.</li></ul></div>",
+      "css": ".ds-banner { padding: 16px; border-radius: var(--radius-md, 8px); font-family: var(--font-sans, Inter, system-ui, sans-serif); font-size: 14px; line-height: 1.55; border: 1px solid transparent; } .ds-banner ul { margin: 8px 0 0 0; padding-left: 24px; } .ds-banner-clarify { background: #FFFBEB; color: #92400E; border-color: #FDE68A; } .ds-banner-process { background: #F0FDF4; color: #166534; border-color: #BBF7D0; } .ds-banner-error { background: #FFF1F2; color: #991B1B; border-color: #FECDD3; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Audit Trail",
+    "overview": "Every screen exists to make a claim checkable. Evidence sits beside conclusion rather than replacing it, figures align so they can be compared down a column, and nothing is asserted without its source visible on the same page. This is not a decorative stance: the run-detail page shows the raw client email next to the machine's reading of it precisely so a human can catch the machine being wrong. The design's job is to keep that comparison easy and to stay out of the way of it.\n\nThe system is cool, quiet, and dense-but-breathing. Neutrals do almost all the work: a faint blue-grey page ground with pure white surfaces lifted just off it, hairline borders instead of heavy rules, and near-black text at a comfortable 14px. Exactly one accent exists, and it marks the single next action or the one thing to follow. Color is otherwise reserved entirely for state, where it is doing real work: telling an operator whether a run is waiting, escalated, or wrong.\n\nTwo anti-references are confirmed and binding. The first is AI-product atmosphere: dark surfaces, violet glow, orbs, shimmer, gradient mesh, intelligence signaled through mood. This product's entire thesis is that it does not guess, so borrowing the visual language of vibes-based software actively undermines the claim. The second is generic AI-generated SaaS: the default indigo-on-white card dashboard that is competent and completely forgettable. This one requires honesty. Parts of the current implementation sit inside that anti-reference rather than outside it, which is why the accent is being replaced and why distinctiveness has to be earned through typography, tabular rigor, measure, and the signature components below rather than through hue. Treat the token layer as sound and the current character as unfinished.",
+    "keyCharacteristics": [
+      "Neutral-dominant; a single accent used sparingly and purposefully",
+      "Tabular figures wherever numbers can be compared vertically",
+      "Exactly two elevations, ever",
+      "Radius encodes function: 6px for what you touch, 8px for what holds, pill for state",
+      "Content measure chosen per content type, never per page",
+      "Uppercase 11px eyebrow labels as the only region-naming device",
+      "Server-rendered and legible with JavaScript off, by requirement"
+    ],
+    "rules": [
+      {
+        "name": "The Two Palettes Rule",
+        "body": "Badges are saturated because they are small; banners are tinted because they are large. Never cross them. A badge must not use a banner wash, and a banner must not use a badge fill. If a new state needs both a badge and a banner, it needs one entry in each family, not one shared color.",
+        "section": "colors"
+      },
+      {
+        "name": "The Accent Is A Pointer Rule",
+        "body": "The accent marks what to do next or what to follow. It is never a background for content, never a decorative panel, and never more than a small fraction of any screen. Its scarcity is what makes it readable.",
+        "section": "colors"
+      },
+      {
+        "name": "The Token-First Rule",
+        "body": "Every status color currently lives as a literal hex inside its component rule rather than in :root. That is the system's main drift risk and the reason the accent replacement is more expensive than it should be. New state colors are declared as custom properties first and referenced second.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Money Rule",
+        "body": "Any figure a reader might compare down a column takes font-variant-numeric: tabular-nums. It is currently on numeric table cells, timestamp cells, thread times, and metric values. Every new numeric column joins them. In a payroll product, digits that shift width between rows are a legibility bug, not a stylistic preference.",
+        "section": "typography"
+      },
+      {
+        "name": "The Monospace Means Verbatim Rule",
+        "body": "Mono is reserved for content the machine received or emitted exactly as shown: the raw client email, a thread body, a provider idempotency key. Never use it for emphasis, headings, or UI labels. When a reader sees mono, they should trust it has not been prettified.",
+        "section": "typography"
+      },
+      {
+        "name": "The Eyebrow Is Not A Heading Rule",
+        "body": "The 11px uppercase label names a region; it never carries the region's meaning alone and never substitutes for a real heading in the document outline.",
+        "section": "typography"
+      },
+      {
+        "name": "The Measure Rule",
+        "body": "Choose a max-width from the content type, not the viewport. Prose caps near 640px, forms near 560px, reading surfaces near 820px. Full-shell width is for tabular data only.",
+        "section": "layout"
+      },
+      {
+        "name": "The Two-Step Rule",
+        "body": "Two elevations exist: resting and hover. Adding a third is a design change requiring a decision, not a local judgment call. If something needs to feel higher, restructure the layout rather than inventing a shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No Double Frame Rule",
+        "body": "A container nested inside another container drops its shadow. One border plus one shadow per visual boundary.",
+        "section": "elevation"
+      },
+      {
+        "name": "The 6/8/Pill Rule",
+        "body": "Radius is functional. 6px operates, 8px holds, pill states. A new component inherits the radius of its function, not of its neighbor.",
+        "section": "shapes"
+      },
+      {
+        "name": "The One Mechanism, Many Palettes Rule",
+        "body": "When a family needs N variants, build one structural rule and vary only color, as the badge dot does through currentColor. Never fork the structure per variant.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do reference tokens through var(--...) rather than repeating a literal, especially for the accent, which is scheduled to change.",
+      "Do declare a new status color as a custom property in :root before using it, and add it to both the badge family and the banner family if it needs both.",
+      "Do put font-variant-numeric: tabular-nums on every numeric or timestamp column you add.",
+      "Do compose a new button as the base .btn plus a modifier that changes only color and border.",
+      "Do pick a max-width from the content type (560 forms, 640 prose, 820 reading, 960 detail, 1280 tabular).",
+      "Do keep every surface legible with JavaScript disabled; the 2-second status poller is enhancement only, and /ops is verified JS-free.",
+      "Do replace a removed focus outline with the 3px ring at the same geometry, always.",
+      "Do use monospace only for content the machine received or produced verbatim."
+    ],
+    "donts": [
+      "Don't introduce a third elevation. Two exist; restructure instead.",
+      "Don't clone the button base into a new class, as the three current variants do.",
+      "Don't hard-code a new status hex inline. The existing literals are the system's main drift risk, not its pattern.",
+      "Don't add another indigo literal anywhere while the accent is pending replacement.",
+      "Don't use the accent as a large fill or a decorative panel background.",
+      "Don't cross the two status palettes: no banner wash on a badge, no badge fill on a banner.",
+      "Don't ship a class name with no CSS behind it. Four already exist (status-badge, mt-md, failure-summary, failure-secondary) and each is either dead markup or a silently missing style.",
+      "Don't truncate evidence content. Thread bodies and raw email wrap and scroll; they never ellipsize.",
+      "Don't reach for dark surfaces, glow, gradient mesh, shimmer, or orbs. AI-product atmosphere is a confirmed anti-reference and it contradicts the product's core claim.",
+      "Don't settle for the default indigo-on-white card dashboard. Generic AI-generated SaaS is a confirmed anti-reference, and the current implementation is close enough to it that new work must actively earn distinction through type, measure, and tabular rigor.",
+      "Don't add a build step, bundler, or client framework to achieve a visual effect. Server-rendered with one hand-authored stylesheet is a binding product constraint.",
+      "Don't add a font weight outside 400, 500, and 600, or the webfont request stops matching what is used."
+    ]
+  }
+}

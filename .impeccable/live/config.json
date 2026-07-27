@@ -1,0 +1,13 @@
+{
+  "files": ["app/templates/base.html"],
+  "exclude": [
+    "app/templates/index.html",
+    "app/templates/runs_list.html",
+    "app/templates/run_detail.html",
+    "app/templates/eval.html",
+    "app/templates/ops.html"
+  ],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}
