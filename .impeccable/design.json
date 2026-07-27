@@ -125,11 +125,6 @@
         "name": "focus-ring-danger",
         "value": "0 0 0 3px rgba(220, 38, 38, 0.16)",
         "purpose": "Same geometry as the accent ring, for the destructive button."
-      },
-      {
-        "name": "play-overlay",
-        "value": "0 4px 14px rgba(16, 24, 40, 0.25)",
-        "purpose": "One-off on the demo thumbnail play button. Not part of the two-step system."
       }
     ],
     "motion": [
@@ -148,7 +143,7 @@
       {
         "name": "compact",
         "value": "700px",
-        "purpose": "The only breakpoint. Stacks the conversation heading and disclosure summary. Coverage is thin, not deliberate minimalism."
+        "purpose": "The only breakpoint. Reaches the shell inset (64px -> 16px), card padding, the inline-form wrap, both fixed-width selects, the ops/eval grid strips, and the table-scroll minimum width, plus the pre-existing conversation-heading/disclosure-summary stack. CSS arithmetic against the stylesheet source; not yet confirmed against a rendered layout at any width (browser automation unavailable when written)."
       }
     ]
   },
@@ -315,12 +310,12 @@
     ],
     "donts": [
       "Don't introduce a third elevation. Two exist; restructure instead.",
-      "Don't clone the button base into a new class, as the three current variants do.",
+      "Don't clone the button base into a new class. A new variant composes .btn plus a modifier that declares only its color/border deltas.",
       "Don't hard-code a new status hex inline. The existing literals are the system's main drift risk, not its pattern.",
       "Don't treat the waiting indigo family as a second accent. It is a status family, exclusive to pending/running; nothing outside those two states may use it.",
       "Don't use the accent as a large fill or a decorative panel background.",
       "Don't cross the two status palettes: no banner wash on a badge, no badge fill on a banner.",
-      "Don't ship a class name with no CSS behind it. Four already exist (status-badge, mt-md, failure-summary, failure-secondary) and each is either dead markup or a silently missing style.",
+      "Don't ship a class name with no CSS behind it and no js- prefix. A class that exists only as a script query hook carries a js- prefix and never appears in the stylesheet; a class without that prefix must have a real CSS rule.",
       "Don't truncate evidence content. Thread bodies and raw email wrap and scroll; they never ellipsize.",
       "Don't reach for dark surfaces, glow, gradient mesh, shimmer, or orbs. AI-product atmosphere is a confirmed anti-reference and it contradicts the product's core claim.",
       "Don't settle for the default indigo-on-white card dashboard. Generic AI-generated SaaS is a confirmed anti-reference, and the current implementation is close enough to it that new work must actively earn distinction through type, measure, and tabular rigor.",

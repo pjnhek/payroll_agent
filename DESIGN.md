@@ -296,7 +296,9 @@ Spacing runs on a 4/8/16/24/32/48/64 scale with 8px and 16px carrying most of th
 
 Repeating grid patterns: a two-column equal grid for the ops transport panels, a three-column equal grid for the eval metric strip, and `auto-fit minmax()` grids for the delivery-review fact list (180px floor) and its action groups (260px, or 220px for the clarification variant). The `auto-fit` grids are the only genuinely fluid layout in the system.
 
-**Known gap, recorded as fact not doctrine:** there is exactly one breakpoint (`max-width: 700px`) and it adjusts only two things, stacking the conversation heading and the disclosure summary. Everything else relies on the intrinsic `auto-fit` grids and `max-width` caps. Wide data tables in particular have no small-screen treatment. This is thin coverage, not a considered mobile strategy, and should not be cited as an intentional minimalism.
+There is exactly one breakpoint (`max-width: 700px`), and it now reaches the shell inset (nav and `.page-wrapper` horizontal padding drop from 64px to 16px), card padding, the inline-form wrap, both fixed-width selects (`.select-inline`, `.demo-select`), the ops/eval grid strips, and a `.table-scroll` minimum width. The four wide data tables (runs list, eval fixture drill-in, ops attempts, ops dead-letter) sit in focusable, `aria-label`led `.table-scroll` regions that scroll horizontally rather than crushing columns. Everything not covered by the breakpoint still relies on the intrinsic `auto-fit` grids and `max-width` caps, which remain content-appropriate at any width.
+
+**Known gap, recorded as fact not doctrine:** the narrow-width rules above are CSS arithmetic against the stylesheet source (64px insets each side leave roughly 262px of content at 390px, against a 240px-minimum select), not an observed render — browser automation was unavailable when they were written, so whether the result looks right at 390px, 700px, or any width between is **unverified**. This is an open visual check, not a considered-and-confirmed mobile strategy.
 
 There is no dark mode anywhere in the system; no `prefers-color-scheme` block exists.
 
@@ -324,7 +326,7 @@ The evidence that this is considered rather than sprayed: nested tables explicit
 
 ## Shapes
 
-Rectilinear and calm. Nothing is circular except the badge status dot and the play overlay; nothing is clipped or angled; no shape is decorative.
+Rectilinear and calm. Nothing is circular except the badge status dot; nothing is clipped or angled; no shape is decorative. (The play overlay — a circular button on the demo thumbnail — was removed in commit `1d81d2f` so exactly one accent-weighted call to action remains per view.)
 
 Radius carries meaning on a three-step scale. **6px** belongs to things you operate: buttons, inputs, selects, textareas. **8px** belongs to things that hold content: cards, tables, banners, callouts, code panels, thread messages, the disclosure panel, the demo thumbnail. **Pill** belongs to state: badges only. Reading radius alone tells you whether something is a control, a container, or a status.
 
@@ -351,7 +353,9 @@ The select control's chevron is an inline data-URI SVG stroked to match muted in
 - **Focus:** native outline removed and replaced by the 3px accent ring on every variant; the destructive variant uses a danger-tinted ring. Never remove the ring without replacing it.
 - **Press:** `translateY(0.5px)`. A half pixel, felt rather than seen.
 
-**Known drift.** A base `.btn` class exists at `app/static/style.css:418` and is used by no template. The three real variants each re-declare its seven base properties independently. New variants compose the base plus a modifier.
+The base `.btn` class is the only place the seven base properties (display, padding, radius, font family/size/weight, border, cursor, transition) are declared, plus the focus ring and the half-pixel press. Every button in every template composes `.btn` plus exactly one color modifier — `.btn-accent`, `.btn-reject`, or `.btn-retrigger` — and no modifier re-declares a base property. `.btn-approve` is the single named exception: it composes `.btn .btn-accent .btn-approve` at exactly one site, Approve & Send on `/runs/{id}` (the money gate — the one irreversible action that releases a payroll to a client), and is allowlisted to override `padding` and `font-weight` so that button carries a real size delta rather than reading as an ordinary accent button.
+
+**The Script-Hook Prefix Rule.** A class that exists only as a JavaScript query hook — never styled, only selected — carries a `js-` prefix and must never appear in `app/static/style.css`. A class without that prefix must have a real CSS rule behind it. This makes a class's nature legible from the markup alone: `js-status-badge` is obviously wired to a script, `status-cluster` is obviously a layout rule.
 
 ### Badges
 
@@ -386,10 +390,11 @@ The select control's chevron is an inline data-URI SVG stroked to match muted in
 
 ### Navigation
 
-- **Style:** 56px fixed height, surface white, hairline bottom, resting lift, 64px horizontal inset matching the page, 24px gap.
+- **Style:** 56px fixed height, surface white, hairline bottom, resting lift, 64px horizontal inset matching the page (16px below 700px), 24px gap.
 - **Brand:** 17px/600 at -0.01em in full ink, pushed left with `margin-right: auto`; hovers to accent.
 - **Links:** 14px/500 muted ink; hover to full ink. Underline is never used for nav state.
-- **Mobile:** no treatment. The nav does not adapt below 700px.
+- **Current page:** marked with `aria-current="page"` (set server-side in `base.html` from `request.url.path`, no JavaScript) plus ink + 600 weight — the same two-signal treatment as a heading, never an underline and never the accent, since the accent marks the next action, not the current location.
+- **Mobile:** the horizontal inset drops to 16px below 700px; layout otherwise holds unchanged.
 
 ### Signature: the thread message
 
@@ -419,12 +424,12 @@ Three equal columns, 32px gutters, each an 11px uppercase muted eyebrow above a 
 ### Don't:
 
 - **Don't** introduce a third elevation. Two exist; restructure instead.
-- **Don't** clone the button base into a new class, as the three current variants do.
+- **Don't** clone the button base into a new class. A new variant composes `.btn` plus a modifier that declares only its color/border deltas.
 - **Don't** hard-code a new status hex inline. The existing literals are the system's main drift risk, not its pattern.
 - **Don't** treat the waiting indigo family as a second accent. It is a status family, exclusive to pending/running; nothing outside those two states may use it.
 - **Don't** use the accent as a large fill or a decorative panel background.
 - **Don't** cross the two status palettes: no banner wash on a badge, no badge fill on a banner.
-- **Don't** ship a class name with no CSS behind it. Four already exist (`status-badge`, `mt-md`, `failure-summary`, `failure-secondary`) and each is either dead markup or a silently missing style.
+- **Don't** ship a class name with no CSS behind it and no `js-` prefix. A class that exists only as a script query hook carries a `js-` prefix and never appears in the stylesheet (see `js-status-badge`, `js-failure-summary`, `js-failure-secondary` in `runs_list.html`); a class without that prefix must have a real CSS rule.
 - **Don't** truncate evidence content. Thread bodies and raw email wrap and scroll; they never ellipsize.
 - **Don't** reach for dark surfaces, glow, gradient mesh, shimmer, or orbs. AI-product atmosphere is a confirmed anti-reference and it contradicts the product's core claim.
 - **Don't** settle for the default indigo-on-white card dashboard. Generic AI-generated SaaS is a confirmed anti-reference, and the current implementation is close enough to it that new work must actively earn distinction through type, measure, and tabular rigor.
