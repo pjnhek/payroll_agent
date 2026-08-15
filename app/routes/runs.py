@@ -1119,23 +1119,29 @@ def authorize_new_confirmation(
     run_id: uuid.UUID,
     acknowledgement: str = Form(default=""),
 ) -> RedirectResponse:
-    """Create one explicit new confirmation slot from the stored frozen snapshot."""
+    """Create one explicit new confirmation slot from the stored frozen snapshot.
+
+    Every refusal attaches a fixed notice code -- this guards sending a client
+    a SECOND email, so a mistyped acknowledgement phrase (authorize_bad_ack),
+    a wrong-kind or unloadable review (review_unavailable), or a lost CAS
+    (review_state_changed) must never look like a silently broken button.
+    """
     if acknowledgement != _NEW_CONFIRMATION_ACKNOWLEDGEMENT:
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "authorize_bad_ack")
 
     should_wake = False
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
             if delivery_review is None or delivery_review["review_kind"] != "confirmation":
-                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+                return notice_redirect(f"/runs/{run_id}", "review_unavailable")
             if not repo.claim_status(
                 run_id,
                 RunStatus.NEEDS_OPERATOR,
                 RunStatus.APPROVED,
                 conn=conn,
             ):
-                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+                return notice_redirect(f"/runs/{run_id}", "review_state_changed")
             if not repo.resolve_outbound_provider_handoff_for_delivery_review(
                 run_id,
                 delivery_review["review"]["email_id"],
@@ -1179,6 +1185,7 @@ def authorize_new_confirmation(
             should_wake = True
     except Exception:
         logger.warning("new confirmation authorization unavailable for run %s", run_id)
+        return notice_redirect(f"/runs/{run_id}", "review_unavailable")
     if should_wake:
         wake.wake()
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)

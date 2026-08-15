@@ -67,6 +67,10 @@ NOTICE_LABELS: dict[str, str] = {
         "Another resolution for this run was already accepted. This "
         "submission was not applied."
     ),
+    "authorize_bad_ack": (
+        "The acknowledgement phrase did not match. Type "
+        "AUTHORIZE A NEW CONFIRMATION exactly, then submit again."
+    ),
 }
 
 

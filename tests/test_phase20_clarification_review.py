@@ -288,6 +288,7 @@ def test_authorize_new_confirmation_rejects_clarification_review_without_mutatio
     )
 
     assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=review_unavailable"
     assert claim_calls == []
     assert wake_calls == []
     assert fake_repo.load_run(run_id) == before_run
@@ -669,3 +670,51 @@ def test_review_unavailable_notice_on_wrong_kind(fake_repo):
     assert response.status_code == 303
     assert response.headers["location"] == f"/runs/{run_id}?notice=review_unavailable"
     assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+# ---------------------------------------------------------------------------
+# BUG-4: authorize_new_confirmation guards a client-facing SECOND email, so
+# every refusal attaches a fixed notice code -- highest-value being a
+# mistyped acknowledgement phrase, which used to look like a broken button.
+# ---------------------------------------------------------------------------
+
+
+def test_authorize_bad_ack_explains_why(fake_repo):
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    before_run = dict(fake_repo.load_run(run_id))
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "authorize a new confirmation"},  # wrong case
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=authorize_bad_ack"
+    assert fake_repo.load_run(run_id) == before_run
+
+    page = client.get(f"/runs/{run_id}?notice=authorize_bad_ack")
+    assert page.status_code == 200
+    assert "AUTHORIZE A NEW CONFIRMATION" in page.text
+
+
+def test_authorize_lost_cas_explains_why(fake_repo, monkeypatch):
+    import app.routes.runs as runs_mod
+
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    monkeypatch.setattr(runs_mod.repo, "claim_status", lambda *args, **kwargs: False)
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/authorize",
+        data={"acknowledgement": "AUTHORIZE A NEW CONFIRMATION"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"] == f"/runs/{run_id}?notice=review_state_changed"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+    assert len(fake_repo.outbound_snapshots) == 1, (
+        "a lost CAS must not mint a replacement confirmation slot"
+    )
