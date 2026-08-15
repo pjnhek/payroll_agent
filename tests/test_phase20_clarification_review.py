@@ -718,3 +718,116 @@ def test_authorize_lost_cas_explains_why(fake_repo, monkeypatch):
     assert len(fake_repo.outbound_snapshots) == 1, (
         "a lost CAS must not mint a replacement confirmation slot"
     )
+
+
+# ---------------------------------------------------------------------------
+# T9 (BUG-2 half 2 + BUG-11): the two delivery-review cards consume the
+# classification -- naming the uncertainty and hiding actions that cannot
+# succeed, instead of rendering both Retry buttons unconditionally.
+# ---------------------------------------------------------------------------
+
+_CLARIFICATION_RETRY_ACTION = "/delivery-review/clarification/retry-now"
+_AUTHORIZE_ACTION = "/delivery-review/authorize"
+_MARK_DELIVERED_ACTION = "/delivery-review/mark-delivered"
+_MARK_HANDLED_ACTION = "/delivery-review/clarification/mark-handled"
+_CLARIFICATION_REJECT_ACTION = "/delivery-review/clarification/reject"
+
+
+def test_validation_confirmation_card_hides_both_actions_and_shows_blocker(
+    fake_repo,
+) -> None:
+    """BUG-2: validation (the live-proven Resend 403 on a .example recipient)
+    can never succeed either way -- neither action is offered, and the
+    blocker sentence explains why the space is not silently empty."""
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:validation"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _AUTHORIZE_ACTION not in page.text
+    assert "the recipient or sender configuration must change first" in page.text
+    # The provider-free escape stays unconditional -- the anti-BUG-1 pin.
+    assert _MARK_DELIVERED_ACTION in page.text
+
+
+def test_validation_clarification_card_hides_retry_and_shows_blocker(fake_repo) -> None:
+    run_id, _snapshot = _clarification_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:validation"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _CLARIFICATION_RETRY_ACTION not in page.text
+    assert "the recipient or sender configuration must change first" in page.text
+    # "Mark handled" and "Reject" stay unconditional -- provider-free, must
+    # always be available, or this recreates BUG-1.
+    assert _MARK_HANDLED_ACTION in page.text
+    assert _CLARIFICATION_REJECT_ACTION in page.text
+
+
+def test_transport_confirmation_card_offers_both_actions(fake_repo) -> None:
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:transport"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _AUTHORIZE_ACTION in page.text
+    assert _MARK_DELIVERED_ACTION in page.text
+
+
+def test_payload_mismatch_confirmation_card_offers_authorize_not_retry(
+    fake_repo,
+) -> None:
+    """The case a single `retryable: bool` gets backwards: payload_mismatch
+    cannot be replayed under its existing key, but a fresh slot can."""
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:payload_mismatch"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _AUTHORIZE_ACTION in page.text
+    assert _MARK_DELIVERED_ACTION in page.text
+
+
+def test_payload_mismatch_clarification_card_hides_retry(fake_repo) -> None:
+    run_id, _snapshot = _clarification_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:payload_mismatch"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _CLARIFICATION_RETRY_ACTION not in page.text
+    assert _MARK_HANDLED_ACTION in page.text
+    assert _CLARIFICATION_REJECT_ACTION in page.text
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "transport",
+        "provider_5xx",
+        "rate_limited",
+        "authorization_expired",
+        "unknown",
+        "payload_mismatch",
+        "final_attempt_lease_expired",
+        "authorization",
+        "validation",
+        "configuration",
+    ],
+)
+def test_every_category_renders_its_own_uncertainty_sentence(
+    fake_repo, category: str
+) -> None:
+    from app.models.delivery_review import DELIVERY_REVIEW_CATEGORIES
+
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = f"delivery_review:{category}"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert DELIVERY_REVIEW_CATEGORIES[category].uncertainty in page.text

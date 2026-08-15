@@ -1378,10 +1378,14 @@ def test_clarification_delivery_review_card_is_purpose_isolated(fake_repo):
 
     assert response.status_code == 200
     assert "Review clarification delivery" in response.text
-    assert "Retry same question" in response.text
+    # _clarification_review_run seeds delivery_review:final_attempt_lease_expired,
+    # whose classification is replay_same_ok=False -- "Retry same question" is
+    # correctly withheld, not offered unconditionally (BUG-2).
+    assert ">Retry same question</button>" not in response.text
+    assert f"/runs/{run_id}/delivery-review/clarification/retry-now" not in response.text
+    assert "the replay budget for this reservation is spent" in response.text
     assert "Mark handled" in response.text
     assert "Reject" in response.text
-    assert f"/runs/{run_id}/delivery-review/clarification/retry-now" in response.text
     assert f"/runs/{run_id}/delivery-review/clarification/mark-handled" in response.text
     assert f"/runs/{run_id}/delivery-review/clarification/reject" in response.text
     assert "One payroll name needs clarification" in response.text

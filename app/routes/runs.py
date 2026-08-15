@@ -19,6 +19,9 @@ import app.queue.wake as wake
 from app.email import gateway
 from app.email.clean import clean_body
 from app.models.delivery_review import (
+    DELIVERY_REVIEW_CATEGORIES as _DELIVERY_REVIEW_CATEGORIES,
+)
+from app.models.delivery_review import (
     DELIVERY_REVIEW_CATEGORY_LABELS as _DELIVERY_REVIEW_CATEGORY_LABELS,
 )
 from app.models.job import JobKind
@@ -308,8 +311,17 @@ def _load_delivery_review(
 def _safe_delivery_review_projection(
     run_id: uuid.UUID, delivery_review: dict[str, Any]
 ) -> dict[str, Any]:
-    """Expose only the finite review facts and frozen artifact references."""
+    """Expose only the finite review facts and frozen artifact references.
+
+    Booleans (``can_replay`` / ``can_fresh_send``) and text (``uncertainty`` /
+    ``blocker``) are derived HERE from ``DELIVERY_REVIEW_CATEGORIES`` -- the
+    single reduction boundary for this router's ``_safe_*`` convention. The
+    template receives only booleans, never a category string to re-derive
+    from, so a template edit can never accidentally offer an action the
+    classification says cannot succeed.
+    """
     review = delivery_review["review"]
+    category = _DELIVERY_REVIEW_CATEGORIES[delivery_review["category"]]
     attachments: list[dict[str, str]] = []
     for attachment in review.get("attachments", []):
         attachment_id = attachment.get("id") if isinstance(attachment, dict) else None
@@ -330,7 +342,11 @@ def _safe_delivery_review_projection(
         "subject": review["subject"],
         "reserved_at": review["reserved_at"],
         "attempt_count": review["attempt_count"],
-        "failure_category": _DELIVERY_REVIEW_CATEGORY_LABELS[delivery_review["category"]],
+        "failure_category": category.label,
+        "uncertainty": category.uncertainty,
+        "can_replay": category.replay_same_ok,
+        "can_fresh_send": category.fresh_send_ok,
+        "blocker": category.blocker,
         "message_id": review["message_id"],
         "email_url": f"/runs/{run_id}/delivery-review/email",
         "attachments": attachments,
