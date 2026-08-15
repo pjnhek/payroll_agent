@@ -191,3 +191,37 @@ def test_confirmation_floor_contains_net_pay():
         "the confirmation template floor must include each employee's net_pay "
         f"(expected '1234' or '1,234' in the result; got: {result!r})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 (BUG-13): drafted body can never carry a Subject: line or a bracket
+# placeholder token, even when the model ignores the prompt's format guard.
+# ---------------------------------------------------------------------------
+
+
+def test_compose_confirmation_strips_subject_line_and_placeholder():
+    """A real send carried a literal `Subject: ...` line inside the body AND a
+    `[Your Name]` sign-off placeholder (BUG-13). The prompt now asks the model not
+    to do either, but a request is not a guarantee — this asserts the guard makes
+    the violation IMPOSSIBLE by driving a stubbed LLM that ignores the prompt and
+    returns both violations anyway.
+    """
+    paystubs = [_minimal_paystub()]
+    run = _minimal_run()
+    placeholder_body = (
+        "Subject: Payroll Run Approval - Acme Corp.\n\n"
+        "Hi there,\n\n"
+        "Your payroll run has been approved. Net pay: $1,234.56.\n\n"
+        "Best,\n[Your Name]"
+    )
+    llm = _DraftLLM(placeholder_body)
+
+    result = compose_confirmation(paystubs, run, llm=llm)
+
+    assert not any(
+        line.strip().lower().startswith("subject:") for line in result.splitlines()
+    ), f"drafted confirmation body must not contain a literal Subject: line; got: {result!r}"
+    assert "[" not in result and "]" not in result, (
+        "drafted confirmation body must not contain a bracket placeholder token "
+        f"(e.g. [Your Name]); got: {result!r}"
+    )

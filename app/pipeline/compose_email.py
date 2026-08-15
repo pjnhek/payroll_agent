@@ -20,10 +20,12 @@ the status transition.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, cast
 
 from app.llm import client as llm_client
 from app.llm.prompts import clarify as clarify_prompt
+from app.llm.prompts import confirm as confirm_prompt
 from app.models.contracts import Decision, PaystubLineItem
 
 logger = logging.getLogger("payroll_agent.compose_email")
@@ -227,6 +229,27 @@ def clarification_subject(original_subject: str | None = None) -> str:
 # Confirmation email (HITL-02) — approved-run path
 # ---------------------------------------------------------------------------
 
+# BUG-13: a real send carried a literal `Subject: ...` line inside the drafted BODY
+# (on top of the real RFC subject) and signed off `[Your Name]`. The prompt now asks
+# the model not to do either (see app/llm/prompts/confirm.py), but a request is not a
+# guarantee — these two patterns make both violations IMPOSSIBLE on the return value,
+# not merely discouraged.
+_SUBJECT_LINE_RE = re.compile(r"(?im)^[ \t]*subject[ \t]*:.*(?:\r?\n|$)")
+_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\[\]\r\n]{1,80}\]")
+
+
+def _strip_format_violations(body: str) -> str:
+    """Deterministically strip a Subject: line and any [bracket] placeholder token.
+
+    Applied to every drafted confirmation body, unconditionally, regardless of
+    whether the model honored the prompt's format guard. A confirmation email goes
+    to the client after money has already been approved, so the format floor here
+    cannot depend on the model behaving.
+    """
+    body = _SUBJECT_LINE_RE.sub("", body)
+    body = _BRACKET_PLACEHOLDER_RE.sub("", body)
+    return body.strip()
+
 
 def _confirmation_template_body(
     paystubs: list[PaystubLineItem],
@@ -294,28 +317,7 @@ def compose_confirmation(
     llm.call_text as a KEYWORD argument, so test fakes must accept **kwargs or they raise
     a spurious TypeError instead of exercising the draft path.
     """
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a payroll assistant. Write a brief, warm confirmation email "
-                "telling the client their payroll run has been approved. Include the "
-                "per-employee net pay summary. Keep it professional and concise."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Approved payroll run for "
-                + run.get("business_name", "the client")
-                + ".\n\nPer-employee net pay:\n"
-                + "\n".join(
-                    f"- {item.submitted_name}: ${item.net_pay:,.2f} net"
-                    for item in paystubs
-                )
-            ),
-        },
-    ]
+    messages = confirm_prompt.build_messages(paystubs, run)
     # Same guarantee as compose_clarification: "a draft failure never strands the run" must
     # cover BOTH empty content AND an API error (auth, rate limit, timeout). call_text
     # returns None on empty content but RAISES on an API error — left unwrapped, that
@@ -342,4 +344,16 @@ def compose_confirmation(
                 "confirmation draft returned empty content — using templated confirmation body"
             )
         return _confirmation_template_body(paystubs, run)
-    return body
+
+    # BUG-13: make the Subject:/placeholder violation impossible, not merely
+    # discouraged by the prompt above. If stripping empties the body out entirely
+    # (e.g. a draft that was ONLY a placeholder sign-off), fall through to the
+    # template floor rather than send a blank confirmation.
+    stripped = _strip_format_violations(body)
+    if not stripped:
+        logger.warning(
+            "confirmation draft was entirely format-violating content — "
+            "using templated confirmation body"
+        )
+        return _confirmation_template_body(paystubs, run)
+    return stripped
