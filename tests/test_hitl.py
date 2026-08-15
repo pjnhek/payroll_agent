@@ -152,11 +152,19 @@ def test_approve_commits_one_delivery_job_before_waking(client, fake_repo, monke
     second = client.post(f"/runs/{run_id}/approve", follow_redirects=False)
 
     assert first.status_code == second.status_code == 303
+    # BUG-3: the first POST wins the claim (bare redirect, real delivery); the
+    # second POST loses the claim and explains why instead of reloading
+    # identically -- the payroll was NOT approved twice.
+    assert first.headers["location"] == f"/runs/{run_id}"
+    assert second.headers["location"] == f"/runs/{run_id}?notice=approve_claim_lost"
     assert fake_repo.load_run(run_id)["status"] == RunStatus.APPROVED.value
     assert calls == {"delivery": 1, "wake": 1}
     send_jobs = [
         job for job in fake_repo.jobs.values() if job["kind"] == JobKind.SEND_OUTBOUND.value
     ]
+    # Byte-identical to pre-fix behavior: exactly ONE delivery job, never two --
+    # a regression in the CAS must show up as a test failure, not a duplicate
+    # client email.
     assert len(send_jobs) == 1
 
 
@@ -226,6 +234,12 @@ def test_approve_already_advanced_returns_303(client, fake_repo):
     assert r.status_code == 303, (
         f"approve on a non-awaiting_approval run must return 303 (CAS no-op); "
         f"got {r.status_code}"
+    )
+    assert r.headers["location"] == f"/runs/{run_id}?notice=approve_claim_lost", (
+        "a lost CAS must explain itself instead of reloading identically"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.RECEIVED.value, (
+        "a lost approve claim must never change the run's status"
     )
 
 

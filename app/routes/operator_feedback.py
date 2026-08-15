@@ -71,6 +71,10 @@ NOTICE_LABELS: dict[str, str] = {
         "The acknowledgement phrase did not match. Type "
         "AUTHORIZE A NEW CONFIRMATION exactly, then submit again."
     ),
+    "approve_claim_lost": (
+        "This run is no longer awaiting approval. It may already have been "
+        "approved in another tab. No second approval was recorded."
+    ),
 }
 
 

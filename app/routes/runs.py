@@ -407,7 +407,7 @@ def approve(
                 conn=conn,
             )
             if not claimed:
-                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+                return notice_redirect(f"/runs/{run_id}", "approve_claim_lost")
             # load_run is INSIDE the error boundary on purpose. A transient DB failure
             # during the load must route to ERROR rather than leave the run silently
             # stuck at APPROVED behind a raw 500.
