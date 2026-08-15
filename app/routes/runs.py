@@ -1298,6 +1298,18 @@ def run_detail(
                 delivery_review = _safe_delivery_review_projection(run_id, review)
         except Exception:
             logger.debug("delivery review unavailable for run %s", run_id)
+    # BUG-14: a record_only run (created via /demo/compose) never hands its outbound
+    # messages to the email provider — send_state still reads 'sent' because the send
+    # genuinely completed the record_only branch, so nothing else on the page marks it
+    # as different from a real send. Read the flag ONCE here and thread it into the
+    # template rather than a per-message query. Best-effort like every other read on
+    # this route: a failure degrades to "not flagged" (the safe default — never
+    # falsely claim a real send was only recorded).
+    try:
+        record_only = repo.get_record_only_flag(run_id)
+    except Exception:
+        logger.debug("get_record_only_flag unavailable for run %s", run_id)
+        record_only = False
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -1315,6 +1327,7 @@ def run_detail(
             "notice_label": notice_label(notice),
             "delivery_review": delivery_review,
             "delivery_review_marker": delivery_review_marker,
+            "record_only": record_only,
         },
     )
 

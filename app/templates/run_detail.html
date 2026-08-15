@@ -224,6 +224,9 @@
         {% if msg.purpose %}
         <span class="badge badge-{% if msg.purpose == 'confirmation' %}good{% elif msg.purpose in ['clarification', 'clarification_field_regression'] %}pending{% else %}neutral{% endif %}">{{ msg.purpose | replace('_', ' ') }}</span>
         {% endif %}
+        {% if record_only and msg.direction != 'inbound' %}
+        <span class="badge badge-neutral badge-uppercase">recorded, not sent</span>
+        {% endif %}
         <span class="conversation-message__time">
           {% if msg.created_at %}{% if msg.created_at is string %}{{ msg.created_at[:16] }}{% else %}{{ msg.created_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}{% endif %}
         </span>
@@ -233,6 +236,11 @@
         <div><dt>From</dt><dd>{{ msg.from_addr or '—' }}</dd></div>
         <div><dt>To</dt><dd>{{ msg.to_addr or '—' }}</dd></div>
       </dl>
+      {% if record_only and msg.direction != 'inbound' %}
+      <div class="callout callout-info conversation-message__record-only-note">
+        <p>This run was created with the in-app composer, so this email was drafted and recorded but never sent to the email provider — it never reached a real inbox.</p>
+      </div>
+      {% endif %}
       <pre class="conversation-message__body">{{ msg.body_text or '' }}</pre>
     </article>
     {% endfor %}

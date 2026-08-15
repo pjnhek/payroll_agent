@@ -1712,6 +1712,75 @@ def test_run_detail_has_no_meta_refresh(fake_repo):
 
 
 # ---------------------------------------------------------------------------
+# BUG-14: a record_only run's outbound messages must be labeled recorded-not-sent
+# ---------------------------------------------------------------------------
+
+
+def _outbound_thread_message() -> dict[str, Any]:
+    """An outbound email_messages row shaped like repo.load_thread_messages returns."""
+    return {
+        "direction": "outbound",
+        "purpose": "confirmation",
+        "subject": "Payroll Confirmation — Acme Corp",
+        "body_text": "Your payroll run has been approved.",
+        "message_id": "<abc@payroll-agent.local>",
+        "from_addr": "onboarding@resend.dev",
+        "to_addr": "client@example.com",
+        "created_at": None,
+    }
+
+
+def test_run_detail_record_only_run_labels_outbound_as_not_sent(fake_repo, monkeypatch):
+    """BUG-14: a record_only run (created via /demo/compose) must tell a stranger,
+    in plain language, that its outbound message was drafted and recorded but never
+    actually sent to the email provider. `send_state='sent'` alone made the run
+    indistinguishable from a real send in the UI — a real owner concluded an email
+    had gone out and went looking for it in Gmail.
+    """
+    from app.db import repo as _repo
+
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    run_id = fake_repo.create_run(
+        business_id=business_id, source_email_id=None, record_only=True
+    )
+    monkeypatch.setattr(
+        _repo, "load_thread_messages", lambda rid, conn=None: [_outbound_thread_message()]
+    )
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    lowered = response.text.lower()
+    assert "drafted and recorded" in lowered and "never" in lowered, (
+        "a record_only run's outbound message must be labeled as recorded, not "
+        f"sent, in plain language; got page text:\n{response.text}"
+    )
+
+
+def test_run_detail_non_record_only_run_has_no_not_sent_label(fake_repo, monkeypatch):
+    """The recorded-not-sent label must NOT appear on a normal (non-record_only)
+    run's page — only compose-created runs get it.
+    """
+    from app.db import repo as _repo
+
+    business_id = next(iter(fake_repo.contact_to_business.values()))
+    run_id = fake_repo.create_run(
+        business_id=business_id, source_email_id=None, record_only=False
+    )
+    monkeypatch.setattr(
+        _repo, "load_thread_messages", lambda rid, conn=None: [_outbound_thread_message()]
+    )
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert "drafted and recorded" not in response.text.lower(), (
+        "a non-record_only run's page must not claim its outbound message was "
+        "only recorded, not sent"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tests for POST /runs/{run_id}/simulate-reply
 # ---------------------------------------------------------------------------
 
