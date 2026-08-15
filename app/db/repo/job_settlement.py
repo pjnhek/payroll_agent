@@ -165,6 +165,22 @@ def _delivery_failure_category(result: PipelineResult) -> str:
     return "unknown"
 
 
+def all_producer_failure_categories() -> frozenset[str]:
+    """Return every failure_category `_delivery_failure_category` can produce.
+
+    Derived by calling it once per `PipelineReason` member, never by
+    transcribing a list, so a new reason cannot silently go unlabeled or
+    unclassified. Shared by the vocabulary drift guard
+    (tests/test_status_drift.py) and the category-table coverage test
+    (tests/test_delivery_review_categories.py) so both check against the same
+    single derivation rather than two copies that could drift from each other.
+    """
+    return frozenset(
+        _delivery_failure_category(PipelineResult(reason=member))
+        for member in PipelineReason
+    )
+
+
 def _append_delivery_attempt(
     conn: psycopg.Connection,
     *,
