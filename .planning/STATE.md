@@ -149,6 +149,9 @@ Last activity: 2026-08-14 — Milestone v5 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [quick-260814-q0y]: One allow-listed `?notice=<code>` mechanism (`app/routes/operator_feedback.py`) replaces nine independent silent-303 handlers plus the old `?simulate_reply_error=`/`?demo_queue_error=` flags — server-side reduction before ever reaching a template, AST-pinned so a future call site cannot ship an unlabeled code.
+- [quick-260814-q0y]: Delivery-review retry classification uses two booleans (`replay_same_ok`/`fresh_send_ok`) per failure category, not one `retryable` flag — `payload_mismatch`/`final_attempt_lease_expired` are retryable only by a fresh slot, never by replaying under the existing idempotency key.
+- [quick-260814-q0y]: `DEMO_OUTBOUND_TO` resolves at snapshot-reservation time (never at send time), so a replay of a frozen reservation stays byte-identical regardless of when the override changes. Deploy prerequisite: add `DEMO_OUTBOUND_TO=` to `.env.example` manually — the harness denies file access to that path.
 - [Phase 20 P04]: Approval atomically claims the run, freezes a confirmation snapshot, and enqueues its identifier-only job; it wakes only after commit, while approved remains the business state until fenced settlement proves delivery.
 - [Phase 20 P09]: Delivery settlement locks the exact leased job, immutable reservation, and expected run state before writing a fixed-category attempt event; generic pipeline retry must not handle delivery because it rewinds approved state.
 - [Phase 20 P09]: The database evaluates the reservation-time replay cutoff while the reservation is locked; expired or terminal confirmation delivery enters needs_operator without creating a replacement key.
@@ -352,10 +355,12 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-07-20T20:07:01Z
-Stopped at: Phase 21 complete (UAT 2/2, verification passed) — Milestone v4 100%, all 6 phases done
+Last session: 2026-08-14T00:00:00Z
+Stopped at: Completed quick-260814-q0y (operator-surface defect sweep — 12 bugs + demo deliverability), 14 commits, all green
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Add `DEMO_OUTBOUND_TO=` to `.env.example` manually (harness denied file access during quick-260814-q0y)
+- Migrate live Supabase for `78542f1`'s `email_messages.operator_acknowledged_at` column before any deploy (schema before code)
+- Start the next milestone with /gsd-new-milestone, or continue v5 requirements definition
