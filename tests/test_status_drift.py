@@ -26,8 +26,11 @@ import typing
 
 import pytest
 
+from app.db.repo.job_settlement import _delivery_failure_category
+from app.models.delivery_review import DELIVERY_REVIEW_CATEGORY_LABELS
 from app.models.roster import Employee
 from app.models.status import RunStatus
+from app.pipeline.result import PipelineReason, PipelineResult
 
 _SCHEMA_SQL = pathlib.Path(__file__).parent.parent / "app" / "db" / "schema.sql"
 
@@ -406,4 +409,42 @@ class TestIndexStaticGuard:
         assert not offenders, (
             "test_status_drift.py must not import the DB layer.\n"
             "Forbidden import(s) found:\n  " + "\n  ".join(offenders)
+        )
+
+
+class TestDeliveryReviewCategoryDrift:
+    """The delivery-review failure-category vocabulary has THREE independent sources
+    that must never drift out of step: the producer (job_settlement.py's
+    _delivery_failure_category), the renderer (app.models.delivery_review's
+    DELIVERY_REVIEW_CATEGORY_LABELS, imported into app/routes/runs.py), and the SQL
+    CHECK constraint on outbound_delivery_attempts.failure_category.
+
+    Root cause of BUG-1: _delivery_failure_category can return
+    "authorization_expired", which the renderer's dict used to lack, so
+    _load_delivery_review rejected the run and the operator saw an actionless card.
+    """
+
+    def test_every_producer_output_is_a_labeled_category(self) -> None:
+        """Derive the producer's outputs by calling it once per PipelineReason member
+        (never by transcribing a list) so a new reason cannot pass silently."""
+        for member in PipelineReason:
+            category = _delivery_failure_category(PipelineResult(reason=member))
+            assert category in DELIVERY_REVIEW_CATEGORY_LABELS, (
+                f"PipelineReason.{member.name} maps to failure_category "
+                f"'{category}', which has no entry in DELIVERY_REVIEW_CATEGORY_LABELS"
+            )
+
+    def test_final_attempt_lease_expired_is_labeled(self) -> None:
+        """The literal written by job_settlement.py's final-lease reap path is a key."""
+        assert "final_attempt_lease_expired" in DELIVERY_REVIEW_CATEGORY_LABELS
+
+    def test_schema_check_matches_labeled_categories(self) -> None:
+        """outbound_delivery_attempts.failure_category CHECK == labeled keys + 'none'."""
+        sql = _SCHEMA_SQL.read_text()
+        sql_values = _extract_check_in_values(sql, "failure_category")
+        expected = set(DELIVERY_REVIEW_CATEGORY_LABELS) | {"none"}
+        assert sql_values == expected, (
+            "Enum drift detected for column 'failure_category'!\n"
+            f"  In SQL CHECK but not labeled: {sql_values - expected or 'none'}\n"
+            f"  Labeled but not in SQL CHECK: {expected - sql_values or 'none'}\n"
         )

@@ -18,6 +18,9 @@ import app.pipeline.delivery as delivery
 import app.queue.wake as wake
 from app.email import gateway
 from app.email.clean import clean_body
+from app.models.delivery_review import (
+    DELIVERY_REVIEW_CATEGORY_LABELS as _DELIVERY_REVIEW_CATEGORY_LABELS,
+)
 from app.models.job import JobKind
 from app.models.roster import Employee, Roster
 from app.models.status import RunStatus
@@ -119,17 +122,6 @@ _QUEUE_BADGE_CLASSES = {
     "Running": "running",
     "Queued": "neutral",
     "Retry queued": "neutral",
-}
-_DELIVERY_REVIEW_CATEGORY_LABELS = {
-    "transport": "Transport uncertainty",
-    "provider_5xx": "Provider service failure",
-    "rate_limited": "Provider rate limit",
-    "payload_mismatch": "Frozen payload mismatch",
-    "authorization": "Provider authorization issue",
-    "validation": "Provider validation issue",
-    "configuration": "Delivery configuration issue",
-    "final_attempt_lease_expired": "Final attempt lease expired",
-    "unknown": "Unknown delivery outcome",
 }
 _DELIVERY_REVIEW_PURPOSES = {
     "DeliveryReview": frozenset({"confirmation"}),
