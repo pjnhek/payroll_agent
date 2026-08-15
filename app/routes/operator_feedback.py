@@ -48,6 +48,25 @@ NOTICE_LABELS: dict[str, str] = {
         "This run's state changed while you were reading. Reload and check "
         "the current status."
     ),
+    "resolve_not_needs_operator": (
+        "This run is no longer awaiting an operator resolution. Nothing was applied."
+    ),
+    "resolve_delivery_review": (
+        "This run is held by a delivery review, not a name resolution. Resolve "
+        "the delivery review below instead."
+    ),
+    "resolve_nothing_unresolved": "There is nothing to resolve for this run.",
+    "resolve_roster_unavailable": (
+        "The employee roster could not be loaded. Try again."
+    ),
+    "resolve_invalid_employee": (
+        "One or more names were not mapped to a valid employee, so nothing was "
+        "applied. Select an employee for every name and resubmit."
+    ),
+    "resolve_superseded_conflict": (
+        "Another resolution for this run was already accepted. This "
+        "submission was not applied."
+    ),
 }
 
 

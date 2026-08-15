@@ -516,25 +516,25 @@ async def resolve(
     if run.get("status") != RunStatus.NEEDS_OPERATOR.value:
         # Not (or no longer) awaiting an operator resolution — no-op redirect
         # rather than erroring; a stale page reload/double-submit is harmless.
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "resolve_not_needs_operator")
     if _is_delivery_review_marker(run):
         # Delivery uncertainty is a separate operator decision. In particular, do
         # not let a clarification that may already have reached the client become an
         # alias write or a generic pipeline restart through this form.
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "resolve_delivery_review")
 
     decision = run.get("decision") or {}
     unresolved_names = decision.get("unresolved_names") or []
     if not unresolved_names:
         # Nothing to resolve (shouldn't normally happen for a needs_operator
         # run, but fail safe rather than 500 on a malformed/legacy row).
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "resolve_nothing_unresolved")
 
     try:
         roster = repo.load_roster_for_business(run["business_id"])
     except Exception:
         logger.warning("resolve: roster load failed for run %s", run_id)
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "resolve_roster_unavailable")
     roster_ids = {str(emp.id) for emp in roster.employees}
 
     form = await request.form()
@@ -554,7 +554,7 @@ async def resolve(
                 run_id,
                 i,
             )
-            return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+            return notice_redirect(f"/runs/{run_id}", "resolve_invalid_employee")
         overrides[token] = str(posted_id)
         remember[token] = form.get(f"remember_{i}") is not None
 
@@ -581,7 +581,7 @@ async def resolve(
         # A stale or conflicting browser submission is a bounded no-op. Do not expose
         # names, mappings, employee ids, or the competing generation in the response.
         logger.info("resolve generation rejected by authoritative state")
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "resolve_superseded_conflict")
 
     # Commit is visible before the worker can observe the wake signal.
     wake.wake()

@@ -1399,6 +1399,220 @@ def test_resolve_rejects_whole_post_on_invalid_employee_id(monkeypatch, fake_rep
     )
 
 
+# ---------------------------------------------------------------------------
+# BUG-5: each of the six /resolve guards attaches a fixed notice code instead
+# of a bare 303, so an operator can tell WHY nothing was applied.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_not_needs_operator_explains_why(fake_repo) -> None:
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+    fake_repo.runs[str(run_id)]["status"] = RunStatus.AWAITING_APPROVAL.value
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(uuid.uuid4())},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"]
+        == f"/runs/{run_id}?notice=resolve_not_needs_operator"
+    )
+    assert fake_repo.runs[str(run_id)]["status"] == RunStatus.AWAITING_APPROVAL.value
+
+
+def test_resolve_blocked_by_delivery_review_explains_why(fake_repo) -> None:
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+    fake_repo.runs[str(run_id)]["error_reason"] = "DeliveryReview"
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(uuid.uuid4())},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"] == f"/runs/{run_id}?notice=resolve_delivery_review"
+    )
+    assert fake_repo.runs[str(run_id)]["status"] == "needs_operator"
+
+
+def test_resolve_nothing_unresolved_explains_why(fake_repo) -> None:
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(run_id, COASTAL_BIZ_ID, [])
+
+    response = client.post(
+        f"/runs/{run_id}/resolve", data={}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"]
+        == f"/runs/{run_id}?notice=resolve_nothing_unresolved"
+    )
+
+
+def test_resolve_roster_unavailable_explains_why(monkeypatch, fake_repo) -> None:
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+
+    import app.db.repo as repo_mod
+
+    def raise_roster(*_a: object, **_kw: object) -> object:
+        raise RuntimeError("roster db down")
+
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", raise_roster, raising=False
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(uuid.uuid4())},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"]
+        == f"/runs/{run_id}?notice=resolve_roster_unavailable"
+    )
+
+
+def test_resolve_invalid_employee_explains_why_without_leaking_details(
+    monkeypatch, fake_repo
+) -> None:
+    """The allow-list forbids naming the index, token, or submitted id -- the
+    label must say the whole submission was rejected and nothing applied."""
+    from app.models.roster import Employee, Roster
+
+    real_emp_id = uuid.uuid4()
+    roster = Roster(
+        business_id=COASTAL_BIZ_ID,
+        employees=[
+            Employee(
+                id=real_emp_id,
+                business_id=COASTAL_BIZ_ID,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["PRIVATE_TOKEN_XYZ"]
+    )
+
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+
+    bogus_id = str(uuid.uuid4())
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": bogus_id},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"] == f"/runs/{run_id}?notice=resolve_invalid_employee"
+    )
+    assert "PRIVATE_TOKEN_XYZ" not in response.headers["location"]
+    assert bogus_id not in response.headers["location"]
+
+    page = client.get(f"/runs/{run_id}?notice=resolve_invalid_employee")
+    assert page.status_code == 200
+    assert "nothing was applied" in page.text.lower()
+    # The token itself legitimately re-renders in the resolve form below (it is
+    # the run's own unresolved-name label, not attacker input) -- only the
+    # *notice* channel (query param + banner) must never carry it or the
+    # bogus posted id.
+    assert bogus_id not in page.text
+
+
+def test_resolve_superseded_conflict_explains_why(monkeypatch, fake_repo) -> None:
+    """A ValueError from commit_operator_resume_resolution (a stale/conflicting
+    browser submission) is the REJECTED generation -- distinct from the
+    accepted-but-not-authoritative ?resolution_superseded=1 flag."""
+    from app.models.roster import Employee, Roster
+
+    employee_id = uuid.uuid4()
+    roster = Roster(
+        business_id=COASTAL_BIZ_ID,
+        employees=[
+            Employee(
+                id=employee_id,
+                business_id=COASTAL_BIZ_ID,
+                full_name="Real Employee",
+                known_aliases=[],
+                pay_type="hourly",
+                hourly_rate=Decimal("20.00"),
+                annual_salary=None,
+                retirement_contribution_pct=Decimal("0.00"),
+                filing_status="single",
+                step_2_checkbox=False,
+                step_3_dependents=Decimal("0"),
+                step_4a_other_income=Decimal("0"),
+                step_4b_deductions=Decimal("0"),
+                ytd_ss_wages=Decimal("0.00"),
+                pay_periods_per_year=52,
+            )
+        ],
+    )
+    run_id = uuid.uuid4()
+    fake_repo.runs[str(run_id)] = _needs_operator_run_row(
+        run_id, COASTAL_BIZ_ID, ["Jimmy"]
+    )
+
+    import app.db.repo as repo_mod
+
+    monkeypatch.setattr(
+        repo_mod, "load_roster_for_business", lambda *a, **kw: roster, raising=False
+    )
+    monkeypatch.setattr(
+        repo_mod,
+        "commit_operator_resume_resolution",
+        lambda *a, **kw: (_ for _ in ()).throw(ValueError("conflicting generation")),
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/resolve",
+        data={"employee_id_0": str(employee_id)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"]
+        == f"/runs/{run_id}?notice=resolve_superseded_conflict"
+    )
+    assert response.headers["location"] != f"/runs/{run_id}?resolution_superseded=1"
+
+
 def test_operator_resume_handler_and_resolve_caller_are_identifier_only() -> None:
     """The durable route boundary carries identifiers, never payroll mappings."""
     from app.queue.handlers import operator_resume
