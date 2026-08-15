@@ -75,6 +75,19 @@ NOTICE_LABELS: dict[str, str] = {
         "This run is no longer awaiting approval. It may already have been "
         "approved in another tab. No second approval was recorded."
     ),
+    "demo_unknown_business": (
+        "That business is not part of the demo. Choose one of the listed "
+        "businesses and try again."
+    ),
+    "demo_too_long": (
+        "The submission was too long (max 4000 characters for the body, 200 "
+        "for the subject) and was not sent. Shorten it and try again."
+    ),
+    "demo_queue_error": (
+        "Couldn't start this payroll run. Pyrl's free hosting sleeps after "
+        "15 idle minutes and can take up to a minute to wake, so a first "
+        "attempt right after arriving can fail. Wait a moment and try again."
+    ),
 }
 
 

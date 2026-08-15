@@ -475,12 +475,13 @@ def test_demo_fixture_rolls_back_every_write_failure_and_renders_bounded_notice(
         notice = tc.get(response.headers["location"])
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/runs?demo_queue_error=1"
+    assert response.headers["location"] == "/runs?notice=demo_queue_error"
     assert store.emails == store.runs == store.jobs == []
     assert store.events[-1] == "transaction:rollback"
     assert "wake" not in store.events
     assert notice.status_code == 200
-    assert notice.text.count("We couldn't queue this demo run. Please try again.") == 1
+    # Autoescaped through the shared notice partial: apostrophe is HTML-escaped.
+    assert notice.text.count("start this payroll run.") == 1
     for forbidden in (
         "secret email insert failure",
         "secret run insert failure",

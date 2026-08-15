@@ -191,7 +191,7 @@ def test_send_test_returns_303(fake_repo):
 
     A bare status-code check is satisfied by BOTH the success path
     (redirect to /runs/{run_id}) and the failure path (redirect to
-    /runs?demo_queue_error=1 — see app/routes/demo.py's except block), so it
+    /runs?notice=demo_queue_error — see app/routes/demo.py's except block), so it
     proves nothing about whether the demo write actually happened. Wired onto
     fake_repo so the write (insert_inbound_email/create_run/enqueue_job) is a
     real success against the in-memory store, and the assertions pin the
@@ -205,7 +205,7 @@ def test_send_test_returns_303(fake_repo):
     location = response.headers["location"]
     assert location.startswith("/runs/"), (
         "a successful demo send must redirect to the new run's detail page, "
-        f"not the failure fallback (/runs?demo_queue_error=1); got Location={location!r}"
+        f"not the failure fallback (/runs?notice=demo_queue_error); got Location={location!r}"
     )
     run_id = location.removeprefix("/runs/")
     assert run_id in fake_repo.runs, (
@@ -1128,17 +1128,22 @@ def test_resolution_superseded_notice_uses_fixed_copy_not_query_text(monkeypatch
 
 
 def test_demo_queue_error_notice_uses_fixed_copy_not_query_text(monkeypatch):
-    """The demo failure flag is an allowlisted presence bit, not rendered text."""
+    """The demo failure code is allowlist-reduced to a fixed label, never
+    rendered query text -- an unrecognised ?notice= value renders nothing."""
     from app.db import repo as _repo
 
-    hostile = "DB exploded for Maria <maria@example.test><script>alert(1)</script>"
     monkeypatch.setattr(_repo, "load_all_runs", lambda: [])
 
-    response = client.get("/runs", params={"demo_queue_error": hostile})
+    labeled = client.get("/runs", params={"notice": "demo_queue_error"})
+    assert labeled.status_code == 200
+    # Autoescaped through the shared notice partial: apostrophe is HTML-escaped.
+    assert "start this payroll run." in labeled.text
 
-    assert response.status_code == 200
-    assert "We couldn't queue this demo run. Please try again." in response.text
-    assert hostile not in response.text
+    hostile = "DB exploded for Maria <maria@example.test><script>alert(1)</script>"
+    hostile_resp = client.get("/runs", params={"notice": hostile})
+    assert hostile_resp.status_code == 200
+    assert hostile not in hostile_resp.text
+    assert "start this payroll run." not in hostile_resp.text
 
 
 # ---------------------------------------------------------------------------

@@ -853,14 +853,15 @@ def test_landing_subject_default_complete_and_queue_error_actionable(client):
     assert b'value="Payroll submission"' in plain_resp.content
     assert b"week of" not in plain_resp.content
 
-    error_resp = client.get("/?demo_queue_error=1")
+    error_resp = client.get("/?notice=demo_queue_error")
     assert error_resp.status_code == 200
-    assert b"Couldn't start this payroll run" in error_resp.content
+    # Rendered through Jinja autoescape now (the shared notice partial), so the
+    # apostrophe is HTML-entity-escaped -- assert on apostrophe-free substrings.
+    assert b"start this payroll run" in error_resp.content
     assert b"sleeps after 15 idle minutes" in error_resp.content
-    assert b'href="/runs"' in error_resp.content
 
     hostile = "<script>alert(1)</script>"
-    hostile_resp = client.get("/", params={"demo_queue_error": hostile})
+    hostile_resp = client.get("/", params={"notice": hostile})
     assert hostile_resp.status_code == 200
     assert hostile.encode() not in hostile_resp.content
 
@@ -1080,6 +1081,7 @@ def test_compose_rejects_unknown_business(monkeypatch):
         )
 
     assert resp.status_code in (302, 303)
+    assert resp.headers.get("location", "") == "/?notice=demo_unknown_business"
     assert create_run_calls == [], "create_run must NOT be called for unknown business"
 
 
@@ -1119,8 +1121,7 @@ def test_compose_body_length_cap_rejects_over_limit(monkeypatch):
         )
 
     assert resp.status_code in (302, 303)
-    location = resp.headers.get("location", "")
-    assert location == "/" or location.endswith("/"), "Must redirect to /"
+    assert resp.headers.get("location", "") == "/?notice=demo_too_long"
     assert create_run_calls == [], "create_run must NOT be called when body is over limit"
 
 
@@ -1160,6 +1161,7 @@ def test_compose_subject_length_cap_rejects_over_limit(monkeypatch):
         )
 
     assert resp.status_code in (302, 303)
+    assert resp.headers.get("location", "") == "/?notice=demo_too_long"
     assert create_run_calls == [], "create_run must NOT be called when subject is over limit"
 
 
@@ -1405,6 +1407,35 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
     # Check Metro UUID is in the seed_ids
     metro_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     assert called_seed_ids.get("Metro Deli Group") == metro_id
+
+
+def test_bind_route_rejects_unknown_business_with_notice(monkeypatch):
+    """BUG-10: POST /demo/bind with a business_name off the allowlist explains
+    why instead of a bare redirect -- bind_demo_business is never called."""
+    import app.db.repo as repo_mod
+
+    bind_calls: list[Any] = []
+    monkeypatch.setattr(
+        repo_mod,
+        "bind_demo_business",
+        lambda *a, **kw: _record_and_return(bind_calls, a, True),
+        raising=False,
+    )
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app as fastapi_app
+
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        resp = tc.post(
+            "/demo/bind",
+            data={"business_name": "Unknown Corp"},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code in (302, 303)
+    assert resp.headers.get("location", "") == "/?notice=demo_unknown_business"
+    assert bind_calls == []
 
 
 def test_run_detail_thread_includes_source_inbound(monkeypatch):
@@ -1700,12 +1731,13 @@ def test_demo_compose_rolls_back_every_write_failure_and_renders_bounded_notice(
         notice = tc.get(response.headers["location"])
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/?demo_queue_error=1"
+    assert response.headers["location"] == "/?notice=demo_queue_error"
     assert store.emails == store.runs == store.jobs == []
     assert store.events[-1] == "transaction:rollback"
     assert "wake" not in store.events
     assert notice.status_code == 200
-    assert notice.text.count("Couldn't start this payroll run.") == 1
+    # Autoescaped through the shared notice partial: apostrophe is HTML-escaped.
+    assert notice.text.count("start this payroll run.") == 1
     for forbidden in (
         "secret email insert failure",
         "secret run insert failure",

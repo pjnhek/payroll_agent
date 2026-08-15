@@ -22,6 +22,7 @@ from app.email.clean import clean_body
 from app.models.contracts import InboundEmail
 from app.models.job import JobKind
 from app.queue import wake
+from app.routes.operator_feedback import notice_redirect
 
 logger = logging.getLogger("payroll_agent.webhook")
 
@@ -151,7 +152,7 @@ def demo_bind(
     receive that business's payroll mail.
     """
     if business_name not in SEED_CONTACTS:
-        return RedirectResponse(url="/", status_code=303)
+        return notice_redirect("/", "demo_unknown_business")
 
     success = repo.bind_demo_business(business_name, DEMO_OPERATOR_EMAIL, SEED_BUSINESS_IDS)
     if success:
@@ -188,11 +189,11 @@ def demo_compose(
     """
     # Step 1: Validate business_name against allowlist.
     if business_name not in SEED_CONTACTS:
-        return RedirectResponse(url="/", status_code=303)
+        return notice_redirect("/", "demo_unknown_business")
 
     # Step 2: Length validation (server-side, before DB or LLM touch).
     if len(body) > 4000 or len(subject) > 200:
-        return RedirectResponse(url="/", status_code=303)
+        return notice_redirect("/", "demo_too_long")
 
     # Step 3: Resolve business_id from the stable seed constant — no
     # find_business_by_sender call, so binding state cannot re-point the composer.
@@ -238,7 +239,7 @@ def demo_compose(
 
     except Exception as exc:
         logger.warning("demo_compose enqueue failed: %s", type(exc).__name__)
-        return RedirectResponse(url="/?demo_queue_error=1", status_code=303)
+        return notice_redirect("/", "demo_queue_error")
 
 
 # ---------------------------------------------------------------------------
@@ -337,4 +338,4 @@ def demo_send_test(
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
     except Exception as exc:
         logger.warning("demo send-test enqueue failed: %s", type(exc).__name__)
-        return RedirectResponse(url="/runs?demo_queue_error=1", status_code=303)
+        return notice_redirect("/runs", "demo_queue_error")

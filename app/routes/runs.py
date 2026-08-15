@@ -817,7 +817,7 @@ def _build_alias_rationale_notes(
 @router.get("/runs")
 def runs_list(
     request: Request,
-    demo_queue_error: str = Query(default=""),
+    notice: str = Query(default=""),
 ) -> Response:
     """DASH-01: Read and render the reverse-chronological runs list.
 
@@ -839,7 +839,7 @@ def runs_list(
             "runs": runs,
             "demo_fixtures": DEMO_FIXTURES,
             "in_flight_statuses": list(IN_FLIGHT_STATUSES),
-            "demo_queue_error": bool(demo_queue_error),
+            "notice_label": notice_label(notice),
         },
     )
 

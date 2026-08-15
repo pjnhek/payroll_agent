@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, Response
 
 from app.db import repo
 from app.routes.demo import DEMO_FIXTURES, DEMO_OPERATOR_EMAIL, SEED_BUSINESS_IDS, SEED_CONTACTS
+from app.routes.operator_feedback import notice_label
 from app.routes.templating import templates
 
 logger = logging.getLogger("payroll_agent.webhook")
@@ -68,7 +69,7 @@ def landing(
     request: Request,
     business: str = Query(default=""),
     bound: str = Query(default=""),
-    demo_queue_error: str = Query(default=""),
+    notice: str = Query(default=""),
 ) -> Response:
     """Recruiter landing page with business picker + in-app composer.
 
@@ -134,7 +135,7 @@ def landing(
             "armed_business_id": armed_business_id,
             "armed_business_name": armed_business_name,
             "bound": bound,
-            "demo_queue_error": demo_queue_error == "1",
+            "notice_label": notice_label(notice),
             "demo_operator_email": DEMO_OPERATOR_EMAIL,
             "gate_fixture_key": LANDING_GATE_FIXTURE_KEY,
             "gate_fixture_body": _gate_fixture_body(),
