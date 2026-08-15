@@ -562,7 +562,7 @@ def test_simulated_reply_enqueue_failure_rolls_back_email_and_never_wakes(
     assert response.status_code == 303
     assert (
         response.headers["location"]
-        == f"/runs/{run_id}?simulate_reply_error=enqueue_failed"
+        == f"/runs/{run_id}?notice=reply_enqueue_failed"
     )
     assert set(fake_repo.email_by_id) == before_email_ids
     assert fake_repo.jobs == {}
@@ -595,9 +595,9 @@ def test_simulate_reply_no_proof_attaches_operator_visible_banner_code(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == f"/runs/{run_id}?simulate_reply_error=no_proof"
+    assert response.headers["location"] == f"/runs/{run_id}?notice=reply_no_proof"
 
-    page = client.get(f"/runs/{run_id}?simulate_reply_error=no_proof")
+    page = client.get(f"/runs/{run_id}?notice=reply_no_proof")
     assert page.status_code == 200
     assert "has not been confirmed sent yet" in page.text
 
@@ -628,10 +628,10 @@ def test_simulate_reply_missing_source_attaches_operator_visible_banner_code(
     assert response.status_code == 303
     assert (
         response.headers["location"]
-        == f"/runs/{run_id}?simulate_reply_error=missing_source"
+        == f"/runs/{run_id}?notice=reply_missing_source"
     )
 
-    page = client.get(f"/runs/{run_id}?simulate_reply_error=missing_source")
+    page = client.get(f"/runs/{run_id}?notice=reply_missing_source")
     assert page.status_code == 200
     assert "original email for this run could not be loaded" in page.text
 
@@ -644,7 +644,7 @@ def test_simulate_reply_unrecognized_error_code_renders_no_banner(
     run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
     fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
 
-    page = client.get(f"/runs/{run_id}?simulate_reply_error=<script>alert(1)</script>")
+    page = client.get(f"/runs/{run_id}?notice=<script>alert(1)</script>")
 
     assert page.status_code == 200
     assert "<script>alert(1)</script>" not in page.text

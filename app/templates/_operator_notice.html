@@ -1,0 +1,10 @@
+{# Shared operator-notice banner. `notice_label` is the ALREADY-REDUCED fixed label
+   (see app/routes/operator_feedback.py) -- never the raw `?notice=` code -- so this
+   partial never needs to allow-list anything itself. One region, one placement, at
+   the top of the page so it is visible immediately after a POST-redirect-GET lands,
+   regardless of which handler set it. #}
+{% if notice_label %}
+<div class="callout callout-error" role="alert">
+  <p>{{ notice_label }}</p>
+</div>
+{% endif %}

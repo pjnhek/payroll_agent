@@ -20,6 +20,7 @@
   <p>An earlier resolution was already accepted. This submission was recorded but not applied.</p>
 </div>
 {% endif %}
+{% include "_operator_notice.html" %}
 
 {# Vanilla-JS per-run status poll — replaces a blunt meta-refresh, which would reset
    the page (and any in-progress form) on every tick.
@@ -328,11 +329,6 @@
   <p class="column-label">Demo reply</p>
   <h2 id="reply-composer-title">Reply to client</h2>
   <p class="text-muted">Production receives replies through the inbound email gateway. Use this composer to continue the demo conversation.</p>
-  {% if simulate_reply_error_label %}
-  <div class="callout callout-error" role="alert">
-    <p>{{ simulate_reply_error_label }}</p>
-  </div>
-  {% endif %}
   <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer">
     <textarea name="reply_body" rows="4" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
     <div class="form-inline" style="margin-bottom: 0;">

@@ -26,6 +26,7 @@ from app.models.roster import Employee, Roster
 from app.models.status import RunStatus
 from app.routes import pipeline_glue
 from app.routes.demo import DEMO_FIXTURES
+from app.routes.operator_feedback import notice_label, notice_redirect
 from app.routes.templating import badge_class_filter, badge_label_filter, templates
 
 __all__ = ["router", "repo", "delivery", "wake"]
@@ -130,21 +131,6 @@ _DELIVERY_REVIEW_PURPOSES = {
     ),
 }
 _DELIVERY_REVIEW_MARKERS = frozenset(_DELIVERY_REVIEW_PURPOSES)
-# Fixed, safe vocabulary for simulate_reply's ?simulate_reply_error=<code> query param
-# (see simulate_reply's Guards docstring). Reduced through this allow-list before ever
-# reaching the template — the same "hostile until proven fixed" treatment
-# _safe_failure_presentation applies to error_detail — so an unrecognised code (e.g. a
-# hand-crafted URL) renders no banner rather than an attacker-chosen string.
-_SIMULATE_REPLY_ERROR_LABELS = {
-    "no_proof": (
-        "This clarification question has not been confirmed sent yet. "
-        "Wait a moment and try again."
-    ),
-    "missing_source": (
-        "The original email for this run could not be loaded, so no reply could be built."
-    ),
-    "enqueue_failed": "The reply could not be durably recorded. Try again.",
-}
 _NEW_CONFIRMATION_ACKNOWLEDGEMENT = "AUTHORIZE A NEW CONFIRMATION"
 
 
@@ -1159,7 +1145,7 @@ def run_detail(
     request: Request,
     run_id: uuid.UUID,
     resolution_superseded: str = Query(default=""),
-    simulate_reply_error: str = Query(default=""),
+    notice: str = Query(default=""),
 ) -> Response:
     """DASH-02/03: Render the chronological email conversation and gated controls."""
     try:
@@ -1259,9 +1245,7 @@ def run_detail(
             "roster_employees": roster_employees,
             "unresolved_suggestions": unresolved_suggestions,
             "resolution_superseded": bool(resolution_superseded),
-            "simulate_reply_error_label": _SIMULATE_REPLY_ERROR_LABELS.get(
-                simulate_reply_error
-            ),
+            "notice_label": notice_label(notice),
             "delivery_review": delivery_review,
             "delivery_review_marker": delivery_review_marker,
         },
@@ -1351,16 +1335,14 @@ def simulate_reply(
     correctly rejected by that guard.
 
     Guards (each 303's back to the run; every guard EXCEPT the first attaches a fixed
-    ?simulate_reply_error=<code> banner code so the operator sees WHY nothing happened
-    instead of a silent redirect — see _SIMULATE_REPLY_ERROR_LABELS and run_detail):
+    ?notice=<code> banner code so the operator sees WHY nothing happened instead of a
+    silent redirect — see app.routes.operator_feedback.NOTICE_LABELS and run_detail):
     - silent 303 if run.status != 'awaiting_reply' (nothing to reply to; a normal
       stale double-submit, not an error)
-    - ?simulate_reply_error=no_proof if neither a proven-sent nor an
-      operator-acknowledged clarification Message-ID exists yet
-    - ?simulate_reply_error=missing_source if the run's source inbound email
-      cannot be loaded
-    - ?simulate_reply_error=enqueue_failed if the durable persist+enqueue
-      transaction raises
+    - ?notice=reply_no_proof if neither a proven-sent nor an operator-acknowledged
+      clarification Message-ID exists yet
+    - ?notice=reply_missing_source if the run's source inbound email cannot be loaded
+    - ?notice=reply_enqueue_failed if the durable persist+enqueue transaction raises
     - SSRF-safe: no client-supplied run targeting beyond the path run_id;
       reply_body is used only as body_text of the synthetic email (no headers)
     """
@@ -1395,9 +1377,7 @@ def simulate_reply(
     except Exception:
         clar_mid = None
     if not clar_mid:
-        return RedirectResponse(
-            url=f"/runs/{run_id}?simulate_reply_error=no_proof", status_code=303
-        )
+        return notice_redirect(f"/runs/{run_id}", "reply_no_proof")
 
     # Load the run's source inbound email to get the original sender address. Using
     # from_addr from the original inbound is what lets the sender spoof guard pass —
@@ -1407,9 +1387,7 @@ def simulate_reply(
     except Exception:
         source_inbound = None
     if source_inbound is None:
-        return RedirectResponse(
-            url=f"/runs/{run_id}?simulate_reply_error=missing_source", status_code=303
-        )
+        return notice_redirect(f"/runs/{run_id}", "reply_missing_source")
 
     from_addr = source_inbound.from_addr
     to_addr = source_inbound.to_addr
@@ -1443,9 +1421,7 @@ def simulate_reply(
             )
     except Exception:
         logger.warning("simulate-reply durable enqueue failed")
-        return RedirectResponse(
-            url=f"/runs/{run_id}?simulate_reply_error=enqueue_failed", status_code=303
-        )
+        return notice_redirect(f"/runs/{run_id}", "reply_enqueue_failed")
 
     if routed.should_wake:
         wake.wake()
