@@ -289,6 +289,68 @@ def test_retrigger_from_approved_backgrounds_pipeline(client, fake_repo):
     )
 
 
+def test_retrigger_blocked_by_delivery_review_explains_why(client, fake_repo):
+    """BUG-6 half 1: a run whose delivery evidence must be resolved through its
+    purpose-aware review no longer silently reloads on Retrigger -- the operator
+    sees why. The marker guard fires before any CAS, so no state changes."""
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.APPROVED)
+    fake_repo.runs[str(run_id)]["error_reason"] = "DeliveryReview"
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:transport"
+    fake_repo.set_status(run_id, RunStatus.NEEDS_OPERATOR)
+
+    r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert (
+        r.headers["location"] == f"/runs/{run_id}?notice=retrigger_delivery_review"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value, (
+        "the delivery-review marker guard fires before any CAS -- status unchanged"
+    )
+    assert fake_repo.jobs == {}, "no job may be enqueued when the guard blocks"
+
+    page = client.get(f"/runs/{run_id}?notice=retrigger_delivery_review")
+    assert page.status_code == 200
+    assert "Resolve the delivery review below before re-triggering" in page.text
+
+
+def test_retrigger_blocked_by_active_handoff_explains_why(client, fake_repo):
+    """BUG-6 half 2: a run whose send is still in flight with the provider no
+    longer silently reloads on Retrigger -- the operator sees why. No
+    run_pipeline job is enqueued: clear_reply_context's active-handoff guard
+    raises before enqueue_job runs, so no job is ever recorded without a
+    matching, durable state advance."""
+    business_id = fake_repo.contact_to_business["payroll@coastalcleaning.example"]
+    run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.ERROR)
+    handoff_id = uuid.uuid4()
+    fake_repo.outbound_provider_handoffs[str(handoff_id)] = {
+        "id": handoff_id,
+        "run_id": run_id,
+        "email_id": uuid.uuid4(),
+        "snapshot_id": uuid.uuid4(),
+        "released_at": None,
+        "release_reason": None,
+    }
+
+    r = client.post(f"/runs/{run_id}/retrigger", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert (
+        r.headers["location"] == f"/runs/{run_id}?notice=retrigger_active_handoff"
+    )
+    assert fake_repo.jobs == {}, (
+        "clear_reply_context's active-handoff guard raises before enqueue_job "
+        "runs -- no job is ever recorded without a matching state advance"
+    )
+
+    page = client.get(f"/runs/{run_id}?notice=retrigger_active_handoff")
+    assert page.status_code == 200
+    assert "still in flight with the email provider" in page.text
+
+
 def test_second_retrigger_enqueues_a_second_job(client, fake_repo):
     """QUEUE-02: the dedup_key's epoch is what lets a SECOND, later retrigger enqueue
     a SECOND job rather than being silently swallowed by ON CONFLICT DO NOTHING

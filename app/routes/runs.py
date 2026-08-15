@@ -712,7 +712,7 @@ def retrigger(run_id: uuid.UUID) -> RedirectResponse:
             # A possible provider acceptance must be resolved through its purpose-aware
             # delivery review. Guard before any status CAS, context clear, or job enqueue.
             if _is_delivery_review_marker(repo.load_run(run_id, conn=conn)):
-                return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+                return notice_redirect(f"/runs/{run_id}", "retrigger_delivery_review")
             # Core CAS claims — always safe: delivery's purpose-aware already-sent guard
             # prevents a duplicate confirmation email even if the run already sent one.
             claimed = (
@@ -744,7 +744,7 @@ def retrigger(run_id: uuid.UUID) -> RedirectResponse:
                 )
     except repo.ActiveOutboundProviderHandoffError:
         logger.info("retrigger blocked by active provider handoff for run %s", run_id)
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return notice_redirect(f"/runs/{run_id}", "retrigger_active_handoff")
     # ── Transaction committed. Everything below is post-commit. ────────────────────
     if claimed:
         logger.info("run_id=%s reply context cleared on retrigger", run_id)

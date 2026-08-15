@@ -31,6 +31,14 @@ NOTICE_LABELS: dict[str, str] = {
         "The original email for this run could not be loaded, so no reply could be built."
     ),
     "reply_enqueue_failed": "The reply could not be durably recorded. Try again.",
+    "retrigger_delivery_review": (
+        "This run is held by a delivery review. Resolve the delivery review "
+        "below before re-triggering."
+    ),
+    "retrigger_active_handoff": (
+        "A send for this run is still in flight with the email provider. "
+        "Wait for it to settle, then try again."
+    ),
 }
 
 
