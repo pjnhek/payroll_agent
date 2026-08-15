@@ -137,6 +137,25 @@ The default Resend sender is `onboarding@resend.dev`, which is suitable for an a
 Sending to arbitrary client addresses requires a verified domain and a corresponding
 `RESEND_FROM_ADDR`.
 
+### Demo mode routes client email to the operator's inbox
+
+The seeded demo contacts (`payroll@coastalcleaning.example`, `hr@metrodeli.example`,
+`finance@summittech.example`) are RFC 2606 reserved `.example` addresses, and Resend's free
+tier — sending `from=onboarding@resend.dev` — only delivers to the account owner's own address.
+Without an override, every clarification and confirmation send to these addresses fails
+identically, and the landing-page gate demo always escalates to delivery review instead of
+completing the clarify → reply → resume loop.
+
+Setting `DEMO_OUTBOUND_TO` (see `.env.example` / `render.yaml`) redirects every outbound client
+email to that single deliverable address, resolved at the moment the email is frozen for sending —
+not the moment it is actually sent — so a replay of a given frozen email is always addressed the
+same way regardless of when the setting last changed. The run record and the thread view still show
+the real seeded contact as the client-facing recipient; only the actual SMTP recipient is
+redirected. This is complementary to, not a replacement for, `demo_sender_bindings` (the operator
+`/demo/bind` route): that mechanism owns the **inbound** leg (which business a real reply routes
+to); `DEMO_OUTBOUND_TO` owns the **outbound** leg (where a demo send actually lands). With
+`DEMO_OUTBOUND_TO` unset, behavior is unchanged from today.
+
 ### The pump: cadence, recovery, and the 750-hour budget
 
 A GitHub Actions cron (`.github/workflows/pump.yml`) hits an authenticated `/internal/pump`

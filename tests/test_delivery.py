@@ -511,6 +511,68 @@ def test_confirmation_reservation_enqueues_one_frozen_send_job(fake_repo, monkey
     assert send_jobs[0]["dedup_key"] == f"send_outbound:{snapshot['email_id']}"
 
 
+def test_confirmation_reservation_respects_demo_outbound_to_override(
+    fake_repo, monkeypatch
+):
+    """With DEMO_OUTBOUND_TO set, the reserved confirmation's to_addr is
+    the override, and nothing else in the frozen envelope changes -- the
+    override lands in the frozen snapshot and nowhere else."""
+    from datetime import datetime
+
+    from app.config import get_settings
+    from app.models.contracts import InboundEmail
+    from app.pipeline import delivery as orch
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("DEMO_OUTBOUND_TO", "operator@example.com")
+
+    run_id = _run_id()
+    roster, item = _minimal_roster_and_item(run_id)
+    fake_repo.runs[str(run_id)] = {
+        "id": run_id,
+        "business_id": roster.business_id,
+        "status": RunStatus.APPROVED.value,
+        "reply_epoch": 0,
+        "pay_period_start": None,
+        "pay_period_end": None,
+        "record_only": False,
+    }
+    run = fake_repo.load_run(run_id)
+    assert run is not None
+
+    inbound = InboundEmail(
+        id=uuid.uuid4(),
+        message_id="<source@payroll-agent.local>",
+        in_reply_to=None,
+        references_header=None,
+        subject="Payroll hours",
+        from_addr="payroll@coastalcleaning.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+        created_at=datetime.now(tz=UTC),
+    )
+
+    monkeypatch.setattr(orch.repo, "load_business_name", lambda *_args, **_kw: "Coastal")
+    monkeypatch.setattr(orch.repo, "load_line_items", lambda *_args, **_kw: [item])
+    monkeypatch.setattr(
+        orch.repo, "load_roster_for_business", lambda *_args, **_kw: roster
+    )
+    monkeypatch.setattr(orch.repo, "load_inbound_email", lambda *_args, **_kw: inbound)
+    monkeypatch.setattr(orch.repo, "get_record_only_flag", lambda *_args, **_kw: False)
+    monkeypatch.setattr(orch, "compose_confirmation", lambda *_a, **_kw: "frozen confirmation")
+    monkeypatch.setattr(orch, "generate_paystub_pdf", lambda *_a, **_kw: b"frozen pdf")
+
+    assert orch.deliver(run_id, run) is True
+
+    snapshot = next(iter(fake_repo.outbound_snapshots.values()))["payload"]
+    assert snapshot["to_addr"] == "operator@example.com"
+    assert snapshot["from_addr"] == get_settings().resend_from_addr
+    assert snapshot["in_reply_to"] == inbound.message_id
+    assert snapshot["references_header"] == inbound.message_id
+    assert snapshot["message_id"] not in (None, "", inbound.message_id)
+
+
 def test_new_confirmation_passes_complete_prior_ytd_to_paystub(fake_repo, monkeypatch):
     """A first reservation receives every display category from reconciled history."""
     from app.pipeline import delivery as orch

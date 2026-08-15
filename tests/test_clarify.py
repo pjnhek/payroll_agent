@@ -413,6 +413,62 @@ def test_clarify_reserves_and_queues_before_pausing(fake_repo, mock_llm, monkeyp
     assert "David Reyes" in snapshot["body_text"]
 
 
+def test_clarify_reservation_respects_demo_outbound_to_and_reply_still_threads(
+    fake_repo, mock_llm, monkeypatch
+):
+    """With DEMO_OUTBOUND_TO set, the frozen clarification's to_addr is
+    the override, but simulate_reply's synthetic reply still threads --
+    from_addr is taken from the run's own SOURCE inbound (never from the
+    outbound to_addr), so find_business_by_sender still resolves and the
+    sender-spoof guard still passes."""
+    from fastapi.testclient import TestClient
+
+    from app.config import get_settings
+    from app.main import app as fastapi_app
+    from app.models.job import JobKind
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://mock-test-stub/mockdb")
+    monkeypatch.setenv("DEMO_OUTBOUND_TO", "operator@example.com")
+
+    mock_llm.script = _gate_block_script(fake_repo)
+    run_id = _seed_metrodeli_run(fake_repo)
+
+    run_pipeline(run_id)
+
+    run = fake_repo.load_run(run_id)
+    assert run["status"] == "awaiting_reply"
+    outbound = fake_repo.outbound[str(run_id)]
+    snapshot = fake_repo.load_outbound_snapshot(run_id, outbound[0]["id"])
+    assert snapshot is not None
+    assert snapshot["to_addr"] == "operator@example.com", (
+        "the override must land in the frozen envelope"
+    )
+    # Proof-of-delivery for simulate_reply's guard: mirrors the existing
+    # fake_repo seeding style (see tests/test_reply_redelivery.py) rather
+    # than draining the reservation through the queue.
+    outbound[0]["send_state"] = "sent"
+
+    with TestClient(fastapi_app, raise_server_exceptions=False) as client:
+        response = client.post(
+            f"/runs/{run_id}/simulate-reply",
+            data={"reply_body": "I meant David Reyes"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    resume_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RESUME_REPLY.value and job["run_id"] == run_id
+    ]
+    assert len(resume_jobs) == 1, (
+        "simulate-reply must still thread and enqueue a durable resume even "
+        "with the outbound recipient overridden -- from_addr comes from the "
+        "SOURCE inbound, never from to_addr"
+    )
+
+
 def test_clarify_reentry_reuses_the_frozen_slot_before_drafting(
     fake_repo, mock_llm, monkeypatch
 ):

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config import get_settings
 from app.db import repo
+from app.email.routing import resolve_outbound_recipient
 from app.models.contracts import Decision, Extracted, InboundEmail
 from app.models.job import JobKind
 from app.models.roster import Roster
@@ -470,7 +471,7 @@ def clarify(
             round=current_round,
             message_id=f"<{uuid.uuid4()}@demo.payroll-agent.local>",
             from_addr=settings.resend_from_addr,
-            to_addr=email.from_addr,
+            to_addr=resolve_outbound_recipient(email.from_addr),
             reply_to=settings.resend_reply_to or None,
             in_reply_to=email.message_id,
             references_header=email.message_id,

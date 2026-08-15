@@ -69,6 +69,18 @@ class Settings(BaseSettings):
     # Omitted from send when empty.
     resend_reply_to: str = ""           # RESEND_REPLY_TO env var — inbound .resend.app address
 
+    # DEMO OUTBOUND OVERRIDE: Resend free tier with from=onboarding@resend.dev only
+    # delivers to the account owner's own address (RFC 2606 .example seed contacts are
+    # never deliverable, and a plus-addressed variant was live-tested and also
+    # rejected). When set, EVERY outbound client email (confirmation + clarification)
+    # is redirected to this address at snapshot-reservation time — before any
+    # idempotency key is minted, so every replay of a given reservation stays
+    # byte-identical regardless of when this setting changes. Empty default is the
+    # production-safe value: unset, this is a pure no-op relative to today. This is a
+    # demo affordance, not a production feature, and it must never be resolved at
+    # send time — see app/email/routing.py.
+    demo_outbound_to: str = ""  # DEMO_OUTBOUND_TO env var
+
     # ── Durable job queue ──────────────────────────────────────────────────────
     # WORKER_COUNT: 2 daemon threads. `0` is the test/dev off switch —
     # tests/conftest.py pins WORKER_COUNT=0 so the suite never spawns real worker

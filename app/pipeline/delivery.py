@@ -11,6 +11,7 @@ import psycopg
 
 import app.db.repo as repo
 from app.config import get_settings
+from app.email.routing import resolve_outbound_recipient
 from app.models.job import JobKind
 from app.models.status import RunStatus
 from app.pipeline import alias_learning, send_guard
@@ -152,7 +153,7 @@ def deliver(
             round=0,
             message_id=f"<{uuid.uuid4()}@payroll-agent.local>",
             from_addr=settings.resend_from_addr,
-            to_addr=inbound.from_addr if inbound else "",
+            to_addr=resolve_outbound_recipient(inbound.from_addr if inbound else ""),
             reply_to=settings.resend_reply_to or None,
             in_reply_to=in_reply_to,
             references_header=references_header,
