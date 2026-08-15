@@ -179,7 +179,44 @@ dashboard, the eval proof, and Render/Supabase/Resend hosting. 7 phases.
 
 - **Phase 11 (Clarification Round Machine & Alias Learning), 2026-07-07:** The multi-round clarification state machine is correct and unstrandable, and the alias-learning loop actually learns. **CLAR2-01:** `_clarify`'s idempotency guard re-keyed from purpose-only to `(purpose, round)` via `get_outbound_for_round`, so a genuinely-new round-2+ question always sends (no run silently parks at `awaiting_reply` with no email out) while a true re-trigger stays suppressed. **CLAR2-02:** a 3-round cap escalates to a first-class `needs_operator` status/badge with an operator resolve+resume surface (server-side roster validation) or reject. **CLAR2-03/05:** `resume_pipeline` writes the consumed marker at its own CAS claim and `_combined_context_email` accumulates ORIGINAL + all consumed replies in round order behind a code-owned "questions we asked" anchor — the known-edge fixture flips from documenting a silent-mispay to asserting it closed (Round-1 "30, not 40" pays 30). **CLAR2-04:** the unreachable count-diff alias bind is replaced with deterministic bind-on-confirmation against a persisted `{suggested, bound}` candidate shape, requiring same-record evidence (`_bind_evidence_for_token`) so the misname guard's never-learn-from-inference intent survives; a full-loop hermetic test drives REAL name resolution and proves the system stops asking. **CLAR2-06/07:** a redelivered/stranded unconsumed reply re-drives the CAS-gated resume (no permanently-dropped replies), and a per-run `reply_epoch` counter + retrigger context-wipe ensure no provenance badge outlives its data — without ever mutating the append-only `email_messages` audit log. Cross-AI review (Codex + internal) of the initially-passing phase found 5 CONFIRMED critical money/security bugs; all 5 + a warning were fixed via gap plans 11-06/07/09/10 and re-verified (exploits traced dead in merged source). Verified 9/9; full suite 596 passing, 0 regressions. CLAR2-01…CLAR2-07.
 
-## Next Milestone: none active — demo-polish work already shipped
+## Current Milestone: v5 React/TypeScript Operator Console
+
+**Goal:** Convert the operator-facing dashboard to React + TypeScript in three independently shippable
+vertical slices, without editing a single money-moving route.
+
+**Target features:**
+- Frontend toolchain (Vite + TypeScript), a node builder stage in the existing multi-stage Dockerfile, an
+  SPA mount that does not shadow `/api`, `/webhook`, `/health`, or `/internal`, a CI job, and `/runs`
+  converted with its in-place row poller.
+- `/runs/{id}` converted: the 8-branch decision-banner matrix, both delivery-review variants, the
+  conversation thread, the payroll-details disclosure, and the operator controls.
+- `/eval` converted: headline metrics, the committed `chart.svg`, and the per-fixture drill-in.
+
+**Explicitly NOT converted:** `/` (landing) and `/ops` both stay Jinja2. `/ops` stays deliberately
+script-free, because the page an operator reads when everything else is broken must not depend on a bundle.
+That property is pinned by `tests/test_ops_route.py:364` and was verified live at Phase 21 UAT.
+
+**Motivation, recorded honestly:** this reverses the Phase 5 "no SPA/bundler/TS" decision. The driver is
+portfolio signal for a specific role, not a defect in the Jinja dashboard. A cross-AI scope review argued the
+existing server-rendered console is the stronger artifact on engineering merit alone; the milestone proceeds
+with that dissent on the record, and with `/ops` preserved as the deliberate counter-example.
+
+**Three locked decisions were falsified before any code was written** (cross-AI scope review, 2026-08-14,
+each verified against live source):
+1. *Mutations use native `<form method="post">` + 303, never `fetch`.* The original plan assumed handler
+   byte-identity implied browser-semantics identity. It does not: `app/routes/runs.py:580` encodes
+   `?resolution_superseded=1` into the redirect target only, `app/routes/demo.py:337` redirects success to
+   the newly created run, and Reject's guard is a native `onsubmit="return confirm(...)"`. A fetch plus
+   manual re-fetch loses all three.
+2. *Per-route Pydantic response DTOs with field allowlists.* `_safe_run_for_browser`
+   (`app/routes/runs.py:224`) is a **denylist** (`app/routes/runs.py:246`), so serializing it wholesale would
+   expose `alias_candidates`, `reply_epoch`, and `business_id`, and would auto-expose any column later added
+   to `RUN_COLS`.
+3. *Vertical slices, each independently deployable.* The original horizontal API-then-UI split would have
+   stranded an unconsumed JSON API, and the uncertain external timeline makes a half-migrated dashboard a
+   worse artifact than no migration at all.
+
+### Prior: v4.1 retired, demo-polish work already shipped
 
 **The planned "Demo Polish & Run-Detail UI" mini-milestone was found already built.** A `/gsd-new-milestone`
 run on 2026-07-20 (started as v4.1) opened a 4-agent research pass to verify current state before defining
@@ -211,11 +248,15 @@ Phase 21. The app remains demo-ready.
 
 ### Active
 
-**No active milestone / no open requirements.** v4 — Durable Execution — SHIPPED 2026-07-20 (archived in
-`milestones/v4-ROADMAP.md` + `milestones/v4-REQUIREMENTS.md`); the demo-polish items above are all shipped and
-test-covered. Start the next milestone with `/gsd-new-milestone` when there is genuinely new scope (e.g. the
-optional net-new polish noted in `research/SUMMARY.md`: inline HTML/CSS eval chart, HTML "Payroll details"
-YTD table, thread affordances, or dead-code hygiene).
+**v5 — React/TypeScript Operator Console — IN PROGRESS (started 2026-08-14).** Requirements are defined in
+`.planning/REQUIREMENTS.md` and mapped to Phases 22–24 in `.planning/ROADMAP.md`. The milestone is presentation
+layer only: `app/pipeline/`, `app/queue/`, `app/db/`, `app/llm/`, and `app/email/` are out of scope, and all 20
+mutation routes stay byte-identical. The known cost center is roughly 4,650 LOC of existing tests that assert
+against rendered markup (`tests/test_dashboard.py` 2,218 LOC / 85 markup assertions, `tests/test_needs_operator.py`
+2,009 LOC / 10); `tests/test_ops_route.py` is deliberately NOT in that set, because `/ops` stays Jinja.
+
+Prior: v4 — Durable Execution — SHIPPED 2026-07-20 (archived in `milestones/v4-ROADMAP.md` +
+`milestones/v4-REQUIREMENTS.md`); the demo-polish items above are all shipped and test-covered.
 
 Prior milestones: **v1.0** (email-driven pipeline, `milestones/v1.0-REQUIREMENTS.md`), **v2 Production
 Hardening** (16 reqs: MONEY/OPS2/DATA/CLAR2, `milestones/v2-REQUIREMENTS.md`), **v3 Production-Ready Codebase**
@@ -307,7 +348,21 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-20 — **Premature v4.1 "Demo Polish & Run-Detail UI" milestone RETIRED; records
+*Last updated: 2026-08-14 — **Milestone v5 (React/TypeScript Operator Console) started.** Converts `/runs`,
+`/runs/{id}`, and `/eval` to React + TypeScript across three independently shippable vertical slices
+(Phases 22–24); `/` and `/ops` stay Jinja2, with `/ops` deliberately script-free. Presentation layer only:
+no money-moving route is edited, and all 20 mutation endpoints keep native form-POST + 303 semantics.
+Scope was adversarially reviewed by an external AI CLI against live source BEFORE any planning artifact was
+written; that review falsified three locked decisions (fetch-based mutations lose redirect-encoded state at
+`app/routes/runs.py:580` and `app/routes/demo.py:337`; a generic serializer over the `_safe_run_for_browser`
+denylist at `app/routes/runs.py:246` would leak `alias_candidates`/`reply_epoch`/`business_id`; and a
+horizontal API-first phase split would strand an unconsumed API), all three corrected above before Step 4.
+The same review argued the milestone should not happen at all on engineering merit; that dissent is recorded
+in the Current Milestone section rather than discarded. `phases.clear` was deliberately SKIPPED at Step 6:
+all 23 phase dirs (01–21) span four milestones and archiving them wholesale under `v4-phases/` would mislabel
+17 of them. Prior milestone: v4 — Durable Execution SHIPPED 2026-07-20.*
+
+<!-- Prior footer (v4.1 retirement): Last updated: 2026-07-20 — **Premature v4.1 "Demo Polish & Run-Detail UI" milestone RETIRED; records
 reconciled.** A `/gsd-new-milestone` run opened v4.1 to formalize the four demo-polish backlog items, but its
 research pass (4 agents; `research/SUMMARY.md`) found all four already shipped — three independently confirmed
 they landed in Phase 20 + an untracked quick task `260718-hie` (`91bc6ca`) and were never marked done. Rather
@@ -316,7 +371,7 @@ the one genuine residual gap (dashboard paystub-**download** route not passing `
 PDF showed Current-as-YTD while the emailed PDF was correct) was closed via quick task `260720-lba` (`25e2582`,
 display-only parity fix + hermetic RED→GREEN regression test), and PROJECT.md/STATE.md/backlog.md were
 corrected to reflect that the demo-polish work is done. No active milestone; app remains demo-ready. Prior
-milestone: v4 — Durable Execution SHIPPED 2026-07-20 (below).*
+milestone: v4 — Durable Execution SHIPPED 2026-07-20 (below).* -->
 
 <!-- Prior footer (v4 milestone close): Last updated: 2026-07-20 after the **v4 — Durable Execution milestone** shipped (Phases 16–21; all 19
 requirements validated). v4 made the payroll pipeline durable end-to-end: a non-blocking webhook + durable
