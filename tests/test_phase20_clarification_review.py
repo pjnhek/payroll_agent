@@ -532,3 +532,140 @@ def test_typed_confirmation_authorization_releases_handoff_and_clones_frozen_byt
         for attachment in original["attachments"]
     ]
     assert wake_calls == [None]
+
+
+# ---------------------------------------------------------------------------
+# BUG-7/8/9: every non-silent outcome of a delivery-review outcome handler
+# attaches a fixed notice code -- one per AdvanceSendJobOutcome member plus
+# the shared review_unavailable / review_state_changed codes.
+# ---------------------------------------------------------------------------
+
+
+def test_retry_now_missing_outcome_explains_why(fake_repo, monkeypatch):
+    import app.routes.runs as runs_mod
+
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    monkeypatch.setattr(
+        runs_mod.repo,
+        "advance_existing_send_job_due_now",
+        lambda run, email, **_: runs_mod.repo.AdvanceSendJobOutcome.MISSING,
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/retry-now", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=retry_missing"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_retry_now_expired_outcome_explains_why(fake_repo):
+    """Mirrors test_clarification_retry_expired_is_a_noop, but on the confirmation
+    facade and asserting the notice code instead of only the no-op."""
+    import app.routes.runs as runs_mod  # noqa: F401 -- imported for parity with siblings
+
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.outbound_snapshots[str(snapshot["email_id"])]["payload"][
+        "reserved_at"
+    ] = datetime.now(UTC) - timedelta(hours=21)
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/retry-now", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=retry_expired"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_retry_now_not_pending_outcome_explains_why(fake_repo, monkeypatch):
+    import app.routes.runs as runs_mod
+
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    monkeypatch.setattr(
+        runs_mod.repo,
+        "advance_existing_send_job_due_now",
+        lambda run, email, **_: runs_mod.repo.AdvanceSendJobOutcome.NOT_PENDING,
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/retry-now", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=retry_not_pending"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_retry_now_db_exception_explains_why(fake_repo, monkeypatch):
+    import app.routes.runs as runs_mod
+
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+
+    def raise_connection(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(runs_mod.repo, "get_connection", raise_connection)
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/retry-now", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=retry_unavailable"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_mark_delivery_delivered_lost_cas_explains_why(fake_repo, monkeypatch):
+    """A concurrent actor already moved the run off needs_operator by the time
+    this transaction's claim_status runs -- the operator sees why "Mark
+    delivered" appeared to do nothing, instead of a silent reload."""
+    import app.routes.runs as runs_mod
+
+    run_id, snapshot = _confirmation_review_run(fake_repo)
+    monkeypatch.setattr(runs_mod.repo, "claim_status", lambda *args, **kwargs: False)
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/mark-delivered", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"] == f"/runs/{run_id}?notice=review_state_changed"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_finish_clarification_review_lost_cas_explains_why(fake_repo, monkeypatch):
+    """The same lost-CAS race for BOTH clarification outcome handlers (mark-handled
+    and reject) funnels through _finish_clarification_delivery_review."""
+    import app.routes.runs as runs_mod
+
+    run_id, _snapshot = _clarification_review_run(fake_repo)
+    monkeypatch.setattr(runs_mod.repo, "claim_status", lambda *args, **kwargs: False)
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/clarification/mark-handled",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"] == f"/runs/{run_id}?notice=review_state_changed"
+    )
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value
+
+
+def test_review_unavailable_notice_on_wrong_kind(fake_repo):
+    """A confirmation-only route hit against a clarification review is exactly
+    the wrong-kind case review_unavailable exists to explain."""
+    run_id, _snapshot = _clarification_review_run(fake_repo)
+
+    response = client.post(
+        f"/runs/{run_id}/delivery-review/mark-delivered", follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?notice=review_unavailable"
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.NEEDS_OPERATOR.value

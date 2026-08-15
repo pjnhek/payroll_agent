@@ -39,6 +39,15 @@ NOTICE_LABELS: dict[str, str] = {
         "A send for this run is still in flight with the email provider. "
         "Wait for it to settle, then try again."
     ),
+    "retry_missing": "There is no send job left for this frozen email.",
+    "retry_expired": "The 20-hour replay window for this reservation has closed.",
+    "retry_not_pending": "A send for this email is already in flight.",
+    "retry_unavailable": "Could not reach the database. Try again.",
+    "review_unavailable": "This run no longer has a loadable delivery review.",
+    "review_state_changed": (
+        "This run's state changed while you were reading. Reload and check "
+        "the current status."
+    ),
 }
 
 

@@ -945,24 +945,45 @@ def delivery_review_attachment(
     )
 
 
+# Notice codes for each AdvanceSendJobOutcome that means "nothing was advanced".
+# ADVANCED is deliberately absent — a silent, unbannered redirect IS the correct
+# outcome for a successful retry (the page re-renders with the job queued).
+_ADVANCE_OUTCOME_NOTICE_CODES: dict[repo.AdvanceSendJobOutcome, str] = {
+    repo.AdvanceSendJobOutcome.MISSING: "retry_missing",
+    repo.AdvanceSendJobOutcome.EXPIRED: "retry_expired",
+    repo.AdvanceSendJobOutcome.NOT_PENDING: "retry_not_pending",
+}
+
+
 @router.post("/runs/{run_id}/delivery-review/retry-now")
 def retry_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
-    """Advance one existing eligible delivery job and wake only after commit."""
+    """Advance one existing eligible delivery job and wake only after commit.
+
+    Every non-silent outcome attaches a fixed notice code (see
+    _ADVANCE_OUTCOME_NOTICE_CODES and NOTICE_LABELS) so a missing job, an
+    expired replay window, an already-in-flight send, or an unreachable
+    database explains itself instead of reloading identically.
+    """
     should_wake = False
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
-            if delivery_review is not None and delivery_review["review_kind"] == (
+            if delivery_review is None or delivery_review["review_kind"] != (
                 "confirmation"
             ):
-                outcome = repo.advance_existing_send_job_due_now(
-                    run_id,
-                    delivery_review["review"]["email_id"],
-                    conn=conn,
-                )
-                should_wake = outcome == repo.AdvanceSendJobOutcome.ADVANCED
+                return notice_redirect(f"/runs/{run_id}", "review_unavailable")
+            outcome = repo.advance_existing_send_job_due_now(
+                run_id,
+                delivery_review["review"]["email_id"],
+                conn=conn,
+            )
+            code = _ADVANCE_OUTCOME_NOTICE_CODES.get(outcome)
+            if code is not None:
+                return notice_redirect(f"/runs/{run_id}", code)
+            should_wake = outcome == repo.AdvanceSendJobOutcome.ADVANCED
     except Exception:
         logger.warning("delivery retry-now unavailable for run %s", run_id)
+        return notice_redirect(f"/runs/{run_id}", "retry_unavailable")
     if should_wake:
         wake.wake()
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
@@ -970,22 +991,30 @@ def retry_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
 
 @router.post("/runs/{run_id}/delivery-review/clarification/retry-now")
 def retry_clarification_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
-    """Reopen only the existing frozen clarification job while replay is eligible."""
+    """Reopen only the existing frozen clarification job while replay is eligible.
+
+    Same notice-code treatment as retry_delivery_now — see its docstring.
+    """
     should_wake = False
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
-            if delivery_review is not None and delivery_review["review_kind"] == (
+            if delivery_review is None or delivery_review["review_kind"] != (
                 "clarification"
             ):
-                outcome = repo.advance_existing_clarification_delivery_review_job_due_now(
-                    run_id,
-                    delivery_review["review"]["email_id"],
-                    conn=conn,
-                )
-                should_wake = outcome == repo.AdvanceSendJobOutcome.ADVANCED
+                return notice_redirect(f"/runs/{run_id}", "review_unavailable")
+            outcome = repo.advance_existing_clarification_delivery_review_job_due_now(
+                run_id,
+                delivery_review["review"]["email_id"],
+                conn=conn,
+            )
+            code = _ADVANCE_OUTCOME_NOTICE_CODES.get(outcome)
+            if code is not None:
+                return notice_redirect(f"/runs/{run_id}", code)
+            should_wake = outcome == repo.AdvanceSendJobOutcome.ADVANCED
     except Exception:
         logger.warning("clarification delivery retry unavailable for run %s", run_id)
+        return notice_redirect(f"/runs/{run_id}", "retry_unavailable")
     if should_wake:
         wake.wake()
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
@@ -1003,27 +1032,35 @@ def _finish_clarification_delivery_review(
     composer (simulate_reply) thread its synthetic reply against this question
     afterward; see mark_outbound_operator_acknowledged's docstring for why this must
     NOT touch send_state or be read by any proof-of-delivery guard.
+
+    A lost CAS (review_state_changed) and a load/claim exception
+    (review_unavailable) both attach a fixed notice code instead of silently
+    no-oping "Mark handled" or clarification "Reject" alike.
     """
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
-            if delivery_review is not None and delivery_review["review_kind"] == (
+            if delivery_review is None or delivery_review["review_kind"] != (
                 "clarification"
             ):
-                claimed = repo.claim_status(
+                return notice_redirect(f"/runs/{run_id}", "review_unavailable")
+            claimed = repo.claim_status(
+                run_id,
+                RunStatus.NEEDS_OPERATOR,
+                target,
+                conn=conn,
+            )
+            if not claimed:
+                return notice_redirect(f"/runs/{run_id}", "review_state_changed")
+            if acknowledge_outbound:
+                repo.mark_outbound_operator_acknowledged(
                     run_id,
-                    RunStatus.NEEDS_OPERATOR,
-                    target,
+                    delivery_review["review"]["email_id"],
                     conn=conn,
                 )
-                if claimed and acknowledge_outbound:
-                    repo.mark_outbound_operator_acknowledged(
-                        run_id,
-                        delivery_review["review"]["email_id"],
-                        conn=conn,
-                    )
     except Exception:
         logger.warning("clarification delivery review outcome unavailable for run %s", run_id)
+        return notice_redirect(f"/runs/{run_id}", "review_unavailable")
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
@@ -1043,30 +1080,37 @@ def reject_clarification_delivery(run_id: uuid.UUID) -> RedirectResponse:
 
 @router.post("/runs/{run_id}/delivery-review/mark-delivered")
 def mark_delivery_delivered(run_id: uuid.UUID) -> RedirectResponse:
-    """Resolve delivery uncertainty without another provider request."""
+    """Resolve delivery uncertainty without another provider request.
+
+    A lost CAS (review_state_changed) and a load/claim/handoff-release
+    exception (review_unavailable) both attach a fixed notice code instead of
+    silently no-oping.
+    """
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
-            if delivery_review is not None and delivery_review["review_kind"] == (
+            if delivery_review is None or delivery_review["review_kind"] != (
                 "confirmation"
             ):
-                if not repo.claim_status(
-                    run_id,
-                    RunStatus.NEEDS_OPERATOR,
-                    RunStatus.RECONCILED,
-                    conn=conn,
-                ):
-                    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
-                if not repo.resolve_outbound_provider_handoff_for_delivery_review(
-                    run_id,
-                    delivery_review["review"]["email_id"],
-                    delivery_review["review"]["snapshot_id"],
-                    resolution="finalized",
-                    conn=conn,
-                ):
-                    raise ValueError("delivery review no longer owns active handoff")
+                return notice_redirect(f"/runs/{run_id}", "review_unavailable")
+            if not repo.claim_status(
+                run_id,
+                RunStatus.NEEDS_OPERATOR,
+                RunStatus.RECONCILED,
+                conn=conn,
+            ):
+                return notice_redirect(f"/runs/{run_id}", "review_state_changed")
+            if not repo.resolve_outbound_provider_handoff_for_delivery_review(
+                run_id,
+                delivery_review["review"]["email_id"],
+                delivery_review["review"]["snapshot_id"],
+                resolution="finalized",
+                conn=conn,
+            ):
+                raise ValueError("delivery review no longer owns active handoff")
     except Exception:
         logger.warning("mark delivery review unavailable for run %s", run_id)
+        return notice_redirect(f"/runs/{run_id}", "review_unavailable")
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
