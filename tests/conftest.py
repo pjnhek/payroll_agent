@@ -2461,6 +2461,47 @@ class InMemoryRepo:
             "created_at": found.get("created_at"),
         }
 
+    def mark_outbound_operator_acknowledged(self, run_id, email_id, conn=None):
+        """Mirror repo.mark_outbound_operator_acknowledged: write-once, exact-row.
+
+        Stamps operator_acknowledged_at on the outbound row matching email_id — a
+        SEPARATE fact from send_state (never mutated here), matching the real
+        column's doc comment in schema.sql.
+        """
+        rows = self.outbound.get(str(run_id))
+        if not rows:
+            return False
+        for row in rows:
+            if row.get("id") == email_id and row.get("operator_acknowledged_at") is None:
+                row["operator_acknowledged_at"] = datetime.now(UTC)
+                return True
+        return False
+
+    def get_operator_acknowledged_message_id(self, run_id, purpose, conn=None):
+        """Mirror repo.get_operator_acknowledged_message_id (companion, not a
+        replacement, for get_outbound_message_id — see that function's docstring).
+        """
+        if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
+            raise ValueError(
+                "purpose must be 'clarification', 'confirmation', or "
+                f"'clarification_field_regression', got {purpose!r}"
+            )
+        rows = self.outbound.get(str(run_id))
+        if not rows:
+            return None
+        run = self.runs.get(str(run_id))
+        current_epoch = run.get("reply_epoch", 0) if run is not None else 0
+        matching = [
+            r
+            for r in rows
+            if r.get("purpose") == purpose
+            and r.get("epoch", 0) == current_epoch
+            and r.get("operator_acknowledged_at") is not None
+        ]
+        if not matching:
+            return None
+        return matching[-1]["message_id"]
+
     def mark_reply_consumed(self, message_id, round, conn=None):
         """Write-once consumed_round marker on the matching inbound row.
 
@@ -2870,6 +2911,8 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
         "set_clarification_round",
         "get_outbound_for_round",
         "get_unconfirmed_outbound",
+        "mark_outbound_operator_acknowledged",
+        "get_operator_acknowledged_message_id",
         "mark_reply_consumed",
         "load_consumed_replies",
         "get_inbound_by_message_id",

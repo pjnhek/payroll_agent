@@ -556,9 +556,119 @@ def test_simulated_reply_enqueue_failure_rolls_back_email_and_never_wakes(
     response = client.post(
         f"/runs/{run_id}/simulate-reply",
         data={"reply_body": "Maria Chen 40 regular, confirmed"},
+        follow_redirects=False,
     )
 
-    assert response.status_code in (200, 303)
+    assert response.status_code == 303
+    assert (
+        response.headers["location"]
+        == f"/runs/{run_id}?simulate_reply_error=enqueue_failed"
+    )
     assert set(fake_repo.email_by_id) == before_email_ids
     assert fake_repo.jobs == {}
     assert wakes == []
+
+
+def test_simulate_reply_no_proof_attaches_operator_visible_banner_code(
+    client, fake_repo
+) -> None:
+    """No proven-sent AND no operator-acknowledged clarification row -> the operator
+    sees why, instead of a bare silent redirect (the mark-handled dead-end fix)."""
+    source_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<source-{uuid.uuid4()}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen 40 regular",
+    )
+    assert inserted and source_id is not None
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=source_id)
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    # No outbound row seeded at all: neither proof nor an operator acknowledgment.
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "confirmed"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_id}?simulate_reply_error=no_proof"
+
+    page = client.get(f"/runs/{run_id}?simulate_reply_error=no_proof")
+    assert page.status_code == 200
+    assert "has not been confirmed sent yet" in page.text
+
+
+def test_simulate_reply_missing_source_attaches_operator_visible_banner_code(
+    client, fake_repo
+) -> None:
+    """A proven-sent clarification row exists, but the run's source inbound email
+    cannot be loaded -- the operator sees why, instead of a silent redirect."""
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+    fake_repo.outbound[str(run_id)] = [
+        {
+            "message_id": "<clarify-missing-source@payroll-agent.local>",
+            "direction": "outbound",
+            "purpose": "clarification",
+            "send_state": "sent",
+            "round": 0,
+        }
+    ]
+
+    response = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "confirmed"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        response.headers["location"]
+        == f"/runs/{run_id}?simulate_reply_error=missing_source"
+    )
+
+    page = client.get(f"/runs/{run_id}?simulate_reply_error=missing_source")
+    assert page.status_code == 200
+    assert "original email for this run could not be loaded" in page.text
+
+
+def test_simulate_reply_unrecognized_error_code_renders_no_banner(
+    client, fake_repo
+) -> None:
+    """A hand-crafted/unrecognised query value must render nothing -- the fixed
+    allow-list, never attacker-supplied text, decides what appears on the page."""
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+
+    page = client.get(f"/runs/{run_id}?simulate_reply_error=<script>alert(1)</script>")
+
+    assert page.status_code == 200
+    assert "<script>alert(1)</script>" not in page.text
+
+
+def test_reject_from_awaiting_reply_is_the_operator_escape(client, fake_repo) -> None:
+    """FIX B3: a run stuck in awaiting_reply (the client will never reply) has a
+    real human exit -- reject -- rather than waiting forever with no forward path
+    and no escape (the second half of the mark-handled-dead-end debug session)."""
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+
+    response = client.post(f"/runs/{run_id}/reject", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.REJECTED.value
+
+
+def test_reject_from_awaiting_reply_renders_in_the_template(client, fake_repo) -> None:
+    """The escape must actually be reachable from the page, not just the route."""
+    run_id = fake_repo.create_run(business_id=COASTAL_BIZ_ID, source_email_id=None)
+    fake_repo.set_status(run_id, RunStatus.AWAITING_REPLY)
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert f'action="/runs/{run_id}/reject"' in page.text

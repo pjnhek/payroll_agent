@@ -138,6 +138,21 @@ _DELIVERY_REVIEW_PURPOSES = {
     ),
 }
 _DELIVERY_REVIEW_MARKERS = frozenset(_DELIVERY_REVIEW_PURPOSES)
+# Fixed, safe vocabulary for simulate_reply's ?simulate_reply_error=<code> query param
+# (see simulate_reply's Guards docstring). Reduced through this allow-list before ever
+# reaching the template — the same "hostile until proven fixed" treatment
+# _safe_failure_presentation applies to error_detail — so an unrecognised code (e.g. a
+# hand-crafted URL) renders no banner rather than an attacker-chosen string.
+_SIMULATE_REPLY_ERROR_LABELS = {
+    "no_proof": (
+        "This clarification question has not been confirmed sent yet. "
+        "Wait a moment and try again."
+    ),
+    "missing_source": (
+        "The original email for this run could not be loaded, so no reply could be built."
+    ),
+    "enqueue_failed": "The reply could not be durably recorded. Try again.",
+}
 _NEW_CONFIRMATION_ACKNOWLEDGEMENT = "AUTHORIZE A NEW CONFIRMATION"
 
 
@@ -449,22 +464,37 @@ def approve(
 
 @router.post("/runs/{run_id}/reject")
 def reject(run_id: uuid.UUID) -> RedirectResponse:
-    """Reject: CAS claim (AWAITING_APPROVAL OR NEEDS_OPERATOR → REJECTED) → 303.
+    """Reject: CAS claim (AWAITING_APPROVAL, NEEDS_OPERATOR, or AWAITING_REPLY →
+    REJECTED) → 303.
 
     claim_status is atomic — a concurrent rejection or approval sees False and no-ops,
     so a rejected run can never also be delivered. Always 303 to run detail regardless
     of the claim outcome.
 
     needs_operator is also a valid reject source (one of the escalation's two exits —
-    resolve+resume, or reject). The `or` short-circuits: if the first CAS wins (the run
-    was awaiting_approval) the second is skipped; if it loses, the second CAS attempts
-    the needs_operator claim. The two target mutually exclusive prior statuses, so at
-    most one can ever succeed for a given run — there is no double-claim race between
-    them.
+    resolve+resume, or reject). The `or` short-circuits across all three CASes: whichever
+    one the run's CURRENT status matches wins; the three target mutually exclusive prior
+    statuses, so at most one can ever succeed for a given run — there is no double-claim
+    race between them.
+
+    awaiting_reply is the operator escape for a run genuinely stuck waiting on a client
+    reply that will never come (mark-handled-dead-end debug session, FIX B3): before
+    this, awaiting_reply had NO human exit at all — Re-trigger does not render for it
+    (see run_detail.html) and this route did not accept it as a source. A plain reject
+    is deliberately the ONLY escape added, not a staleness-based auto-retrigger:
+    awaiting_reply can legitimately sit for hours or days waiting on a real client
+    reply, so the 15-minute STALE_THRESHOLD that recovers other stranded in-flight
+    statuses would be actively wrong here — it would treat completely normal waiting as
+    a crashed worker. No outbound handoff cleanup is needed on this path: a still-in-
+    flight clarification send holds no active handoff by the time a run is observably
+    sitting at awaiting_reply (see app/db/repo/job_settlement.py's expected_status check
+    for why a race against a live send is already fenced independently of this route).
     """
-    repo.claim_status(
-        run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED
-    ) or repo.claim_status(run_id, RunStatus.NEEDS_OPERATOR, RunStatus.REJECTED)
+    (
+        repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED)
+        or repo.claim_status(run_id, RunStatus.NEEDS_OPERATOR, RunStatus.REJECTED)
+        or repo.claim_status(run_id, RunStatus.AWAITING_REPLY, RunStatus.REJECTED)
+    )
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
 
@@ -984,21 +1014,36 @@ def retry_clarification_delivery_now(run_id: uuid.UUID) -> RedirectResponse:
 
 
 def _finish_clarification_delivery_review(
-    run_id: uuid.UUID, target: RunStatus
+    run_id: uuid.UUID, target: RunStatus, *, acknowledge_outbound: bool = False
 ) -> RedirectResponse:
-    """CAS a clarification review to a provider-free explicit operator outcome."""
+    """CAS a clarification review to a provider-free explicit operator outcome.
+
+    acknowledge_outbound=True (mark-handled only, never reject) additionally records
+    the operator's durable assertion on the review's EXACT frozen outbound row via
+    mark_outbound_operator_acknowledged, inside the SAME transaction as the status
+    CAS — so the two never observably diverge. This is what lets the demo reply
+    composer (simulate_reply) thread its synthetic reply against this question
+    afterward; see mark_outbound_operator_acknowledged's docstring for why this must
+    NOT touch send_state or be read by any proof-of-delivery guard.
+    """
     try:
         with repo.get_connection() as conn, conn.transaction():
             delivery_review = _load_delivery_review(run_id, conn=conn)
             if delivery_review is not None and delivery_review["review_kind"] == (
                 "clarification"
             ):
-                repo.claim_status(
+                claimed = repo.claim_status(
                     run_id,
                     RunStatus.NEEDS_OPERATOR,
                     target,
                     conn=conn,
                 )
+                if claimed and acknowledge_outbound:
+                    repo.mark_outbound_operator_acknowledged(
+                        run_id,
+                        delivery_review["review"]["email_id"],
+                        conn=conn,
+                    )
     except Exception:
         logger.warning("clarification delivery review outcome unavailable for run %s", run_id)
     return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
@@ -1007,7 +1052,9 @@ def _finish_clarification_delivery_review(
 @router.post("/runs/{run_id}/delivery-review/clarification/mark-handled")
 def mark_clarification_delivery_handled(run_id: uuid.UUID) -> RedirectResponse:
     """Acknowledge the frozen question without sending another provider request."""
-    return _finish_clarification_delivery_review(run_id, RunStatus.AWAITING_REPLY)
+    return _finish_clarification_delivery_review(
+        run_id, RunStatus.AWAITING_REPLY, acknowledge_outbound=True
+    )
 
 
 @router.post("/runs/{run_id}/delivery-review/clarification/reject")
@@ -1120,6 +1167,7 @@ def run_detail(
     request: Request,
     run_id: uuid.UUID,
     resolution_superseded: str = Query(default=""),
+    simulate_reply_error: str = Query(default=""),
 ) -> Response:
     """DASH-02/03: Render the chronological email conversation and gated controls."""
     try:
@@ -1219,6 +1267,9 @@ def run_detail(
             "roster_employees": roster_employees,
             "unresolved_suggestions": unresolved_suggestions,
             "resolution_superseded": bool(resolution_superseded),
+            "simulate_reply_error_label": _SIMULATE_REPLY_ERROR_LABELS.get(
+                simulate_reply_error
+            ),
             "delivery_review": delivery_review,
             "delivery_review_marker": delivery_review_marker,
         },
@@ -1307,10 +1358,17 @@ def simulate_reply(
     find_business_by_sender resolves. Synthesizing any other from_addr here would be
     correctly rejected by that guard.
 
-    Guards:
-    - 303 no-op if run.status != 'awaiting_reply' (nothing to reply to)
-    - 303 no-op if no clarification Message-ID exists in outbound rows
-    - 303 no-op if the run's source inbound email cannot be loaded
+    Guards (each 303's back to the run; every guard EXCEPT the first attaches a fixed
+    ?simulate_reply_error=<code> banner code so the operator sees WHY nothing happened
+    instead of a silent redirect — see _SIMULATE_REPLY_ERROR_LABELS and run_detail):
+    - silent 303 if run.status != 'awaiting_reply' (nothing to reply to; a normal
+      stale double-submit, not an error)
+    - ?simulate_reply_error=no_proof if neither a proven-sent nor an
+      operator-acknowledged clarification Message-ID exists yet
+    - ?simulate_reply_error=missing_source if the run's source inbound email
+      cannot be loaded
+    - ?simulate_reply_error=enqueue_failed if the durable persist+enqueue
+      transaction raises
     - SSRF-safe: no client-supplied run targeting beyond the path run_id;
       reply_body is used only as body_text of the synthetic email (no headers)
     """
@@ -1322,17 +1380,32 @@ def simulate_reply(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    # Guard: only act for awaiting_reply runs.
+    # Guard: only act for awaiting_reply runs. Silent no-op is correct here (not a
+    # banner case): this fires on a stale double-submit after the run has already
+    # advanced past awaiting_reply, matching every other stale-resubmit guard on this
+    # router (e.g. resolve()'s status check).
     if run.get("status") != RunStatus.AWAITING_REPLY.value:
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
-    # Look up the clarification outbound Message-ID.
+    # Look up the clarification outbound Message-ID. Proof-of-delivery
+    # (send_state='sent') is tried FIRST and remains the primary source — a real
+    # completed send is always preferred. Only when that is absent do we fall back to
+    # an operator-acknowledged row (the "Mark handled" delivery-review outcome,
+    # app/routes/runs.py:_finish_clarification_delivery_review): the client may
+    # already be replying to that frozen question even though the provider never
+    # proved delivery, and the demo composer still needs SOME Message-ID to thread
+    # its synthetic reply against. This fallback is purpose-built and read-only — it
+    # never feeds any proof-of-delivery / duplicate-send guard.
     try:
-        clar_mid = repo.get_outbound_message_id(run_id, purpose="clarification")
+        clar_mid = repo.get_outbound_message_id(
+            run_id, purpose="clarification"
+        ) or repo.get_operator_acknowledged_message_id(run_id, purpose="clarification")
     except Exception:
         clar_mid = None
     if not clar_mid:
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return RedirectResponse(
+            url=f"/runs/{run_id}?simulate_reply_error=no_proof", status_code=303
+        )
 
     # Load the run's source inbound email to get the original sender address. Using
     # from_addr from the original inbound is what lets the sender spoof guard pass —
@@ -1342,7 +1415,9 @@ def simulate_reply(
     except Exception:
         source_inbound = None
     if source_inbound is None:
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return RedirectResponse(
+            url=f"/runs/{run_id}?simulate_reply_error=missing_source", status_code=303
+        )
 
     from_addr = source_inbound.from_addr
     to_addr = source_inbound.to_addr
@@ -1376,7 +1451,9 @@ def simulate_reply(
             )
     except Exception:
         logger.warning("simulate-reply durable enqueue failed")
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return RedirectResponse(
+            url=f"/runs/{run_id}?simulate_reply_error=enqueue_failed", status_code=303
+        )
 
     if routed.should_wake:
         wake.wake()

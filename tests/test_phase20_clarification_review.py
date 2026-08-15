@@ -328,6 +328,75 @@ def test_clarification_handled_and_reject_are_provider_and_alias_free(
     assert fake_repo.load_run(run_id)["status"] == RunStatus.REJECTED.value
 
 
+def test_mark_handled_then_simulate_reply_does_not_dead_end(fake_repo, monkeypatch):
+    """Reproduces the mark-handled dead end (debug session mark-handled-dead-end).
+
+    The frozen clarification row never becomes send_state='sent' — mark-handled
+    is explicitly provider-free (see _finish_clarification_delivery_review's
+    docstring) — so simulate_reply's proof-of-delivery guard
+    (get_outbound_message_id, filtered to send_state='sent') can never see it.
+    Before the fix, this leaves AWAITING_REPLY with no working forward path: the
+    operator clicks "Mark handled", then "Simulate client reply" silently 303s
+    with no reply persisted and no job enqueued. This test drives both requests
+    through the real routes against a hermetic fake_repo and asserts the reply
+    actually lands, not just that the response redirected.
+    """
+    from app.email import gateway
+    from app.models.job import JobKind
+
+    run_id, snapshot = _clarification_review_run(fake_repo)
+
+    # simulate_reply needs the run's source inbound email to build the synthetic
+    # reply's from_addr/to_addr/subject.
+    source_id, inserted = fake_repo.insert_inbound_email(
+        message_id=f"<source-{run_id}@test.example>",
+        in_reply_to=None,
+        references_header=None,
+        subject="payroll hours",
+        from_addr="payroll@coastalcleaning.example",
+        to_addr="agent@payroll-agent.local",
+        body_text="D. Reyes 40 regular",
+    )
+    assert inserted and source_id is not None
+    fake_repo.runs[str(run_id)]["source_email_id"] = source_id
+
+    monkeypatch.setattr(
+        gateway,
+        "send_outbound",
+        lambda **_: pytest.fail("mark-handled + simulate-reply called the provider"),
+    )
+
+    handled = client.post(
+        f"/runs/{run_id}/delivery-review/clarification/mark-handled",
+        follow_redirects=False,
+    )
+    assert handled.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.AWAITING_REPLY.value
+    # The frozen row is still unproven — mark-handled must NOT fabricate a
+    # provider-confirmed send. This is the invariant the fix must not weaken.
+    reserved_row = next(
+        r for r in fake_repo.outbound[str(run_id)] if r["message_id"] == snapshot["message_id"]
+    )
+    assert reserved_row["send_state"] != "sent"
+
+    replied = client.post(
+        f"/runs/{run_id}/simulate-reply",
+        data={"reply_body": "I meant David Reyes"},
+        follow_redirects=False,
+    )
+    assert replied.status_code == 303
+
+    resume_jobs = [
+        job
+        for job in fake_repo.jobs.values()
+        if job["kind"] == JobKind.RESUME_REPLY.value and job["run_id"] == run_id
+    ]
+    assert len(resume_jobs) == 1, (
+        "simulate-reply after mark-handled must persist and enqueue the reply "
+        "instead of silently 303-ing with nothing recorded"
+    )
+
+
 def test_delivery_review_marker_blocks_resolve_before_roster_or_alias_work(
     fake_repo, monkeypatch
 ):

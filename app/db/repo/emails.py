@@ -566,6 +566,85 @@ def get_unconfirmed_outbound(
     }
 
 
+def mark_outbound_operator_acknowledged(
+    run_id: uuid.UUID,
+    email_id: uuid.UUID,
+    conn: psycopg.Connection | None = None,
+) -> bool:
+    """Durably record that an operator explicitly closed out one frozen outbound row.
+
+    This is the write side of the "Mark handled" delivery-review action
+    (app/routes/runs.py:_finish_clarification_delivery_review). It stamps
+    operator_acknowledged_at on the EXACT row the caller's own review load already
+    resolved (never a blind "any unconfirmed row for this run" write) — mirroring
+    resolve_outbound_provider_handoff_for_delivery_review's exact-row discipline.
+
+    Deliberately does NOT touch send_state. See the column's doc comment in
+    schema.sql: send_state stays pure provider-transport truth, and this is a
+    separate, orthogonal human-assertion fact. A caller that wants proof-of-delivery
+    must keep reading get_outbound_message_id / get_outbound_for_round; a caller that
+    wants "did an operator explicitly close this out" reads
+    get_operator_acknowledged_message_id.
+
+    Write-once: IS NULL in the WHERE clause makes a second mark-handled call on the
+    same row a no-op rather than resetting the timestamp, so the first acknowledgment
+    is the durable one.
+
+    Returns whether this call was the one that wrote the timestamp.
+    """
+    with _conn_ctx(conn) as (c, owns), c.transaction() if owns else _nulltx():
+        row = c.execute(
+            """
+            UPDATE email_messages
+               SET operator_acknowledged_at = now()
+             WHERE id = %s AND run_id = %s AND direction = 'outbound'
+               AND operator_acknowledged_at IS NULL
+            RETURNING id
+            """,
+            (str(email_id), str(run_id)),
+        ).fetchone()
+    return row is not None
+
+
+def get_operator_acknowledged_message_id(
+    run_id: uuid.UUID,
+    purpose: str,
+    conn: psycopg.Connection | None = None,
+) -> str | None:
+    """Purpose-aware, current-epoch Message-ID lookup for an operator-closed-out row.
+
+    Companion to get_outbound_message_id, never a replacement for it: that function
+    answers "was this message PROVEN sent by the provider?" (send_state='sent' only).
+    This function answers a DIFFERENT question — "did an operator explicitly close
+    this question out without further provider work?" (operator_acknowledged_at IS NOT
+    NULL). Only app/routes/runs.py's simulate_reply reads this, and only to thread its
+    synthetic reply's In-Reply-To/References against the frozen question — it must
+    never be substituted for a proof-of-delivery check.
+
+    Same epoch scoping and invalid-purpose guard as get_outbound_message_id, for the
+    same reasons (a human retrigger bumps the epoch and must not let a stale
+    acknowledgment satisfy the current epoch's question).
+    """
+    if purpose not in ("clarification", "confirmation", "clarification_field_regression"):
+        raise ValueError(
+            "purpose must be 'clarification', 'confirmation', or "
+            f"'clarification_field_regression', got {purpose!r}"
+        )
+    with _conn_ctx(conn) as (c, _owns):
+        row = c.execute(
+            """
+            SELECT message_id FROM email_messages
+            WHERE run_id = %s AND direction = 'outbound'
+              AND purpose = %s AND operator_acknowledged_at IS NOT NULL
+              AND epoch = (SELECT reply_epoch FROM payroll_runs WHERE id = %s)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (str(run_id), purpose, str(run_id)),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def mark_reply_consumed(
     message_id: str,
     round: int,

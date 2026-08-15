@@ -242,6 +242,19 @@ CREATE TABLE IF NOT EXISTS email_messages (
     -- Outbound rows: 'reserved' before the provider call, 'sent' on success, 'failed'
     -- on error — so a crash mid-send is distinguishable from a completed send.
     send_state       TEXT        CHECK (send_state IN ('reserved','sent','failed')),
+    -- operator_acknowledged_at is deliberately a SEPARATE fact from send_state, not a
+    -- fourth send_state value. send_state stays pure provider-transport truth: only a
+    -- worker settlement may ever set it to 'sent'. This column instead records a human
+    -- assertion ("I have handled this without another provider request" — the
+    -- delivery-review "Mark handled" action) on a row whose send_state may permanently
+    -- stay 'reserved' or 'failed'. Every proof-of-delivery guard
+    -- (get_outbound_message_id, get_outbound_for_round) keeps filtering on
+    -- send_state = 'sent' ONLY and must never widen to read this column — a crashed
+    -- send must never look like a completed one. get_operator_acknowledged_message_id
+    -- is the one purpose-built reader of this column, used solely by the demo reply
+    -- composer to thread its synthetic reply's In-Reply-To/References against the
+    -- frozen question the operator explicitly closed out.
+    operator_acknowledged_at TIMESTAMPTZ,
     -- NOT NULL DEFAULT 0 is load-bearing: Postgres treats NULLs as DISTINCT in a
     -- UNIQUE constraint, so a nullable round would make every confirmation row unique
     -- under the widened UNIQUE below — silently disabling the one-confirmation-per-run
@@ -286,6 +299,10 @@ ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS purpose
     TEXT CHECK (purpose IN ('clarification','confirmation','clarification_field_regression'));
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS send_state
     TEXT CHECK (send_state IN ('reserved','sent','failed'));   -- NULLABLE by design (see above)
+-- operator_acknowledged_at: NULLABLE, no default — a durable human assertion, distinct
+-- from send_state (see the inline CREATE TABLE comment above for why it is not a
+-- fourth send_state value).
+ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS operator_acknowledged_at TIMESTAMPTZ;
 -- round is NOT NULL DEFAULT 0 (a nullable round breaks the dedup guard — see the
 -- inline CREATE TABLE comment); consumed_round stays nullable (NULL = unconsumed).
 ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS round INT NOT NULL DEFAULT 0;

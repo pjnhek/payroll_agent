@@ -149,6 +149,13 @@
 <div class="banner banner-awaiting banner-mb">
   <strong>Awaiting client reply</strong> — A clarification email has been sent. Waiting for the client to respond.
   <p class="form-help">The demo reply composer is at the end of this conversation.</p>
+  <div class="banner-divider">
+    <form method="post" action="/runs/{{ run.id }}/reject"
+          onsubmit="return confirm('Reject this payroll run? This cannot be undone.')">
+      <button type="submit" class="btn btn-reject">Reject</button>
+      <span class="form-help">If the client will never reply, reject this run instead of waiting indefinitely.</span>
+    </form>
+  </div>
 </div>
 {% elif run.decision and run.decision.final_action == 'process' %}
 <div class="banner banner-process banner-mb">
@@ -321,6 +328,11 @@
   <p class="column-label">Demo reply</p>
   <h2 id="reply-composer-title">Reply to client</h2>
   <p class="text-muted">Production receives replies through the inbound email gateway. Use this composer to continue the demo conversation.</p>
+  {% if simulate_reply_error_label %}
+  <div class="callout callout-error" role="alert">
+    <p>{{ simulate_reply_error_label }}</p>
+  </div>
+  {% endif %}
   <form method="post" action="/runs/{{ run.id }}/simulate-reply" class="composer">
     <textarea name="reply_body" rows="4" class="sim-reply-textarea">Sorry for the confusion — I meant &lt;correct full name here&gt;. Please process with that name. Thanks!</textarea>
     <div class="form-inline" style="margin-bottom: 0;">
