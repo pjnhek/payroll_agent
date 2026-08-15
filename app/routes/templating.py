@@ -18,7 +18,6 @@ templates = Jinja2Templates(directory="app/templates")
 _BADGE_CLASS: dict[str, str] = {
     "received": "neutral",
     "extracting": "neutral",
-    "computing": "neutral",
     "awaiting_reply": "neutral",
     "approved": "neutral",
     "computed": "neutral",
@@ -34,7 +33,6 @@ _BADGE_CLASS: dict[str, str] = {
 _BADGE_LABEL: dict[str, str] = {
     "received": "Received",
     "extracting": "Extracting",
-    "computing": "Computing",
     "awaiting_reply": "Awaiting Reply",
     "awaiting_approval": "Needs Approval",
     "approved": "Approved",

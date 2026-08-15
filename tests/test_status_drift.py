@@ -448,3 +448,36 @@ class TestDeliveryReviewCategoryDrift:
             f"  In SQL CHECK but not labeled: {sql_values - expected or 'none'}\n"
             f"  Labeled but not in SQL CHECK: {expected - sql_values or 'none'}\n"
         )
+
+
+class TestBadgeMapsPinnedToRunStatus:
+    """BUG-12: app/routes/templating.py's badge maps must contain exactly the
+    RunStatus members -- no dead legacy entries, no missing ones.
+
+    'computing' was a dead key in BOTH maps: it is not one of the 11
+    RunStatus members (the codebase already knows this --
+    app/routes/runs.py carries a comment saying 'COMPUTING is NOT a
+    RunStatus member'), and badge_class_filter/badge_label_filter already
+    have safe .get() defaults, so nothing regresses if a legacy row ever
+    carries the string.
+    """
+
+    def test_badge_class_keys_match_run_status(self) -> None:
+        from app.routes.templating import _BADGE_CLASS
+
+        run_status_values = {member.value for member in RunStatus}
+        assert set(_BADGE_CLASS) == run_status_values, (
+            "Enum drift detected for _BADGE_CLASS!\n"
+            f"  Extra keys: {set(_BADGE_CLASS) - run_status_values or 'none'}\n"
+            f"  Missing keys: {run_status_values - set(_BADGE_CLASS) or 'none'}"
+        )
+
+    def test_badge_label_keys_match_run_status(self) -> None:
+        from app.routes.templating import _BADGE_LABEL
+
+        run_status_values = {member.value for member in RunStatus}
+        assert set(_BADGE_LABEL) == run_status_values, (
+            "Enum drift detected for _BADGE_LABEL!\n"
+            f"  Extra keys: {set(_BADGE_LABEL) - run_status_values or 'none'}\n"
+            f"  Missing keys: {run_status_values - set(_BADGE_LABEL) or 'none'}"
+        )
