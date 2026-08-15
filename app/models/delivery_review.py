@@ -65,8 +65,8 @@ DELIVERY_REVIEW_CATEGORIES: dict[str, DeliveryReviewCategory] = {
     "provider_5xx": DeliveryReviewCategory(
         label="Provider service failure",
         uncertainty=(
-            "The provider's own service failed while processing the send, "
-            "so it is unclear whether the email went out."
+            "The provider failed while processing the send, so it is "
+            "unclear whether the email went out."
         ),
         replay_same_ok=True,
         fresh_send_ok=True,
@@ -85,8 +85,8 @@ DELIVERY_REVIEW_CATEGORIES: dict[str, DeliveryReviewCategory] = {
     "authorization_expired": DeliveryReviewCategory(
         label="Delivery authorization expired",
         uncertainty=(
-            "The send's authorization window closed before the provider "
-            "confirmed whether it was received."
+            "The authorization window for this send closed before the "
+            "provider confirmed whether it was received."
         ),
         replay_same_ok=True,
         fresh_send_ok=True,
@@ -98,7 +98,7 @@ DELIVERY_REVIEW_CATEGORIES: dict[str, DeliveryReviewCategory] = {
     "unknown": DeliveryReviewCategory(
         label="Unknown delivery outcome",
         uncertainty=(
-            "The provider's failure did not match a known category, so what "
+            "The failure did not match a known provider category, so what "
             "happened to this send is unclassified."
         ),
         replay_same_ok=True,
@@ -130,7 +130,7 @@ DELIVERY_REVIEW_CATEGORIES: dict[str, DeliveryReviewCategory] = {
     ),
     "authorization": DeliveryReviewCategory(
         label="Provider authorization issue",
-        uncertainty="The provider rejected the send's credentials or sender permission.",
+        uncertainty="The provider rejected the credentials or sender permission for this send.",
         replay_same_ok=False,
         fresh_send_ok=False,
         blocker=(
