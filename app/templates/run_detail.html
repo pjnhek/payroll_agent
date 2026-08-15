@@ -275,7 +275,7 @@
 </section>
 {% endif %}
 {% elif run.status == 'needs_operator' and delivery_review_marker %}
-<section class="delivery-review-card mt-xl" aria-labelledby="delivery-review-unavailable-title"><div class="delivery-review-header"><div><p class="column-label">Delivery review</p><h2 id="delivery-review-unavailable-title">Delivery review unavailable</h2></div><span class="badge badge-escalate">Action required</span></div><p>The frozen delivery evidence is not available for this review. No retry, alias resolution, or generic recovery was started.</p></section>
+<section class="delivery-review-card mt-xl" aria-labelledby="delivery-review-unavailable-title"><div class="delivery-review-header"><div><p class="column-label">Delivery review</p><h2 id="delivery-review-unavailable-title">Delivery review unavailable</h2></div><span class="badge badge-escalate">Action required</span></div><p>The frozen delivery evidence is not available for this review. No retry, alias resolution, or generic recovery was started.</p><p class="form-help">The frozen evidence cannot be loaded, so no retry, resolve, or re-trigger can be offered safely. Reject is the only option here.</p><form method="post" action="/runs/{{ run.id }}/reject" onsubmit="return confirm('Reject this payroll run? This cannot be undone.')"><button type="submit" class="btn btn-reject">Reject</button></form></section>
 {% endif %}
 
 <details class="payroll-details mt-xl">

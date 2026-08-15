@@ -831,3 +831,39 @@ def test_every_category_renders_its_own_uncertainty_sentence(
 
     assert page.status_code == 200
     assert DELIVERY_REVIEW_CATEGORIES[category].uncertainty in page.text
+
+
+# ---------------------------------------------------------------------------
+# T10 (BUG-1): the "Delivery review unavailable" card gets a working Reject
+# escape. Per Design flag 4, Reject is the ONLY escape offered -- resolve()
+# and retrigger() both guard the delivery-review marker and would silently
+# no-op (:546 / :736), which would convert this into a fresh BUG-5.
+# ---------------------------------------------------------------------------
+
+
+def test_unavailable_delivery_review_card_offers_only_reject(
+    fake_repo, monkeypatch
+) -> None:
+    import app.routes.runs as runs_mod
+
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    # Break the load: the marker is still True (error_reason/status intact),
+    # but the frozen snapshot itself cannot be loaded -- the None-cause BUG-1
+    # is actually about (snapshot row gone, purpose mismatch, etc).
+    monkeypatch.setattr(
+        runs_mod.repo, "load_delivery_review_snapshot", lambda *a, **kw: None
+    )
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert "Delivery review unavailable" in page.text
+    assert "Action required" in page.text
+    assert f'action="/runs/{run_id}/reject"' in page.text
+    assert f'action="/runs/{run_id}/resolve"' not in page.text
+    assert f'action="/runs/{run_id}/retrigger"' not in page.text
+
+    rejected = client.post(f"/runs/{run_id}/reject", follow_redirects=False)
+
+    assert rejected.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.REJECTED.value
