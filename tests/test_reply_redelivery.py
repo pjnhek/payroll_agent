@@ -672,3 +672,48 @@ def test_reject_from_awaiting_reply_renders_in_the_template(client, fake_repo) -
 
     assert page.status_code == 200
     assert f'action="/runs/{run_id}/reject"' in page.text
+
+
+def test_reject_from_awaiting_reply_is_not_revived_by_a_late_client_reply(
+    client, fake_repo, resume_spy
+) -> None:
+    """The fence reject()'s docstring leans on, asserted rather than asserted-in-prose.
+
+    reject() takes no handoff lock, and awaiting_reply is NOT a quiet state: the
+    run occupies it for the whole send lifecycle, so a reject can land while a
+    reply is genuinely in motion. The safety comes from downstream refusing a
+    non-awaiting_reply run, so pin that here for the reject path specifically --
+    the operator escape must be terminal, never a race that a late reply can undo
+    and resume into a payroll the operator already rejected.
+    """
+    message_id = f"<late-reply-{uuid.uuid4()}@metrodeli.example>"
+    run_id, _row = _seed_awaiting_reply_run_with_reply(
+        fake_repo, message_id=message_id, consumed=False
+    )
+
+    rejected = client.post(f"/runs/{run_id}/reject", follow_redirects=False)
+    assert rejected.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.REJECTED.value
+
+    redelivered_payload = InboundEmail(
+        id=uuid.uuid4(),
+        message_id=message_id,
+        in_reply_to="<clarify-msg@payroll-agent.local>",
+        references_header="<clarify-msg@payroll-agent.local>",
+        subject="Re: payroll hours",
+        from_addr=COASTAL_EMAIL,
+        to_addr="agent@payroll-agent.local",
+        body_text="Maria Chen, correct spelling, 40 regular",
+        created_at=datetime.now(UTC),
+    ).model_dump(mode="json")
+
+    r = client.post("/webhook/inbound", json=redelivered_payload)
+    assert r.status_code == 200
+    assert drain.drain_once() is DrainOutcome.DONE
+
+    assert resume_spy == [], (
+        "a reply arriving after the operator rejected the run must never resume "
+        f"it; got {len(resume_spy)} re-schedule(s)"
+    )
+    assert _pending_resume_jobs(fake_repo) == []
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.REJECTED.value

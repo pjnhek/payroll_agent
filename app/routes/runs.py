@@ -479,10 +479,32 @@ def reject(run_id: uuid.UUID) -> RedirectResponse:
     awaiting_reply can legitimately sit for hours or days waiting on a real client
     reply, so the 15-minute STALE_THRESHOLD that recovers other stranded in-flight
     statuses would be actively wrong here — it would treat completely normal waiting as
-    a crashed worker. No outbound handoff cleanup is needed on this path: a still-in-
-    flight clarification send holds no active handoff by the time a run is observably
-    sitting at awaiting_reply (see app/db/repo/job_settlement.py's expected_status check
-    for why a race against a live send is already fenced independently of this route).
+    a crashed worker.
+
+    This route deliberately takes NO handoff lock, and the reason is not that no
+    handoff can be active — it is that the fences live downstream. Do not restate the
+    earlier claim that a run sitting at awaiting_reply holds no in-flight send: it is
+    the opposite of what the code does. app/pipeline/clarification.py sets
+    AWAITING_REPLY in the SAME transaction that enqueues SEND_OUTBOUND, so the run
+    occupies awaiting_reply for the entire send lifecycle — enqueue, lease, handoff
+    authorization, and the provider POST all happen while it sits there. Rejecting
+    mid-flight is therefore reachable, not theoretical.
+
+    What makes it safe anyway:
+    - the send cannot complete against a rejected run. Both the handoff authorization
+      (app/db/repo/outbound_handoffs.py's _expected_run_status) and settlement
+      (app/db/repo/job_settlement.py's expected_status check) require AWAITING_REPLY,
+      and a REJECTED run fails both — settlement retires the lease as invalid_context
+      instead of recording a send.
+    - a client reply cannot revive it. app/ingest.py and app/routes/pipeline_glue.py
+      both refuse to route a reply whose run is not awaiting_reply.
+
+    The residue that leaves is understood and accepted: reject during the narrow
+    window between the provider POST and settlement means the clarification email went
+    out while its email_messages row stays send_state='reserved' with an unreleased
+    handoff. The run is terminal, nothing reads either fact for a rejected run, and no
+    money moves. If that ever stops being true, this route needs the same
+    ActiveOutboundProviderHandoffError fence retrigger() carries.
     """
     (
         repo.claim_status(run_id, RunStatus.AWAITING_APPROVAL, RunStatus.REJECTED)
