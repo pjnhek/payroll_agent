@@ -2239,7 +2239,7 @@ def test_demo_reset_rearming_writes_demo_sender_bindings_not_contact_email():
 
     # Provide minimal env vars so the module loads cleanly.
     test_env = {
-        "DEMO_CONTACT_EMAIL": "pjnhek@gmail.com",
+        "DEMO_OPERATOR_EMAIL": "operator@example.test",
         "DEMO_BUSINESS_NAME": "Coastal Cleaning Co.",
         "DATABASE_URL": "postgresql://mock-test-stub/mockdb",
     }

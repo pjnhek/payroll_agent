@@ -68,7 +68,7 @@ _SEED_BUSINESS_IDS: dict[str, uuid.UUID] = {
 def _rearm_demo_identity(conn: Any) -> None:
     """Re-UPSERT the demo_sender_bindings row for the env-configured identity.
 
-    Uses DEMO_CONTACT_EMAIL (operator_email) and DEMO_BUSINESS_NAME to resolve
+    Uses DEMO_OPERATOR_EMAIL (operator_email) and DEMO_BUSINESS_NAME to resolve
     the business_id from the _SEED_BUSINESS_IDS constant. If either env var is
     missing or the business name is unknown, prints a warning and skips the
     re-arm so the operator knows to bind manually.
@@ -76,13 +76,13 @@ def _rearm_demo_identity(conn: Any) -> None:
     The businesses table is never mutated by this function — the only path that
     writes to businesses is seed() which writes back the stable .example contacts.
     """
-    operator_email = os.environ.get("DEMO_CONTACT_EMAIL", "").strip()
+    operator_email = os.environ.get("DEMO_OPERATOR_EMAIL", "").strip()
     business_name = os.environ.get("DEMO_BUSINESS_NAME", "").strip()
     business_id = _SEED_BUSINESS_IDS.get(business_name)
 
     if not operator_email or business_id is None:
         print(
-            "WARNING: DEMO_CONTACT_EMAIL / DEMO_BUSINESS_NAME not set or invalid — "
+            "WARNING: DEMO_OPERATOR_EMAIL / DEMO_BUSINESS_NAME not set or invalid — "
             "demo identity not re-armed; run POST /demo/bind manually"
         )
         return
