@@ -162,7 +162,7 @@ def test_compose_confirmation_uses_draft_when_present():
 
     result = compose_confirmation(paystubs, run, llm=llm)
 
-    assert result == "Your payroll has been approved. Net pay: $1,234.56.", (
+    assert result.startswith("Your payroll has been approved. Net pay: $1,234.56."), (
         "when the LLM returns a non-empty body, compose_confirmation must use it"
     )
     assert llm.calls, "compose_confirmation must call the draft LLM"
@@ -225,3 +225,139 @@ def test_compose_confirmation_strips_subject_line_and_placeholder():
         "drafted confirmation body must not contain a bracket placeholder token "
         f"(e.g. [Your Name]); got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 (BUG-13 round 2): removing the placeholder TOKEN is not the fix. The
+# original guard deleted `[Your Name]` and left "Best regards," dangling over
+# nothing, which is the same broken-looking close BUG-13 was reported for.
+# ---------------------------------------------------------------------------
+
+
+def test_compose_confirmation_removes_the_whole_sign_off_not_just_the_placeholder():
+    """The sign-off BLOCK must go, not just its bracket token.
+
+    Deleting `[Your Name]` in place left the body ending "Best regards," with
+    nothing under it. The client still sees a broken sign-off, so the violation
+    was never actually fixed — only made harder to grep for.
+    """
+    paystubs = [_minimal_paystub()]
+    run = _minimal_run()
+    llm = _DraftLLM(
+        "Hi Acme Corp,\n\n"
+        "Your payroll run has been approved.\n\n"
+        "- Maria Chen: $1,234.56 net\n\n"
+        "Best regards,\n[Your Name]\nPayroll Team"
+    )
+
+    result = compose_confirmation(paystubs, run, llm=llm)
+
+    assert "Best regards" not in result, (
+        f"the sign-off line must be truncated, not left dangling; got: {result!r}"
+    )
+    assert "Payroll Team" not in result, (
+        "everything below the sign-off is signature material and goes with it; "
+        f"got: {result!r}"
+    )
+    assert "- Maria Chen: $1,234.56 net" in result, (
+        f"the net pay summary above the sign-off must survive; got: {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 (BUG-13 round 2): a bracketed span is NOT deleted in place. Silent
+# content deletion from a money-approved client email is the wrong failure.
+# ---------------------------------------------------------------------------
+
+
+def test_compose_confirmation_never_silently_deletes_bracketed_prose():
+    """A residual placeholder disqualifies the draft; it never edits it.
+
+    The old guard turned "net pay for [pay period ending 2026-06-15] is below"
+    into "net pay for  is below" — a mangled sentence in an email the client
+    reads after money was approved. Falling back to the deterministic template
+    is the correct failure: it is complete, correct, and already the documented
+    floor.
+    """
+    paystubs = [_minimal_paystub()]
+    run = _minimal_run()
+    mangling_body = (
+        "Hi there,\n\n"
+        "Your net pay for [pay period ending 2026-06-15] is below.\n\n"
+        "- Maria Chen: $1,234.56 net"
+    )
+    llm = _DraftLLM(mangling_body)
+
+    result = compose_confirmation(paystubs, run, llm=llm)
+
+    assert "net pay for  is below" not in result, (
+        "the guard must never leave a sentence with its middle deleted"
+    )
+    assert "[" not in result and "]" not in result, (
+        f"no placeholder may survive to the client; got: {result!r}"
+    )
+    assert result == _template_floor(paystubs, run), (
+        "a draft that cannot be repaired without deleting content must fall back "
+        f"to the template floor verbatim; got: {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 (BUG-13 round 2): the prompt tells the model "the system appends its
+# own closing line, so end the email right after the net pay summary". Nothing
+# appended anything, so the drafted path ended abruptly on a dollar figure while
+# the FALLBACK path was the only one that closed properly.
+# ---------------------------------------------------------------------------
+
+
+def test_compose_confirmation_appends_the_closing_line_the_prompt_promises():
+    paystubs = [_minimal_paystub()]
+    run = _minimal_run()
+    llm = _DraftLLM(
+        "Your payroll run has been approved.\n\n- Maria Chen: $1,234.56 net"
+    )
+
+    result = compose_confirmation(paystubs, run, llm=llm)
+
+    assert result.endswith("Please contact us if you have any questions."), (
+        "the drafted body must end with the same closing line the template floor "
+        f"uses, or the prompt's instruction to omit one is a lie; got: {result!r}"
+    )
+
+
+def test_compose_confirmation_does_not_double_the_closing_line():
+    """The model sometimes writes the closing itself. Appending blindly would
+    print it twice."""
+    paystubs = [_minimal_paystub()]
+    run = _minimal_run()
+    llm = _DraftLLM(
+        "Your payroll run has been approved.\n\n"
+        "- Maria Chen: $1,234.56 net\n\n"
+        "Please contact us if you have any questions."
+    )
+
+    result = compose_confirmation(paystubs, run, llm=llm)
+
+    assert result.count("Please contact us if you have any questions.") == 1, (
+        f"the closing line must appear exactly once; got: {result!r}"
+    )
+
+
+def test_template_floor_and_drafted_path_close_identically():
+    """One closing constant, two consumers. If they drift, a client can receive
+    two differently-ending confirmations depending on whether the model was up."""
+    paystubs = [_minimal_paystub()]
+    run = _minimal_run()
+
+    floor = compose_confirmation(paystubs, run, llm=_DraftLLM(None))
+    drafted = compose_confirmation(
+        paystubs, run, llm=_DraftLLM("Approved. - Maria Chen: $1,234.56 net")
+    )
+
+    closing = "Please contact us if you have any questions."
+    assert floor.endswith(closing) and drafted.endswith(closing)
+
+
+def _template_floor(paystubs: list[PaystubLineItem], run: dict[str, str]) -> str:
+    """The floor body, obtained through the public entry point (empty draft)."""
+    return compose_confirmation(paystubs, run, llm=_DraftLLM(None))

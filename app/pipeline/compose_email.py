@@ -232,22 +232,66 @@ def clarification_subject(original_subject: str | None = None) -> str:
 # BUG-13: a real send carried a literal `Subject: ...` line inside the drafted BODY
 # (on top of the real RFC subject) and signed off `[Your Name]`. The prompt now asks
 # the model not to do either (see app/llm/prompts/confirm.py), but a request is not a
-# guarantee — these two patterns make both violations IMPOSSIBLE on the return value,
-# not merely discouraged.
+# guarantee, so the return value is guarded here too.
+#
+# The guard deliberately does NOT delete bracketed spans in place. Doing so removed
+# the placeholder TOKEN while leaving the sign-off that introduced it ("Best regards,"
+# with nothing under it), and it silently ate legitimate prose — a model writing
+# "net pay for [pay period ending 2026-08-15]" produced "net pay for  ". Silent
+# content deletion is the wrong failure mode for an email that goes to a client after
+# money has already been approved. So instead:
+#   - the Subject: line is stripped (a whole line, nothing else can be lost with it),
+#   - the sign-off BLOCK is truncated (which takes its placeholder with it), and
+#   - any placeholder still standing after that DISQUALIFIES the whole draft, which
+#     falls back to the deterministic template floor below.
+# Failing toward a known-good body beats surgically repairing an unknown-bad one, and
+# it lets the detector stay broad without risking a mangled sentence.
 _SUBJECT_LINE_RE = re.compile(r"(?im)^[ \t]*subject[ \t]*:.*(?:\r?\n|$)")
 _BRACKET_PLACEHOLDER_RE = re.compile(r"\[[^\[\]\r\n]{1,80}\]")
+# A line that is ONLY a sign-off phrase (plus optional trailing punctuation) and
+# nothing else. The "and nothing else" is what keeps "Thanks for sending your hours."
+# — a legitimate sentence that opens with a sign-off word — out of the match.
+_SIGN_OFF_RE = re.compile(
+    r"(?im)^[ \t]*(?:"
+    r"(?:best|kind|warm|warmest)[ \t]+regards"
+    r"|regards"
+    r"|sincerely(?:[ \t]+yours)?"
+    r"|yours[ \t]+(?:truly|sincerely)"
+    r"|thanks(?:[ \t]+again)?"
+    r"|thank[ \t]+you"
+    r"|many[ \t]+thanks"
+    r"|cheers"
+    r"|best"
+    r"|respectfully"
+    r")[ \t]*[,.!]?[ \t]*$"
+)
+
+# The one closing line for BOTH confirmation paths. The prompt in
+# app/llm/prompts/confirm.py tells the model the system appends its own closing, which
+# is only true because compose_confirmation appends THIS constant to an accepted
+# draft; _confirmation_template_body ends with the same string. One definition so the
+# drafted body and the template floor cannot end differently.
+_CONFIRMATION_CLOSING = "Please contact us if you have any questions."
 
 
 def _strip_format_violations(body: str) -> str:
-    """Deterministically strip a Subject: line and any [bracket] placeholder token.
+    """Strip a Subject: line and truncate the sign-off block from a drafted body.
 
-    Applied to every drafted confirmation body, unconditionally, regardless of
-    whether the model honored the prompt's format guard. A confirmation email goes
-    to the client after money has already been approved, so the format floor here
-    cannot depend on the model behaving.
+    Truncating at the sign-off (rather than deleting the `[Your Name]` token under
+    it) is what actually fixes BUG-13: the symptom was a broken-looking close, and
+    removing only the token left "Best regards," dangling over nothing. Whatever the
+    model wrote as a sign-off is discarded wholesale, and compose_confirmation appends
+    the one canonical closing line in its place.
+
+    Callers must still check the result with _BRACKET_PLACEHOLDER_RE — a placeholder
+    outside the sign-off block (a `Hi [Client Name],` greeting, say) survives this
+    function on purpose, so the caller can reject the draft rather than have a word
+    silently vanish from a client-facing email.
     """
     body = _SUBJECT_LINE_RE.sub("", body)
-    body = _BRACKET_PLACEHOLDER_RE.sub("", body)
+    sign_off = _SIGN_OFF_RE.search(body)
+    if sign_off is not None:
+        body = body[: sign_off.start()]
     return body.strip()
 
 
@@ -271,7 +315,7 @@ def _confirmation_template_body(
     ]
     for item in paystubs:
         lines.append(f"- {item.submitted_name}: ${item.net_pay:,.2f} net")
-    lines += ["", "Please contact us if you have any questions."]
+    lines += ["", _CONFIRMATION_CLOSING]
     return "\n".join(lines)
 
 
@@ -345,10 +389,12 @@ def compose_confirmation(
             )
         return _confirmation_template_body(paystubs, run)
 
-    # BUG-13: make the Subject:/placeholder violation impossible, not merely
-    # discouraged by the prompt above. If stripping empties the body out entirely
-    # (e.g. a draft that was ONLY a placeholder sign-off), fall through to the
-    # template floor rather than send a blank confirmation.
+    # BUG-13. Two disqualifiers, both falling back to the deterministic floor rather
+    # than editing the draft further: a body that was ENTIRELY a subject line plus a
+    # sign-off, and a body still carrying a [placeholder] outside the sign-off block
+    # the strip already removed. Rejecting the whole draft is deliberate — see
+    # _strip_format_violations: silently deleting a bracketed span from a
+    # money-approved client email is a worse failure than sending the template.
     stripped = _strip_format_violations(body)
     if not stripped:
         logger.warning(
@@ -356,4 +402,16 @@ def compose_confirmation(
             "using templated confirmation body"
         )
         return _confirmation_template_body(paystubs, run)
-    return stripped
+    if _BRACKET_PLACEHOLDER_RE.search(stripped):
+        logger.warning(
+            "confirmation draft kept a bracket placeholder outside its sign-off — "
+            "using templated confirmation body"
+        )
+        return _confirmation_template_body(paystubs, run)
+
+    # The prompt tells the model the system appends its own closing line so it can end
+    # right after the net pay summary. This is the append that makes that true. Guard
+    # against doubling it when the model wrote the same sentence unprompted.
+    if stripped.endswith(_CONFIRMATION_CLOSING):
+        return stripped
+    return f"{stripped}\n\n{_CONFIRMATION_CLOSING}"

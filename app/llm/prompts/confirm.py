@@ -6,9 +6,16 @@ Same convention — no "json" / example shape (free-text, not JSON mode) — and
 same format discipline clarify.py already had (BUG-13): plain text, no subject
 line, no signature placeholder. The confirmation prompt lacked this guard until
 BUG-13 (a real send carried a literal `Subject: ...` line in the body and signed
-off `[Your Name]`); it now matches clarify.py's constraints, and
-`compose_email._strip_format_violations` makes the violation impossible even if
-the model ignores the prompt.
+off `[Your Name]`); it now matches clarify.py's constraints.
+
+The prompt is only half the guard, and it is the half that can be ignored. The
+enforcing half is in compose_email.compose_confirmation, which strips the subject
+line, truncates whatever sign-off the model wrote, rejects a draft still carrying a
+bracket placeholder to the deterministic template floor, and appends the one
+canonical closing line. The "the system appends its own closing line" instruction
+below is a statement about that append, not an aspiration — if it is ever removed
+there, this sentence has to go too, or the drafted email ends abruptly on a dollar
+figure while the FALLBACK path is the only one that closes properly.
 
 The model here only phrases the summary sentence around the per-employee net pay
 figures the code already computed. It does not choose what to report — the figures
