@@ -18,8 +18,11 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from app.models.contracts import Decision, Extracted
 from tests.conftest import FakeConnection, patch_get_connection
+
+_TEST_OPERATOR_EMAIL = "operator@example.test"
 
 # ---------------------------------------------------------------------------
 # Task 1: Repo helper tests
@@ -170,7 +173,7 @@ def test_bind_demo_business_writes_binding_table_not_businesses(fake_conn):
     # The INSERT returns a row id — script fetchone so the helper doesn't crash
     fake_conn.script_fetchone(None)  # UPSERT INTO demo_sender_bindings (no RETURNING needed)
 
-    result = bind_demo_business("Metro Deli Group", "pjnhek@gmail.com", seed_ids, conn=fake_conn)
+    result = bind_demo_business("Metro Deli Group", _TEST_OPERATOR_EMAIL, seed_ids, conn=fake_conn)
 
     assert result is True
 
@@ -187,7 +190,7 @@ def test_bind_demo_business_writes_binding_table_not_businesses(fake_conn):
 
     # Verify operator_email and business_id are in the params
     all_params = [str(p) for sql, params in fake_conn.executed if params for p in params]
-    assert "pjnhek@gmail.com" in all_params, "operator_email must be in SQL params"
+    assert _TEST_OPERATOR_EMAIL in all_params, "operator_email must be in SQL params"
     assert str(metro_id) in all_params or metro_id in [
         p for _, params in fake_conn.executed if params for p in params
     ], "business_id must be in SQL params"
@@ -199,7 +202,7 @@ def test_bind_demo_business_returns_false_for_unknown_name(fake_conn):
 
     seed_ids = {"Metro Deli Group": uuid.UUID("b0000002-0000-0000-0000-000000000002")}
 
-    result = bind_demo_business("Unknown Corp", "pjnhek@gmail.com", seed_ids, conn=fake_conn)
+    result = bind_demo_business("Unknown Corp", _TEST_OPERATOR_EMAIL, seed_ids, conn=fake_conn)
 
     assert result is False
 
@@ -223,7 +226,7 @@ def test_find_business_by_sender_additive_binding_check(fake_conn):
     # Second execute: demo_sender_bindings returns the Metro UUID
     fake_conn.script_fetchone((str(metro_id),))
 
-    result = find_business_by_sender("pjnhek@gmail.com", conn=fake_conn)
+    result = find_business_by_sender(_TEST_OPERATOR_EMAIL, conn=fake_conn)
 
     assert result == metro_id, "Additive fallback must return Metro UUID"
     assert len(fake_conn.executed) >= 2, "Two SQL executes must be called (primary + additive)"
@@ -1353,6 +1356,9 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
 
     _patch_demo_queue_dependencies(monkeypatch, repo_mod)
 
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEMO_OPERATOR_EMAIL", _TEST_OPERATOR_EMAIL)
+
     from fastapi.testclient import TestClient
 
     from app.main import app as fastapi_app
@@ -1368,12 +1374,14 @@ def test_compose_from_addr_is_seed_contact_not_operator(monkeypatch):
             follow_redirects=False,
         )
 
+    get_settings.cache_clear()
+
     assert insert_calls, "insert_inbound_email must be called"
     captured_from = insert_calls[0].get("from_addr", "")
     assert captured_from == "hr@metrodeli.example", (
         f"from_addr must be the seed .example contact (hr@metrodeli.example), got {captured_from!r}"
     )
-    assert captured_from != "pjnhek@gmail.com", (
+    assert captured_from != _TEST_OPERATOR_EMAIL, (
         "from_addr must NOT be DEMO_OPERATOR_EMAIL"
     )
 
@@ -1400,6 +1408,9 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
         raising=False,
     )
 
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEMO_OPERATOR_EMAIL", _TEST_OPERATOR_EMAIL)
+
     from fastapi.testclient import TestClient
 
     from app.main import app as fastapi_app
@@ -1411,6 +1422,8 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
             follow_redirects=False,
         )
 
+    get_settings.cache_clear()
+
     assert resp.status_code in (302, 303), f"Expected redirect, got {resp.status_code}"
     location = resp.headers.get("location", "")
     assert "bound=1" in location, "Must redirect to /?bound=1"
@@ -1418,7 +1431,9 @@ def test_bind_route_writes_demo_sender_bindings_not_contact_email(monkeypatch):
     assert len(bind_calls) == 1, "bind_demo_business must be called once"
     called_name, called_email, called_seed_ids = bind_calls[0]
     assert called_name == "Metro Deli Group"
-    assert called_email == "pjnhek@gmail.com", "operator_email must be DEMO_OPERATOR_EMAIL"
+    assert called_email == _TEST_OPERATOR_EMAIL, (
+        "operator_email must be the configured DEMO_OPERATOR_EMAIL setting"
+    )
     # Check Metro UUID is in the seed_ids
     metro_id = uuid.UUID("b0000002-0000-0000-0000-000000000002")
     assert called_seed_ids.get("Metro Deli Group") == metro_id
