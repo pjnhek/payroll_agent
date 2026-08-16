@@ -68,8 +68,8 @@ services:
       # DEMO OUTBOUND OVERRIDE: Resend free tier only delivers to the account owner's
       # own address, so every send to a seeded .example contact fails identically.
       # Redirects EVERY outbound client email to this address at snapshot-reservation
-      # time. Should hold the same address as DEMO_OPERATOR_EMAIL (app/routes/demo.py)
-      # — that constant is the INBOUND leg (Path-2 sender binding); this is the
+      # time. Should hold the same address as DEMO_OPERATOR_EMAIL (see app/config.py)
+      # — that setting is the INBOUND leg (Path-2 sender binding); this is the
       # OUTBOUND leg.
       #
       # sync: false, not a committed value. It is not a secret in the credential
@@ -78,6 +78,17 @@ services:
       # not belong in version control. Set it in the Render dashboard; leaving it
       # unset is the production-safe no-op (see app/config.py).
       - key: DEMO_OUTBOUND_TO
+        sync: false
+
+      # DEMO OPERATOR EMAIL: the INBOUND leg of Path-2 demo routing (POST /demo/bind
+      # writes this address into demo_sender_bindings so inbound mail from this sender
+      # routes to the bound business). DEMO_OUTBOUND_TO above is the OUTBOUND leg. sync:
+      # false, not a committed value, for the same personal-address reason as
+      # DEMO_OUTBOUND_TO. Leaving it unset means POST /demo/bind refuses rather than
+      # binding an empty operator address — the production-safe default (see
+      # app/config.py). Must be set in the Render dashboard for the deployed demo's
+      # /demo/bind route to work.
+      - key: DEMO_OPERATOR_EMAIL
         sync: false
 
       # ── Durable job queue — non-secret, see app/config.py for derivations ──────

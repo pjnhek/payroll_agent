@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     # send time — see app/email/routing.py.
     demo_outbound_to: str = ""  # DEMO_OUTBOUND_TO env var
 
+    # DEMO OPERATOR EMAIL: the INBOUND leg of the demo's Path-2 real-email routing —
+    # POST /demo/bind writes this address into demo_sender_bindings.operator_email so an
+    # inbound sender matching it resolves to the bound business
+    # (app/db/repo/runs.py::find_business_by_sender). DEMO_OUTBOUND_TO above is the
+    # OUTBOUND leg (where client replies get redirected); this is the opposite direction.
+    # Empty default is the production-safe value: unset, /demo/bind refuses rather than
+    # binding an empty string, which would otherwise let a sender with from_addr="" match a
+    # demo_sender_bindings row — see app/routes/demo.py::resolve_operator_email().
+    demo_operator_email: str = ""  # DEMO_OPERATOR_EMAIL env var
+
     # ── Durable job queue ──────────────────────────────────────────────────────
     # WORKER_COUNT: 2 daemon threads. `0` is the test/dev off switch —
     # tests/conftest.py pins WORKER_COUNT=0 so the suite never spawns real worker
