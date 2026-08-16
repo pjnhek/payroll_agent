@@ -1,8 +1,9 @@
 """Demo affordances — POST /demo/bind, /demo/compose, /demo/send-test.
 
 Also owns the demo allowlist constants (DEMO_FIXTURES, DEMO_FIXTURE_DEFAULT_KEY,
-DEMO_OPERATOR_EMAIL, SEED_CONTACTS, SEED_BUSINESS_IDS); they are public names
-because runs.py and dashboard.py import them.
+SEED_CONTACTS, SEED_BUSINESS_IDS); they are public names because runs.py and
+dashboard.py import them. resolve_operator_email() resolves the configured
+DEMO_OPERATOR_EMAIL setting at call time — see its own docstring.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import psycopg
 from fastapi import APIRouter, Form
 from fastapi.responses import RedirectResponse
 
+from app.config import get_settings
 from app.db import repo
 from app.email import gateway
 from app.email.clean import clean_body
@@ -67,9 +69,14 @@ DEMO_FIXTURE_DEFAULT_KEY = "coastal_exact"
 # Demo routing constants
 # ---------------------------------------------------------------------------
 
-# Hardcoded operator email for Path-2 demo binding. bind_demo_business writes
-# demo_sender_bindings for Path-2 routing; the address is never user-supplied.
-DEMO_OPERATOR_EMAIL = "pjnhek@gmail.com"
+def resolve_operator_email() -> str:
+    """Return the configured demo operator email, or "" if unset.
+
+    A whitespace-only DEMO_OPERATOR_EMAIL is treated as unset (mirrors
+    app/email/routing.py::resolve_outbound_recipient): a stray env var containing only
+    spaces must not silently arm a binding for an effectively-empty operator address.
+    """
+    return get_settings().demo_operator_email.strip()
 
 # Stable seed .example contacts. /demo/bind must NEVER mutate them: the fixtures and
 # every routing path below key off these exact addresses, so rewriting a business's
@@ -147,14 +154,15 @@ def demo_bind(
     Seed .example contacts remain permanently stable.
 
     SECURITY: business_name is validated against the SEED_CONTACTS allowlist and
-    operator_email is the hardcoded DEMO_OPERATOR_EMAIL constant — accepting either
+    operator_email is resolved from the configured DEMO_OPERATOR_EMAIL setting via
+    resolve_operator_email(), never taken from the form — accepting either
     from the form would let any caller bind an arbitrary address to a business and
     receive that business's payroll mail.
     """
     if business_name not in SEED_CONTACTS:
         return notice_redirect("/", "demo_unknown_business")
 
-    success = repo.bind_demo_business(business_name, DEMO_OPERATOR_EMAIL, SEED_BUSINESS_IDS)
+    success = repo.bind_demo_business(business_name, resolve_operator_email(), SEED_BUSINESS_IDS)
     if success:
         return RedirectResponse(url="/?bound=1", status_code=303)
     return RedirectResponse(url="/", status_code=303)

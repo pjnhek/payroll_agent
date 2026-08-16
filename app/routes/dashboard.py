@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
 from app.db import repo
-from app.routes.demo import DEMO_FIXTURES, DEMO_OPERATOR_EMAIL, SEED_BUSINESS_IDS, SEED_CONTACTS
+from app.routes.demo import DEMO_FIXTURES, SEED_BUSINESS_IDS, SEED_CONTACTS, resolve_operator_email
 from app.routes.operator_feedback import notice_label
 from app.routes.templating import templates
 
@@ -111,7 +111,7 @@ def landing(
     armed_business_name = None
     if bound == "1":
         try:
-            armed_business_id = repo.get_demo_binding(DEMO_OPERATOR_EMAIL)
+            armed_business_id = repo.get_demo_binding(resolve_operator_email())
         except Exception:
             armed_business_id = None
 
@@ -136,7 +136,6 @@ def landing(
             "armed_business_name": armed_business_name,
             "bound": bound,
             "notice_label": notice_label(notice),
-            "demo_operator_email": DEMO_OPERATOR_EMAIL,
             "gate_fixture_key": LANDING_GATE_FIXTURE_KEY,
             "gate_fixture_body": _gate_fixture_body(),
         },

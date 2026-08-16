@@ -40,13 +40,15 @@ def bind_demo_business(
 
     NEVER touches businesses.contact_email — the seeded .example contacts stay
     permanently stable, and only demo_sender_bindings is written. The operator_email
-    is the hardcoded DEMO_OPERATOR_EMAIL constant from the call site, never
-    user-supplied: this table feeds sender→business routing, so a user-supplied
-    value here would let an arbitrary sender bind themselves to a business.
+    is the configured operator address, resolved via
+    app.routes.demo.resolve_operator_email(), never user-supplied: this table feeds
+    sender→business routing, so a user-supplied value here would let an arbitrary
+    sender bind themselves to a business.
 
     Args:
         business_name: validated against the seed_business_ids allowlist.
-        operator_email: the hardcoded operator email (DEMO_OPERATOR_EMAIL).
+        operator_email: the configured operator email (resolved via
+            app.routes.demo.resolve_operator_email()).
         seed_business_ids: dict[str, UUID] of the three stable seed businesses.
 
     Returns:
