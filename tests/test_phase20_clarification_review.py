@@ -751,6 +751,55 @@ def test_validation_confirmation_card_hides_both_actions_and_shows_blocker(
     assert _MARK_DELIVERED_ACTION in page.text
 
 
+@pytest.mark.parametrize("category", ["validation", "authorization", "configuration"])
+def test_unsendable_confirmation_card_offers_reject_not_only_mark_delivered(
+    fake_repo, category: str
+) -> None:
+    """The anti-BUG-1 pin for the confirmation card's blocked branch.
+
+    Hiding "Authorize a new confirmation" for a category that can never succeed
+    left "Mark delivered" as the operator's ONLY action -- and that action CASes
+    the run to RECONCILED, asserting the client received a confirmation the
+    provider had definitively refused. Every category that hides the authorize
+    form must therefore also offer the honest negative exit, or hiding the
+    action recreates exactly the dead end this session was fixing.
+    """
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = f"delivery_review:{category}"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _AUTHORIZE_ACTION not in page.text, (
+        f"{category} must not offer a fresh send"
+    )
+    assert f'action="/runs/{run_id}/reject"' in page.text, (
+        f"{category} hides the only provider action, so it must offer Reject "
+        "instead of leaving Mark delivered as the sole (and false) exit"
+    )
+
+    rejected = client.post(f"/runs/{run_id}/reject", follow_redirects=False)
+
+    assert rejected.status_code == 303
+    assert fake_repo.load_run(run_id)["status"] == RunStatus.REJECTED.value
+
+
+def test_sendable_confirmation_card_does_not_offer_reject(fake_repo) -> None:
+    """The converse pin. On a category where a fresh send CAN succeed, delivery
+    may genuinely already have happened, so Mark delivered / Authorize are the
+    correct pair. Offering Reject there would let an operator reject a run whose
+    confirmation already reached the client -- a new hazard, not a fix.
+    """
+    run_id, _snapshot = _confirmation_review_run(fake_repo)
+    fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:transport"
+
+    page = client.get(f"/runs/{run_id}")
+
+    assert page.status_code == 200
+    assert _AUTHORIZE_ACTION in page.text
+    assert f'action="/runs/{run_id}/reject"' not in page.text
+
+
 def test_validation_clarification_card_hides_retry_and_shows_blocker(fake_repo) -> None:
     run_id, _snapshot = _clarification_review_run(fake_repo)
     fake_repo.runs[str(run_id)]["error_detail"] = "delivery_review:validation"
