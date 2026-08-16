@@ -1472,7 +1472,6 @@ def test_bind_route_refuses_when_operator_email_unset(monkeypatch):
     """POST /demo/bind with no DEMO_OPERATOR_EMAIL configured must refuse rather than
     binding an empty operator address -- repo.bind_demo_business is never called."""
     import app.db.repo as repo_mod
-    from app.config import get_settings
 
     bind_calls: list[Any] = []
     monkeypatch.setattr(
@@ -1514,7 +1513,6 @@ def test_bind_route_refuses_when_operator_email_whitespace_only(monkeypatch):
     """A whitespace-only DEMO_OPERATOR_EMAIL must also be treated as unset -- proves
     resolve_operator_email()'s .strip() makes it count as unset, not just falsy-empty."""
     import app.db.repo as repo_mod
-    from app.config import get_settings
 
     bind_calls: list[Any] = []
     monkeypatch.setattr(

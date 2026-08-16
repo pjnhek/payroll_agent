@@ -66,8 +66,9 @@ DEMO_FIXTURES: dict[str, dict[str, str]] = {
 DEMO_FIXTURE_DEFAULT_KEY = "coastal_exact"
 
 # ---------------------------------------------------------------------------
-# Demo routing constants
+# Demo routing config and constants
 # ---------------------------------------------------------------------------
+
 
 def resolve_operator_email() -> str:
     """Return the configured demo operator email, or "" if unset.
@@ -77,6 +78,7 @@ def resolve_operator_email() -> str:
     spaces must not silently arm a binding for an effectively-empty operator address.
     """
     return get_settings().demo_operator_email.strip()
+
 
 # Stable seed .example contacts. /demo/bind must NEVER mutate them: the fixtures and
 # every routing path below key off these exact addresses, so rewriting a business's
