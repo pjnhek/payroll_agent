@@ -162,7 +162,11 @@ def demo_bind(
     if business_name not in SEED_CONTACTS:
         return notice_redirect("/", "demo_unknown_business")
 
-    success = repo.bind_demo_business(business_name, resolve_operator_email(), SEED_BUSINESS_IDS)
+    operator_email = resolve_operator_email()
+    if not operator_email:
+        return notice_redirect("/", "demo_operator_unset")
+
+    success = repo.bind_demo_business(business_name, operator_email, SEED_BUSINESS_IDS)
     if success:
         return RedirectResponse(url="/?bound=1", status_code=303)
     return RedirectResponse(url="/", status_code=303)

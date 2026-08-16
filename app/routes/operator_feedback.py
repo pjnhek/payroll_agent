@@ -88,6 +88,10 @@ NOTICE_LABELS: dict[str, str] = {
         "15 idle minutes and can take up to a minute to wake, so a first "
         "attempt right after arriving can fail. Wait a moment and try again."
     ),
+    "demo_operator_unset": (
+        "No operator address is configured for this demo, so "
+        "nothing was bound. Set DEMO_OPERATOR_EMAIL and try again."
+    ),
 }
 
 

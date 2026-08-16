@@ -244,6 +244,21 @@ def test_find_business_by_sender_primary_path_unchanged(fake_conn):
     assert len(fake_conn.executed) == 1, "Only one execute for primary path"
 
 
+def test_find_business_by_sender_empty_string_returns_none(fake_conn):
+    """find_business_by_sender("") must return None — an empty sender must never
+    accidentally match a demo_sender_bindings row with operator_email=''."""
+    from app.db.repo import find_business_by_sender
+
+    # First execute: contact_email match returns None
+    fake_conn.script_fetchone(None)
+    # Second execute: demo_sender_bindings additive lookup also returns None
+    fake_conn.script_fetchone(None)
+
+    result = find_business_by_sender("", conn=fake_conn)
+
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # create_run record_only parameter tests
 # ---------------------------------------------------------------------------
@@ -1435,6 +1450,83 @@ def test_bind_route_rejects_unknown_business_with_notice(monkeypatch):
 
     assert resp.status_code in (302, 303)
     assert resp.headers.get("location", "") == "/?notice=demo_unknown_business"
+    assert bind_calls == []
+
+
+def test_bind_route_refuses_when_operator_email_unset(monkeypatch):
+    """POST /demo/bind with no DEMO_OPERATOR_EMAIL configured must refuse rather than
+    binding an empty operator address -- repo.bind_demo_business is never called."""
+    import app.db.repo as repo_mod
+    from app.config import get_settings
+
+    bind_calls: list[Any] = []
+    monkeypatch.setattr(
+        repo_mod,
+        "bind_demo_business",
+        lambda *a, **kw: _record_and_return(bind_calls, a, True),
+        raising=False,
+    )
+
+    get_settings.cache_clear()
+    # setenv("", ...) rather than delenv: Settings.model_config sets env_file=".env",
+    # so pydantic-settings falls back to reading a local .env FILE when the var is
+    # absent from os.environ -- delenv would only remove it from os.environ, and the
+    # moment a developer adds a real DEMO_OPERATOR_EMAIL to their local .env this test
+    # would silently stop testing the unset path. Env vars take priority over env_file
+    # in pydantic-settings' resolution order, so setenv("") pins the empty value
+    # deterministically regardless of .env contents.
+    monkeypatch.setenv("DEMO_OPERATOR_EMAIL", "")
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app as fastapi_app
+
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        resp = tc.post(
+            "/demo/bind",
+            data={"business_name": "Metro Deli Group"},
+            follow_redirects=False,
+        )
+
+    get_settings.cache_clear()
+
+    assert resp.status_code in (302, 303)
+    assert resp.headers.get("location", "") == "/?notice=demo_operator_unset"
+    assert bind_calls == []
+
+
+def test_bind_route_refuses_when_operator_email_whitespace_only(monkeypatch):
+    """A whitespace-only DEMO_OPERATOR_EMAIL must also be treated as unset -- proves
+    resolve_operator_email()'s .strip() makes it count as unset, not just falsy-empty."""
+    import app.db.repo as repo_mod
+    from app.config import get_settings
+
+    bind_calls: list[Any] = []
+    monkeypatch.setattr(
+        repo_mod,
+        "bind_demo_business",
+        lambda *a, **kw: _record_and_return(bind_calls, a, True),
+        raising=False,
+    )
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEMO_OPERATOR_EMAIL", "   ")
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app as fastapi_app
+
+    with TestClient(fastapi_app, raise_server_exceptions=False) as tc:
+        resp = tc.post(
+            "/demo/bind",
+            data={"business_name": "Metro Deli Group"},
+            follow_redirects=False,
+        )
+
+    get_settings.cache_clear()
+
+    assert resp.status_code in (302, 303)
+    assert resp.headers.get("location", "") == "/?notice=demo_operator_unset"
     assert bind_calls == []
 
 
