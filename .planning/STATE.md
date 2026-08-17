@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution
 Phase: Not started (defining requirements)
 Plan: —
 Status: Defining requirements
-Last activity: 2026-08-16 — Completed quick task 260816-ffv: made the hardcoded demo operator email config-driven
+Last activity: 2026-08-17 — Pushed quick task 260816-ffv (CI green), verified the live demo loop end to end, closed the last open debug artifact
 
 ## Performance Metrics
 
@@ -359,13 +359,14 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-08-16
-Stopped at: Completed quick-260816-ffv (demo operator email config-driven + /demo/bind refusal fence), 6 commits, 1403 passed / 107 skipped, NOT pushed (user reviews first)
+Last session: 2026-08-17
+Stopped at: quick-260816-ffv pushed (`c3e1595..f708e9c`, 8 commits, all 4 CI workflows green). Live service verified healthy on the new code (`/health/live|ready|schema|queue` all ok, `in_sync`). Debug artifact `mark-handled-dead-end` human-verified PASS against the LIVE service and flipped to `resolved` — the full clarify -> reply -> resume -> awaiting_approval loop was walked end to end in production. Board is clean for v5.
 Resume file: None
 
 ## Operator Next Steps
 
-- Add the `DEMO_OPERATOR_EMAIL=` block to `.env.example` manually (dotenv guard denies harness file access; exact lines in `quick/260816-ffv-.../260816-ffv-SUMMARY.md`), then set `DEMO_OPERATOR_EMAIL` in your local `.env`
-- Set `DEMO_OPERATOR_EMAIL` in the Render dashboard's Environment tab before the next deploy — until it is set, the deployed `/demo/bind` correctly refuses rather than binding an empty operator address
-- Migrate live Supabase for `78542f1`'s `email_messages.operator_acknowledged_at` column before any deploy (schema before code)
 - Start the next milestone with /gsd-new-milestone, or continue v5 requirements definition
+
+_Cleared 2026-08-17:_
+- ~~Add `DEMO_OPERATOR_EMAIL` to `.env.example` / local `.env` / Render dashboard~~ — all three done; live `POST /demo/bind` returns `303 -> /?bound=1`, proving the setting resolves in production.
+- ~~Migrate live Supabase for `78542f1`'s `email_messages.operator_acknowledged_at` column~~ — was never a manual step: `app/db/schema.sql:305` ships an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, and live `GET /health/schema` returns `in_sync`.

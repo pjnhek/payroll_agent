@@ -1,5 +1,5 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "im on payroll-agent.onrender.com and im pressing the 'run this email through the pipeline' for the watch the gate refuse to guess, then on the run (https://payroll-agent.onrender.com/runs/5a738802-9295-4de6-8df5-a85bdc87cc4a) im seeing clarification delivery review, and im confused what its supposed to be doing. the retry same question is confusing and mark handled is also confusing, when pressing mark handled and landing on the page where im supposed to write a reply, the send button doesnt do anything"
 created: 2026-08-14T00:00:00Z
 updated: 2026-08-14T01:00:00Z
@@ -259,6 +259,24 @@ files_changed:
   - tests/test_reply_redelivery.py (B2/B3 regression tests + strengthened the pre-existing
     enqueue-failure test's assertion)
 
-commit_status: NOT yet committed (working tree only) — pending user confirmation per the
-  awaiting_human_verify checkpoint below, matching the debug protocol's "archive only after
-  confirmation" rule.
+commit_status: committed as 78542f1 and pushed; live on payroll-agent.onrender.com.
+
+human_verification:
+  date: 2026-08-17
+  verdict: PASS — verified by the reporter against the LIVE deployed service, not a local run.
+  what_was_exercised: landing CTA "Watch the gate refuse to guess" -> "Run this email through
+    the pipeline" -> clarification sent -> operator replied via the demo composer -> run
+    RESUMED and advanced to awaiting_approval (the human gate). The originally-reported
+    symptom (composer's reply button reloads the page unchanged, run has no forward path)
+    did NOT reproduce.
+  note_on_the_delivery_review_path: the CLARIFICATION delivery-review card did not appear at
+    all this time, and its absence is correct rather than a gap in the verification. The card
+    was a downstream symptom of an undeliverable send: clarification.py:474 addresses the
+    clarification via resolve_outbound_recipient(email.from_addr), which resolved to the RFC
+    2606 seed contact hr@metrodeli.example, Resend refused it, and the failed send escalated
+    the run. With DEMO_OUTBOUND_TO now configured in the Render dashboard, the send is
+    redirected to a real mailbox and succeeds, so the run goes straight to awaiting_reply.
+    The reported defect was in the COMPOSER's reply path, which both routes share and which
+    was exercised directly here, so the verification covers the actual bug. The
+    delivery-review branch itself remains covered by
+    test_mark_handled_then_simulate_reply_does_not_dead_end.
