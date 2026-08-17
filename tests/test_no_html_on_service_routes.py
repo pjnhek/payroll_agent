@@ -1,5 +1,5 @@
-"""GUARD-05's response-level half (T-22-06): the six unauthenticated service
-routes never answer with an HTML content-type.
+"""GUARD-05's response-level half: the six unauthenticated service routes
+never answer with an HTML content-type.
 
 `/health/live` is Render's own healthCheckPath target and `/internal/pump`
 is the sole execution trigger for the durable job queue on a platform with

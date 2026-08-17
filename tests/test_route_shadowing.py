@@ -1,4 +1,4 @@
-"""Route-table structural guards (T-22-05, GUARD-05's route-table half).
+"""Route-table structural guards (GUARD-05's route-table half).
 
 v5 replaces the "no SPA" architecture with per-page React islands whose
 built assets land under the ONE `/static` mount that already exists
@@ -8,10 +8,11 @@ shadow every service route behind it: `/health/live` and `/internal/pump`
 would answer 200+HTML, making Render mark a broken deploy healthy while
 `pump.yml`'s `curl -f` goes green and the durable queue is never drained.
 These tests assert that shape can never land, and are demonstrated red
-under a real injected root mount (see SUMMARY.md for the transcript).
+under a real injected root mount.
 
 Reads the live route table from `app.main.app` — never a hand-maintained
-path list (D-22-05 idiom: the registry, not the prose, is authoritative).
+path list, so the registry stays the source of truth instead of the prose
+describing it.
 
 FastAPI 0.138's lazy-include routing wraps every `include_router()` call in
 an internal wrapper object whose own `matches()` discards the child scope,
@@ -66,11 +67,11 @@ def _first_matching_route(flat_routes: list[Any], scope: dict[str, Any]) -> Any 
     return None
 
 
-# The exact ten reserved paths named in the plan's must-haves, each paired
-# with its expected HTTP method and the concrete endpoint function object a
-# request must resolve to. Asserted on the endpoint object, never on a
-# status code: a catch-all mount serving `html=True` returns 200 for
-# everything, which makes a status-code assertion useless (T-22-05).
+# The ten reserved paths every route on this table must resolve correctly,
+# each paired with its expected HTTP method and the concrete endpoint
+# function object a request must resolve to. Asserted on the endpoint
+# object, never on a status code: a catch-all mount serving `html=True`
+# returns 200 for everything, which makes a status-code assertion useless.
 _RESERVED_PATH_EXPECTATIONS: list[tuple[str, str, Any]] = [
     ("/webhook/inbound", "POST", inbound),
     ("/health/live", "GET", health_live),

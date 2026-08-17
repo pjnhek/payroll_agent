@@ -24,9 +24,9 @@ _BASE_HTML_PATH = _REPO_ROOT / "app" / "templates" / "base.html"
 _APP_DIR = _REPO_ROOT / "app"
 _FRONTEND_SRC_DIR = _REPO_ROOT / "frontend" / "src"
 
-# D-22-16: the token/a11y scan's suffix allowlist, widened from {".css",
-# ".html", ".py"} to also see .ts/.tsx — otherwise the guard goes blind the
-# moment a page's markup moves into a React component.
+# The token/a11y scan's suffix allowlist, widened from {".css", ".html",
+# ".py"} to also see .ts/.tsx — otherwise the guard goes blind the moment a
+# page's markup moves into a React component.
 _SCANNED_SUFFIXES = frozenset({".css", ".html", ".py", ".ts", ".tsx"})
 
 _STYLE_CSS = _STYLE_PATH.read_text()
@@ -199,9 +199,9 @@ def _frontend_src_files() -> list[Path]:
 
 
 def _template_and_frontend_files() -> list[Path]:
-    """`app/templates/*.html` plus `frontend/src`'s `.ts`/`.tsx` files
-    (D-22-16) — the combined surface the accent-hex and button-composition
-    guards must see so neither one goes blind as pages convert."""
+    """`app/templates/*.html` plus `frontend/src`'s `.ts`/`.tsx` files — the
+    combined surface the accent-hex and button-composition guards must see
+    so neither one goes blind as pages convert."""
     return [*_REPO_ROOT.glob("app/templates/*.html"), *_frontend_src_files()]
 
 
@@ -222,19 +222,19 @@ def _token_scan_files() -> list[Path]:
 def test_accent_soft_deleted() -> None:
     """`--accent-soft` appears nowhere under app/ or frontend/src — it was
     deleted, not retinted. Suffix allowlist widened to .ts/.tsx and the scan
-    walks frontend/src too (D-22-16), so a future React component cannot
-    quietly reintroduce it outside this guard's sight."""
+    walks frontend/src too, so a future React component cannot quietly
+    reintroduce it outside this guard's sight."""
     for path in _token_scan_files():
         contents = path.read_text(errors="ignore")
         assert "accent-soft" not in contents, f"--accent-soft still referenced in {path}"
 
 
 # ---------------------------------------------------------------------------
-# D-22-16 anti-narrowing pin — the guard must not silently narrow its own
-# scan breadth as pages convert. This mirrors the D-22-06 completeness idiom
-# (scripts/check_proof_inventory.py): counts are measured, never hand-pinned,
-# so a future glob edit that drops a suffix reds here instead of quietly
-# scanning less.
+# Anti-narrowing pin — the guard must not silently narrow its own scan
+# breadth as pages convert. Same idiom as the proof-inventory completeness
+# check (scripts/check_proof_inventory.py): counts are measured, never
+# hand-pinned, so a future glob edit that drops a suffix reds here instead
+# of quietly scanning less.
 # ---------------------------------------------------------------------------
 
 _REPO_WALK_SKIP_DIRS = frozenset(
@@ -259,9 +259,9 @@ def _repo_present_suffixes() -> set[str]:
 
 
 def test_token_scan_covers_every_present_extension() -> None:
-    """Anti-narrowing pin (D-22-16): for every allowlisted suffix that
-    genuinely exists in the repo right now, the token/a11y scan must have
-    actually picked up at least one file of that suffix.
+    """Anti-narrowing pin: for every allowlisted suffix that genuinely
+    exists in the repo right now, the token/a11y scan must have actually
+    picked up at least one file of that suffix.
 
     Once frontend/src exists the .tsx count must be non-zero, and a future
     change that drops an extension from a glob reds here instead of
@@ -436,12 +436,12 @@ def test_button_modifier_classes_always_compose_the_base() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Class hygiene (group 3b, Task 3c) — js- prefix convention.
+# Class hygiene — js- prefix convention.
 #
-# D-22-15 / plan 22-02, Task 1: the presence pin that used to live here
+# The presence pin that used to live here
 # (`test_script_hook_classes_carry_js_prefix_and_stay_out_of_css`, plus its
-# module-scope `runs_list.html` read) is DELETED, not widened, and this is
-# the written justification the deletion's own action step requires.
+# module-scope `runs_list.html` read) is DELETED, not widened. Written
+# justification for the deletion follows.
 #
 # The `js-` convention existed to stop someone deleting a
 # `document.querySelector` target (`.js-status-badge`, `.js-failure-summary`,
@@ -454,22 +454,22 @@ def test_button_modifier_classes_always_compose_the_base() -> None:
 # presence on a page where they no longer do anything would pin dead code,
 # not prevent it.
 #
-# Plan 22-10 (Phase 22's `/runs` React conversion) owns the replacement: a
-# Vitest test asserting the status badge updates in place on a new poll
-# result, which is the same "the live wiring didn't silently break" property
-# this test used to pin, expressed against the layer that now owns it.
+# The `/runs` React conversion owns the replacement: a Vitest test asserting
+# the status badge updates in place on a new poll result, which is the same
+# "the live wiring didn't silently break" property this test used to pin,
+# expressed against the layer that now owns it.
 #
-# This amends ROADMAP.md Phase 22 Success Criterion 5's third sentence
-# ("The three `js-` poller hooks still resolve, they have zero CSS and look
-# like dead markup, and deleting them would break this phase's own headline
-# feature.") — that property held for a `document.querySelector` poller and
-# no longer holds once the poller's target is a React component's state.
+# This changes what the milestone's own success criteria say about these
+# hooks: they no longer "still resolve" or "look like dead markup that would
+# break the headline feature if deleted" — that property held for a
+# `document.querySelector` poller and no longer holds once the poller's
+# target is a React component's state.
 #
-# Also satisfies D-22-01: the module-scope `runs_list.html` read this test
-# depended on read the file at IMPORT time, so renaming or deleting the
-# template took the whole module — including the unrelated WCAG contrast
-# gates above — down at collection. Deleting the read alongside its sole
-# consumer means collection no longer depends on the template's existence
-# at all (verified: see SUMMARY.md for the temporarily-renamed-template
-# collect-only proof).
+# The module-scope `runs_list.html` read this test depended on read the file
+# at IMPORT time, so renaming or deleting the template took the whole
+# module — including the unrelated WCAG contrast gates above — down at
+# collection. Deleting the read alongside its sole consumer means collection
+# no longer depends on the template's existence at all (verified by
+# temporarily renaming the template and confirming `--collect-only` still
+# exits 0, then reverting byte-identically).
 # ---------------------------------------------------------------------------
