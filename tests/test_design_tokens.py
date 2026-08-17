@@ -14,6 +14,7 @@ local copy is the simpler, more auditable choice.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -21,6 +22,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _STYLE_PATH = _REPO_ROOT / "app" / "static" / "style.css"
 _BASE_HTML_PATH = _REPO_ROOT / "app" / "templates" / "base.html"
 _APP_DIR = _REPO_ROOT / "app"
+_FRONTEND_SRC_DIR = _REPO_ROOT / "frontend" / "src"
+
+# D-22-16: the token/a11y scan's suffix allowlist, widened from {".css",
+# ".html", ".py"} to also see .ts/.tsx — otherwise the guard goes blind the
+# moment a page's markup moves into a React component.
+_SCANNED_SUFFIXES = frozenset({".css", ".html", ".py", ".ts", ".tsx"})
 
 _STYLE_CSS = _STYLE_PATH.read_text()
 _BASE_HTML = _BASE_HTML_PATH.read_text()
@@ -175,20 +182,103 @@ def test_accent_and_pending_tokens_declared_at_new_values() -> None:
         assert _ROOT_TOKENS[name] == value, f"{name} = {_ROOT_TOKENS[name]!r}, expected {value!r}"
 
 
+def _frontend_src_files() -> list[Path]:
+    """Every `.ts`/`.tsx` file under `frontend/src`, or an empty list when the
+    directory does not yet exist.
+
+    This plan (22-02) runs BEFORE the Vite scaffold (a later plan in this
+    phase) creates `frontend/`, so an absent directory must be a structural
+    no-op here — never a collection error, never a vacuous pass dressed up
+    as coverage. Once the scaffold lands this starts returning real files
+    and `test_token_scan_covers_every_present_extension` below is what turns
+    that into an enforced non-zero count rather than a silent narrowing.
+    """
+    if not _FRONTEND_SRC_DIR.is_dir():
+        return []
+    return [p for p in _FRONTEND_SRC_DIR.rglob("*") if p.is_file() and p.suffix in {".ts", ".tsx"}]
+
+
+def _template_and_frontend_files() -> list[Path]:
+    """`app/templates/*.html` plus `frontend/src`'s `.ts`/`.tsx` files
+    (D-22-16) — the combined surface the accent-hex and button-composition
+    guards must see so neither one goes blind as pages convert."""
+    return [*_REPO_ROOT.glob("app/templates/*.html"), *_frontend_src_files()]
+
+
+def _token_scan_files() -> list[Path]:
+    """The exact combined file set this module's token/a11y guards scan:
+    app/'s tree (suffix-filtered) plus frontend/src, deduplicated by
+    resolved path. This is the input `test_token_scan_covers_every_present_
+    extension` measures against a live repo walk below."""
+    app_files = (
+        p for p in _APP_DIR.rglob("*") if p.is_file() and p.suffix in _SCANNED_SUFFIXES
+    )
+    combined: dict[Path, Path] = {}
+    for p in (*app_files, *_frontend_src_files()):
+        combined[p.resolve()] = p
+    return list(combined.values())
+
+
 def test_accent_soft_deleted() -> None:
-    """`--accent-soft` appears nowhere under app/ — it was deleted, not retinted."""
-    for path in _APP_DIR.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix not in {".css", ".html", ".py"}:
-            continue
+    """`--accent-soft` appears nowhere under app/ or frontend/src — it was
+    deleted, not retinted. Suffix allowlist widened to .ts/.tsx and the scan
+    walks frontend/src too (D-22-16), so a future React component cannot
+    quietly reintroduce it outside this guard's sight."""
+    for path in _token_scan_files():
         contents = path.read_text(errors="ignore")
         assert "accent-soft" not in contents, f"--accent-soft still referenced in {path}"
 
 
+# ---------------------------------------------------------------------------
+# D-22-16 anti-narrowing pin — the guard must not silently narrow its own
+# scan breadth as pages convert. This mirrors the D-22-06 completeness idiom
+# (scripts/check_proof_inventory.py): counts are measured, never hand-pinned,
+# so a future glob edit that drops a suffix reds here instead of quietly
+# scanning less.
+# ---------------------------------------------------------------------------
+
+_REPO_WALK_SKIP_DIRS = frozenset(
+    {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
+)
+
+
+def _repo_present_suffixes() -> set[str]:
+    """Which of the allowlisted suffixes exist anywhere in the live repo
+    right now, derived from a real walk — never a hard-coded list — so this
+    pin cannot itself go stale. Heavy/irrelevant directories are pruned for
+    walk cost only, never for correctness: none of them can hold content
+    this guard needs to see."""
+    present: set[str] = set()
+    for _dirpath, dirnames, filenames in os.walk(_REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _REPO_WALK_SKIP_DIRS]
+        for name in filenames:
+            suffix = Path(name).suffix
+            if suffix in _SCANNED_SUFFIXES:
+                present.add(suffix)
+    return present
+
+
+def test_token_scan_covers_every_present_extension() -> None:
+    """Anti-narrowing pin (D-22-16): for every allowlisted suffix that
+    genuinely exists in the repo right now, the token/a11y scan must have
+    actually picked up at least one file of that suffix.
+
+    Once frontend/src exists the .tsx count must be non-zero, and a future
+    change that drops an extension from a glob reds here instead of
+    silently reducing coverage — the exact blind-spot class a passing guard
+    that proves nothing about what it doesn't scan represents.
+    """
+    scanned_suffixes = {p.suffix for p in _token_scan_files()}
+    for suffix in _repo_present_suffixes():
+        assert suffix in scanned_suffixes, (
+            f"{suffix} files exist in the repo but the token-scan guard "
+            f"scanned zero of them — the scan has silently narrowed"
+        )
+
+
 def test_superseded_accent_values_absent() -> None:
     """Neither the superseded accent hexes nor the superseded ring rgba survive."""
-    for path in [_STYLE_PATH, *_REPO_ROOT.glob("app/templates/*.html")]:
+    for path in [_STYLE_PATH, *_template_and_frontend_files()]:
         lowered = path.read_text().lower()
         assert _OLD_ACCENT.lower() not in lowered, f"{_OLD_ACCENT} still present in {path}"
         assert _OLD_ACCENT_HOVER.lower() not in lowered, (
@@ -334,7 +424,7 @@ _BUTTON_MODIFIER_TOKENS = ("btn-accent", "btn-approve", "btn-reject", "btn-retri
 def test_button_modifier_classes_always_compose_the_base() -> None:
     """Every template `class` attribute carrying a button modifier also carries the
     bare `btn` base class — the composition rule made enforceable."""
-    for path in _REPO_ROOT.glob("app/templates/*.html"):
+    for path in _template_and_frontend_files():
         html = path.read_text()
         for class_attr in re.findall(r'class="([^"]*)"', html):
             tokens = class_attr.split()
@@ -346,31 +436,40 @@ def test_button_modifier_classes_always_compose_the_base() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Class hygiene (group 3b, Task 3c) — js- prefix convention, and the mt-md fix.
+# Class hygiene (group 3b, Task 3c) — js- prefix convention.
+#
+# D-22-15 / plan 22-02, Task 1: the presence pin that used to live here
+# (`test_script_hook_classes_carry_js_prefix_and_stay_out_of_css`, plus its
+# module-scope `runs_list.html` read) is DELETED, not widened, and this is
+# the written justification the deletion's own action step requires.
+#
+# The `js-` convention existed to stop someone deleting a
+# `document.querySelector` target (`.js-status-badge`, `.js-failure-summary`,
+# `.js-failure-secondary` in the vanilla-JS poller) that looked like dead
+# markup because it carried no CSS rule. React holds each of those values in
+# component state and re-renders them directly — there is no
+# `document.querySelector` call anywhere in a React island, so keeping the
+# classNames around after conversion would create the exact thing this
+# convention opposed: markup that exists for no live reason. Asserting their
+# presence on a page where they no longer do anything would pin dead code,
+# not prevent it.
+#
+# Plan 22-10 (Phase 22's `/runs` React conversion) owns the replacement: a
+# Vitest test asserting the status badge updates in place on a new poll
+# result, which is the same "the live wiring didn't silently break" property
+# this test used to pin, expressed against the layer that now owns it.
+#
+# This amends ROADMAP.md Phase 22 Success Criterion 5's third sentence
+# ("The three `js-` poller hooks still resolve, they have zero CSS and look
+# like dead markup, and deleting them would break this phase's own headline
+# feature.") — that property held for a `document.querySelector` poller and
+# no longer holds once the poller's target is a React component's state.
+#
+# Also satisfies D-22-01: the module-scope `runs_list.html` read this test
+# depended on read the file at IMPORT time, so renaming or deleting the
+# template took the whole module — including the unrelated WCAG contrast
+# gates above — down at collection. Deleting the read alongside its sole
+# consumer means collection no longer depends on the template's existence
+# at all (verified: see SUMMARY.md for the temporarily-renamed-template
+# collect-only proof).
 # ---------------------------------------------------------------------------
-
-_RUNS_LIST_HTML = (_REPO_ROOT / "app" / "templates" / "runs_list.html").read_text()
-
-
-def test_script_hook_classes_carry_js_prefix_and_stay_out_of_css() -> None:
-    """The three renamed script hooks appear in runs_list.html under their `js-`
-    prefix and appear nowhere in style.css (a class that exists only as a script
-    query hook must never grow a style rule). Their unprefixed former names
-    appear in neither file. The spacing helper that was missing (`mt-md`) now
-    has a real rule."""
-    for hook in ("js-status-badge", "js-failure-summary", "js-failure-secondary"):
-        assert hook in _RUNS_LIST_HTML, f"{hook} missing from runs_list.html"
-        assert hook not in _STYLE_CSS, (
-            f"{hook} is a script hook and must never appear in style.css"
-        )
-
-    for former_name in ("status-badge", "failure-summary", "failure-secondary"):
-        unprefixed = re.compile(r"(?<!js-)" + re.escape(former_name))
-        assert not unprefixed.search(_RUNS_LIST_HTML), (
-            f"unprefixed {former_name} still present in runs_list.html"
-        )
-        assert not unprefixed.search(_STYLE_CSS), (
-            f"unprefixed {former_name} still present in style.css"
-        )
-
-    assert re.search(r"\.mt-md\s*\{", _STYLE_CSS), "`.mt-md` must have a CSS rule"
