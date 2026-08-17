@@ -120,3 +120,64 @@ jobs:
 
       - name: Run mypy
         run: uv run mypy
+
+  frontend:
+    name: "Frontend (typecheck, lint, test, build)"
+    runs-on: ubuntu-latest
+    # No job-level concurrency group: this job inherits the workflow-level
+    # `ci-${{ github.ref }}` group above, so two pull requests on different refs
+    # each get their own run and never cancel each other's. Declaring a
+    # job-level group here would scope cancellation to this job alone, which
+    # is not what a pre-merge gate wants.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1 (v4)
+
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0 (v4)
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # npm ci (never npm install) fails on any lockfile/package.json mismatch
+      # rather than silently re-resolving -- a stale lockfile must fail the
+      # job, not merge green, matching the Python builder's `uv sync --locked`.
+      - name: Install deps (npm ci, lockfile-asserting)
+        run: cd frontend && npm ci
+
+      - name: Typecheck
+        run: cd frontend && npm run typecheck
+
+      - name: Lint
+        run: cd frontend && npm run lint
+
+      - name: Test
+        run: cd frontend && npm run test
+
+      - name: Build
+        run: cd frontend && npm run build
+
+  docker-build:
+    name: "Docker image build (proves the deployed-asset parity claim)"
+    runs-on: ubuntu-latest
+    # No job-level concurrency group, and no `needs:` on the frontend job above --
+    # this job and `frontend` are independent and must fail independently.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1 (v4)
+
+      # This job exists to catch one specific gap: app/static/dist is gitignored
+      # and dockerignored on purpose, so a developer's local `docker build` can
+      # succeed only because their own working tree happens to have a
+      # previously built bundle sitting on disk, while a build from a clean
+      # clone -- which is exactly what this checkout is -- has no bundle at
+      # all and must build it in-image. Building from the checked-out clone,
+      # not a developer's working tree, is what makes this proof real; the
+      # runtime stage's own build-time manifest assertion is what turns a
+      # missing bundle into a build failure instead of a blank console.
+      # No stage target is passed, and no registry credentials are configured --
+      # this job only proves the image builds, it never pushes anywhere, so the
+      # workflow's `permissions: contents: read` stays sufficient.
+      - name: Build image from the checked-out clone
+        run: docker build -t payroll-agent-ci .
