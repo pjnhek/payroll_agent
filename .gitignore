@@ -7,6 +7,10 @@ dist/
 .venv/
 venv/
 
+# frontend/ dependency tree -- reinstalled from the committed package-lock.json,
+# never committed itself (matches .venv/ above for the Python side).
+node_modules/
+
 # Personal system-design audit prep (not project artifacts)
 SYSTEM_DESIGN_AUDIT_CHANGELOG.md
 system_design_audit.html
