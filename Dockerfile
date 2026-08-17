@@ -38,6 +38,31 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 
+# ── Frontend stage ────────────────────────────────────────────────────────────
+# Builds the Vite bundle INSIDE the image. This is the load-bearing half of the
+# deploy-trap fix: app/static/dist is excluded from both .gitignore and
+# .dockerignore, so a Git clone (what Render actually builds from) never has a
+# locally built bundle sitting on disk. Without this stage, a developer's local
+# `docker build` would succeed only because their own working tree happens to
+# have app/static/dist present, while Render's clone-based build would produce
+# an image with no bundle at all and no error anywhere -- the console just
+# renders an empty mount point.
+FROM node:24-slim AS frontend
+
+WORKDIR /app
+
+# Layer 1: install dependencies from the committed lockfile only.
+# npm ci (never npm install) fails on any lockfile/package.json mismatch rather
+# than silently re-resolving -- the same "a stale lockfile must fail the build,
+# not merge green" discipline the Python builder stage's `uv sync --frozen`
+# already applies.
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN cd frontend && npm ci
+
+# Layer 2: copy the rest of the frontend source and run the production build.
+COPY frontend/ ./frontend/
+RUN cd frontend && npm run build
+
 # ── Runtime stage ──────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
@@ -51,6 +76,19 @@ WORKDIR /app
 # The uv binary is NOT copied — it is a build tool only and is not needed at runtime.
 # CMD therefore invokes .venv/bin/uvicorn directly rather than `uv run`.
 COPY --from=builder /app /app
+
+# Copy the frontend bundle from the frontend stage. This MUST come after the
+# whole-tree copy above, which would otherwise overwrite app/static/dist
+# wholesale with whatever (nothing, in a clean clone) the builder stage saw.
+COPY --from=frontend /app/app/static/dist /app/app/static/dist
+
+# Build-time existence assertion for the manifest file. Without this, a
+# stage-ordering mistake (this copy landing before the whole-tree copy instead
+# of after, or the frontend stage failing silently in some future refactor)
+# ships a runtime image whose /static mount serves a 404 for the entry script
+# and whose console renders an empty mount element -- and nothing anywhere
+# fails. This assertion turns that into an image build failure instead.
+RUN test -f app/static/dist/.vite/manifest.json
 
 # Add the venv to PATH so uvicorn and all installed executables are found.
 ENV PATH="/app/.venv/bin:$PATH"

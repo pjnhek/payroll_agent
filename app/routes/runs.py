@@ -30,7 +30,13 @@ from app.models.status import RunStatus
 from app.routes import pipeline_glue
 from app.routes.demo import DEMO_FIXTURES
 from app.routes.operator_feedback import notice_label, notice_redirect
-from app.routes.templating import badge_class_filter, badge_label_filter, templates
+from app.routes.templating import (
+    badge_class_filter,
+    badge_label_filter,
+    render_react_page,
+    templates,
+)
+from app.schemas.runs_list import RunListRow, RunsListPage
 
 __all__ = ["router", "repo", "delivery", "wake"]
 
@@ -243,6 +249,34 @@ def _safe_run_for_browser(run: dict[str, Any]) -> dict[str, Any]:
         if field in raw_fields or field.startswith("job_"):
             safe_run.pop(field, None)
     return safe_run
+
+
+def _format_created_at(value: datetime | None) -> str:
+    """Preformatted list-page timestamp -- computed server-side so a second
+    formatter in TypeScript can't drift, and formatting in the browser can't
+    silently shift the value into the viewer's timezone. Mirrors the prior
+    Jinja `strftime('%Y-%m-%d %H:%M')` + em-dash-when-absent exactly."""
+    return value.strftime("%Y-%m-%d %H:%M") if value else "—"
+
+
+def _run_list_row_from_run(run: dict[str, Any]) -> RunListRow:
+    """Build the allowlisted RunListRow DTO from a raw repo.load_all_runs() row.
+
+    Reuses the existing _safe_run_for_browser denylist reduction (failure/queue
+    projection) and the shared badge vocabulary, then hands the merged dict to
+    RunListRow.from_row's allowlist -- any column neither declared on the model
+    nor named in RunListRow.EXCLUDED raises UnclassifiedColumnError rather than
+    silently reaching the browser.
+    """
+    safe_run = _safe_run_for_browser(run)
+    status = str(safe_run.get("status", ""))
+    row = {
+        **safe_run,
+        "badge_class": badge_class_filter(status),
+        "badge_label": badge_label_filter(status),
+        "created_at_display": _format_created_at(safe_run.get("created_at")),
+    }
+    return RunListRow.from_row(row)
 
 
 def _safe_run_with_queue_projection(
@@ -861,22 +895,34 @@ def runs_list(
 
     This unauthenticated GET is deliberately side-effect free. Durable queue workers
     own automatic recovery; operators use explicit mutation routes such as Retrigger.
+
+    React-rendered: the row data travels inside the page's embedded JSON
+    data island; Jinja keeps only the chrome (notice, heading, demo form) around the
+    mount point. Only the repo read is wrapped in the DB-unavailable fallback -- DTO
+    construction (RunListRow.from_row's allowlist) and the manifest lookup both stay
+    OUTSIDE that except block, so a genuine schema drift or a missing bundle raises
+    loudly (500) instead of being silently swallowed into an empty-looking page.
     """
     try:
-        runs = [_safe_run_for_browser(run) for run in repo.load_all_runs()]
+        raw_runs = repo.load_all_runs()
     except Exception:
         # DB unavailable (no pool / no connection): render empty list rather than 500.
         # This keeps the dashboard functional during test runs and Render cold-starts
         # before the pool is warmed up.
         logger.debug("load_all_runs unavailable — rendering empty list")
-        runs = []
-    return templates.TemplateResponse(
+        raw_runs = []
+    page = RunsListPage(
+        runs=[_run_list_row_from_run(run) for run in raw_runs],
+        in_flight_statuses=list(IN_FLIGHT_STATUSES),
+    )
+    return render_react_page(
         request,
-        "runs_list.html",
-        {
-            "runs": runs,
+        entry="runs",
+        template_name="runs_list.html",
+        page_title="Payroll runs · Pyrl",
+        data=page,
+        extra_context={
             "demo_fixtures": DEMO_FIXTURES,
-            "in_flight_statuses": list(IN_FLIGHT_STATUSES),
             "notice_label": notice_label(notice),
         },
     )

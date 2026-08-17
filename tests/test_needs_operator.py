@@ -36,6 +36,7 @@ import dataclasses
 import inspect
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -55,12 +56,27 @@ from app.pipeline.clarification import MAX_CLARIFICATION_ROUNDS
 from app.pipeline.clarification import clarify as _clarify
 from app.pipeline.result import PipelineOutcome, PipelineResult
 from app.routes.runs import IN_FLIGHT_STATUSES
+from app.routes.templating import INITIAL_DATA_ELEMENT_ID
 from tests.conftest import InMemoryRepo
 
 COASTAL_BIZ_ID = uuid.UUID("b0000001-0000-0000-0000-000000000001")
 COASTAL_EMAIL = "payroll@coastalcleaning.example"
 
 client = TestClient(app, raise_server_exceptions=False)
+
+_ISLAND_PATTERN = re.compile(
+    r'<script id="' + re.escape(INITIAL_DATA_ELEMENT_ID) + r'" type="application/json">'
+    r"(.*?)</script>",
+    re.DOTALL,
+)
+
+
+def _parse_island(response_text: str) -> dict[str, Any]:
+    """Extract and parse the embedded __INITIAL_DATA__ island from a rendered
+    /runs response (mirrors tests/test_dashboard.py's helper of the same name)."""
+    match = _ISLAND_PATTERN.search(response_text)
+    assert match is not None, "no __INITIAL_DATA__ island found in response text"
+    return json.loads(match.group(1))  # type: ignore[no-any-return]
 
 
 def _bare_roster(business_id: uuid.UUID = COASTAL_BIZ_ID):
@@ -1284,8 +1300,11 @@ def test_run_detail_renders_needs_operator_badge_label(fake_repo):
 
 
 def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
-    """GET /runs must also render the 'Needs Operator' label + escalate class
-    for a needs_operator row in the runs list table."""
+    """GET /runs must carry the 'Needs Operator' label + 'escalate' badge class
+    for a needs_operator row in the data island's RunListRow -- rewritten as a
+    positive exact-shape assertion against the parsed island (the badge is no
+    longer server-rendered markup; React renders it client-side from these two
+    fields)."""
     from app.db import repo as _repo
 
     run_id = uuid.uuid4()
@@ -1302,8 +1321,10 @@ def test_runs_list_renders_needs_operator_badge_label(monkeypatch):
 
     response = client.get("/runs")
     assert response.status_code == 200
-    assert "Needs Operator" in response.text
-    assert "badge-escalate" in response.text
+    island = _parse_island(response.text)
+    row = island["runs"][0]
+    assert row["badge_label"] == "Needs Operator"
+    assert row["badge_class"] == "escalate"
 
 
 # ===========================================================================

@@ -1,119 +1,14 @@
-{% extends "base.html" %}
-{% block title %}Payroll runs · Pyrl{% endblock %}
-{% block content %}
-{# Vanilla-JS per-row status poll — replaces a blunt meta-refresh, which would reset
-   the demo-business <select> and the scroll position on every tick.
-   Polls GET /runs/{id}/status every 2s while business or queue work is open.
-   Swaps each badge IN PLACE; STOPS polling that row when it settles.
-   Cap: 60 attempts (120s) per row. Timeout has no recovery side effect.
-   The demo-business <select> and scroll position survive — NO full-page reload. #}
-<script>
-(function() {
-  var IN_FLIGHT    = new Set({{ in_flight_statuses | tojson }});
-  var MAX_ATTEMPTS = 60;
-
-  function startPoll(runId) {
-    var attempts = 0;
-    var timer = setInterval(function() {
-      if (attempts >= MAX_ATTEMPTS) { clearInterval(timer); return; }
-      attempts++;
-      fetch('/runs/' + runId + '/status')
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-          if (!data) { return; }
-          var badge = document.querySelector('[data-run-id="' + runId + '"] .js-status-badge');
-          if (badge) {
-            badge.className = 'badge badge-' + data.badge_class + ' js-status-badge';
-            badge.textContent = data.badge_label;
-          }
-          var queueBadge = document.querySelector('[data-run-id="' + runId + '"] .queue-badge');
-          if (queueBadge) {
-            queueBadge.className = 'badge badge-' + data.queue_badge_class + ' queue-badge';
-            queueBadge.textContent = data.queue_label || '';
-            queueBadge.hidden = !data.has_open_job;
-          }
-          var secondary = document.querySelector('[data-run-id="' + runId + '"] .js-failure-secondary');
-          if (secondary) {
-            secondary.textContent = data.failure.secondary_label || '';
-            secondary.hidden = !data.failure.secondary_label;
-          }
-          var failureSummary = document.querySelector('[data-run-id="' + runId + '"] .js-failure-summary');
-          if (failureSummary) {
-            var parts = [data.failure.stage, data.failure.reason, data.failure.attempts].filter(Boolean);
-            failureSummary.textContent = parts.join(' · ');
-            failureSummary.hidden = parts.length === 0;
-          }
-          if (!IN_FLIGHT.has(data.status) && !data.has_open_job) {
-            clearInterval(timer);
-          }
-        })
-        .catch(function() {});
-    }, 2000);
-  }
-
-  document.querySelectorAll('tr[data-run-id]').forEach(function(row) {
-    if (row.dataset.inFlight === 'true' || row.dataset.hasOpenJob === 'true') {
-      startPoll(row.getAttribute('data-run-id'));
-    }
-  });
-})();
-</script>
+{% extends "react_page.html" %}
+{# React owns the former table region only -- the notice include, the
+   heading, and the demo send-test form stay exactly as they were, in the same
+   order, as Jinja-owned chrome around the mount point. The vanilla-JS poller
+   script that used to live here is deleted entirely: it selected DOM nodes
+   React now owns, so keeping it would be genuinely dead markup. #}
+{% block chrome %}
 {% include "_operator_notice.html" %}
 <h1>Payroll Runs</h1>
-
-{% if runs %}
-<div class="table-scroll" role="region" tabindex="0" aria-label="Payroll runs">
-<table>
-  <thead>
-    <tr>
-      <th>Created</th>
-      <th>Business</th>
-      <th>Status</th>
-      <th>Summary</th>
-      <th>Action</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for run in runs %}
-    <tr data-run-id="{{ run.id }}"
-        data-in-flight="{{ 'true' if run.status in in_flight_statuses else 'false' }}"
-        data-has-open-job="{{ 'true' if run.has_open_job else 'false' }}">
-      <td class="cell-time">
-        {{ run.created_at.strftime('%Y-%m-%d %H:%M') if run.created_at else '—' }}
-      </td>
-      <td>{{ run.business_name }}</td>
-      <td>
-        <span class="status-cluster">
-          <span class="badge badge-{{ run.status | badge_class }} js-status-badge">{{ run.status | badge_label }}</span>
-          <span class="badge badge-{{ run.queue_badge_class }} queue-badge"
-                aria-live="polite" {% if not run.has_open_job %}hidden{% endif %}>{{ run.queue_label or '' }}</span>
-        </span>
-        <span class="badge badge-neutral js-failure-secondary" {% if not run.failure.secondary_label %}hidden{% endif %}>{{ run.failure.secondary_label or '' }}</span>
-      </td>
-      <td class="text-muted">
-        {% if run.failure.stage or run.failure.reason or run.failure.attempts %}
-          <span class="js-failure-summary">{{ [run.failure.stage, run.failure.reason, run.failure.attempts] | select | join(' · ') }}</span>
-        {% elif run.summary_gate_reason %}
-          {{ run.summary_gate_reason }}
-        {% elif run.employee_count %}
-          {{ run.employee_count }} employee{{ 's' if run.employee_count != 1 else '' }}
-        {% else %}
-          —
-        {% endif %}
-      </td>
-      <td><a href="/runs/{{ run.id }}">View</a></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-</div>
-{% else %}
-<div class="empty-state">
-  <p class="empty-state__title">No payroll runs yet</p>
-  <p class="text-muted">Use the Send Test Email button below to fire a demo fixture through the pipeline.</p>
-</div>
-{% endif %}
-
+{% endblock %}
+{% block chrome_after %}
 {# Demo send-test with business/fixture picker #}
 <div class="mt-2xl">
   <form method="post" action="/demo/send-test" class="form-inline form-inline--flush">

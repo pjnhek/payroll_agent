@@ -16,6 +16,7 @@ Also covers:
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC
 from pathlib import Path
@@ -25,8 +26,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.routes.templating import INITIAL_DATA_ELEMENT_ID
 
 client = TestClient(app, raise_server_exceptions=False)
+
+_ISLAND_PATTERN = re.compile(
+    r'<script id="' + re.escape(INITIAL_DATA_ELEMENT_ID) + r'" type="application/json">'
+    r"(.*?)</script>",
+    re.DOTALL,
+)
+
+
+def _parse_island(response_text: str) -> dict[str, Any]:
+    """Extract and parse the embedded __INITIAL_DATA__ island from a rendered
+    /runs response -- the one helper every /runs-attributed test below
+    routes through, per the JSON-island rewrite convention
+    (tests/test_react_page_render.py carries the same helper)."""
+    match = _ISLAND_PATTERN.search(response_text)
+    assert match is not None, "no __INITIAL_DATA__ island found in response text"
+    return json.loads(match.group(1))  # type: ignore[no-any-return]
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +67,15 @@ def test_runs_list_returns_200(fake_repo):
     repo.load_all_runs() fails and the route degrades to an empty list (its
     own `except Exception: runs = []` fallback) — 200 either way. Wired onto
     fake_repo with a real seeded run so the assertion actually proves the row
-    renders, not merely that SOME page (possibly the empty-state page) came
-    back.
+    reaches the embedded data island's rows array, not merely that SOME
+    response (possibly a zero-row island) came back.
+
+    The old empty-state-copy assertion ("No payroll runs yet") has no
+    server-side surface after conversion — it is pure JSX with no DTO field
+    behind it, so `TestClient` (which never executes JavaScript) cannot see
+    it. That intent now lives in `RunsPage.test.tsx` (plan 22-06); the
+    falsification below instead proves the island's rows array itself
+    empties out, which the server response DOES still carry.
     """
     business_id = next(iter(fake_repo.contact_to_business.values()))
     run_id = fake_repo.create_run(business_id=business_id, source_email_id=None)
@@ -59,19 +84,19 @@ def test_runs_list_returns_200(fake_repo):
     assert response.status_code == 200, (
         f"GET /runs must return 200 (DASH-01 runs list); got {response.status_code}"
     )
-    assert str(run_id) in response.text, (
-        "the seeded run must actually render as a row, not fall through to "
-        "the empty-state page"
+    island = _parse_island(response.text)
+    assert [row["id"] for row in island["runs"]] == [str(run_id)], (
+        "the seeded run must actually appear in the data island's rows array"
     )
-    assert "No payroll runs yet" not in response.text
 
-    # Falsification: with no runs seeded at all, the page must show the
-    # empty-state copy instead — pins that the row assertion above depended
-    # on the real seeded run, not boilerplate present on every response.
+    # Falsification: with no runs seeded at all, the island's rows array
+    # must be empty — pins that the row assertion above depended on the real
+    # seeded run, not boilerplate present on every response regardless of
+    # repository state.
     fake_repo.runs.clear()
     empty = client.get("/runs")
     assert empty.status_code == 200
-    assert "No payroll runs yet" in empty.text
+    assert _parse_island(empty.text)["runs"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +677,13 @@ def test_retry_exhausted_diagnostics_are_bounded_across_html_and_polling(monkeyp
 
 
 def test_runs_list_uses_safe_failure_projection(monkeypatch):
-    """The list keeps Error canonical and exposes only the bounded projection."""
+    """The list keeps Error canonical and exposes only the bounded projection.
+
+    The guarded content now lives inside the __INITIAL_DATA__ island as
+    RunListRow's `badge_label`/`failure` fields, not as literal HTML
+    fragments -- rewritten as a positive exact-shape assertion against the
+    parsed island per the JSON-island conversion.
+    """
     from app.db import repo as _repo
 
     run_id = uuid.uuid4()
@@ -684,10 +715,13 @@ def test_runs_list_uses_safe_failure_projection(monkeypatch):
     response = client.get("/runs")
 
     assert response.status_code == 200
-    assert ">Error<" in response.text
-    assert "Retries exhausted" in response.text
-    assert "Final attempt lease expired" in response.text
-    assert "5 of 5 attempts" in response.text
+    island = _parse_island(response.text)
+    row = island["runs"][0]
+    assert row["badge_label"] == "Error"
+    assert row["failure"]["secondary_label"] == "Retries exhausted"
+    assert row["failure"]["stage"] == "Unknown stage"
+    assert row["failure"]["reason"] == "Final attempt lease expired"
+    assert row["failure"]["attempts"] == "5 of 5 attempts"
     assert hostile not in response.text
 
 
@@ -868,7 +902,13 @@ def test_queued_run_detail_has_secondary_badge_durability_and_bounded_polling(
 def test_retry_queued_runs_list_keeps_payroll_badge_first_and_updates_in_place(
     monkeypatch,
 ):
-    """List polling preserves the existing row and renders one secondary badge."""
+    """The list's row DTO carries the payroll status badge and the secondary
+    queue badge as distinct fields, with exactly one queue label -- rewritten
+    against the parsed data island. The old vanilla-JS poller this test used
+    to pin (MAX_ATTEMPTS, setInterval, the has_open_job-driven badge swap) is
+    deleted entirely on this converted page; live in-place polling is a later
+    plan's job (usePoller), out of this tracer's scope.
+    """
     from app.db import repo as _repo
 
     run_id = uuid.uuid4()
@@ -892,15 +932,14 @@ def test_retry_queued_runs_list_keeps_payroll_badge_first_and_updates_in_place(
         ],
     )
 
-    text = client.get("/runs").text
+    response = client.get("/runs")
+    island = _parse_island(response.text)
+    row = island["runs"][0]
 
-    assert text.index("Received") < text.index("Retry queued")
-    assert text.count("Retry queued") == 1
-    assert 'data-has-open-job="true"' in text
-    assert "var MAX_ATTEMPTS = 60" in text
-    assert "setInterval(function()" in text and "}, 2000)" in text
-    assert "window.location.reload" not in text
-    assert "data.has_open_job" in text
+    assert row["badge_label"] == "Received"
+    assert row["queue_label"] == "Retry queued"
+    assert row["has_open_job"] is True
+    assert response.text.count("Retry queued") == 1
 
 
 def test_queue_feedback_hidden_when_no_open_work(monkeypatch):

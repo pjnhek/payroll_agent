@@ -28,6 +28,7 @@ import threading
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import pytest
@@ -404,6 +405,35 @@ def roster_from_seed() -> Roster:
     business_id = result.employees[0].business_id
     employees = [e for e in result.employees if e.business_id == business_id]
     return Roster(business_id=business_id, employees=employees)
+
+
+# ---------------------------------------------------------------------------
+# 3a. Vite manifest fixture — points app.routes.templating's manifest loader at
+# the committed fixture manifest for the WHOLE suite, autouse, so any test
+# hitting GET /runs (scattered across test_dashboard.py, test_needs_operator.py,
+# test_demo_fixtures.py, test_stuck_run_recovery.py, ...) renders deterministically
+# with no real Vite build and no Node in the hermetic test job, since the manifest
+# loader fails closed (raises) rather than rendering a bundle-less shell.
+# Individual tests that need to exercise the missing-manifest path (e.g.
+# tests/test_react_page_render.py's ManifestMissingError assertion) monkeypatch
+# MANIFEST_PATH again themselves, on top of this fixture's already-applied patch.
+# ---------------------------------------------------------------------------
+
+_VITE_MANIFEST_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "vite_manifest.json"
+)
+
+
+@pytest.fixture(autouse=True)
+def _vite_manifest_fixture(monkeypatch):
+    """Point the Vite manifest loader at the committed fixture and clear its
+    lru_cache before and after every test."""
+    from app.routes import templating
+
+    monkeypatch.setattr(templating, "MANIFEST_PATH", _VITE_MANIFEST_FIXTURE)
+    templating.load_manifest.cache_clear()
+    yield
+    templating.load_manifest.cache_clear()
 
 
 # ---------------------------------------------------------------------------

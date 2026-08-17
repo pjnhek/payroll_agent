@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{# The shared shell every React-rendered page extends. A calling template
+   (e.g. runs_list.html) overrides the two chrome blocks with its own
+   Jinja-owned markup -- the notice/heading before the mount point, the
+   fenced mutation forms after it -- while this shell owns the mount element,
+   the JSON data island, and the Vite-built asset tags, which stay identical
+   across every React-rendered page.
+
+   Boot tags (the data island script and the module script) live ONLY here,
+   never hoisted into base.html -- that placement is the entire reason /ops
+   stays script-free (tests/test_ops_route.py's script-free pin). #}
+{% block title %}{{ page_title }}{% endblock %}
+{% block content %}
+{% block chrome %}{% endblock %}
+<div id="{{ mount_id }}"></div>
+{% block chrome_after %}{% endblock %}
+<script id="{{ island_id }}" type="application/json">{{ island_json }}</script>
+{% for href in stylesheet_hrefs %}
+<link rel="stylesheet" href="{{ href }}">
+{% endfor %}
+<script type="module" src="{{ module_src }}"></script>
+{% endblock %}
