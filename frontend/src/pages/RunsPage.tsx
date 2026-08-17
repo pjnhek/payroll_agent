@@ -11,13 +11,16 @@
 // NOT reproduced here: React holds this state and re-renders it directly, so a DOM
 // query-selector hook would be dead markup the moment it existed. Live polling
 // (usePoller) is a later plan's job -- this page renders the initial snapshot only.
+//
+// The status cluster, queue badge and failure presentation are lifted into three
+// focused components (StatusBadge/QueueBadge/FailureSummary) so each is independently
+// testable and each owns exactly one piece of the pre-conversion markup.
 
-export interface FailureInfo {
-  secondary_label: string | null;
-  stage: string | null;
-  reason: string | null;
-  attempts: string | null;
-}
+import { FailureSummary, type FailureInfo } from "../components/FailureSummary";
+import { QueueBadge } from "../components/QueueBadge";
+import { StatusBadge } from "../components/StatusBadge";
+
+export type { FailureInfo };
 
 export interface RunListRow {
   id: string;
@@ -82,7 +85,7 @@ export function RunsPage({ data }: { data: RunsListPage }) {
 }
 
 function RunRow({ run, inFlight }: { run: RunListRow; inFlight: boolean }) {
-  const { stage, reason, attempts, secondary_label: secondaryLabel } = run.failure;
+  const { stage, reason, attempts } = run.failure;
   const hasFailureSummary = Boolean(stage || reason || attempts);
 
   return (
@@ -95,22 +98,17 @@ function RunRow({ run, inFlight }: { run: RunListRow; inFlight: boolean }) {
       <td>{run.business_name}</td>
       <td>
         <span className="status-cluster">
-          <span className={`badge badge-${run.badge_class}`}>{run.badge_label}</span>
-          <span
-            className={`badge badge-${run.queue_badge_class} queue-badge`}
-            aria-live="polite"
-            hidden={!run.has_open_job}
-          >
-            {run.queue_label ?? ""}
-          </span>
-        </span>
-        <span className="badge badge-neutral" hidden={!secondaryLabel}>
-          {secondaryLabel ?? ""}
+          <StatusBadge badgeClass={run.badge_class} label={run.badge_label} />
+          <QueueBadge
+            label={run.queue_label}
+            badgeClass={run.queue_badge_class}
+            hasOpenJob={run.has_open_job}
+          />
         </span>
       </td>
       <td className="text-muted">
         {hasFailureSummary ? (
-          <span>{[stage, reason, attempts].filter(Boolean).join(" · ")}</span>
+          <FailureSummary failure={run.failure} />
         ) : run.summary_gate_reason ? (
           run.summary_gate_reason
         ) : run.employee_count ? (
