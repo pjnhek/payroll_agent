@@ -124,6 +124,50 @@ uv run ruff check .
 uv run mypy
 ```
 
+### Frontend development
+
+`/runs` is rendered by React, built with Vite (`frontend/`). Two developer commands cover it:
+one starts a hot-reloading dev server proxied to uvicorn, the other typechecks and lints.
+
+Install with the lockfile-asserting command, not the resolving one:
+
+```bash
+cd frontend && npm ci
+```
+
+`npm ci` fails on any `package.json`/`package-lock.json` mismatch instead of silently
+re-resolving, matching the Python side's `uv sync --frozen`: a stale lockfile should fail the
+build, not merge green.
+
+Run uvicorn and the Vite dev server as two processes. Export `VITE_DEV_SERVER_URL` before
+starting uvicorn so it emits the Vite dev client and the entry's source path instead of the
+built manifest tags, then browse the dev server's origin:
+
+```bash
+# terminal 1, from the repo root
+VITE_DEV_SERVER_URL=http://localhost:5173 uv run uvicorn app.main:app --port 8000
+
+# terminal 2, from frontend/
+cd frontend && npm run dev
+```
+
+Vite's dev server (`http://localhost:5173`) proxies every non-Vite path to uvicorn on `:8000`,
+so it is the origin you browse from, and mutation redirects resolve against it correctly.
+Typecheck and lint both together with one command:
+
+```bash
+cd frontend && npm run check
+```
+
+`VITE_DEV_SERVER_URL` defaults to empty. Empty means the server resolves hashed asset paths
+through the Vite build manifest and renders production asset tags, which is the only state a
+deployed container can be in, since the image build (`Dockerfile`) never sets this variable.
+
+The production bundle is built inside the image (the Dockerfile's `frontend` stage) and is
+deliberately not committed; `app/static/dist/` is gitignored. An empty `app/static/dist/`
+locally is expected, not a sign the build is broken, until you run `npm run build` yourself or
+build the Docker image.
+
 ## Deployment notes
 
 1. Connect the repository to Render and create a Blueprint from `render.yaml`. After that initial
