@@ -33,6 +33,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1 (v4)
+        with:
+          # Diff-scope fence (below) resolves a base commit from either the PR
+          # payload or the push before-SHA and diffs against it -- a shallow
+          # (depth-1) checkout has no history to diff, so fetch everything.
+          fetch-depth: 0
 
       - name: Set up uv + Python 3.12
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2 (v5)
@@ -46,6 +51,51 @@ jobs:
 
       - name: Run ruff check
         run: uv run ruff check .
+
+      # v5 milestone scope fence -- SCOPED TO THIS MILESTONE, remove once
+      # SHELL-08's closing diff proof has been produced, at milestone close.
+      #
+      # The React console migration is only allowed to touch presentation-layer
+      # code. The milestone's auditable claim (SHELL-08) is that
+      # app/pipeline, app/queue, app/db, app/llm, and app/email are unmodified
+      # at milestone close -- this step makes that claim continuously true
+      # rather than checked once at the end, so a money-moving edit merged
+      # under cover of a presentation-layer pull request fails CI by name
+      # instead of surviving to the final diff.
+      - name: Diff-scope fence (money-moving code is untouchable this milestone)
+        run: |
+          set -eu
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            BASE_SHA="${PR_BASE_SHA}"
+          else
+            BASE_SHA="${PUSH_BEFORE_SHA}"
+            # The very first push of a new branch reports an all-zeros before-SHA --
+            # there is nothing to diff against, so fall back to the merge base with
+            # the default branch rather than crashing (or worse, silently passing
+            # with an empty diff, which would be a false green).
+            if [ -z "$(printf '%s' "$BASE_SHA" | tr -d '0')" ]; then
+              BASE_SHA=$(git merge-base HEAD "origin/${DEFAULT_BRANCH}")
+            fi
+          fi
+
+          CHANGED=$(git diff --name-only "${BASE_SHA}...HEAD" -- \
+            app/pipeline/ app/queue/ app/db/ app/llm/ app/email/)
+
+          if [ -n "$CHANGED" ]; then
+            echo "Diff-scope fence violation: the v5 milestone's auditable claim" >&2
+            echo "(SHELL-08) is that no money-moving code was edited during the" >&2
+            echo "React console migration. The following paths under" >&2
+            echo "app/pipeline/, app/queue/, app/db/, app/llm/, or app/email/" >&2
+            echo "changed in this diff and must not have:" >&2
+            echo "$CHANGED" >&2
+            exit 1
+          fi
+          echo "Diff-scope fence OK: no untouchable-directory paths changed."
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
       # GUARD-01: the generated markdown view is a derived artifact of
       # tests/assertion_inventory.py; --check regenerates it in memory and
