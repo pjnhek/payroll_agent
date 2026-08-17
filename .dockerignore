@@ -48,3 +48,15 @@ scripts/
 
 # Extraction caches (large, eval-only; not needed at runtime)
 eval/fixtures/*_extraction.json
+
+# frontend/ dependency tree: a locally installed node_modules riding into the build
+# context through the builder stage's whole-tree copy would make a local image build
+# succeed while the actual install (npm ci against the committed lockfile) never runs
+# inside the image -- silently masking a real install failure.
+frontend/node_modules/
+
+# frontend/ build output: a locally built bundle riding into the build context the
+# same way would make a local `docker build` succeed while Render, building from the
+# Git clone (where this directory is gitignored and therefore absent), ships a blank
+# console with nothing failing anywhere. The bundle must be built INSIDE the image.
+app/static/dist/

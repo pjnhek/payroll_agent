@@ -1,32 +1,37 @@
-# React + TypeScript + Vite
+# frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Vite toolchain, built as a set of page islands mounted into the
+existing Jinja2 dashboard shell. See `../app/routes/templating.py` for how a built entry is
+served, and `vite.config.ts` for the build configuration.
 
-Currently, two official plugins are available:
+## Dependency override: `openapi-typescript` vs the pinned TypeScript version
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+`package.json` pins TypeScript to `6.0.3` and carries this `overrides` block:
 
 ```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+"overrides": {
+  "openapi-typescript": {
+    "typescript": "$typescript"
   }
 }
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Without it, `npm install` fails: `openapi-typescript` (every published version, including the
+one pinned here) declares a peer dependency of `typescript: ^5.x` only, which does not accept
+the pinned `6.0.3`. That peer declaration is stale metadata rather than a real
+incompatibility for this project's use — `openapi-typescript` drives the TypeScript compiler's
+AST factory and printer APIs to turn an OpenAPI document into `.d.ts` text, and those APIs are
+unchanged across this version boundary for the surface it touches.
+
+Before relying on this override, it was verified end to end, not just accepted on the
+resolver's say-so: a clean install with the override reported the actually-resolved
+TypeScript version as `6.0.3` (not a silent fallback to a `5.x` line), `openapi-typescript` ran
+against this project's real generated OpenAPI document (30 paths, 7 component schemas) and
+produced real output (over 1,800 lines, all 7 schemas present by name, over 100 typed
+members), and that generated output typechecked cleanly under `tsc --noEmit --strict` on
+TypeScript `6.0.3` with zero errors.
+
+Do not widen this override to any other package, and do not reach for
+`npm install --legacy-peer-deps` if a future package hits the same class of stale-peer
+problem — verify the actual generated output typechecks under the pinned TypeScript version
+first, the way this one was.
