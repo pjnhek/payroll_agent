@@ -3,9 +3,10 @@ gsd_state_version: 1.0
 milestone: v5
 milestone_name: React/TypeScript Operator Console
 current_phase: 22
-status: planning
+current_phase_name: frontend-foundation-runs-list
+status: executing
 stopped_at: Phase 22 context gathered
-last_updated: "2026-08-17T20:33:36.518Z"
+last_updated: "2026-08-17T20:48:09.936Z"
 last_activity: 2026-08-17
 last_activity_desc: Created the v5 roadmap - phases 22-24 as three independently deployable vertical slices, 31/31 requirements mapped
 progress:
@@ -14,7 +15,6 @@ progress:
   total_plans: 12
   completed_plans: 0
   percent: 0
-current_phase_name: 22 - Frontend Foundation & Runs List
 ---
 
 # Project State
@@ -24,14 +24,14 @@ current_phase_name: 22 - Frontend Foundation & Runs List
 See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution milestone shipped & archived)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 made the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** **v5 — React/TypeScript Operator Console — roadmap cut 2026-08-17.** Three independently deployable vertical slices: **Phase 22** (`/runs` + the entire shared foundation: toolchain, Docker node stage, blocking CI job, allowlist DTO pattern, six guards, committed test-assertion inventory), **Phase 23** (`/runs/{id}` — the ~80% phase), **Phase 24** (`/eval` + the closing diff proof). 31/31 requirements mapped, no orphans. The milestone is presentation-layer only: `app/pipeline/`, `app/queue/`, `app/db/`, `app/llm/`, `app/email/` are untouchable and the 14 operator-facing mutation handlers stay byte-identical. `/` and `/ops` are never converted; `/ops` stays script-free. Next: `/gsd-plan-phase 22`.
+**Current focus:** Phase 22 — frontend-foundation-runs-list
 
 ## Current Position
 
-Phase: 22 - Frontend Foundation & Runs List (not started)
-Plan: —
-Status: Roadmap complete — ready to plan Phase 22
-Last activity: 2026-08-17 — Created the v5 roadmap (phases 22-24), populated REQUIREMENTS.md traceability 31/31
+Phase: 22 (frontend-foundation-runs-list) — EXECUTING
+Plan: 1 of 12
+Status: Executing Phase 22
+Last activity: 2026-08-17 — Phase 22 execution started
 
 Progress: [#####################---] 23/26 phases (v1.0 + v2 + v3 + v4 complete; v5 phases 22-24 pending)
 
