@@ -60,7 +60,7 @@ behavior-preservation exercise wearing a frontend-framework costume."
 
 ### Test-Suite Integrity (foundation — Slice 1)
 
-- [ ] **GUARD-01**: Before any page is converted, every `.text` assertion across all 14 affected test files is attributed to the route it exercises and classified as presence or absence, and that inventory is committed as the migration's baseline.
+- [x] **GUARD-01**: Before any page is converted, every `.text` assertion across all 14 affected test files is attributed to the route it exercises and classified as presence or absence, and that inventory is committed as the migration's baseline.
 - [ ] **GUARD-02**: An engineer can tell, for any absence assertion that still passes after conversion, whether it passes because the guarded content is genuinely absent or because the assertion can no longer see it.
 - [ ] **GUARD-03**: All five destructive-action confirmation guards are covered by tests, so removing or neutralizing one fails the suite.
 - [ ] **GUARD-04**: Adding a column to `RUN_COLS` without either exposing it in a page's response shape or naming it internal-only fails CI, identifying the column by name.
@@ -152,7 +152,7 @@ Populated during roadmap creation.
 | SHELL-08 | Phase 24 | Pending |
 | SHELL-09 | Phase 22 | Complete |
 | SHELL-10 | Phase 22 | Complete |
-| GUARD-01 | Phase 22 | Pending |
+| GUARD-01 | Phase 22 | Complete |
 | GUARD-02 | Phase 22 | Pending |
 | GUARD-03 | Phase 23 | Pending |
 | GUARD-04 | Phase 22 | Pending |
