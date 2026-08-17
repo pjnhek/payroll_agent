@@ -13,9 +13,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { FailureSummary } from "../components/FailureSummary";
+import { FailureSummary, type FailureInfo } from "../components/FailureSummary";
 import { QueueBadge } from "../components/QueueBadge";
 import { StatusBadge } from "../components/StatusBadge";
+import { RunsPage, type RunListRow, type RunsListPage } from "./RunsPage";
 
 // vitest.config.ts sets test.globals=false deliberately (explicit imports over
 // ambient Jest-style globals), so @testing-library/react's usual automatic
@@ -24,6 +25,36 @@ import { StatusBadge } from "../components/StatusBadge";
 // later test can match a leftover node from an earlier one -- exactly the multi-match
 // failure this line prevents.
 afterEach(cleanup);
+
+const NO_FAILURE: FailureInfo = {
+  secondary_label: null,
+  stage: null,
+  reason: null,
+  attempts: null,
+};
+
+function makeRow(overrides: Partial<RunListRow> = {}): RunListRow {
+  return {
+    id: "11111111-1111-1111-1111-111111111111",
+    created_at: "2026-08-17T12:34:00Z",
+    created_at_display: "2026-08-17 12:34",
+    business_name: "Acme Co",
+    status: "received",
+    badge_class: "neutral",
+    badge_label: "Received",
+    queue_label: null,
+    queue_badge_class: "neutral",
+    has_open_job: false,
+    failure: NO_FAILURE,
+    summary_gate_reason: null,
+    employee_count: 0,
+    ...overrides,
+  };
+}
+
+function makePage(runs: RunListRow[]): RunsListPage {
+  return { runs, in_flight_statuses: ["received", "extracting"] };
+}
 
 // ---------------------------------------------------------------------------
 // Task 1: StatusBadge
@@ -151,5 +182,124 @@ describe("FailureSummary", () => {
     // element, per the plan's explicit "renders nothing at all" requirement.
     expect(container.querySelectorAll("span")).toHaveLength(1);
     expect(container.textContent).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 2: RunsPage -- columns, ordering, empty state, summary precedence
+// ---------------------------------------------------------------------------
+
+describe("RunsPage", () => {
+  it("renders two rows with the identical created-at value as two distinct rows, each with its own run-id data attribute", () => {
+    const rows = [
+      makeRow({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", created_at: "2026-08-17T12:00:00Z" }),
+      makeRow({ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", created_at: "2026-08-17T12:00:00Z" }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    const trs = document.querySelectorAll("tbody tr");
+    expect(trs).toHaveLength(2);
+    expect(trs[0]?.getAttribute("data-run-id")).toBe("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    expect(trs[1]?.getAttribute("data-run-id")).toBe("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+  });
+
+  it("given an empty rows array renders the empty-state title and helper sentence, and no table element", () => {
+    render(<RunsPage data={makePage([])} />);
+    expect(screen.getByText("No payroll runs yet")).not.toBeNull();
+    expect(
+      screen.getByText(
+        "Use the Send Test Email button below to fire a demo fixture through the pipeline.",
+      ),
+    ).not.toBeNull();
+    expect(document.querySelector("table")).toBeNull();
+  });
+
+  it("given exactly one row renders one body row inside a table", () => {
+    render(<RunsPage data={makePage([makeRow()])} />);
+    const table = document.querySelector("table");
+    expect(table).not.toBeNull();
+    expect(table?.querySelectorAll("tbody tr")).toHaveLength(1);
+  });
+
+  it("renders rows in the exact input order with no client-side sort", () => {
+    const rows = [
+      makeRow({ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", business_name: "Zed Co" }),
+      makeRow({ id: "dddddddd-dddd-dddd-dddd-dddddddddddd", business_name: "Alpha Co" }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    const ids = Array.from(document.querySelectorAll("tbody tr")).map((tr) =>
+      tr.getAttribute("data-run-id"),
+    );
+    expect(ids).toEqual([
+      "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    ]);
+  });
+
+  it("renders the five column headers in the order Created, Business, Status, Summary, Action", () => {
+    render(<RunsPage data={makePage([makeRow()])} />);
+    const headers = Array.from(document.querySelectorAll("thead th")).map(
+      (th) => th.textContent,
+    );
+    expect(headers).toEqual(["Created", "Business", "Status", "Summary", "Action"]);
+  });
+
+  it("summary precedence: renders the failure summary when any of stage, reason or attempts is present", () => {
+    const rows = [
+      makeRow({
+        failure: { secondary_label: null, stage: "Extraction", reason: null, attempts: null },
+        summary_gate_reason: "Missing hours",
+        employee_count: 3,
+      }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    expect(screen.getByText("Extraction")).not.toBeNull();
+    expect(screen.queryByText("Missing hours")).toBeNull();
+    expect(screen.queryByText("3 employees")).toBeNull();
+  });
+
+  it("summary precedence: renders the gate reason when there is no failure summary", () => {
+    const rows = [
+      makeRow({ failure: NO_FAILURE, summary_gate_reason: "Missing hours", employee_count: 3 }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    expect(screen.getByText("Missing hours")).not.toBeNull();
+  });
+
+  it("summary precedence: renders the employee count with plural agreement when there is no failure or gate reason", () => {
+    const rows = [
+      makeRow({ failure: NO_FAILURE, summary_gate_reason: null, employee_count: 3 }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    expect(screen.getByText("3 employees")).not.toBeNull();
+  });
+
+  it("summary precedence: renders the employee count with singular agreement for exactly one employee", () => {
+    const rows = [
+      makeRow({ failure: NO_FAILURE, summary_gate_reason: null, employee_count: 1 }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    expect(screen.getByText("1 employee")).not.toBeNull();
+  });
+
+  it("summary precedence: renders the em-dash placeholder when none of the three are present", () => {
+    const rows = [
+      makeRow({ failure: NO_FAILURE, summary_gate_reason: null, employee_count: 0 }),
+    ];
+    render(<RunsPage data={makePage(rows)} />);
+    const summaryCell = document.querySelectorAll("tbody td")[3];
+    expect(summaryCell?.textContent).toBe("—");
+  });
+
+  it("links each row's action cell to the run's detail path", () => {
+    const rows = [makeRow({ id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee" })];
+    render(<RunsPage data={makePage(rows)} />);
+    const link = screen.getByRole("link", { name: "View" });
+    expect(link.getAttribute("href")).toBe("/runs/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+  });
+
+  it("renders the preformatted created-at display string verbatim, with no date/time formatting in the component", () => {
+    const rows = [makeRow({ created_at_display: "2026-08-17 12:34" })];
+    render(<RunsPage data={makePage(rows)} />);
+    expect(screen.getByText("2026-08-17 12:34")).not.toBeNull();
   });
 });
