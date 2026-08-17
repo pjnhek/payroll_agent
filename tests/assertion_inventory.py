@@ -143,6 +143,15 @@ FILE_SCOPE_NOTES: dict[str, str] = {
         ' never `response.text` directly, so no `ast.Compare` node has a `.text` attribute'
         ' operand.'
     ),
+    'tests/test_page_shell_pins.py': (
+        'Zero `.text` comparisons: all three `.text` usages (lines 63, 105, 118) read'
+        ' `response.text` as a call ARGUMENT into an extractor helper'
+        ' (`_extract_title`, `_extract_nav_html`); every assertion in this file then'
+        ' compares the extracted `title`/`nav_html` string, never `response.text`'
+        ' directly, so no `ast.Compare` node has a `.text` attribute operand. The page'
+        ' shell pins it guards are structural (one title per page, one current nav'
+        ' item) and survive the React conversion unchanged.'
+    ),
     'tests/test_dashboard.py': (
         "76 `.text` comparisons, the suite's largest cost-center file (v5 PROJECT.md). Spans"
         ' all three converting pages plus two permanently-unconverted support routes: /runs'
