@@ -156,6 +156,19 @@ class Settings(BaseSettings):
     # site rather than in Settings itself.
     pump_token: str = ""        # PUMP_TOKEN env var
 
+    # VITE_DEV_SERVER_URL: local-dev-only opt-in for the fail-closed dev branch in
+    # render_react_page() (app/routes/templating.py). Empty default is the
+    # production-safe value: render_react_page() resolves hashed asset paths through
+    # the Vite build manifest exactly as it does today. Setting this (e.g.
+    # http://localhost:5173) switches render_react_page() to emit the Vite dev
+    # client module plus the entry's raw source path from this origin instead,
+    # skipping the manifest entirely -- there is no build output to read in dev.
+    # The image build (Dockerfile) never sets this: the dev server is a local-only
+    # affordance, and any leak into a deployed container would serve script tags
+    # pointing at a developer's machine. Mirrors the pump-token / demo-operator-
+    # email convention: default to the safe state, refuse rather than degrade.
+    vite_dev_server_url: str = ""  # VITE_DEV_SERVER_URL env var
+
     # QUEUE_POLL_SECONDS: the SLOW DURABLE FALLBACK, not the latency path. The
     # in-process threading.Event wake (app/queue/wake.py) is what makes
     # Retrigger feel instant for the demo; this poll exists only to cover what

@@ -21,6 +21,8 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from pydantic import BaseModel
 
+from app.config import get_settings
+
 templates = Jinja2Templates(directory="app/templates")
 
 # ---------------------------------------------------------------------------
@@ -111,14 +113,43 @@ def render_react_page(
     data: BaseModel,
     extra_context: dict[str, Any] | None = None,
 ) -> Response:
-    """Render `template_name` (a template extending `react_page.html`) with the
-    Vite-built `entry`'s chunk resolved from the manifest and `data` embedded
-    as the page's JSON data island.
+    """Render `template_name` (a template extending `react_page.html`) with
+    `entry`'s built asset(s) and `data` embedded as the page's JSON data island.
 
-    Fails closed: a missing manifest file, or a manifest that does not carry
-    `entry`'s chunk, raises `ManifestMissingError` rather than rendering a
-    shell with no bundle to hydrate against.
+    Two mutually exclusive branches, gated on Settings.vite_dev_server_url,
+    kept in one function with a single early return so the production path
+    can never be reached through the dev path's code:
+
+    - DEV (setting non-empty, local-only): emits the Vite dev client module
+      plus `entry`'s raw source path from the configured dev-server origin.
+      The manifest is never read in this branch -- there is no build output
+      to read in dev, so requiring one would make the dev branch unusable.
+    - PRODUCTION (setting empty, the default and the only state a deployed
+      container can be in): resolves `entry`'s hashed asset paths through the
+      Vite build manifest exactly as before. Fails closed: a missing manifest
+      file, or a manifest that does not carry `entry`'s chunk, raises
+      ManifestMissingError rather than rendering a shell with no bundle to
+      hydrate against.
     """
+    base_context: dict[str, Any] = {
+        "page_title": page_title,
+        "mount_id": REACT_MOUNT_ID,
+        "island_id": INITIAL_DATA_ELEMENT_ID,
+        "island_json": json_script(data),
+    }
+
+    dev_origin = get_settings().vite_dev_server_url
+    if dev_origin:
+        context: dict[str, Any] = {
+            **base_context,
+            "stylesheet_hrefs": [],
+            "dev_client_src": f"{dev_origin}/@vite/client",
+            "module_src": f"{dev_origin}/src/entries/{entry}.tsx",
+        }
+        if extra_context:
+            context.update(extra_context)
+        return templates.TemplateResponse(request, template_name, context)
+
     manifest = load_manifest()
     manifest_key = f"src/entries/{entry}.tsx"
     chunk = manifest.get(manifest_key)
@@ -128,12 +159,10 @@ def render_react_page(
             f"(known entries: {sorted(manifest)})"
         )
     css_files = chunk.get("css", [])
-    context: dict[str, Any] = {
-        "page_title": page_title,
-        "mount_id": REACT_MOUNT_ID,
-        "island_id": INITIAL_DATA_ELEMENT_ID,
-        "island_json": json_script(data),
+    context = {
+        **base_context,
         "stylesheet_hrefs": [f"/static/dist/{href}" for href in css_files],
+        "dev_client_src": None,
         "module_src": f"/static/dist/{chunk['file']}",
     }
     if extra_context:

@@ -18,5 +18,8 @@
 {% for href in stylesheet_hrefs %}
 <link rel="stylesheet" href="{{ href }}">
 {% endfor %}
+{% if dev_client_src %}
+<script type="module" src="{{ dev_client_src }}"></script>
+{% endif %}
 <script type="module" src="{{ module_src }}"></script>
 {% endblock %}
