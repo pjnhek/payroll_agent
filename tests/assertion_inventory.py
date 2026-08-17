@@ -117,6 +117,20 @@ class AssertionEntry:
 
 
 FILE_SCOPE_NOTES: dict[str, str] = {
+    'tests/assertion_inventory.py': (
+        'Zero `.text` comparisons: this is the GUARD-01 registry itself. The'
+        ' substring `.text` appears only in this module\'s own docstring prose'
+        ' (describing what a `.text` comparison is) and inside the captured'
+        ' `source_text` string VALUES of other files\' entries — never as a'
+        ' left operand or comparator of an `ast.Compare` node in this file.'
+    ),
+    'tests/test_inventory_completeness.py': (
+        'Zero `.text` comparisons: this is the GUARD-01 completeness guard'
+        ' itself. The substring `.text` appears only in docstrings, comments,'
+        ' and the guard\'s own field/variable names (`entry.route`,'
+        ' `_is_text_attribute`) — never as a left operand or comparator of an'
+        ' `ast.Compare` node in this file.'
+    ),
     'tests/conftest.py': (
         'Zero `.text` comparisons: `.text` appears only once (line 3120), as a fake-response'
         " test double's own attribute assignment (`self.text = text`) — never as the left"
