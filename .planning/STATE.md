@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v5
 milestone_name: React/TypeScript Operator Console
-current_phase_name: defining requirements
+current_phase_name: 22 - Frontend Foundation & Runs List
 status: planning
-stopped_at: quick-260816-ffv pushed (c3e1595..f708e9c, 8 commits, 4/4 CI workflows green); live service verified healthy on the new code; last open debug artifact (mark-handled-dead-end) human-verified against production and resolved. Board clean for v5.
-last_updated: "2026-08-17T16:50:00.000Z"
+stopped_at: v5 roadmap created - 3 phases (22 Frontend Foundation & Runs List, 23 Run Detail, 24 Eval View & Preservation Proof), 31/31 requirements mapped, no orphans. Ready to plan Phase 22.
+last_updated: "2026-08-17T18:30:00.000Z"
 last_activity: 2026-08-17
-last_activity_desc: "Pushed quick-260816-ffv, verified the live demo loop end to end, closed the last open debug artifact"
+last_activity_desc: "Created the v5 roadmap - phases 22-24 as three independently deployable vertical slices, 31/31 requirements mapped"
 progress:
-  total_phases: 23
-  completed_phases: 10
+  total_phases: 26
+  completed_phases: 23
   total_plans: 113
   completed_plans: 113
 ---
@@ -22,14 +22,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution milestone shipped & archived)
 
 **Core value:** A messy real-world payroll email goes in; a correct, human-approved payroll comes out — every name-match and process-vs-clarify call is made deterministically by code (no confidence guessing). **v4 made the pipeline durable: no accepted email is ever lost, every failure recovers automatically within ~30 minutes, and a client is sent at most one confirmation per approved run, per epoch.**
-**Current focus:** v4 SHIPPED & archived 2026-07-20 (tag `v4`). **The planned "demo polish & run-detail UI" mini-milestone was found already shipped** — a `/gsd-new-milestone` research pass (2026-07-20) verified all 4 backlog items landed during Phase 20 / an untracked quick task (`260718-hie`) and were never marked done. The single real gap (dashboard paystub-download YTD parity) was closed via quick task `260720-lba`; the premature v4.1 milestone was retired and the records reconciled. App is demo-ready; no active milestone.
+**Current focus:** **v5 — React/TypeScript Operator Console — roadmap cut 2026-08-17.** Three independently deployable vertical slices: **Phase 22** (`/runs` + the entire shared foundation: toolchain, Docker node stage, blocking CI job, allowlist DTO pattern, six guards, committed test-assertion inventory), **Phase 23** (`/runs/{id}` — the ~80% phase), **Phase 24** (`/eval` + the closing diff proof). 31/31 requirements mapped, no orphans. The milestone is presentation-layer only: `app/pipeline/`, `app/queue/`, `app/db/`, `app/llm/`, `app/email/` are untouchable and the 14 operator-facing mutation handlers stay byte-identical. `/` and `/ops` are never converted; `/ops` stays script-free. Next: `/gsd-plan-phase 22`.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 22 - Frontend Foundation & Runs List (not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-08-17 — Pushed quick task 260816-ffv (CI green), verified the live demo loop end to end, closed the last open debug artifact
+Status: Roadmap complete — ready to plan Phase 22
+Last activity: 2026-08-17 — Created the v5 roadmap (phases 22-24), populated REQUIREMENTS.md traceability 31/31
+
+Progress: [#####################---] 23/26 phases (v1.0 + v2 + v3 + v4 complete; v5 phases 22-24 pending)
 
 ## Performance Metrics
 
@@ -142,6 +144,7 @@ Last activity: 2026-08-17 — Pushed quick task 260816-ffv (CI green), verified 
 
 ### Roadmap Evolution
 
+- **v5 roadmap created (2026-08-17):** 3 phases (22-24), continuing global phase numbering from v4's Phase 21. The phase split was NOT derived by the roadmapper — it is a locked decision from the 2026-08-17 cross-AI scope review: three independently shippable vertical slices, each of which must leave the app fully working with unconverted pages still on Jinja. Phase 22 Frontend Foundation & Runs List -> Phase 23 Run Detail (The Operator Gate) -> Phase 24 Eval View & Preservation Proof. **Sizing is deliberately uneven and must not be rebalanced:** Phase 23 carries ~80% of the conversion cost (44 of 60 test GETs, 14 of 18 forms, all 5 confirm guards, the 6-elif + 1-fallthrough + 1-overlay banner structure, all three delivery-review states), Phase 22 carries a light page plus the entire one-time infrastructure and guard cost (9 of 16 pitfall preventions), Phase 24 is genuinely small but owns the highest-severity security pin (`/eval` path traversal). **Requirement count is not a cost proxy:** 18/9/4 by count, but 23 is by far the largest build. 31/31 requirements mapped, no orphans, no duplicates. GUARD-01 (the route-attribution + presence/absence inventory across all 14 affected test files) is a **gate, not a task** — it can only be done while the Jinja pages still render, so no conversion work in any phase begins before it is committed. GUARD-02 is flagged as the softest requirement (a property an engineer must be able to determine, not a behavior a test asserts) and needs a concrete, testable formulation during Phase 22 planning. SHELL-08/09/10 are milestone-wide preservation invariants booked to one phase each for bookkeeping but asserted continuously in all three.
 - **v4 roadmap created (2026-07-14):** 6 phases (16–21), continuing global phase numbering from v3's Phase 15. Phase 16 Queue Substrate & Unblocked Webhook (merges research's Phase 1 "unblock the event loop" — zero schema, no forced-order dependency — into the queue-substrate phase, since granularity is "standard" and a single-requirement standalone phase for QUEUE-01 alone would fragment unnecessarily) -> Phase 17 The Pump -> Phase 18 Failure Policy & Sweep Deletion -> Phase 19 Webhook Cutover & Durable Ingest -> Phase 20 Exactly-Once Send -> Phase 21 Durability Proofs & Ops View. Hard-ordered per the milestone's non-negotiable constraint (from `.planning/research/ARCHITECTURE.md`): the pump (17) and the failure policy (18) MUST precede the webhook cutover (19), or the cutover ships a regression window where a worker records SUCCESS on a FAILED payroll while the old sweep races the new queue. Phase 20 (send) is independent of Phase 19 and could ship in parallel, but is sequenced after for planning clarity. Phase 21 (proofs) is last by definition — it proves all 5 preceding phases, and explicitly encodes the two cross-cutting hazards flagged in REQUIREMENTS.md (concurrency-proof.yml's hard-coded test-file list; the precedent of a vacuous "concurrency proof" from Phase 10 of v2 that passed while proving nothing). 19/19 v4 requirements mapped, no orphans (note: the milestone's own header text says "17 REQ-IDs," which undercounts the actual enumerated set by 2 — traceability was built against the real 19).
 - v3 roadmap created (2026-07-08): 4 phases (12-15), continuing global phase numbering from v2's Phase 11. Phase 12 CI Quality Gates -> Phase 13 Module Structure & Boundaries -> Phase 14 Full Type-Checking (mypy) -> Phase 15 Comment Hygiene & Deferred-Polish Triage. Hard-ordered per the milestone's ordering constraint: CI first (protects every later refactor), STRUCT (incl. BOUND-01) before COMM (comments rewritten once, in final file locations), TYPE its own phase after STRUCT (smaller split modules are easier to annotate; user explicitly ruled out squeezing full mypy adoption into a shared phase). 16/16 v3 requirements mapped, no orphans.
 - Phase 11 added (2026-07-05): Clarification Round Machine & Alias Learning — clarify-cluster design phase from phase-9 review findings (WR-04/05/06, CX-01) + conversation-traced findings (alias-learning bind unreachable, ambiguous-reply attribution); sources: todos 260705-01, 260705-02, 260623-08
@@ -157,6 +160,10 @@ Recent decisions affecting current work:
 - [Phase 20 P04]: Approval atomically claims the run, freezes a confirmation snapshot, and enqueues its identifier-only job; it wakes only after commit, while approved remains the business state until fenced settlement proves delivery.
 - [Phase 20 P09]: Delivery settlement locks the exact leased job, immutable reservation, and expected run state before writing a fixed-category attempt event; generic pipeline retry must not handle delivery because it rewinds approved state.
 - [Phase 20 P09]: The database evaluates the reservation-time replay cutoff while the reservation is locked; expired or terminal confirmation delivery enters needs_operator without creating a replacement key.
+- [Roadmap]: v5 — Three independently deployable vertical slices, never a horizontal API-then-UI split. A slice that ships must leave the app fully working with unconverted pages still on Jinja; the rejected horizontal split would have stranded an unconsumed JSON API, and an uncertain external timeline makes a half-migrated dashboard a worse artifact than no migration at all.
+- [Roadmap]: v5 — GUARD-01's test-assertion inventory is a **gate**: no page conversion begins in ANY phase until the route-attribution + presence/absence classification across all 14 affected test files is committed. After conversion, a vacuous absence assertion is indistinguishable from a valid one.
+- [Roadmap]: v5 — SHELL-05 (deployed assets == locally built assets) is deploy-blocking Phase 22 work and the trap is verified latent today: `.gitignore:5` is `dist/`, `.dockerignore` does not list `dist`, `Dockerfile:38` is `COPY . .` — a local `docker build` succeeds while Render, building from the Git clone, ships a blank console with nothing failing. Coupled to SHELL-06: if the bundle is built rather than committed, the CI build IS the only gate, so it must trigger on `pull_request` (like `ci.yml`), not only `push` (like `eval.yml`).
+- [Roadmap]: v5 — Phase sizing is intentionally uneven (23 >> 22 > 24) and is recorded in ROADMAP.md as an explicit do-not-rebalance instruction to future planners.
 - [Roadmap]: v4 — `jobs` is transport state ONLY; `payroll_runs.status` stays the sole business state machine (INVARIANT J-1, enforced by a CI drift guard analogous to the existing `RunStatus`↔CHECK test).
 - [Roadmap]: v4 — Forced phase order 16→17→18→19 (queue substrate → pump → failure policy → webhook cutover) is non-negotiable; deleting `sweep_stranded_runs` happens in the SAME phase the failure policy lands (Phase 18), not deferred until "the queue is proven."
 - [Roadmap]: v4 — Every durability proof (Phase 21) must ship with a demonstrated red run, per the Phase-10 (v2) precedent of a vacuous concurrency proof that passed while proving nothing.
@@ -360,12 +367,15 @@ eval-chart defect, not cosmetics).
 ## Session Continuity
 
 Last session: 2026-08-17
-Stopped at: quick-260816-ffv pushed (`c3e1595..f708e9c`, 8 commits, all 4 CI workflows green). Live service verified healthy on the new code (`/health/live|ready|schema|queue` all ok, `in_sync`). Debug artifact `mark-handled-dead-end` human-verified PASS against the LIVE service and flipped to `resolved` — the full clarify -> reply -> resume -> awaiting_approval loop was walked end to end in production. Board is clean for v5.
+Stopped at: **v5 roadmap created** — `.planning/ROADMAP.md` now carries the v5 milestone entry, the 3-phase checklist (22-24), full phase details with success criteria and planner notes, and the appended Progress rows; `.planning/REQUIREMENTS.md` traceability populated 31/31 with a per-phase distribution table. The stale `Next (mini) — Demo Polish & Run-Detail UI (planned)` milestone bullet was deleted (retired 2026-07-20 after research found all four items already shipped). Next: `/gsd-plan-phase 22`.
+
+Prior session stopped at: quick-260816-ffv pushed (`c3e1595..f708e9c`, 8 commits, all 4 CI workflows green). Live service verified healthy on the new code (`/health/live|ready|schema|queue` all ok, `in_sync`). Debug artifact `mark-handled-dead-end` human-verified PASS against the LIVE service and flipped to `resolved` — the full clarify -> reply -> resume -> awaiting_approval loop was walked end to end in production. Board is clean for v5.
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone, or continue v5 requirements definition
+- Plan the first v5 phase: `/gsd-plan-phase 22`
+- Phase 22 planning must produce a concrete, testable formulation for GUARD-02 (the softest of the 31 requirements) and must confirm the Vite manifest path + the Vite/plugin-react/Vitest peer ranges against TypeScript 6.0.3 at install time — the STACK.md matrix was validated against TS 7.0.2
 
 _Cleared 2026-08-17:_
 - ~~Add `DEMO_OPERATOR_EMAIL` to `.env.example` / local `.env` / Render dashboard~~ — all three done; live `POST /demo/bind` returns `303 -> /?bound=1`, proving the setting resolves in production.

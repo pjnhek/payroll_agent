@@ -135,42 +135,56 @@ Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHELL-01 | — | Pending |
-| SHELL-02 | — | Pending |
-| SHELL-03 | — | Pending |
-| SHELL-04 | — | Pending |
-| SHELL-05 | — | Pending |
-| SHELL-06 | — | Pending |
-| SHELL-07 | — | Pending |
-| SHELL-08 | — | Pending |
-| SHELL-09 | — | Pending |
-| SHELL-10 | — | Pending |
-| GUARD-01 | — | Pending |
-| GUARD-02 | — | Pending |
-| GUARD-03 | — | Pending |
-| GUARD-04 | — | Pending |
-| GUARD-05 | — | Pending |
-| GUARD-06 | — | Pending |
-| LIST-01 | — | Pending |
-| LIST-02 | — | Pending |
-| LIST-03 | — | Pending |
-| LIST-04 | — | Pending |
-| DETAIL-01 | — | Pending |
-| DETAIL-02 | — | Pending |
-| DETAIL-03 | — | Pending |
-| DETAIL-04 | — | Pending |
-| DETAIL-05 | — | Pending |
-| DETAIL-06 | — | Pending |
-| DETAIL-07 | — | Pending |
-| DETAIL-08 | — | Pending |
-| EVALUI-01 | — | Pending |
-| EVALUI-02 | — | Pending |
-| EVALUI-03 | — | Pending |
+| SHELL-01 | Phase 22 | Pending |
+| SHELL-02 | Phase 22 | Pending |
+| SHELL-03 | Phase 22 | Pending |
+| SHELL-04 | Phase 22 | Pending |
+| SHELL-05 | Phase 22 | Pending |
+| SHELL-06 | Phase 22 | Pending |
+| SHELL-07 | Phase 22 | Pending |
+| SHELL-08 | Phase 24 | Pending |
+| SHELL-09 | Phase 22 | Pending |
+| SHELL-10 | Phase 22 | Pending |
+| GUARD-01 | Phase 22 | Pending |
+| GUARD-02 | Phase 22 | Pending |
+| GUARD-03 | Phase 23 | Pending |
+| GUARD-04 | Phase 22 | Pending |
+| GUARD-05 | Phase 22 | Pending |
+| GUARD-06 | Phase 22 | Pending |
+| LIST-01 | Phase 22 | Pending |
+| LIST-02 | Phase 22 | Pending |
+| LIST-03 | Phase 22 | Pending |
+| LIST-04 | Phase 22 | Pending |
+| DETAIL-01 | Phase 23 | Pending |
+| DETAIL-02 | Phase 23 | Pending |
+| DETAIL-03 | Phase 23 | Pending |
+| DETAIL-04 | Phase 23 | Pending |
+| DETAIL-05 | Phase 23 | Pending |
+| DETAIL-06 | Phase 23 | Pending |
+| DETAIL-07 | Phase 23 | Pending |
+| DETAIL-08 | Phase 23 | Pending |
+| EVALUI-01 | Phase 24 | Pending |
+| EVALUI-02 | Phase 24 | Pending |
+| EVALUI-03 | Phase 24 | Pending |
 
 **Coverage:**
 - v5 requirements: 31 total
-- Mapped to phases: 0 (roadmap not yet created)
-- Unmapped: 31 ⚠️
+- Mapped to phases: 31 ✓ (every requirement maps to exactly one phase; no orphans, no duplicates)
+- Unmapped: 0
+
+**Per-phase distribution** (requirement count is NOT a cost proxy — see the sizing note below):
+
+| Phase | Requirements | Count |
+|-------|--------------|-------|
+| Phase 22 — Frontend Foundation & Runs List | SHELL-01…07, SHELL-09, SHELL-10, GUARD-01, GUARD-02, GUARD-04, GUARD-05, GUARD-06, LIST-01…04 | 18 |
+| Phase 23 — Run Detail (The Operator Gate) | GUARD-03, DETAIL-01…08 | 9 |
+| Phase 24 — Eval View & Preservation Proof | SHELL-08, EVALUI-01…03 | 4 |
+
+**SHELL-08 / SHELL-09 / SHELL-10 are milestone-wide preservation invariants.** Each is booked to exactly one
+phase for traceability — SHELL-08 to Phase 24 because that is where the closing diff proof is produced,
+SHELL-09 and SHELL-10 to Phase 22 because that is where the shared-shell and guard-scope risks are created —
+but all three are asserted **continuously, in every phase**, via the per-slice diff-scope CI gate and the
+widened design-token / a11y guards that land in Phase 22.
 
 ---
 
@@ -184,4 +198,4 @@ Slice 3 (`/eval`) is genuinely small: static-artifact display, no poller, no mut
 
 ---
 *Requirements defined: 2026-08-17*
-*Last updated: 2026-08-17 after initial definition*
+*Last updated: 2026-08-17 — traceability populated at roadmap creation (Phases 22-24)*
