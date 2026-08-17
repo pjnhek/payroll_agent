@@ -265,6 +265,18 @@ None — no external service configuration required.
 - **Route/layer classifications for `/runs/{run_id}` and `/eval` are recorded but intentionally not yet pinned/rewritten** — per the plan's own instruction, only `/runs`-attributed entries are rewritten in this phase; Phases covering `/runs/{run_id}` and `/eval` conversion inherit a finished classification and do not need to re-derive it.
 - No blockers.
 
+## Self-Check: PASSED
+
+- FOUND: `tests/assertion_inventory.py`
+- FOUND: `tests/test_inventory_completeness.py`
+- FOUND: `scripts/render_assertion_inventory.py`
+- FOUND: `docs/ASSERTION-INVENTORY.md`
+- FOUND: `.planning/phases/22-frontend-foundation-runs-list/22-01-SUMMARY.md`
+- FOUND commit: `8bb9a9f`
+- FOUND commit: `998f774`
+- FOUND commit: `ceefafc`
+- FOUND commit: `47f488b`
+
 ---
 *Phase: 22-frontend-foundation-runs-list*
 *Completed: 2026-08-17*
