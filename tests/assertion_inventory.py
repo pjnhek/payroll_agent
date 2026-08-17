@@ -229,6 +229,16 @@ FILE_SCOPE_NOTES: dict[str, str] = {
         " guard's scope by construction, the same shape as tests/test_gateway.py's intermediate-"
         ' variable pattern noted above.'
     ),
+    'tests/test_react_dev_mode.py': (
+        '5 `.text` comparisons, all attributed to /runs: the dev-server render'
+        ' branch boot-tag assertions (no developer-host URL leaking into a'
+        ' default-settings render; the Vite dev client module and entry source'
+        ' path present in a dev-mode render; no manifest-resolved hashed asset'
+        ' path leaking into a dev-mode render). All five inspect the boot-tag'
+        ' script elements react_page.html renders around the mount point --'
+        ' Jinja-owned chrome, not React DOM or the JSON data island -- so all'
+        ' are layer=JINJA_SHELL.'
+    ),
     'tests/test_reply_redelivery.py': (
         '4 `.text` comparisons, attributed to /runs/{run_id}: three reached via the ?notice='
         ' query channel after a simulate-reply mutation, one on the reject-form action markup —'
@@ -1702,6 +1712,57 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         route='/runs',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.JSON_ISLAND,
+    ),
+    'test_react_dev_mode:63:11': AssertionEntry(
+        file='tests/test_react_dev_mode.py',
+        line=63,
+        col_offset=11,
+        source_text='"localhost" not in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_react_dev_mode:64:11': AssertionEntry(
+        file='tests/test_react_dev_mode.py',
+        line=64,
+        col_offset=11,
+        source_text='_DEV_ORIGIN not in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_react_dev_mode:108:8': AssertionEntry(
+        file='tests/test_react_dev_mode.py',
+        line=108,
+        col_offset=8,
+        source_text=(
+            'f\'<script type="module" src="{_dev_mode_enabled}/@vite/client"></script>\'\n'
+            '        in response.text'
+        ),
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_react_dev_mode:112:8': AssertionEntry(
+        file='tests/test_react_dev_mode.py',
+        line=112,
+        col_offset=8,
+        source_text=(
+            'f\'<script type="module" src="{_dev_mode_enabled}/src/entries/runs.tsx"></script>\'\n'
+            '        in response.text'
+        ),
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_react_dev_mode:116:11': AssertionEntry(
+        file='tests/test_react_dev_mode.py',
+        line=116,
+        col_offset=11,
+        source_text='"/static/dist/" not in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.JINJA_SHELL,
     ),
     'test_reply_redelivery:602:11': AssertionEntry(
         file='tests/test_reply_redelivery.py',
