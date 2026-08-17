@@ -32,11 +32,12 @@ read-only and deterministic, and no two entries collide on their
 `(file, line, col_offset)` position.
 
 What this guard does NOT establish: it does not decide whether a rewritten
-assertion is CORRECT after a page converts (that is Phase 23/24's job, per
-page) and it does not run any mutation itself — the demonstrated-red evidence
-for this specific guard is captured once, by hand, in this plan's own
-SUMMARY.md, exactly as `docs/DURABILITY-PROOFS.md` demonstrates each proof: a
-mutation applied, the failing assertion named, then a byte-identical revert.
+assertion is CORRECT after its page converts (that is a per-page follow-up
+job, done once each page's own conversion actually lands) and it does not run
+any mutation itself — the demonstrated-red evidence for this specific guard
+is captured once, by hand: a mutation applied, the failing assertion named,
+then a byte-identical revert, the same shape this project's durability proofs
+use.
 """
 
 from __future__ import annotations

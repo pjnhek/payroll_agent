@@ -47,6 +47,33 @@ jobs:
       - name: Run ruff check
         run: uv run ruff check .
 
+      # GUARD-01: the generated markdown view is a derived artifact of
+      # tests/assertion_inventory.py; --check regenerates it in memory and
+      # diffs against the committed file so a reviewer's markdown can never
+      # silently drift from what the completeness guard enforces.
+      - name: Assertion inventory view is current
+        run: uv run python scripts/render_assertion_inventory.py --check
+
+      # GUARD-01: the assertion inventory is a *gate*, not a task -- the
+      # route-attribution and presence/absence classification pass can only
+      # be performed honestly while the Jinja pages still render. Once a
+      # frontend/src file lands, a converted page makes a vacuous absence
+      # assertion indistinguishable from a valid one, so no conversion source
+      # may exist before the registry that classified it does.
+      - name: Assertion inventory precedes conversion (GUARD-01 gate)
+        run: |
+          if [ -d frontend/src ] && [ -n "$(find frontend/src -type f 2>/dev/null)" ] \
+             && [ ! -f tests/assertion_inventory.py ]; then
+            echo "GUARD-01 violation: frontend/src contains files but" \
+                 "tests/assertion_inventory.py does not exist." >&2
+            echo "The assertion inventory must be committed BEFORE any page" \
+                 "conversion -- after conversion, a vacuous absence assertion" \
+                 "is indistinguishable from a valid one, and no later phase" \
+                 "can honestly redo the route-attribution + classification pass." >&2
+            exit 1
+          fi
+          echo "GUARD-01 gate OK: no frontend/src file precedes the assertion inventory."
+
   test:
     name: "Test suite (hermetic)"
     runs-on: ubuntu-latest

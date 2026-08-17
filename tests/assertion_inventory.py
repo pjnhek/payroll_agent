@@ -19,11 +19,11 @@ What this registry does NOT establish: it does not itself prove completeness
 (that is `tests/test_inventory_completeness.py`'s job, walking the same AST
 shape independently and asserting the discovered set equals this dict's key
 set) and it does not decide whether an assertion is safety-critical enough to
-carry a falsifying mutation (that is the separate, smaller
-`tests/test_safety_mutation_registry.py`, GUARD-02/D-22-11). This module is
-inert data plus two small enums — no I/O, no test collection, so it costs
-nothing at import time and stays fast under `mypy --strict` and pytest
-collection.
+carry a falsifying mutation (that is a separate, smaller sibling registry
+scoped to PII scrubbing, XSS, path traversal, and the delivery-review Reject
+gate — GUARD-02). This module is inert data plus two small enums — no I/O, no
+test collection, so it costs nothing at import time and stays fast under
+`mypy --strict` and pytest collection.
 
 Why an AST walk was chosen over a regex scan: a live re-derivation this session
 found 17 files under `tests/` containing the substring `.text`
@@ -41,31 +41,32 @@ special-cases.
 
 Every registry entry's `route`, `assertion_class`, and `layer` were classified
 by hand against this session's own read of `app/templates/runs_list.html`
-(the D-22-12 React mount boundary, lines 64-115) and by tracing each
-assertion's own enclosing test function back to its `client.get(...)`/
-`client.post(...)` call — never guessed from the assertion's file name or from
-a substring inside its own message. `layer=UNCONVERTED` is used for every
-route this phase does not convert (`/runs/{run_id}`, `/eval`,
-`/runs/{run_id}/status`, `/runs/{run_id}/delivery-review/email`, `/health/*`,
-`/webhook/inbound`, and `route="none"` non-HTTP bodies such as `caplog.text`)
-per D-22-10 ("classify all in Phase 22, pin and rewrite per slice"); `/ops` and
-`/` are `layer=JINJA_SHELL` because they are never converted at all (permanent,
-not merely "not yet"). Only `/runs`-attributed entries were split further into
-`JINJA_SHELL` (chrome outside the React mount: the `<h1>`, the `?notice=`
-banner, the demo form, and whole-page checks like the meta-refresh absence),
-`JSON_ISLAND` (content that originates in a `RunListRow`/`RunStatusPoll` DTO
-field — a run id, a badge class/label, a failure reason — and will therefore
-live inside the `__INITIAL_DATA__` JSON blob after conversion, where the
-correct rewritten assertion is a positive exact-shape check against parsed
-JSON, not a substring search over `response.text`), and `REACT_DOM` (static
-JSX markup with no DTO field behind it, such as the empty-state copy "No
-payroll runs yet" — the genuinely vacuous class D-22-09 names by example,
-because `TestClient` never executes JavaScript and cannot see it after
-conversion).
+(the React mount boundary is lines 64-115) and by tracing each assertion's
+own enclosing test function back to its `client.get(...)`/`client.post(...)`
+call — never guessed from the assertion's file name or from a substring
+inside its own message. `layer=UNCONVERTED` is used for every route not yet
+converted to React (`/runs/{run_id}`, `/eval`, `/runs/{run_id}/status`,
+`/runs/{run_id}/delivery-review/email`, `/health/*`, `/webhook/inbound`, and
+`route="none"` non-HTTP bodies such as `caplog.text`) — the classification
+pass covers every affected assertion up front, but only the assertions on a
+page actually being converted are pinned and rewritten at conversion time;
+`/ops` and `/` are `layer=JINJA_SHELL` because they are never converted at
+all (permanent, not merely "not yet"). Only `/runs`-attributed entries were
+split further into `JINJA_SHELL` (chrome outside the React mount: the
+`<h1>`, the `?notice=` banner, the demo form, and whole-page checks like the
+meta-refresh absence), `JSON_ISLAND` (content that originates in a
+`RunListRow`/`RunStatusPoll` DTO field — a run id, a badge class/label, a
+failure reason — and will therefore live inside the `__INITIAL_DATA__` JSON
+blob after conversion, where the correct rewritten assertion is a positive
+exact-shape check against parsed JSON, not a substring search over
+`response.text`), and `REACT_DOM` (static JSX markup with no DTO field
+behind it, such as the empty-state copy "No payroll runs yet" — the
+genuinely vacuous class, because `TestClient` never executes JavaScript and
+cannot see it after conversion).
 
 Baseline counts (files/entries; per-file and per-route/class/layer breakdowns
 are derived output printed by `scripts/render_assertion_inventory.py`, never
-hand-pinned here, per D-22-06):
+hand-pinned here):
 """
 
 
@@ -152,8 +153,8 @@ FILE_SCOPE_NOTES: dict[str, str] = {
     'tests/test_demo_fixtures.py': (
         '1 `.text` comparison, attributed to /runs: the demo-queue-error rollback notice'
         " (reached via response.headers['location'] -> /runs?notice=demo_queue_error) is"
-        ' classified individually below as JINJA_SHELL — the ?notice= channel stays server-side'
-        ' per D-22-12.'
+        ' classified individually below as JINJA_SHELL — the ?notice= channel is a'
+        ' server-rendered banner that never round-trips through JSON.'
     ),
     'tests/test_demo_landing.py': (
         '2 `.text` comparisons, zero affected: both exercise GET / (the landing page — one'
@@ -184,7 +185,7 @@ FILE_SCOPE_NOTES: dict[str, str] = {
     'tests/test_hitl.py': (
         '2 `.text` comparisons, attributed to /runs/{run_id}: both are retrigger-blocked'
         ' explanatory-notice assertions on the run detail page (BUG-6), classified individually'
-        ' below as layer=UNCONVERTED (Phase 23 converts /runs/{run_id}).'
+        ' below as layer=UNCONVERTED — /runs/{run_id} is not yet converted to React.'
     ),
     'tests/test_needs_operator.py': (
         '11 `.text` comparisons: 4 are caplog.text (non-HTTP, route=none, layer=UNCONVERTED —'
@@ -202,8 +203,8 @@ FILE_SCOPE_NOTES: dict[str, str] = {
     'tests/test_phase20_clarification_review.py': (
         '30 `.text` comparisons, attributed to /runs/{run_id} (24, the 8-branch delivery-'
         ' review-card decision matrix) and /runs/{run_id}/delivery-review/email (6, the frozen'
-        ' email/attachment content endpoint) — both UNCONVERTED in this phase; Phase 23 owns'
-        ' /runs/{run_id}.'
+        ' email/attachment content endpoint) — both layer=UNCONVERTED; neither route is'
+        ' converted to React yet.'
     ),
     'tests/test_queue_durability.py': (
         '1 `.text` comparison, zero affected: caplog.text (route=none, layer=UNCONVERTED) — log'
@@ -220,8 +221,8 @@ FILE_SCOPE_NOTES: dict[str, str] = {
     ),
     'tests/test_stuck_run_recovery.py': (
         '1 `.text` comparison, attributed to /runs: the <h1>Payroll Runs</h1> chrome heading'
-        ' (runs_list.html:62, outside the D-22-12 React mount region), classified as'
-        ' layer=JINJA_SHELL.'
+        ' (runs_list.html:62, outside the React mount region at runs_list.html:64-115),'
+        ' classified as layer=JINJA_SHELL.'
     ),
 }
 
