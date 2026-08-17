@@ -1,0 +1,8 @@
+{
+  "src/entries/runs.tsx": {
+    "file": "assets/runs-FIXTURE01.js",
+    "name": "runs",
+    "src": "src/entries/runs.tsx",
+    "isEntry": true
+  }
+}

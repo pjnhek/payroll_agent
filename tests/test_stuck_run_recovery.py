@@ -46,11 +46,17 @@ def test_runs_list_ast_is_read_only_and_has_no_background_tasks_parameter() -> N
         if isinstance(node, ast.Call)
         and (qualified := _qualified_call(node)) is not None
     }
+    # The route now renders through render_react_page() / builds a RunsListPage
+    # DTO -- both bare-name calls (imported directly, not attribute access), so
+    # this attribute-call-only scan does not see them. Their bodies are pure
+    # presentation/read code with no mutation, no BackgroundTasks, and no queue
+    # side effects (see app/routes/templating.py::render_react_page and
+    # app/routes/runs.py::_run_list_row_from_run) -- read those directly to
+    # confirm read-only-ness; this scan is necessarily blind to bare-name calls.
     assert calls == {
         "logger.debug",
         "repo.load_all_runs",
         "router.get",
-        "templates.TemplateResponse",
     }
 
 
