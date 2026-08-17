@@ -25,13 +25,16 @@ are therefore weighted toward preservation, guards, and leak prevention rather t
    is severe: `/health/live` and `/internal/pump` returning 200+HTML would make Render mark a broken deploy
    healthy AND `pump.yml`'s `curl -f` go green while the durable queue is never drained, voiding v4's guarantee
    through a frontend routing choice.
+
 2. **Initial page data embedded server-side** in a `<script type="application/json" id="__INITIAL_DATA__">`
    block, never fetched on mount — Render free cold-starts in ~1 min and a second round trip would put a
    spinner over the operator approval gate, which is the money surface.
+
 3. **Mutation forms stay server-rendered** in the Jinja shell, including all five
    `onsubmit="return confirm(...)"` guards. React renders data islands only. This preserves the existing
    no-JavaScript property for free and keeps the confirm guards out of JSX, where returning `false` from
    `onSubmit` does **not** cancel submission.
+
 4. **TypeScript 6.0.3 + ESLint + `eslint-plugin-react-hooks`**, overriding the research's TS 7.0.2 + Biome —
    `exhaustive-deps` is the rule that guards the poller's effect-dependency correctness, which is the
    milestone's riskiest behavior.
@@ -87,17 +90,34 @@ demonstrated able to fail.
 **Plans**: 12 plans (6 waves)
 
 Plans:
+**Wave 1**
+
 - [ ] 22-01-PLAN.md — GUARD-01: the committed test-assertion inventory gate (wave 1)
 - [ ] 22-02-PLAN.md — Widen the design-token/a11y guards and pin the service-route structure before any markup moves (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 22-03-PLAN.md — Frontend toolchain scaffold, pinned installs, and the real Vite manifest shape (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 22-04-PLAN.md — TRACER: React-rendered `/runs` end to end from a Docker-built bundle (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 22-05-PLAN.md — SHELL-06 CI gates: frontend job, image-build job, diff-scope fence (wave 4)
 - [ ] 22-06-PLAN.md — LIST-01/LIST-04 parity: badge components, full RunsPage, Vitest suite (wave 4)
 - [ ] 22-07-PLAN.md — `RunStatusPoll` DTO, enforced response model, GUARD-04 column drift test (wave 4)
 - [ ] 22-08-PLAN.md — Pulled-forward Phase 23 foundations: MutationForm/ConfirmForm, DecisionBanner union (wave 4)
 - [ ] 22-09-PLAN.md — SHELL-04: Vite dev server proxying to uvicorn, fail-closed dev branch, README (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 22-10-PLAN.md — LIST-02 poller and GUARD-06's two independent enforcement paths (wave 5)
 - [ ] 22-11-PLAN.md — Generated TypeScript DTOs and the staleness gate (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
 - [ ] 22-12-PLAN.md — GUARD-02 safety mutation registry, LIST-03 preservation, inventory backfill (wave 6)
 
 **UI hint**: yes

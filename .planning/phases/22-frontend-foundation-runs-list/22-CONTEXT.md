@@ -52,8 +52,8 @@ implementation-level questions that lock left open.
   Verified latent today: `.gitignore:5` is `dist/`, `.dockerignore` has no `dist` entry, `Dockerfile:38` is
   `COPY . .`.
 
-- **D-22-03: Local dev is the Vite dev server proxying to uvicorn, with a fail-closed dev branch in
-  `render_react_page()`.** Browse `localhost:5173`; Vite's `server.proxy` forwards to uvicorn, and the server
+- **D-22-03: Local dev is the Vite dev server proxying to uvicorn.** With a fail-closed dev branch in
+  `render_react_page()`. Browse `localhost:5173`; Vite's `server.proxy` forwards to uvicorn, and the server
   emits `@vite/client` plus the entry source path instead of manifest-hashed tags when a dev setting is on.
   This satisfies SHELL-04 literally ("hot reload that proxies to uvicorn") and gives real React Fast Refresh.
   **Named cost:** a second code path in the server-side template layer. Required mitigations: the setting
@@ -125,15 +125,15 @@ implementation-level questions that lock left open.
   and 24 inherit a finished classification. This avoids Phase 22 writing pins against `run_detail.html`
   markup that Phase 23 replaces.
 
-- **D-22-11: The safety-subset mutation registry is a new hermetic sibling, run by `ci.yml`'s existing test
-  job.** Same AST-anchored idiom as `MUTATION_TARGETS` / `check_proof_inventory.py`, but its own registry and
+- **D-22-11: The safety-subset mutation registry is a new hermetic sibling.** It is run by `ci.yml`'s existing
+  test job. Same AST-anchored idiom as `MUTATION_TARGETS` / `check_proof_inventory.py`, but its own registry and
   its own completeness check. These mutations are markup and DTO edits with no database in the loop, so they
   must NOT be wired into `concurrency-proof.yml`, where a missing `DATABASE_URL` silently converts a proof
   into a skip. That failure mode has already bitten this project.
 
 ### The `/runs` island, DTO shape, and poller
 
-- **D-22-12: React owns `runs_list.html:64-115` only.**
+- **D-22-12: React owns one region of `runs_list.html` and nothing else.** That region is lines 64-115.
   One mount point replacing the `{% if runs %}` branch: the `.table-scroll` region, the table, and the empty
   state. Jinja keeps `:62` `<h1>`, `:61` the `_operator_notice.html` include, and `:117-128` the demo
   send-test form. The `?notice=` operator-feedback channel added by quick task `260814-q0y` stays entirely
@@ -165,8 +165,8 @@ implementation-level questions that lock left open.
   A batch status endpoint was considered and deferred to backlog: it changes the wire shape this milestone
   claims to preserve.
 
-- **D-22-15: The three `js-` poller hooks are dropped on converted pages; the guard is replaced, not
-  re-pointed.** The `js-` convention existed to stop someone deleting a `document.querySelector` target that
+- **D-22-15: The three `js-` poller hooks are dropped on converted pages.** The guard is replaced, not
+  re-pointed. The `js-` convention existed to stop someone deleting a `document.querySelector` target that
   looked like dead markup. React holds the badge in state and re-renders it, so there is no selector and
   keeping the classNames would create actually-dead markup, which is the thing the convention opposes.
   `tests/test_design_tokens.py:356-370` is deleted **with a written justification in the commit** and replaced
