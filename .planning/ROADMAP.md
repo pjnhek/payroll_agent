@@ -84,8 +84,31 @@ demonstrated able to fail.
   4. **A pull request is blocked before merge** by each of: a broken TypeScript build, a frontend lint or test failure, a mutation issued via `fetch`/`axios`, a new column in `RUN_COLS` that is neither exposed in a page's response shape nor named internal-only (identified by name), a catch-all route, an HTML response from `POST /webhook/inbound` / `/health/*` / `/internal/pump`, or an edit under `app/pipeline|queue|db|llm|email/`. Each guard is demonstrated red and byte-identically reverted. A developer runs one command for the hot-reloading dev server against uvicorn and one command to typecheck + lint.
   5. **Nothing that already worked is quietly lost.** `/ops` still has no script tag, `setInterval`, or meta-refresh; `/runs` keeps its per-page `<title>`, its single `aria-current="page"` nav match, and the `app/static/style.css` tokens with no color literal outside `:root`; and at 375px the page does not overflow while the wide table scrolls inside its own keyboard-reachable region. The three `js-` poller hooks still resolve — they have zero CSS and look like dead markup, and deleting them would break this phase's own headline feature.
 
-**Plans**: TBD
+**Plans**: 12 plans (6 waves)
+
+Plans:
+- [ ] 22-01-PLAN.md — GUARD-01: the committed test-assertion inventory gate (wave 1)
+- [ ] 22-02-PLAN.md — Widen the design-token/a11y guards and pin the service-route structure before any markup moves (wave 1)
+- [ ] 22-03-PLAN.md — Frontend toolchain scaffold, pinned installs, and the real Vite manifest shape (wave 2)
+- [ ] 22-04-PLAN.md — TRACER: React-rendered `/runs` end to end from a Docker-built bundle (wave 3)
+- [ ] 22-05-PLAN.md — SHELL-06 CI gates: frontend job, image-build job, diff-scope fence (wave 4)
+- [ ] 22-06-PLAN.md — LIST-01/LIST-04 parity: badge components, full RunsPage, Vitest suite (wave 4)
+- [ ] 22-07-PLAN.md — `RunStatusPoll` DTO, enforced response model, GUARD-04 column drift test (wave 4)
+- [ ] 22-08-PLAN.md — Pulled-forward Phase 23 foundations: MutationForm/ConfirmForm, DecisionBanner union (wave 4)
+- [ ] 22-09-PLAN.md — SHELL-04: Vite dev server proxying to uvicorn, fail-closed dev branch, README (wave 4)
+- [ ] 22-10-PLAN.md — LIST-02 poller and GUARD-06's two independent enforcement paths (wave 5)
+- [ ] 22-11-PLAN.md — Generated TypeScript DTOs and the staleness gate (wave 5)
+- [ ] 22-12-PLAN.md — GUARD-02 safety mutation registry, LIST-03 preservation, inventory backfill (wave 6)
+
 **UI hint**: yes
+
+**SC-5 amendment (recorded at planning, 2026-08-17):** Success Criterion 5's third sentence — "The
+three `js-` poller hooks still resolve…" — is superseded by D-22-15. Those hooks were a
+`document.querySelector` affordance; React holds the badge in component state, so the hooks are
+removed on the converted page and the criterion's intent (the polling feature must not be silently
+broken by someone tidying markup) is carried by a Vitest in-place-update test owned by plan 22-10.
+Success Criterion 1's parenthetical counts are illustrative, not normative (D-22-06): the inventory
+records the counts it measures.
 
 **Phase notes for the planner:**
 

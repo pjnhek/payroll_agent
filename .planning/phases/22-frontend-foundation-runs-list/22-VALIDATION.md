@@ -51,14 +51,53 @@ the `npm run check` command and the CI `frontend` job are the *only* gates on th
 
 ## Per-Task Verification Map
 
-Filled after planning — task IDs do not exist until PLAN.md files are written. Requirement-level
-mapping is already fixed below and each task must inherit its requirement's command.
+Filled at planning, 2026-08-17. 12 plans, 35 tasks, 6 waves. Every task carries an `<automated>`
+verify; the one checkpoint (22-03-01) is a blocking package-legitimacy gate and is verified by human
+confirmation rather than a command.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 22-01-01 | 01 | 1 | GUARD-01 | — | N/A | hermetic | `uv run pytest tests/test_inventory_completeness.py -x` | ❌ W0 | ⬜ pending |
+| 22-01-01 | 01 | 1 | GUARD-01 | T-22-01 | registry entries re-resolve against live source | hermetic | `uv run python -c "from tests.assertion_inventory import ASSERTION_INVENTORY"` + ruff + mypy | ❌ creates | ⬜ pending |
+| 22-01-02 | 01 | 1 | GUARD-01 | T-22-01/03 | AST walk, no execution of parsed files | hermetic | `uv run pytest tests/test_inventory_completeness.py -x -q` | ❌ creates | ⬜ pending |
+| 22-01-03 | 01 | 1 | GUARD-01 | T-22-02 | conversion-ordering gate blocks a merge | CI + hermetic | `uv run python scripts/render_assertion_inventory.py --check` | ❌ creates | ⬜ pending |
+| 22-02-01 | 02 | 1 | SHELL-10 | T-22-07 | guard scan cannot silently narrow | hermetic | `uv run pytest tests/test_design_tokens.py -x -q` | ✅ modifies | ⬜ pending |
+| 22-02-02 | 02 | 1 | SHELL-01, GUARD-05 | T-22-05/06 | no catch-all; service routes never HTML | hermetic | `uv run pytest tests/test_route_shadowing.py tests/test_no_html_on_service_routes.py -x -q` | ❌ creates | ⬜ pending |
+| 22-02-03 | 02 | 1 | SHELL-09, SHELL-10 | T-22-08 | per-page title, single nav match | hermetic | `uv run pytest tests/test_page_shell_pins.py -x -q` | ❌ creates | ⬜ pending |
+| 22-03-01 | 03 | 2 | SHELL-06 | T-22-SC | package legitimacy confirmed before install | blocking human checkpoint | — (human confirmation; never auto-approvable) | — | ⬜ pending |
+| 22-03-02 | 03 | 2 | SHELL-04, SHELL-06 | T-22-SC/11 | pinned versions, committed lockfile | build | `cd frontend && npm ci && npm run build` | ❌ creates | ⬜ pending |
+| 22-03-03 | 03 | 2 | SHELL-04, SHELL-06 | T-22-09/10/12 | network-call, form and raw-markup bans | lint + unit | `cd frontend && npm run check && npm run test` | ❌ creates | ⬜ pending |
+| 22-04-01 | 04 | 3 | SHELL-01, SHELL-02, SHELL-03, SHELL-07 | T-22-13/14/15/16/17 | allowlist DTO, island escaping, fail-closed manifest | hermetic (parse island from `response.text`) | `uv run pytest tests/test_react_page_render.py tests/test_schema_projection.py -x -q` | ❌ creates | ⬜ pending |
+| 22-04-02 | 04 | 3 | GUARD-01 | T-22-01 | rewritten assertions cannot go vacuous | hermetic | `uv run pytest tests/test_dashboard.py tests/test_inventory_completeness.py -q` | ✅ modifies | ⬜ pending |
+| 22-04-03 | 04 | 3 | SHELL-05 | T-22-15/18 | image build fails without a bundle | image build + hermetic | `uv run pytest tests/test_bundle_asset_exists.py -x -q` + real `docker build` from `git archive` export | ❌ creates | ⬜ pending |
+| 22-05-01 | 05 | 4 | SHELL-05, SHELL-06 | T-22-19/21/22/23 | pre-merge trigger inherited, clone-based build | CI config | `uv run pytest tests/test_ci_gate_config.py -x -q` | ✅ modifies | ⬜ pending |
+| 22-05-02 | 05 | 4 | SHELL-06 | T-22-20 | untouchable directories fenced | CI config | `uv run pytest tests/test_ci_gate_config.py -x -q` | ✅ modifies | ⬜ pending |
+| 22-05-03 | 05 | 4 | SHELL-06 | T-22-19/20/21 | gate config itself covered and red-proven | hermetic | `uv run pytest tests/test_ci_gate_config.py -x -q` | ❌ creates | ⬜ pending |
+| 22-06-01 | 06 | 4 | LIST-01 | T-22-24/26 | text nodes only, server-owned vocabulary | Vitest component | `cd frontend && npm run test -- RunsPage` | ❌ creates | ⬜ pending |
+| 22-06-02 | 06 | 4 | LIST-01 | T-22-25 | failure never renders as an empty list | Vitest component | `cd frontend && npm run test -- RunsPage` | ✅ modifies | ⬜ pending |
+| 22-06-03 | 06 | 4 | LIST-04 | T-22-27 | scroll region structure; manual 375px check | Vitest + manual | `cd frontend && npm run test -- RunsPage`; Chrome DevTools at 375/374/376px | ⚠️ partial | ⬜ pending |
+| 22-07-01 | 07 | 4 | SHELL-07 | T-22-30/31 | enforced response model, unchanged wire body | hermetic | `uv run pytest tests/test_dashboard.py -k status -q` | ❌ creates | ⬜ pending |
+| 22-07-02 | 07 | 4 | GUARD-04 | T-22-29/32 | every column deliberately classified | hermetic | `uv run python -c "from app.schemas.run_columns import RUN_COL_CLASSIFICATION"` | ❌ creates | ⬜ pending |
+| 22-07-03 | 07 | 4 | GUARD-04 | T-22-28 | new column fails CI by name | hermetic | `uv run pytest tests/test_schema_projection.py -x -q` | ✅ modifies | ⬜ pending |
+| 22-08-01 | 08 | 4 | SHELL-03 | T-22-33/34/37 | native form; decline cancels via prevent-default | Vitest component | `cd frontend && npm run test -- MutationForm` | ❌ creates | ⬜ pending |
+| 22-08-02 | 08 | 4 | SHELL-03 | T-22-35/36 | armless banner variant is a compile error | Vitest + typecheck | `cd frontend && npm run test -- DecisionBanner && npm run check` | ❌ creates | ⬜ pending |
+| 22-09-01 | 09 | 4 | SHELL-04 | T-22-38/39 | dev branch unreachable in a deployed image | hermetic | `uv run pytest tests/test_react_dev_mode.py -x -q` | ❌ creates | ⬜ pending |
+| 22-09-02 | 09 | 4 | SHELL-04 | T-22-40/41 | explicit proxy prefixes; redirect origin measured | manual (two servers) | `cd frontend && npm run check` + recorded redirect-origin measurements | ✅ modifies | ⬜ pending |
+| 22-09-03 | 09 | 4 | SHELL-04 | T-22-42 | documented commands were executed | manual (documented in README) | `npm run dev`; `npm run check` | ✅ modifies | ⬜ pending |
+| 22-10-01 | 10 | 5 | LIST-02, GUARD-06 | T-22-45/47 | teardown observable, single request call site | Vitest (fake timers) | `cd frontend && npm run test -- usePoller` | ❌ creates | ⬜ pending |
+| 22-10-02 | 10 | 5 | LIST-02 | T-22-46 | settled rows never poll; in-place badge update | Vitest component | `cd frontend && npm run test -- RunsPage` | ✅ modifies | ⬜ pending |
+| 22-10-03 | 10 | 5 | GUARD-06 | T-22-43/44 | two independent enforcement paths, non-vacuous | hermetic text scan | `uv run pytest tests/test_no_fetch_outside_poller.py -x -q` | ❌ creates | ⬜ pending |
+| 22-11-01 | 11 | 5 | SHELL-07 | T-22-50/51 | deterministic generation, no new HTTP surface | hermetic | `uv run python scripts/generate_openapi_doc.py` | ❌ creates | ⬜ pending |
+| 22-11-02 | 11 | 5 | SHELL-07 | T-22-49 | withheld field is a compile error | typecheck | `cd frontend && npm run check && npm run test` | ✅ modifies | ⬜ pending |
+| 22-11-03 | 11 | 5 | SHELL-06 | T-22-48/52 | stale declarations fail CI, no runtime skip | hermetic + CI | `uv run pytest tests/test_generated_types_staleness.py tests/test_ci_gate_config.py -x -q` | ❌ creates | ⬜ pending |
+| 22-12-01 | 12 | 6 | GUARD-02 | T-22-53/57 | safety pins resolve; hermetic, not DB-gated | hermetic | `uv run pytest tests/test_safety_mutation_registry.py -x -q` | ❌ creates | ⬜ pending |
+| 22-12-02 | 12 | 6 | GUARD-02 | T-22-53 | every pin demonstrated able to fail | mutation sweep | `uv run pytest tests/test_safety_mutation_registry.py -x -q` + recorded per-entry red runs | ✅ modifies | ⬜ pending |
+| 22-12-03 | 12 | 6 | LIST-03, SHELL-03, GUARD-01 | T-22-54/55/56 | notice channel allowlisted; replacement trail closed | hermetic | `uv run pytest tests/test_dashboard.py tests/test_inventory_completeness.py -x -q` | ✅ modifies | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+**Sampling continuity:** no three consecutive tasks lack an automated verify — the only task without
+one is the blocking package-legitimacy checkpoint 22-03-01, and both of its plan siblings carry
+automated commands.
 
 ### Requirement → command map (research-verified, inherited by tasks)
 
@@ -87,18 +126,27 @@ mapping is already fixed below and each task must inherit its requirement's comm
 
 ## Wave 0 Requirements
 
-- [ ] `frontend/` scaffold (`npm create vite@latest frontend -- --template react-ts`) — also resolves
-      Open Question 1 (exact Vite manifest path / multi-entry `rollupOptions.input` shape) as a side effect
-- [ ] `frontend/vitest.config.ts` — framework install, `test.environment: "jsdom"`
-- [ ] `tests/test_inventory_completeness.py` — GUARD-01 (must land before any conversion commit)
-- [ ] `tests/test_safety_mutation_registry.py` — GUARD-02's mutation-pinned subset
-- [ ] `tests/test_route_shadowing.py` — SHELL-01 / GUARD-05 catch-all-absence half
-- [ ] `tests/test_react_page_render.py` — SHELL-02
-- [ ] `tests/test_bundle_asset_exists.py` — SHELL-05 hermetic half
-- [ ] `tests/test_schema_projection.py` — SHELL-07 / GUARD-04
-- [ ] `tests/test_no_html_on_service_routes.py` — GUARD-05
-- [ ] `tests/test_no_fetch_outside_poller.py` — GUARD-06 Python-side half
-- [ ] A `<title>`-per-page pin — SHELL-10; zero existing coverage in the repo today
+Every gap below is assigned to a named plan and task; none is left to be discovered during execution.
+
+- [ ] `frontend/` scaffold — plan 22-03 task 2. Also resolves Open Question 1 (real manifest path and
+      the multi-entry input shape), recorded in `frontend/MANIFEST-SHAPE.md` BEFORE plan 22-04 writes
+      the loader
+- [ ] `frontend/vitest.config.ts` + `frontend/src/test/setup.ts` — plan 22-03 task 3
+- [ ] `tests/assertion_inventory.py` + `tests/test_inventory_completeness.py` — plan 22-01 tasks 1-2
+      (GUARD-01; must land before any conversion commit, enforced by a CI step in 22-01 task 3)
+- [ ] `tests/test_design_tokens.py` widening — plan 22-02 task 1 (must land before any markup moves)
+- [ ] `tests/test_route_shadowing.py` + `tests/test_no_html_on_service_routes.py` — plan 22-02 task 2
+- [ ] `tests/test_page_shell_pins.py` (per-page `<title>` pin, zero existing coverage) — plan 22-02 task 3
+- [ ] `tests/test_react_page_render.py` + `tests/test_schema_projection.py` — plan 22-04 task 1
+- [ ] `tests/test_bundle_asset_exists.py` — plan 22-04 task 3
+- [ ] `tests/test_ci_gate_config.py` — plan 22-05 task 3
+- [ ] `tests/test_react_dev_mode.py` — plan 22-09 task 1
+- [ ] `tests/test_no_fetch_outside_poller.py` — plan 22-10 task 3
+- [ ] `tests/test_generated_types_staleness.py` — plan 22-11 task 3
+- [ ] `tests/safety_mutation_registry.py` + `tests/test_safety_mutation_registry.py` — plan 22-12 tasks 1-2
+- [ ] A 375px-overflow automated pin — still NOT created. jsdom performs no layout, so no automated
+      pin is written; plan 22-06 task 3 performs and records a manual measurement at 375/374/376px and
+      leaves LIST-04's manual row open if no browser is available
 
 ---
 
