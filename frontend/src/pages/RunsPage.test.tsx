@@ -303,3 +303,31 @@ describe("RunsPage", () => {
     expect(screen.getByText("2026-08-17 12:34")).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 3: scroll-region structure -- a jsdom-level structural pin, not a layout
+// measurement. jsdom performs no layout, so this asserts only what jsdom CAN see:
+// element nesting, attributes and presence/absence. The real 375/374/376px overflow
+// proof is manual and recorded in SUMMARY.md (or explicitly left open there if no
+// browser was available), matching this repo's precedent for the same property.
+// ---------------------------------------------------------------------------
+
+describe("RunsPage scroll region structure", () => {
+  it("renders the scroll region as the table's direct parent, carrying the region role, a zero tab index and the accessible label", () => {
+    render(<RunsPage data={makePage([makeRow()])} />);
+    const region = document.querySelector('[role="region"]') as HTMLElement;
+    expect(region).not.toBeNull();
+    expect(region.getAttribute("tabindex")).toBe("0");
+    expect(region.getAttribute("aria-label")).toBe("Payroll runs");
+    // :scope > table asserts DIRECT parentage, not merely a shared ancestor --
+    // a table nested one level deeper (e.g. inside a wrapper div) would fail this.
+    const table = region.querySelector(":scope > table");
+    expect(table).not.toBeNull();
+  });
+
+  it("with zero rows renders no such region element at all", () => {
+    render(<RunsPage data={makePage([])} />);
+    expect(document.querySelector('[role="region"]')).toBeNull();
+    expect(document.querySelector(".table-scroll")).toBeNull();
+  });
+});
