@@ -11,7 +11,7 @@ from typing import Any, TypedDict, cast
 
 import psycopg
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
 import app.db.repo as repo
 import app.pipeline.delivery as delivery
@@ -36,6 +36,7 @@ from app.routes.templating import (
     render_react_page,
     templates,
 )
+from app.schemas.run_status import RunStatusPoll
 from app.schemas.runs_list import RunListRow, RunsListPage
 
 __all__ = ["router", "repo", "delivery", "wake"]
@@ -933,14 +934,21 @@ def runs_list(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/runs/{run_id}/status")
-def run_status(run_id: uuid.UUID) -> JSONResponse:
+@router.get("/runs/{run_id}/status", response_model=RunStatusPoll)
+def run_status(run_id: uuid.UUID) -> RunStatusPoll:
     """Lightweight status poll endpoint for the vanilla-JS badge updater.
 
-    Returns {"status": "<status>", "badge_class": "<class>", "badge_label": "<label>"}.
-    The JS poller in run_detail.html / runs_list.html calls this every 2s per in-flight
-    run, swaps the badge in-place, and stops polling when the status is settled —
-    no full-page reload, no dropdown reset.
+    Returns the seven-field RunStatusPoll shape (status/badge_class/badge_label/
+    failure/queue_label/queue_badge_class/has_open_job). The JS poller in
+    run_detail.html / runs_list.html calls this every 2s per in-flight run, swaps
+    the badge in-place, and stops polling when the status is settled — no
+    full-page reload, no dropdown reset.
+
+    response_model=RunStatusPoll formalizes a shape this route already returned
+    field-for-field, and puts it into the application's own OpenAPI document
+    natively. Returning the model itself (not a pre-built JSONResponse) is what
+    makes the declaration actually enforced — a route that constructs its own
+    JSON response object bypasses response-model validation entirely.
     """
     try:
         run = repo.load_run(run_id)
@@ -950,16 +958,14 @@ def run_status(run_id: uuid.UUID) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Run not found")
     safe_run = _safe_run_with_queue_projection(run_id, run)
     status = safe_run.get("status", "")
-    return JSONResponse(
-        content={
-            "status": status,
-            "badge_class": badge_class_filter(status),
-            "badge_label": badge_label_filter(status),
-            "failure": safe_run["failure"],
-            "queue_label": safe_run["queue_label"],
-            "queue_badge_class": safe_run["queue_badge_class"],
-            "has_open_job": safe_run["has_open_job"],
-        }
+    return RunStatusPoll(
+        status=status,
+        badge_class=badge_class_filter(status),
+        badge_label=badge_label_filter(status),
+        failure=safe_run["failure"],
+        queue_label=safe_run["queue_label"],
+        queue_badge_class=safe_run["queue_badge_class"],
+        has_open_job=safe_run["has_open_job"],
     )
 
 

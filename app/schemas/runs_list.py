@@ -16,27 +16,25 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.schemas._projection import RowProjection
+from app.schemas.run_status import FailureInfo, RunStatusPoll
+
+# Re-exported for backward compatibility: `app/schemas/__init__.py` imports
+# `FailureInfo` from this module, and `RunStatusPoll` now owns the definition
+# -- the poll shape is the seven volatile fields' single source of truth.
+__all__ = ["FailureInfo", "RunListRow", "RunsListPage"]
 
 
-class FailureInfo(BaseModel):
-    """Browser-safe terminal-diagnostics projection.
-
-    Field-for-field mirror of `app.routes.runs.FailurePresentation` (a `TypedDict`) --
-    kept as a distinct Pydantic model here so it nests cleanly inside `RunListRow` and
-    round-trips through `model_dump_json()`/`openapi-typescript` codegen.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    secondary_label: str | None
-    stage: str | None
-    reason: str | None
-    attempts: str | None
-
-
-class RunListRow(RowProjection):
+class RunListRow(RunStatusPoll, RowProjection):
     """One row of the /runs list -- exactly the fields `runs_list.html` rendered
     before conversion, no more.
+
+    Composes `RunStatusPoll`'s seven volatile fields (`status`, `badge_class`,
+    `badge_label`, `failure`, `queue_label`, `queue_badge_class`, `has_open_job`)
+    via multiple inheritance rather than restating them -- a flat field union,
+    not a nested sub-object. A flat union is what lets a poller merge its
+    `RunStatusPoll` response straight onto an existing row object
+    (`{...row, ...pollResponse}` in TypeScript); a nested `poll: RunStatusPoll`
+    field would force a different, asymmetric merge shape at every call site.
 
     `EXCLUDED` names every column a raw run row can carry that this page does not
     display. Two distinct sources feed that row shape in this codebase and both must be
@@ -85,17 +83,13 @@ class RunListRow(RowProjection):
         }
     )
 
+    # status, badge_class, badge_label, queue_label, queue_badge_class,
+    # has_open_job, failure -- inherited from RunStatusPoll, not restated
+    # here.
     id: UUID
     created_at: datetime | None = None
     created_at_display: str
     business_name: str = ""
-    status: str
-    badge_class: str
-    badge_label: str
-    queue_label: str | None = None
-    queue_badge_class: str
-    has_open_job: bool
-    failure: FailureInfo
     summary_gate_reason: str | None = None
     employee_count: int = 0
 
