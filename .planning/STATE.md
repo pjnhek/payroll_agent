@@ -4,10 +4,10 @@ milestone: v5
 milestone_name: React/TypeScript Operator Console
 current_phase_name: defining requirements
 status: planning
-stopped_at: Completed quick-260815-r2k (confirmation draft guards + record-only honesty — BUG-13, BUG-14), 2 commits, all green
-last_updated: "2026-08-15T04:51:51.504Z"
-last_activity: 2026-08-14
-last_activity_desc: Milestone v5 started
+stopped_at: quick-260816-ffv pushed (c3e1595..f708e9c, 8 commits, 4/4 CI workflows green); live service verified healthy on the new code; last open debug artifact (mark-handled-dead-end) human-verified against production and resolved. Board clean for v5.
+last_updated: "2026-08-17T16:50:00.000Z"
+last_activity: 2026-08-17
+last_activity_desc: "Pushed quick-260816-ffv, verified the live demo loop end to end, closed the last open debug artifact"
 progress:
   total_phases: 23
   completed_phases: 10
