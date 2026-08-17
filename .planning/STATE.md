@@ -2,17 +2,19 @@
 gsd_state_version: 1.0
 milestone: v5
 milestone_name: React/TypeScript Operator Console
-current_phase_name: 22 - Frontend Foundation & Runs List
+current_phase: 22
 status: planning
-stopped_at: v5 roadmap created - 3 phases (22 Frontend Foundation & Runs List, 23 Run Detail, 24 Eval View & Preservation Proof), 31/31 requirements mapped, no orphans. Ready to plan Phase 22.
-last_updated: "2026-08-17T18:30:00.000Z"
+stopped_at: Phase 22 context gathered
+last_updated: "2026-08-17T18:44:17.836Z"
 last_activity: 2026-08-17
-last_activity_desc: "Created the v5 roadmap - phases 22-24 as three independently deployable vertical slices, 31/31 requirements mapped"
+last_activity_desc: Created the v5 roadmap - phases 22-24 as three independently deployable vertical slices, 31/31 requirements mapped
 progress:
-  total_phases: 26
-  completed_phases: 23
-  total_plans: 113
-  completed_plans: 113
+  total_phases: 3
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
+current_phase_name: 22 - Frontend Foundation & Runs List
 ---
 
 # Project State
@@ -366,11 +368,11 @@ eval-chart defect, not cosmetics).
 
 ## Session Continuity
 
-Last session: 2026-08-17
-Stopped at: **v5 roadmap created** — `.planning/ROADMAP.md` now carries the v5 milestone entry, the 3-phase checklist (22-24), full phase details with success criteria and planner notes, and the appended Progress rows; `.planning/REQUIREMENTS.md` traceability populated 31/31 with a per-phase distribution table. The stale `Next (mini) — Demo Polish & Run-Detail UI (planned)` milestone bullet was deleted (retired 2026-07-20 after research found all four items already shipped). Next: `/gsd-plan-phase 22`.
+Last session: 2026-08-17T18:44:17.814Z
+Stopped at: Phase 22 context gathered
 
 Prior session stopped at: quick-260816-ffv pushed (`c3e1595..f708e9c`, 8 commits, all 4 CI workflows green). Live service verified healthy on the new code (`/health/live|ready|schema|queue` all ok, `in_sync`). Debug artifact `mark-handled-dead-end` human-verified PASS against the LIVE service and flipped to `resolved` — the full clarify -> reply -> resume -> awaiting_approval loop was walked end to end in production. Board is clean for v5.
-Resume file: None
+Resume file: .planning/phases/22-frontend-foundation-runs-list/22-CONTEXT.md
 
 ## Operator Next Steps
 
@@ -378,5 +380,6 @@ Resume file: None
 - Phase 22 planning must produce a concrete, testable formulation for GUARD-02 (the softest of the 31 requirements) and must confirm the Vite manifest path + the Vite/plugin-react/Vitest peer ranges against TypeScript 6.0.3 at install time — the STACK.md matrix was validated against TS 7.0.2
 
 _Cleared 2026-08-17:_
+
 - ~~Add `DEMO_OPERATOR_EMAIL` to `.env.example` / local `.env` / Render dashboard~~ — all three done; live `POST /demo/bind` returns `303 -> /?bound=1`, proving the setting resolves in production.
 - ~~Migrate live Supabase for `78542f1`'s `email_messages.operator_acknowledged_at` column~~ — was never a manual step: `app/db/schema.sql:305` ships an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, and live `GET /health/schema` returns `in_sync`.
