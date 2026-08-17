@@ -204,14 +204,15 @@ with that dissent on the record, and with `/ops` preserved as the deliberate cou
 **Three locked decisions were falsified before any code was written** (cross-AI scope review, 2026-08-14,
 each verified against live source):
 1. *Mutations use native `<form method="post">` + 303, never `fetch`.* The original plan assumed handler
-   byte-identity implied browser-semantics identity. It does not: `app/routes/runs.py:580` encodes
-   `?resolution_superseded=1` into the redirect target only, `app/routes/demo.py:337` redirects success to
-   the newly created run, and Reject's guard is a native `onsubmit="return confirm(...)"`. A fetch plus
-   manual re-fetch loses all three.
+   byte-identity implied browser-semantics identity. It does not: `app/routes/runs.py:626` encodes
+   `?resolution_superseded=1` into the redirect target only, `app/routes/demo.py:252` and
+   `app/routes/demo.py:352` each redirect success to the newly created run, and there are **five** native
+   `onsubmit="return confirm(...)"` guards, not one (`app/templates/run_detail.html:143`, `:155`, `:282`,
+   `:286`, `:320`). A fetch plus manual re-fetch loses all of it.
 2. *Per-route Pydantic response DTOs with field allowlists.* `_safe_run_for_browser`
-   (`app/routes/runs.py:224`) is a **denylist** (`app/routes/runs.py:246`), so serializing it wholesale would
-   expose `alias_candidates`, `reply_epoch`, and `business_id`, and would auto-expose any column later added
-   to `RUN_COLS`.
+   (`app/routes/runs.py:220`) is a **denylist** (`app/routes/runs.py:244`, `safe_run.pop(field, None)`), so
+   serializing it wholesale would expose `alias_candidates`, `reply_epoch`, and `business_id`, and would
+   auto-expose any column later added to `RUN_COLS`.
 3. *Vertical slices, each independently deployable.* The original horizontal API-then-UI split would have
    stranded an unconsumed JSON API, and the uncertain external timeline makes a half-migrated dashboard a
    worse artifact than no migration at all.
@@ -248,12 +249,28 @@ Phase 21. The app remains demo-ready.
 
 ### Active
 
-**v5 — React/TypeScript Operator Console — IN PROGRESS (started 2026-08-14).** Requirements are defined in
-`.planning/REQUIREMENTS.md` and mapped to Phases 22–24 in `.planning/ROADMAP.md`. The milestone is presentation
-layer only: `app/pipeline/`, `app/queue/`, `app/db/`, `app/llm/`, and `app/email/` are out of scope, and all 20
-mutation routes stay byte-identical. The known cost center is roughly 4,650 LOC of existing tests that assert
-against rendered markup (`tests/test_dashboard.py` 2,218 LOC / 85 markup assertions, `tests/test_needs_operator.py`
-2,009 LOC / 10); `tests/test_ops_route.py` is deliberately NOT in that set, because `/ops` stays Jinja.
+**v5 — React/TypeScript Operator Console — IN PROGRESS (started 2026-08-14; requirements + roadmap being
+defined 2026-08-17).** The milestone is presentation layer only: `app/pipeline/`, `app/queue/`, `app/db/`,
+`app/llm/`, and `app/email/` are out of scope, and every mutation route stays byte-identical.
+
+**Mutation-route inventory, measured 2026-08-17** (supersedes an earlier "20 mutation routes" claim, which
+overcounted): there are **15** `@router.post` routes and **no** PUT/PATCH/DELETE anywhere in `app/`. Of those,
+**14 are operator/demo-facing** and in this milestone's blast radius — 11 in `app/routes/runs.py`
+(`approve`, `reject`, `resolve`, `retrigger`, `simulate-reply`, and six `delivery-review/*` actions) and 3 in
+`app/routes/demo.py` (`bind`, `compose`, `send-test`). The 15th, `POST /webhook/inbound`, is not
+operator-facing and is out of scope.
+
+**The test cost center, measured 2026-08-17** (LOC figures below supersede an earlier 2,218 / 2,009 pair — both
+files grew with the 260814–260816 quick tasks): `tests/test_dashboard.py` is 2,296 LOC / 295 asserts / 85
+`*.text` references, and `tests/test_needs_operator.py` is 2,223 LOC / 167 asserts / 8 real markup references
+(12 `.text` minus 4 `caplog.text`). **The planning-relevant number is not the total but the presence/absence
+split:** 42 presence vs **31 absence** assertions in `test_dashboard.py`, and 5 presence vs **7 absence** in
+`test_needs_operator.py`. Those **38 absence assertions** are the conversion's silent-failure surface — an
+`assert X not in response.text` keeps passing for free once a route returns a shell instead of full HTML, so
+the tests that survive a bad port are disproportionately the *safety* ones (the PII-redaction proofs at
+`tests/test_dashboard.py:523-526` are in that set). Presence assertions fail loudly and are therefore the safe
+class. `tests/test_ops_route.py` is deliberately NOT in the cost center, because `/ops` stays Jinja — its
+script-free guarantee is pinned by `test_ops_page_has_no_script_or_polling` at `tests/test_ops_route.py:364`.
 
 Prior: v4 — Durable Execution — SHIPPED 2026-07-20 (archived in `milestones/v4-ROADMAP.md` +
 `milestones/v4-REQUIREMENTS.md`); the demo-polish items above are all shipped and test-covered.
@@ -329,6 +346,10 @@ Hardening** (16 reqs: MONEY/OPS2/DATA/CLAR2, `milestones/v2-REQUIREMENTS.md`), *
 | **v4:** An authenticated pump endpoint + frequent cron, not an internal timer loop | Render free wakes only on **inbound HTTP**; internal sleeps do not keep it alive. Without an external pump, a queue is durable *storage* and never durable *execution* — a job retried with a future `available_at` would sit forever | ✓ Good — held through v4 close; the pump shares the single `drain_once()` with the workers and OPS-01's live UAT proved drain-before-alarm ordering on a real dispatch |
 | **v4:** Exactly-once send via Resend's `Idempotency-Key`, keyed on the existing pre-send reserved `message_id` | `gateway.py` already mints a durable unique synthetic `message_id` and writes a `reserved` row *before* calling Resend — it just discards it. Handing it to the provider (and reusing it on retry, never minting a fresh uuid4) closes the double-payroll-email window that retries would otherwise open | ✓ Good — shipped Phase 20; PROOF-03 (Phase 21) demonstrates a crash between provider-accept and the local `sent` commit sends no second email, byte-identical `message_id` across attempts, and reds against a fresh-per-attempt key |
 | **v4:** Milestone scoped to durability, not throughput | At ~1 payroll email per client per week, fairness/priority/backpressure machinery is building for load that never arrives; durability is the claim that is both true and load-bearing for any future productization | ✓ Good — v4 shipped durability (proofs able-to-fail, ops view, best-effort recovery) with zero throughput machinery; the honest claim held end to end |
+| **v5:** MPA with per-page React islands, NOT an SPA (locked 2026-08-17) | Three research dimensions converged independently: mutations are already full browser navigations, so a client router buys nothing and costs a re-hydrate per approve/reject on a cold-startable instance; and it *dissolves* route shadowing rather than solving it — build output lands under the `/static` mount that already exists at `app/main.py:11`, so no catch-all is ever introduced. The rejected catch-all's failure mode is severe: `/health/live` and `/internal/pump` returning 200+HTML makes Render mark a broken deploy healthy AND `pump.yml`'s `curl -f` go green while the durable queue is never drained — v4's guarantee voided by a frontend routing choice | New — locked before planning |
+| **v5:** Initial page data embedded server-side, not fetched on mount (locked 2026-08-17) | Render free cold-starts in ~1 min; fetch-on-mount stacks a second round trip on top, putting a spinner over the operator approval gate — the money surface. Embedded as `<script type="application/json">` rather than a `window.__DATA__=` assignment, which is XSS-safer. Accepted cost: the DTO is serialized at two call sites (page route + JSON endpoint) | New — locked before planning |
+| **v5:** Mutation forms stay server-rendered in the Jinja shell (locked 2026-08-17) | `base.html` keeps every `<form method="post">` and all five `onsubmit="return confirm(...)"` guards; React renders only data islands inside it. This preserves the existing no-JavaScript property for free and collapses five separate pitfalls at once (form semantics, route shadowing, `aria-current`/`<title>`, the `js-` poller hooks, the cold-start critical path). It also keeps the five confirm guards out of JSX, where returning `false` from `onSubmit` does NOT cancel submission — a regression currently guarded by zero tests (`grep -rn "onsubmit\|confirm(" tests/` → 0 hits) | New — locked before planning |
+| **v5:** TypeScript 6.0.3 + ESLint, overriding the research's TS 7.0.2 + Biome (locked 2026-08-17) | `STACK.md` recommends Biome partly to escape `typescript-eslint`'s `<6.1.0` peer cap, but concedes in the same breath that Biome's React-hooks coverage is thinner than `eslint-plugin-react-hooks` — and that gap lands on the milestone's riskiest behavior. The `/runs/{id}` poller's correctness IS an effect-dependency problem (`run_detail.html:76`), and its in-source comment at `:39-44` records that a narrower earlier check missed `extracting → awaiting_reply` so the clarification banner never appeared without a manual refresh. `exhaustive-deps` catches that class; an 8-12x faster `tsc` is worth nothing at three pages. Accepted cost: two tools instead of one, departing from the `ruff` precedent | New — locked before planning; override recorded in `research/STACK.md` |
 
 ## Evolution
 
@@ -351,11 +372,13 @@ This document evolves at phase transitions and milestone boundaries.
 *Last updated: 2026-08-14 — **Milestone v5 (React/TypeScript Operator Console) started.** Converts `/runs`,
 `/runs/{id}`, and `/eval` to React + TypeScript across three independently shippable vertical slices
 (Phases 22–24); `/` and `/ops` stay Jinja2, with `/ops` deliberately script-free. Presentation layer only:
-no money-moving route is edited, and all 20 mutation endpoints keep native form-POST + 303 semantics.
+no money-moving route is edited, and all 14 operator-facing mutation endpoints keep native form-POST + 303
+semantics (measured 2026-08-17; an earlier "20" overcounted).
 Scope was adversarially reviewed by an external AI CLI against live source BEFORE any planning artifact was
 written; that review falsified three locked decisions (fetch-based mutations lose redirect-encoded state at
-`app/routes/runs.py:580` and `app/routes/demo.py:337`; a generic serializer over the `_safe_run_for_browser`
-denylist at `app/routes/runs.py:246` would leak `alias_candidates`/`reply_epoch`/`business_id`; and a
+`app/routes/runs.py:626` and `app/routes/demo.py:252`/`:352`; a generic serializer over the
+`_safe_run_for_browser` denylist at `app/routes/runs.py:244` would leak
+`alias_candidates`/`reply_epoch`/`business_id`; and a
 horizontal API-first phase split would strand an unconsumed API), all three corrected above before Step 4.
 The same review argued the milestone should not happen at all on engineering merit; that dissent is recorded
 in the Current Milestone section rather than discarded. `phases.clear` was deliberately SKIPPED at Step 6:
