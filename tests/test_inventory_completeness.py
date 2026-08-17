@@ -132,8 +132,18 @@ def test_every_discovered_assertion_has_a_registry_entry() -> None:
 
 
 def test_no_registry_entry_is_stale() -> None:
+    """An entry with a non-null `replaced_by` is exempt from this check by
+    design: it records that its guarded content moved into the React DOM,
+    where TestClient has no server-side surface left to assert against, so
+    the underlying `.text` comparison was deliberately DELETED from the test
+    file rather than kept as a stale pointer. Every other entry must still
+    resolve against a live comparison -- an unexplained disappearance is
+    exactly the "stale pointer past a refactor or rename" failure mode this
+    guard exists to catch.
+    """
     discovered = discover_text_comparisons()
-    orphans = sorted(set(ASSERTION_INVENTORY) - set(discovered))
+    replaced = {key for key, entry in ASSERTION_INVENTORY.items() if entry.replaced_by}
+    orphans = sorted(set(ASSERTION_INVENTORY) - set(discovered) - replaced)
     assert not orphans, (
         "ASSERTION_INVENTORY entries with no matching live `.text` comparison "
         f"(a stale pointer past a refactor or rename): {orphans}"
@@ -152,8 +162,13 @@ def test_every_entry_has_a_layer_and_route_classification() -> None:
 
 
 def test_every_entry_source_text_matches_live_source() -> None:
+    """Same `replaced_by` exemption as test_no_registry_entry_is_stale --
+    a deleted, relocated-to-Vitest assertion has no live source segment to
+    diff against."""
     mismatches = []
     for key, entry in sorted(ASSERTION_INVENTORY.items()):
+        if entry.replaced_by:
+            continue
         path = REPO_ROOT / entry.file
         source = path.read_bytes().decode("utf-8")
         tree = ast.parse(source, filename=str(path))

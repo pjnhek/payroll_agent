@@ -219,6 +219,16 @@ FILE_SCOPE_NOTES: dict[str, str] = {
         '1 `.text` comparison, zero affected: caplog.text (route=none, layer=UNCONVERTED) — log'
         ' output, not an HTTP response body.'
     ),
+    'tests/test_react_page_render.py': (
+        '2 `.text` comparisons, both attributed to /runs: the demo form presence check'
+        ' (layer=JINJA_SHELL) and the hostile-business-name script-injection round-trip check'
+        ' (layer=JSON_ISLAND). Every other assertion in this new file (added by the same plan'
+        ' that converted /runs to React) parses the __INITIAL_DATA__ island once via the'
+        ' shared `_parse_island` helper and asserts on the resulting dict/list — those compares'
+        ' operate on parsed values, not on a `.text` attribute access, so they are outside this'
+        " guard's scope by construction, the same shape as tests/test_gateway.py's intermediate-"
+        ' variable pattern noted above.'
+    ),
     'tests/test_reply_redelivery.py': (
         '4 `.text` comparisons, attributed to /runs/{run_id}: three reached via the ?notice='
         ' query channel after a simulate-reply mutation, one on the reject-form action markup —'
@@ -237,14 +247,19 @@ FILE_SCOPE_NOTES: dict[str, str] = {
 
 
 ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
-    'test_dashboard:62:11': AssertionEntry(
+    'test_dashboard:88:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=62,
+        line=88,
         col_offset=11,
-        source_text='str(run_id) in response.text',
+        source_text='[row["id"] for row in island["runs"]] == [str(run_id)]',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_dashboard.py::test_runs_list_returns_200 -- rewritten as a positive'
+            ' exact-shape assertion against the parsed island\'s rows array (no longer a literal'
+            ' `.text` substring search)'
+        ),
     ),
     'test_dashboard:66:11': AssertionEntry(
         file='tests/test_dashboard.py',
@@ -254,6 +269,10 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         route='/runs',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.REACT_DOM,
+        replaced_by=(
+            'frontend/src/pages/RunsPage.test.tsx (plan 22-06) -- empty-state copy is pure JSX'
+            ' with no server-side surface after conversion'
+        ),
     ),
     'test_dashboard:74:11': AssertionEntry(
         file='tests/test_dashboard.py',
@@ -263,480 +282,459 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.REACT_DOM,
+        replaced_by=(
+            'frontend/src/pages/RunsPage.test.tsx (plan 22-06) -- empty-state copy is pure JSX'
+            ' with no server-side surface after conversion'
+        ),
     ),
-    'test_dashboard:179:11': AssertionEntry(
+    'test_dashboard:204:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=179,
+        line=204,
         col_offset=11,
         source_text='"chart.svg" in response.text',
         route='/eval',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:235:15': AssertionEntry(
+    'test_dashboard:260:15': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=235,
+        line=260,
         col_offset=15,
         source_text='"No eval results" in response.text',
         route='/eval',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:235:53': AssertionEntry(
+    'test_dashboard:260:53': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=235,
+        line=260,
         col_offset=53,
         source_text='"chart.svg" in response.text',
         route='/eval',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:309:11': AssertionEntry(
+    'test_dashboard:334:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=309,
+        line=334,
         col_offset=11,
         source_text='sentinel not in response.text',
         route='/eval',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:313:11': AssertionEntry(
+    'test_dashboard:338:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=313,
+        line=338,
         col_offset=11,
         source_text='"‹fixture file missing›" in response.text',
         route='/eval',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:316:11': AssertionEntry(
+    'test_dashboard:341:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=316,
+        line=341,
         col_offset=11,
         source_text='legit_body in response.text',
         route='/eval',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:415:11': AssertionEntry(
+    'test_dashboard:440:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=415,
+        line=440,
         col_offset=11,
         source_text='\'http-equiv="refresh"\' not in response.text',
         route='/runs',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.JINJA_SHELL,
     ),
-    'test_dashboard:463:11': AssertionEntry(
+    'test_dashboard:488:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=463,
+        line=488,
         col_offset=11,
         source_text='"/status" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:464:11': AssertionEntry(
+    'test_dashboard:489:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=464,
+        line=489,
         col_offset=11,
         source_text='str(run_id) in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:473:11': AssertionEntry(
+    'test_dashboard:498:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=473,
+        line=498,
         col_offset=11,
         source_text='"/status" not in settled.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:523:11': AssertionEntry(
+    'test_dashboard:548:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=523,
+        line=548,
         col_offset=11,
         source_text='"Maria Chen" not in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:524:11': AssertionEntry(
+    'test_dashboard:549:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=524,
+        line=549,
         col_offset=11,
         source_text='"maria@example.test" not in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:525:11': AssertionEntry(
+    'test_dashboard:550:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=525,
+        line=550,
         col_offset=11,
         source_text='"provider said" not in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:526:11': AssertionEntry(
+    'test_dashboard:551:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=526,
+        line=551,
         col_offset=11,
         source_text='"Error" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:527:11': AssertionEntry(
+    'test_dashboard:552:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=527,
+        line=552,
         col_offset=11,
-        source_text="f'/runs/{run_id}/retrigger' in response.text",
+        source_text='f\'/runs/{run_id}/retrigger\' in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:560:11': AssertionEntry(
+    'test_dashboard:585:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=560,
+        line=585,
         col_offset=11,
         source_text='"Maria Chen" in leaking.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:618:11': AssertionEntry(
+    'test_dashboard:643:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=618,
+        line=643,
         col_offset=11,
         source_text='"Retries exhausted" in detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:619:11': AssertionEntry(
+    'test_dashboard:644:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=619,
+        line=644,
         col_offset=11,
         source_text='"Extraction" in detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:620:11': AssertionEntry(
+    'test_dashboard:645:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=620,
+        line=645,
         col_offset=11,
         source_text='"Provider timeout" in detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:621:11': AssertionEntry(
+    'test_dashboard:646:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=621,
+        line=646,
         col_offset=11,
         source_text='"5 of 5 attempts" in detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:622:11': AssertionEntry(
+    'test_dashboard:647:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=622,
+        line=647,
         col_offset=11,
         source_text='hostile not in detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:649:15': AssertionEntry(
+    'test_dashboard:674:15': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=649,
+        line=674,
         col_offset=15,
         source_text='derived not in mismatched_detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:650:15': AssertionEntry(
+    'test_dashboard:675:15': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=650,
+        line=675,
         col_offset=15,
         source_text='derived not in mismatched_poll.text',
         route='/runs/{run_id}/status',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:651:11': AssertionEntry(
+    'test_dashboard:676:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=651,
+        line=676,
         col_offset=11,
         source_text='"Stage:</strong> Extraction" not in mismatched_detail.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:687:11': AssertionEntry(
+    'test_dashboard:720:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=687,
+        line=720,
         col_offset=11,
-        source_text='">Error<" in response.text',
+        source_text='row["badge_label"] == "Error"',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_dashboard.py::test_runs_list_uses_safe_failure_projection -- rewritten'
+            ' as a positive exact-shape assertion against the parsed island\'s'
+            ' RunListRow.badge_label field'
+        ),
     ),
-    'test_dashboard:688:11': AssertionEntry(
+    'test_dashboard:721:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=688,
+        line=721,
         col_offset=11,
-        source_text='"Retries exhausted" in response.text',
+        source_text='row["failure"]["secondary_label"] == "Retries exhausted"',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_dashboard.py::test_runs_list_uses_safe_failure_projection -- rewritten'
+            ' as a positive exact-shape assertion against the parsed island\'s'
+            ' RunListRow.failure.secondary_label field'
+        ),
     ),
-    'test_dashboard:689:11': AssertionEntry(
+    'test_dashboard:723:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=689,
+        line=723,
         col_offset=11,
-        source_text='"Final attempt lease expired" in response.text',
+        source_text='row["failure"]["reason"] == "Final attempt lease expired"',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_dashboard.py::test_runs_list_uses_safe_failure_projection -- rewritten'
+            ' as a positive exact-shape assertion against the parsed island\'s'
+            ' RunListRow.failure.reason field'
+        ),
     ),
-    'test_dashboard:690:11': AssertionEntry(
+    'test_dashboard:724:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=690,
+        line=724,
         col_offset=11,
-        source_text='"5 of 5 attempts" in response.text',
+        source_text='row["failure"]["attempts"] == "5 of 5 attempts"',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_dashboard.py::test_runs_list_uses_safe_failure_projection -- rewritten'
+            ' as a positive exact-shape assertion against the parsed island\'s'
+            ' RunListRow.failure.attempts field'
+        ),
     ),
-    'test_dashboard:691:11': AssertionEntry(
+    'test_dashboard:725:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=691,
+        line=725,
         col_offset=11,
         source_text='hostile not in response.text',
         route='/runs',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.JSON_ISLAND,
     ),
-    'test_dashboard:862:8': AssertionEntry(
+    'test_dashboard:896:8': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=862,
+        line=896,
         col_offset=8,
         source_text='"This action is durably saved; you can safely leave this page."\n        not in settled.text',  # noqa: E501 — exact live-source capture, must not be reformatted
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:865:11': AssertionEntry(
+    'test_dashboard:899:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=865,
+        line=899,
         col_offset=11,
         source_text='"var MAX_ATTEMPTS = 60" not in settled.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1070:11': AssertionEntry(
+    'test_dashboard:1109:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1070,
+        line=1109,
         col_offset=11,
         source_text='"Fallback payroll request" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1071:11': AssertionEntry(
+    'test_dashboard:1110:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1071,
+        line=1110,
         col_offset=11,
         source_text='"2026-07-18 12:34" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1112:11': AssertionEntry(
+    'test_dashboard:1151:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1112,
+        line=1151,
         col_offset=11,
         source_text='(\n        "An earlier resolution was already accepted. This submission was recorded "\n        "but not applied."\n    ) in response.text',  # noqa: E501 — exact live-source capture, must not be reformatted
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1116:11': AssertionEntry(
+    'test_dashboard:1155:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1116,
+        line=1155,
         col_offset=11,
         source_text='hostile not in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1124:11': AssertionEntry(
+    'test_dashboard:1163:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1124,
+        line=1163,
         col_offset=11,
         source_text='(\n        "An earlier resolution was already accepted. This submission was recorded "\n        "but not applied."\n    ) not in no_flag.text',  # noqa: E501 — exact live-source capture, must not be reformatted
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1140:11': AssertionEntry(
+    'test_dashboard:1179:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1140,
+        line=1179,
         col_offset=11,
         source_text='"start this payroll run." in labeled.text',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JINJA_SHELL,
     ),
-    'test_dashboard:1145:11': AssertionEntry(
+    'test_dashboard:1184:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1145,
+        line=1184,
         col_offset=11,
         source_text='hostile not in hostile_resp.text',
         route='/runs',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.JINJA_SHELL,
     ),
-    'test_dashboard:1146:11': AssertionEntry(
+    'test_dashboard:1185:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1146,
+        line=1185,
         col_offset=11,
         source_text='"start this payroll run." not in hostile_resp.text',
         route='/runs',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.JINJA_SHELL,
     ),
-    'test_dashboard:1204:11': AssertionEntry(
+    'test_dashboard:1243:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1204,
+        line=1243,
         col_offset=11,
         source_text='"Frozen confirmation" in email.text',
         route='/runs/{run_id}/delivery-review/email',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1205:11': AssertionEntry(
+    'test_dashboard:1244:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1205,
+        line=1244,
         col_offset=11,
         source_text='"Frozen confirmation body" in email.text',
         route='/runs/{run_id}/delivery-review/email',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1206:11': AssertionEntry(
+    'test_dashboard:1245:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1206,
+        line=1245,
         col_offset=11,
         source_text='"Changed after reservation" not in email.text',
         route='/runs/{run_id}/delivery-review/email',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1339:11': AssertionEntry(
+    'test_dashboard:1378:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1339,
+        line=1378,
         col_offset=11,
         source_text='"Review confirmation delivery" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1340:11': AssertionEntry(
+    'test_dashboard:1379:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1340,
+        line=1379,
         col_offset=11,
         source_text='"Frozen payload mismatch" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1341:11': AssertionEntry(
+    'test_dashboard:1380:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1341,
+        line=1380,
         col_offset=11,
         source_text='"Frozen confirmation" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1342:11': AssertionEntry(
+    'test_dashboard:1381:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1342,
+        line=1381,
         col_offset=11,
         source_text='"View frozen email" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1343:11': AssertionEntry(
+    'test_dashboard:1382:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1343,
+        line=1382,
         col_offset=11,
         source_text='"View frozen attachment" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1344:11': AssertionEntry(
+    'test_dashboard:1383:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1344,
+        line=1383,
         col_offset=11,
         source_text='"Mark delivered" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1345:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1345,
-        col_offset=11,
-        source_text='"Authorize a new confirmation" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1346:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1346,
-        col_offset=11,
-        source_text='"AUTHORIZE A NEW CONFIRMATION" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1347:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1347,
-        col_offset=11,
-        source_text='"Resolve unresolved names" not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1358:15': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1358,
-        col_offset=15,
-        source_text='unsafe_name not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1380:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1380,
-        col_offset=11,
-        source_text='"Review clarification delivery" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
@@ -745,176 +743,221 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         file='tests/test_dashboard.py',
         line=1384,
         col_offset=11,
-        source_text='">Retry same question</button>" not in response.text',
+        source_text='"Authorize a new confirmation" in response.text',
         route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
+        assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
     'test_dashboard:1385:11': AssertionEntry(
         file='tests/test_dashboard.py',
         line=1385,
         col_offset=11,
-        source_text='f"/runs/{run_id}/delivery-review/clarification/retry-now" not in response.text',  # noqa: E501 — exact live-source capture, must not be reformatted
+        source_text='"AUTHORIZE A NEW CONFIRMATION" in response.text',
         route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
+        assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
     'test_dashboard:1386:11': AssertionEntry(
         file='tests/test_dashboard.py',
         line=1386,
         col_offset=11,
-        source_text='"the replay budget for this reservation is spent" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1387:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1387,
-        col_offset=11,
-        source_text='"Mark handled" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1388:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1388,
-        col_offset=11,
-        source_text='"Reject" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1389:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1389,
-        col_offset=11,
-        source_text='f"/runs/{run_id}/delivery-review/clarification/mark-handled" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1390:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1390,
-        col_offset=11,
-        source_text='f"/runs/{run_id}/delivery-review/clarification/reject" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1391:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1391,
-        col_offset=11,
-        source_text='"One payroll name needs clarification" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1392:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1392,
-        col_offset=11,
-        source_text='"frozen-question.pdf" in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.PRESENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1393:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1393,
-        col_offset=11,
-        source_text='"Review confirmation delivery" not in response.text',
+        source_text='"Resolve unresolved names" not in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1394:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1394,
-        col_offset=11,
-        source_text='"Mark delivered" not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1395:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1395,
-        col_offset=11,
-        source_text='"Authorize a new confirmation" not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1396:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1396,
-        col_offset=11,
-        source_text='"AUTHORIZE A NEW CONFIRMATION" not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1397:11': AssertionEntry(
+    'test_dashboard:1397:15': AssertionEntry(
         file='tests/test_dashboard.py',
         line=1397,
-        col_offset=11,
-        source_text='"Resolve &amp; Resume" not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1398:11': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1398,
-        col_offset=11,
-        source_text='"remember this alias" not in response.text',
-        route='/runs/{run_id}',
-        assertion_class=AssertionClass.ABSENCE,
-        layer=AssertionLayer.UNCONVERTED,
-    ),
-    'test_dashboard:1403:15': AssertionEntry(
-        file='tests/test_dashboard.py',
-        line=1403,
         col_offset=15,
         source_text='unsafe_name not in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
+    'test_dashboard:1419:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1419,
+        col_offset=11,
+        source_text='"Review clarification delivery" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
     'test_dashboard:1423:11': AssertionEntry(
         file='tests/test_dashboard.py',
         line=1423,
+        col_offset=11,
+        source_text='">Retry same question</button>" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1424:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1424,
+        col_offset=11,
+        source_text='f"/runs/{run_id}/delivery-review/clarification/retry-now" not in response.text',  # noqa: E501 — exact live-source capture, must not be reformatted
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1425:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1425,
+        col_offset=11,
+        source_text='"the replay budget for this reservation is spent" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1426:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1426,
+        col_offset=11,
+        source_text='"Mark handled" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1427:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1427,
+        col_offset=11,
+        source_text='"Reject" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1428:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1428,
+        col_offset=11,
+        source_text='f"/runs/{run_id}/delivery-review/clarification/mark-handled" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1429:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1429,
+        col_offset=11,
+        source_text='f"/runs/{run_id}/delivery-review/clarification/reject" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1430:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1430,
+        col_offset=11,
+        source_text='"One payroll name needs clarification" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1431:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1431,
+        col_offset=11,
+        source_text='"frozen-question.pdf" in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1432:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1432,
+        col_offset=11,
+        source_text='"Review confirmation delivery" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1433:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1433,
+        col_offset=11,
+        source_text='"Mark delivered" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1434:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1434,
+        col_offset=11,
+        source_text='"Authorize a new confirmation" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1435:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1435,
+        col_offset=11,
+        source_text='"AUTHORIZE A NEW CONFIRMATION" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1436:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1436,
+        col_offset=11,
+        source_text='"Resolve &amp; Resume" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1437:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1437,
+        col_offset=11,
+        source_text='"remember this alias" not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1442:15': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1442,
+        col_offset=15,
+        source_text='unsafe_name not in response.text',
+        route='/runs/{run_id}',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:1462:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=1462,
         col_offset=11,
         source_text='"Which employee did you mean by D. Reyes?" in email.text',
         route='/runs/{run_id}/delivery-review/email',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1634:11': AssertionEntry(
+    'test_dashboard:1673:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1634,
+        line=1673,
         col_offset=11,
         source_text='"location.reload()" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1644:11': AssertionEntry(
+    'test_dashboard:1683:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1644,
+        line=1683,
         col_offset=11,
         source_text='"location.reload()" not in settled.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_dashboard:1709:11': AssertionEntry(
+    'test_dashboard:1748:11': AssertionEntry(
         file='tests/test_dashboard.py',
-        line=1709,
+        line=1748,
         col_offset=11,
         source_text='\'http-equiv="refresh"\' not in response.text',
         route='/runs/{run_id}',
@@ -1047,99 +1090,109 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:842:11': AssertionEntry(
+    'test_needs_operator:858:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=842,
+        line=858,
         col_offset=11,
         source_text='"SECRET" not in caplog.text',
         route='none',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:843:11': AssertionEntry(
+    'test_needs_operator:859:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=843,
+        line=859,
         col_offset=11,
         source_text='"e0000001" not in caplog.text',
         route='none',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:844:11': AssertionEntry(
+    'test_needs_operator:860:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=844,
+        line=860,
         col_offset=11,
         source_text='"e0000002" not in caplog.text',
         route='none',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:845:11': AssertionEntry(
+    'test_needs_operator:861:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=845,
+        line=861,
         col_offset=11,
         source_text='"e0000003" not in caplog.text',
         route='none',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:1266:11': AssertionEntry(
+    'test_needs_operator:1282:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1266,
+        line=1282,
         col_offset=11,
         source_text='"Needs Operator" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:1269:11': AssertionEntry(
+    'test_needs_operator:1285:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1269,
+        line=1285,
         col_offset=11,
         source_text='"badge-escalate" in response.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:1282:11': AssertionEntry(
+    'test_needs_operator:1298:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1282,
+        line=1298,
         col_offset=11,
         source_text='"Needs Operator" not in perturbed.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:1283:11': AssertionEntry(
+    'test_needs_operator:1299:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1283,
+        line=1299,
         col_offset=11,
         source_text='"badge-escalate" not in perturbed.text',
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_needs_operator:1305:11': AssertionEntry(
+    'test_needs_operator:1326:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1305,
+        line=1326,
         col_offset=11,
-        source_text='"Needs Operator" in response.text',
+        source_text='row["badge_label"] == "Needs Operator"',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_needs_operator.py::test_runs_list_renders_needs_operator_badge_label --'
+            ' rewritten as a positive exact-shape assertion against the parsed island\'s'
+            ' RunListRow.badge_label field'
+        ),
     ),
-    'test_needs_operator:1306:11': AssertionEntry(
+    'test_needs_operator:1327:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1306,
+        line=1327,
         col_offset=11,
-        source_text='"badge-escalate" in response.text',
+        source_text='row["badge_class"] == "escalate"',
         route='/runs',
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.JSON_ISLAND,
+        replaced_by=(
+            'tests/test_needs_operator.py::test_runs_list_renders_needs_operator_badge_label --'
+            ' rewritten as a positive exact-shape assertion against the parsed island\'s'
+            ' RunListRow.badge_class field'
+        ),
     ),
-    'test_needs_operator:1554:11': AssertionEntry(
+    'test_needs_operator:1575:11': AssertionEntry(
         file='tests/test_needs_operator.py',
-        line=1554,
+        line=1575,
         col_offset=11,
         source_text='bogus_id not in page.text',
         route='/runs/{run_id}',
@@ -1632,6 +1685,24 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
+    'test_react_page_render:99:11': AssertionEntry(
+        file='tests/test_react_page_render.py',
+        line=99,
+        col_offset=11,
+        source_text='\'action="/demo/send-test"\' in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_react_page_render:129:11': AssertionEntry(
+        file='tests/test_react_page_render.py',
+        line=129,
+        col_offset=11,
+        source_text='"<script>alert(1)</script>" not in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.JSON_ISLAND,
+    ),
     'test_reply_redelivery:602:11': AssertionEntry(
         file='tests/test_reply_redelivery.py',
         line=602,
@@ -1695,9 +1766,9 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_stuck_run_recovery:102:11': AssertionEntry(
+    'test_stuck_run_recovery:108:11': AssertionEntry(
         file='tests/test_stuck_run_recovery.py',
-        line=102,
+        line=108,
         col_offset=11,
         source_text='"Payroll Runs" in response.text',
         route='/runs',
