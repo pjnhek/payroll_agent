@@ -17,9 +17,11 @@ The key risks are not "can React render this UI" — they are a test suite where
 
 ### Recommended Stack
 
-Vite 8.2.1 + React 19.2.8 + TypeScript 7.0.2, built as a third Docker stage (`node:24-slim`) that a Python runtime stage copies only `dist/` output from. No client router. No TanStack Query — a ~20-line `usePoller` hook replaces it. Type safety across the Python/TS boundary via `openapi-typescript` (types-only). Biome, not ESLint+Prettier — `typescript-eslint@8.67.0`'s peer range cannot accept TypeScript 7 yet; named cost: Biome's React-hooks rule coverage is thinner than `eslint-plugin-react-hooks`.
+Vite 8.2.1 + React 19.2.8 + **TypeScript 6.0.3**, built as a third Docker stage (`node:24-slim`) that a Python runtime stage copies only `dist/` output from. No client router. No TanStack Query — a ~20-line `usePoller` hook replaces it. Type safety across the Python/TS boundary via `openapi-typescript` (types-only). **ESLint + `typescript-eslint@8.67.0` + `eslint-plugin-react-hooks`, NOT Biome.**
 
-**Core technologies:** Vite 8.2.1 (multi-entry build); React 19.2.8; TypeScript 7.0.2 (Go-native compiler); Biome 2.5.8 (lint+format, one tool, no config debate — direct analogue of `ruff`); Vitest 4.1.10 + @testing-library/react 16.3.2 + jsdom 30.0.1; openapi-typescript 7.13.0 (CI-gated for staleness like `eval/chart.svg`). Explicitly rejected: Playwright, Tailwind/CSS-in-JS, any component library, any global-state library, Next.js/SSR, any monorepo tool.
+**Core technologies:** Vite 8.2.1 (multi-entry build); React 19.2.8; **TypeScript 6.0.3** (last stable 6.x, published 2026-04-16); **ESLint + typescript-eslint 8.67.0 + eslint-plugin-react-hooks**; Vitest 4.1.10 + @testing-library/react 16.3.2 + jsdom 30.0.1; openapi-typescript 7.13.0 (CI-gated for staleness like `eval/chart.svg`). Explicitly rejected: Playwright, Tailwind/CSS-in-JS, any component library, any global-state library, Next.js/SSR, any monorepo tool, **Biome**.
+
+> **This supersedes the TypeScript 7.0.2 + Biome pairing recommended in `STACK.md`.** See the resolved-decisions block above for the reasoning. `STACK.md`'s own trailing "DECISION OVERRIDE" section records it at source. **Install-time caveat:** the peer ranges for Vite 8.2.1, `@vitejs/plugin-react@6.0.5`, and Vitest 4.1.10 were validated against TypeScript **7.0.2**, not 6.0.3 — re-verify them in Slice 1 before treating the matrix as settled.
 
 ### Expected Features (behavioral parity contract)
 
@@ -59,13 +61,44 @@ Four independent passes reached the same structural answer from different angles
 - **Reuse `app/static/style.css` class names; no Tailwind, no CSS-in-JS, no re-declared design tokens** — Stack names the live WCAG-contrast-test mechanism; Pitfalls independently derives the same conclusion from the test-guard-scope angle.
 - **Server-embedded initial data, not fetch-on-mount** — Architecture and Pitfalls converge independently on avoiding a second round trip stacked behind Render free's ~1-minute cold start.
 
-### Decisions the research deliberately did NOT make
+### Decisions the research deliberately did NOT make — ALL THREE NOW RESOLVED (human, 2026-08-17)
 
-(a) **Initial page data: embedded vs. fetched on mount.** Strongly recommended (embed) but not locked the way native-form-POST is — no document names a fallback path or regression test for the read side specifically. Roadmapper should decide whether embedding-only is a phase-exit criterion for all three slices.
+The three questions below were left open by the research and were put to the project owner before
+requirements were written. **All three are resolved; the resolutions are locked constraints, not defaults.**
+They are recorded in `PROJECT.md`'s Key Decisions table (commit `a37e64c`).
 
-(b) **Whether operator mutation controls stay server-rendered enough to work with JS off, or JS becomes required for the three converted pages, with `/ops` as the sole guaranteed no-JS surface.** The current app is fully JS-optional. No research document commits to preserving this for the converted pages vs. accepting JS as assumed. This changes what Slice 1's CI needs to gate and should be decided before Slice 1's DTO/shell design is finalized.
+(a) **Initial page data: embedded vs. fetched on mount.** → **RESOLVED: embed server-side.** The page route
+renders the data into a `<script type="application/json" id="__INITIAL_DATA__">` block and React hydrates from
+it. Driver: Render free cold-starts in ~1 min, and fetch-on-mount stacks a second round trip on top of that,
+putting a spinner over the operator approval gate — the money surface. Chosen over a `window.__DATA__=`
+assignment because the JSON-script form is XSS-safer. **Accepted cost:** the DTO is serialized at two call
+sites (page route + JSON endpoint), so a shape change must touch both. Embedding IS a phase-exit criterion for
+all three slices.
 
-(c) **TypeScript 7.0.2 + Biome vs. TypeScript 6.0.3 + ESLint.** Stack recommends the newer pair for compiler speed and concedes Biome's React-hooks coverage is thinner. The specific intersection that makes this non-cosmetic: the `/runs/{id}` poller's correctness IS an effect-dependency problem — the documented, already-fixed regression (missing the `extracting → awaiting_reply` transition) is exactly the class of bug `exhaustive-deps` catches. Whichever slice ports the poller must prove the reload trigger behaviorally (both halves of the `status`/`queue_label` OR condition) rather than relying on lint, if Biome is kept.
+(b) **No-JS support scope.** → **RESOLVED: mutation controls stay server-rendered.** `base.html` remains a
+server-rendered shell owning every `<form method="post">` and all five `onsubmit="return confirm(...)"`
+guards; React renders only data islands inside it. This preserves the app's existing JS-optional property for
+the converted pages rather than spending it, and it collapses five separately-named pitfalls at once (form
+semantics, route shadowing, `aria-current`/`<title>`, the `js-` poller hooks, the cold-start critical path).
+It also keeps the five confirm guards out of JSX, where returning `false` from `onSubmit` does **not** cancel
+submission — a regression currently guarded by zero tests (`grep -rn "onsubmit\|confirm(" tests/` → 0 hits).
+**Accepted cost:** each converted page is a hybrid, so component boundaries must respect which layer owns
+which markup.
+
+(c) **TypeScript 7.0.2 + Biome vs. TypeScript 6.0.3 + ESLint.** → **RESOLVED: TypeScript 6.0.3 + ESLint**,
+overriding `STACK.md`'s recommendation. The deciding argument is the intersection this document already
+identified: the `/runs/{id}` poller's correctness IS an effect-dependency problem
+(`app/templates/run_detail.html:76`), and its in-source comment at `:39-44` records that a narrower earlier
+check missed the `extracting → awaiting_reply` transition so the clarification banner never appeared without a
+manual refresh. `exhaustive-deps` is the rule that catches that class, and Biome's React-hooks coverage is
+thinner by its own advocate's admission. An 8-12x faster `tsc` buys nothing at three pages, and TS 7's
+programmatic Compiler API is unstable until 7.1. **Accepted cost:** two tools instead of one, a real departure
+from the `ruff` "one tool, no config debate" precedent this project otherwise follows.
+
+**Unchanged by the resolution:** whichever slice ports the poller must still prove the reload trigger
+**behaviorally** — one test for a `status` change and a separate test for a `queue_label`-only change. Lint is
+the cheap guard; the behavioral test is the real one. This requirement does not go away because ESLint was
+chosen.
 
 ### Highest-damage traps, ranked
 
@@ -81,7 +114,7 @@ Four independent passes reached the same structural answer from different angles
 
 ### Pull forward into Slice 1
 
-1. `frontend/` workspace + strict TS + Biome lint rules + Vitest — unavoidably first.
+1. `frontend/` workspace + strict TS (6.0.3) + ESLint/`typescript-eslint`/`eslint-plugin-react-hooks` config + Vitest — unavoidably first.
 2. `app/schemas/` + `RowProjection.from_row` + `UnclassifiedColumnError` — deferring means Slice 2 must reopen `/runs` to retrofit the allowlist pattern.
 3. The three classification tests (mechanism, `RUN_COLS`, AST-read `load_all_runs`) — the seam's value is preventing a leak from the first shipped page.
 4. Manifest loader + `render_react_page()` + shell template — deferring creates drifting duplicate boot logic.
@@ -107,8 +140,9 @@ Four independent passes reached the same structural answer from different angles
 ### Gaps to Address
 
 - Exact Vite manifest path / multi-entry config unverified against a real build — confirm early in Slice 1.
-- Decisions (a) embed-vs-fetch and (b) no-JS support scope are strong defaults, not locked constraints — resolve explicitly before Slice 1's DTO/shell design is finalized.
-- Decision (c) TS7/Biome vs TS6/ESLint trades compiler speed against a named regression-detection gap on the poller; if Biome is kept, Slice 2 must add an explicit behavioral proof of both halves of the reload-trigger OR condition.
+- ~~Decisions (a) embed-vs-fetch and (b) no-JS support scope are strong defaults, not locked constraints~~ — **RESOLVED 2026-08-17: embed server-side; mutation controls stay server-rendered.** Both are now locked constraints. See the resolved-decisions section above.
+- ~~Decision (c) TS7/Biome vs TS6/ESLint~~ — **RESOLVED 2026-08-17: TypeScript 6.0.3 + ESLint + `eslint-plugin-react-hooks`.** The behavioral proof of both halves of the reload-trigger OR condition is still required regardless of linter — it was never contingent on keeping Biome.
+- **Peer-range re-verification (new, from the (c) resolution):** the version matrix in `STACK.md` was validated against TypeScript 7.0.2. Confirm Vite 8.2.1, `@vitejs/plugin-react@6.0.5`, and Vitest 4.1.10 accept TypeScript 6.0.3 at install time, in Slice 1, before treating the stack as settled.
 - The anti-BUG-1 Authorize/Reject mutual-exclusivity pin has no direct positive test today — add one in Slice 2.
 - `clarification_round` DTO conversion trap (latent, not live) — Slice 2 must model "3 or more" explicitly rather than relying on Pydantic to silently resolve a missing field the way Jinja does.
 - `created_at` is in the `/runs` list projection but not in `RUN_COLS` — the list and detail pages cannot share one DTO; state this constraint explicitly in Slice 1/2 schema work.
