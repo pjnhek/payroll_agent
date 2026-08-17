@@ -249,8 +249,11 @@ Phase 21. The app remains demo-ready.
 
 ### Active
 
-**v5 — React/TypeScript Operator Console — IN PROGRESS (started 2026-08-14; requirements + roadmap being
-defined 2026-08-17).** The milestone is presentation layer only: `app/pipeline/`, `app/queue/`, `app/db/`,
+**v5 — React/TypeScript Operator Console — IN PROGRESS.** Declared 2026-08-14 (`abd2170`); the run was
+interrupted before requirements or a roadmap were written, and was resumed and completed 2026-08-17.
+**31 requirements** in `.planning/REQUIREMENTS.md` (`06f70a8`), all 31 mapped to **Phases 22–24** in
+`.planning/ROADMAP.md` (`5934c1f`), over a 4-dimension research pass (`a4b6134`, `9b92332`).
+The milestone is presentation layer only: `app/pipeline/`, `app/queue/`, `app/db/`,
 `app/llm/`, and `app/email/` are out of scope, and every mutation route stays byte-identical.
 
 **Mutation-route inventory, measured 2026-08-17** (supersedes an earlier "20 mutation routes" claim, which
