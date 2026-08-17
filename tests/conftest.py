@@ -32,6 +32,7 @@ from typing import Any, NoReturn, cast
 
 import pytest
 import resend  # noqa: F401 — imported so the module is available for monkeypatching
+from fastapi.testclient import TestClient
 
 from app.models.contracts import InboundEmail
 from app.models.roster import Roster
@@ -2979,6 +2980,33 @@ def fake_repo(monkeypatch) -> InMemoryRepo:
     )
 
     return store
+
+
+# ---------------------------------------------------------------------------
+# 4a. client — the shared hermetic FastAPI TestClient
+#
+# Nearly every route/dashboard test module has independently constructed its
+# own module-level `client = TestClient(app, raise_server_exceptions=False)`
+# (test_ops_route.py, test_dashboard.py, test_needs_operator.py, and others).
+# This fixture is the single shared definition new test modules should
+# prefer over adding another copy of that line — it does not retroactively
+# change the existing module-level instances, which remain valid and are
+# out of this fixture's scope to touch.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client() -> TestClient:
+    """A hermetic FastAPI TestClient over the real `app.main.app` ASGI app.
+
+    `raise_server_exceptions=False` matches the repo's dominant convention
+    (test_dashboard.py, test_needs_operator.py, test_ops_route.py) so an
+    unhandled exception in a route under test surfaces as a 500 response
+    rather than propagating out of the test itself.
+    """
+    from app.main import app as _app
+
+    return TestClient(_app, raise_server_exceptions=False)
 
 
 # ---------------------------------------------------------------------------

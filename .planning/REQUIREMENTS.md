@@ -16,25 +16,32 @@ behavior-preservation exercise wearing a frontend-framework costume."
 
 1. **MPA with per-page React islands, never an SPA.** FastAPI keeps owning routing, mutations, and the
    303-redirect state machine. No client router. No catch-all route.
+
 2. **Initial page data embedded server-side** in a `<script type="application/json" id="__INITIAL_DATA__">`
    block, not fetched on mount.
+
 3. **Mutation forms stay server-rendered** in the Jinja shell, including all five
    `onsubmit="return confirm(...)"` guards. React renders data islands only.
+
 4. **TypeScript 6.0.3 + ESLint + `eslint-plugin-react-hooks`**, overriding the research's TS 7.0.2 + Biome.
 
 **Measured scope facts (verified against live source 2026-08-17; these supersede earlier estimates):**
 
 - **15** `@router.post` routes repo-wide, no PUT/PATCH/DELETE anywhere. **14 operator/demo-facing** (11 in
   `app/routes/runs.py`, 3 in `app/routes/demo.py`); `POST /webhook/inbound` is the 15th and is out of scope.
+
 - **14** test files contain `.text` assertions — not the 2 the milestone originally scoped.
   `test_dashboard.py` = 2,296 LOC / 295 asserts / 85 `*.text` refs, split **42 presence vs 31 absence**.
   `test_needs_operator.py` = 2,223 LOC / 167 asserts / 8 real markup refs, split **5 presence vs 7 absence**.
   `test_phase20_clarification_review.py` = 30 `.text` asserts / 11 `client.get`. `test_reply_redelivery.py` = 4 / 4.
+
 - **38 absence assertions** (`assert X not in ...text`) are the conversion's silent-failure surface, and they
   skew toward the safety proofs (PII scrubbing, XSS, path traversal, the delivery-review Reject gate).
+
 - **Zero** tests reference `onsubmit` or `confirm(` anywhere in `tests/`.
 - The `/runs/{id}` decision banner is **6 mutually-exclusive `elif` branches + 1 implicit no-banner
   fallthrough + 1 orthogonal `hours_changes` overlay** (`run_detail.html:99-208`), not a flat 8-way switch.
+
 - Delivery review has **three** renderable states (clarification, confirmation, degraded "unavailable"), not two.
 
 ---
@@ -43,7 +50,7 @@ behavior-preservation exercise wearing a frontend-framework costume."
 
 ### Shell & Toolchain (foundation — Slice 1)
 
-- [ ] **SHELL-01**: An operator loads `/runs`, `/runs/{id}`, and `/eval` and the pages are rendered by React from a built bundle, served from the existing `/static` mount, with no catch-all route added to the app.
+- [x] **SHELL-01**: An operator loads `/runs`, `/runs/{id}`, and `/eval` and the pages are rendered by React from a built bundle, served from the existing `/static` mount, with no catch-all route added to the app.
 - [ ] **SHELL-02**: An operator's browser receives each page's data already present in the HTML response — no post-load fetch is required before payroll data is visible, so a cold-started instance shows content rather than a spinner.
 - [ ] **SHELL-03**: An operator with JavaScript disabled can still read every converted page's server-rendered shell and submit every mutation form on it.
 - [ ] **SHELL-04**: A developer runs one command to start a local dev server with hot reload that proxies to uvicorn, and one command to typecheck and lint the frontend.
@@ -57,7 +64,7 @@ behavior-preservation exercise wearing a frontend-framework costume."
 - [ ] **GUARD-02**: An engineer can tell, for any absence assertion that still passes after conversion, whether it passes because the guarded content is genuinely absent or because the assertion can no longer see it.
 - [ ] **GUARD-03**: All five destructive-action confirmation guards are covered by tests, so removing or neutralizing one fails the suite.
 - [ ] **GUARD-04**: Adding a column to `RUN_COLS` without either exposing it in a page's response shape or naming it internal-only fails CI, identifying the column by name.
-- [ ] **GUARD-05**: `POST /webhook/inbound`, `/health/*`, and `/internal/pump` never return HTML, and a change that makes them do so fails CI.
+- [x] **GUARD-05**: `POST /webhook/inbound`, `/health/*`, and `/internal/pump` never return HTML, and a change that makes them do so fails CI.
 - [ ] **GUARD-06**: A mutation issued via `fetch` or `axios` from frontend source fails CI, so the native-form-POST decision is enforced rather than trusted.
 
 ### Runs List (Slice 1)
@@ -87,8 +94,8 @@ behavior-preservation exercise wearing a frontend-framework costume."
 ### Preservation Invariants (all slices)
 
 - [ ] **SHELL-08**: `app/pipeline/`, `app/queue/`, `app/db/`, `app/llm/`, and `app/email/` are unmodified at milestone close, and a diff proves it.
-- [ ] **SHELL-09**: `/` and `/ops` remain Jinja2, and `/ops` remains free of any script tag, `setInterval`, or meta-refresh.
-- [ ] **SHELL-10**: Every converted page keeps its per-page `<title>`, its single `aria-current="page"` nav match, and the design tokens from `app/static/style.css` — no color literal is introduced outside `:root`.
+- [x] **SHELL-09**: `/` and `/ops` remain Jinja2, and `/ops` remains free of any script tag, `setInterval`, or meta-refresh.
+- [x] **SHELL-10**: Every converted page keeps its per-page `<title>`, its single `aria-current="page"` nav match, and the design tokens from `app/static/style.css` — no color literal is introduced outside `:root`.
 
 ---
 
@@ -135,7 +142,7 @@ Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHELL-01 | Phase 22 | Pending |
+| SHELL-01 | Phase 22 | Complete |
 | SHELL-02 | Phase 22 | Pending |
 | SHELL-03 | Phase 22 | Pending |
 | SHELL-04 | Phase 22 | Pending |
@@ -143,13 +150,13 @@ Populated during roadmap creation.
 | SHELL-06 | Phase 22 | Pending |
 | SHELL-07 | Phase 22 | Pending |
 | SHELL-08 | Phase 24 | Pending |
-| SHELL-09 | Phase 22 | Pending |
-| SHELL-10 | Phase 22 | Pending |
+| SHELL-09 | Phase 22 | Complete |
+| SHELL-10 | Phase 22 | Complete |
 | GUARD-01 | Phase 22 | Pending |
 | GUARD-02 | Phase 22 | Pending |
 | GUARD-03 | Phase 23 | Pending |
 | GUARD-04 | Phase 22 | Pending |
-| GUARD-05 | Phase 22 | Pending |
+| GUARD-05 | Phase 22 | Complete |
 | GUARD-06 | Phase 22 | Pending |
 | LIST-01 | Phase 22 | Pending |
 | LIST-02 | Phase 22 | Pending |
@@ -168,6 +175,7 @@ Populated during roadmap creation.
 | EVALUI-03 | Phase 24 | Pending |
 
 **Coverage:**
+
 - v5 requirements: 31 total
 - Mapped to phases: 31 ✓ (every requirement maps to exactly one phase; no orphans, no duplicates)
 - Unmapped: 0
