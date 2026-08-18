@@ -1899,9 +1899,9 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
     ),
-    'test_stuck_run_recovery:108:11': AssertionEntry(
+    'test_stuck_run_recovery:123:11': AssertionEntry(
         file='tests/test_stuck_run_recovery.py',
-        line=108,
+        line=123,
         col_offset=11,
         source_text='"Payroll Runs" in response.text',
         route='/runs',

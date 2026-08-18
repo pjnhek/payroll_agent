@@ -46,17 +46,32 @@ def test_runs_list_ast_is_read_only_and_has_no_background_tasks_parameter() -> N
         if isinstance(node, ast.Call)
         and (qualified := _qualified_call(node)) is not None
     }
-    # The route now renders through render_react_page() / builds a RunsListPage
-    # DTO -- both bare-name calls (imported directly, not attribute access), so
-    # this attribute-call-only scan does not see them. Their bodies are pure
-    # presentation/read code with no mutation, no BackgroundTasks, and no queue
-    # side effects (see app/routes/templating.py::render_react_page and
-    # app/routes/runs.py::_run_list_row_from_run) -- read those directly to
-    # confirm read-only-ness; this scan is necessarily blind to bare-name calls.
     assert calls == {
         "logger.debug",
         "repo.load_all_runs",
         "router.get",
+    }
+    # The attribute-call scan above cannot see the render step: the route renders
+    # through render_react_page() and builds a RunsListPage DTO, and both are
+    # imported directly, so their call nodes carry an ast.Name func rather than an
+    # ast.Attribute one. Without the second pass below, swapping render_react_page
+    # for any other bare-name helper -- including one that reaches a mutation or
+    # queue seam -- would leave the qualified set untouched and this test green,
+    # which is precisely the "guard scans a narrower surface than it appears to"
+    # failure this suite exists to prevent. Pin the bare-name calls too, so the
+    # render step has an assertion standing over it again.
+    bare_name_calls = {
+        node.func.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert bare_name_calls == {
+        "Query",
+        "RunsListPage",
+        "_run_list_row_from_run",
+        "list",
+        "notice_label",
+        "render_react_page",
     }
 
 
