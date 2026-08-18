@@ -216,6 +216,28 @@ def test_frontend_package_json_test_script_is_not_a_watcher() -> None:
     )
 
 
+def test_frontend_job_has_a_generated_dto_staleness_step_with_no_runtime_conditional() -> None:
+    """A staleness step silently skipped when a runtime is missing is
+    indistinguishable from a passing one -- the step must exist, must invoke the
+    check variant of the type-generation script, and must carry no `if:`
+    conditional that could skip it."""
+    workflow = _load_workflow(CI_WORKFLOW_PATH)
+    job = _job(workflow, "frontend")
+    staleness_step = _find_step_by_name_substring(job, "staleness")
+    assert staleness_step is not None, (
+        "frontend job has no step whose name references DTO staleness"
+    )
+    assert "if" not in staleness_step, (
+        f"the staleness step declares an `if:` conditional ({staleness_step.get('if')!r}) "
+        "-- a skipped staleness check is indistinguishable from a passing one"
+    )
+    run_body = staleness_step.get("run") or ""
+    assert "generate:types:check" in run_body, (
+        f"staleness step does not invoke the check variant of the type-generation "
+        f"script: {run_body!r}"
+    )
+
+
 def test_docker_build_job_builds_the_whole_image_with_no_registry_credentials() -> None:
     """No stage target -- the whole point is that the runtime stage's build-time
     manifest assertion actually executes. No registry credentials -- this job only
