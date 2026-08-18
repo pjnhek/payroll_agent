@@ -2333,3 +2333,141 @@ def test_health_ready_returns_200_with_db(seeded_db):
     assert response.json()["status"] == "ready", (
         f"GET /health/ready must return {{\"status\": \"ready\"}}; got {response.json()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GUARD-02 Task 3 -- demo send-test path re-verification. Appended at the end
+# of the file (rather than interleaved near test_send_test_returns_303 /
+# test_demo_queue_error_notice_uses_fixed_copy_not_query_text) so no existing
+# ASSERTION_INVENTORY entry's line number shifts.
+# ---------------------------------------------------------------------------
+
+
+def test_send_test_with_no_scenario_selected_uses_the_default_fixture(fake_repo):
+    """The empty-input case, asserted rather than assumed: POST /demo/send-test with
+    NO fixture_key field in the form body at all must fall back to
+    DEMO_FIXTURE_DEFAULT_KEY. test_send_test_returns_303 already proves a 303 plus a
+    real persisted run happens with no form data; this test pins WHICH fixture ran --
+    specifically the default one's business -- by checking the created run's
+    business_id, not merely that some run was created.
+    """
+    from app.routes.demo import DEMO_FIXTURE_DEFAULT_KEY, DEMO_FIXTURES, SEED_BUSINESS_IDS
+
+    response = client.post("/demo/send-test", follow_redirects=False)
+    assert response.status_code == 303, (
+        f"POST /demo/send-test with no scenario selected must still return 303; "
+        f"got {response.status_code}"
+    )
+    location = response.headers["location"]
+    assert location.startswith("/runs/"), (
+        f"an absent fixture_key must still redirect to a run detail path, not the "
+        f"failure fallback; got Location={location!r}"
+    )
+    run_id = location.removeprefix("/runs/")
+    created = fake_repo.runs[run_id]
+    default_business_name = DEMO_FIXTURES[DEMO_FIXTURE_DEFAULT_KEY]["business_name"]
+    assert created["business_id"] == SEED_BUSINESS_IDS[default_business_name], (
+        "an absent fixture_key must resolve to DEMO_FIXTURE_DEFAULT_KEY's business "
+        f"({default_business_name!r}), not some other fixture's"
+    )
+
+
+def test_demo_send_test_wake_failure_after_commit_shows_retry_notice_not_nothing_recorded(
+    fake_repo, monkeypatch
+):
+    """A wake() failure AFTER the transaction commits must still redirect through the
+    demo_queue_error notice, and the RENDERED banner text must be the existing fixed
+    retry message -- never a claim that nothing was recorded, because the run row
+    genuinely exists by the time wake() runs. app/routes/demo.py::demo_send_test calls
+    wake.wake() only after `with repo.get_connection() as conn, conn.transaction():`
+    has already committed, but wake() sits inside the SAME broad `try/except Exception`
+    block as the enqueue path, so its failure looks identical (same redirect target)
+    to a pre-commit failure unless the run row's actual existence is checked.
+    """
+    from app.queue import wake as wake_mod
+
+    def _boom() -> None:
+        raise RuntimeError("wake failed")
+
+    monkeypatch.setattr(wake_mod, "wake", _boom)
+
+    runs_before = set(fake_repo.runs)
+    response = client.post("/demo/send-test", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location == "/runs?notice=demo_queue_error", (
+        f"a post-commit wake() failure must redirect through the demo_queue_error "
+        f"notice code; got Location={location!r}"
+    )
+
+    runs_after = set(fake_repo.runs) - runs_before
+    assert len(runs_after) == 1, (
+        "the run must be durably recorded before wake() runs, even though wake() "
+        "then raised -- a wake failure must never prevent the commit that already happened"
+    )
+
+    banner = client.get(location)
+    assert banner.status_code == 200
+    # Autoescaped through the shared notice partial: apostrophes are HTML-escaped.
+    assert (
+        "Couldn&#39;t start this payroll run. Pyrl&#39;s free hosting sleeps after "
+        "15 idle minutes and can take up to a minute to wake, so a first "
+        "attempt right after arriving can fail. Wait a moment and try again."
+    ) in banner.text, "the post-commit wake failure banner must carry the fixed retry message"
+    assert "nothing was recorded" not in banner.text.lower(), (
+        "the post-commit wake failure banner must never claim nothing was recorded -- "
+        "the run row exists by this point"
+    )
+
+
+def test_demo_queue_error_unknown_notice_renders_no_banner_element_at_all(monkeypatch):
+    """Strengthens the existing test_demo_queue_error_notice_uses_fixed_copy_not_query_text
+    (which already proves the hostile query text does not leak): an unrecognised
+    ?notice= code must render NO banner element at all, not merely one whose text
+    happens to differ from the hostile string -- app/routes/operator_feedback.py's
+    notice_label() returns None for an unknown code, and _operator_notice.html's
+    `{% if notice_label %}` skips the whole callout div in that case."""
+    from app.db import repo as _repo
+
+    monkeypatch.setattr(_repo, "load_all_runs", lambda: [])
+
+    hostile = "DB exploded for Maria <maria@example.test><script>alert(1)</script>"
+    hostile_resp = client.get("/runs", params={"notice": hostile})
+    assert hostile_resp.status_code == 200
+    assert 'class="callout callout-error"' not in hostile_resp.text, (
+        "an unrecognised ?notice= code must render no banner element at all"
+    )
+
+
+def test_demo_queue_error_labeled_notice_carries_the_full_fixed_sentence(monkeypatch):
+    """Strengthens the existing test_demo_queue_error_notice_uses_fixed_copy_not_query_text
+    (which checks only a short substring): the recognised demo_queue_error code must
+    render the FULL fixed retry sentence, not a truncated fragment."""
+    from app.db import repo as _repo
+
+    monkeypatch.setattr(_repo, "load_all_runs", lambda: [])
+
+    labeled = client.get("/runs", params={"notice": "demo_queue_error"})
+    assert labeled.status_code == 200
+    # Autoescaped through the shared notice partial: apostrophes are HTML-escaped.
+    assert (
+        "Couldn&#39;t start this payroll run. Pyrl&#39;s free hosting sleeps after "
+        "15 idle minutes and can take up to a minute to wake, so a first "
+        "attempt right after arriving can fail. Wait a moment and try again."
+    ) in labeled.text, "the full fixed retry sentence must render, not a truncated fragment"
+
+
+def test_runs_list_demo_form_is_server_rendered_with_post_method_and_action(fake_repo):
+    """The demo send-test form stays Jinja-owned chrome around the React mount point:
+    it must be submittable with JavaScript disabled, which requires BOTH a real
+    <form method="post"> AND its action attribute to be present in the server-rendered
+    shell -- not merely the action (already pinned by
+    tests/test_react_page_render.py::test_markup_order_notice_heading_mount_form),
+    and not react-mounted."""
+    response = client.get("/runs")
+    assert response.status_code == 200
+    assert 'method="post"' in response.text, (
+        "the demo send-test form must declare method=\"post\" so it works with "
+        "JavaScript disabled"
+    )
+    assert 'action="/demo/send-test"' in response.text
