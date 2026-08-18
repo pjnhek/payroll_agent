@@ -27,7 +27,9 @@ entry carries a non-null route and layer, every entry's captured `source_text`
 still matches what `ast.get_source_segment` extracts from the CURRENT file (so
 a refactor that moves or rewords a guarded assertion reds this test instead of
 leaving a quietly-stale registry entry), every `.text`-bearing file under
-`tests/` is named in `FILE_SCOPE_NOTES` with a real reason, discovery is
+`tests/` is named in `FILE_SCOPE_NOTES` with a real reason, every browser-DOM
+entry's replacement pointer names a Vitest file and test that exist on disk
+(so a relocated assertion's trail cannot rot into a lie), discovery is
 read-only and deterministic, and no two entries collide on their
 `(file, line, col_offset)` position.
 
@@ -227,3 +229,59 @@ def test_entry_keys_are_position_unique() -> None:
     assert len(triples) == len(set(triples)), (
         "two ASSERTION_INVENTORY entries share one (file, line, col_offset) triple"
     )
+
+
+def _parse_replacement_pointer(replaced_by: str) -> tuple[str, str]:
+    """Split a `replaced_by` string into `(vitest_file, vitest_test_name)`.
+
+    The convention (established closing GUARD-01's replacement trail): a
+    pointer is `"{file}::{test name} -- {explanation}"`. Only the `file::name`
+    prefix is load-bearing for this guard; the ` -- {explanation}` suffix is
+    prose for a human reader and is discarded here.
+    """
+    file_and_name = replaced_by.split(" -- ", 1)[0]
+    file_part, _, name_part = file_and_name.partition("::")
+    return file_part, name_part
+
+
+def _vitest_test_exists(file_path: pathlib.Path, test_name: str) -> bool:
+    """True when `file_path` exists and contains an `it(...)`/`test(...)` call
+    whose FIRST argument is the exact string `test_name` (either quote style).
+    A plain substring search, not a real TSX parser -- sufficient to catch a
+    renamed or deleted test (the "stale pointer" failure mode this guard
+    exists to close) without needing a JavaScript AST in this Python suite.
+    """
+    if not file_path.is_file():
+        return False
+    source = file_path.read_text(encoding="utf-8")
+    for caller in ("it", "test"):
+        for quote in ('"', "'"):
+            if f"{caller}({quote}{test_name}{quote}" in source:
+                return True
+    return False
+
+
+def test_every_react_dom_replacement_pointer_names_a_real_vitest_test() -> None:
+    """Every browser-DOM-layer entry's `replaced_by` pointer must name a Vitest
+    file and test that exist on disk today -- a pointer naming a renamed or
+    deleted test would otherwise rot into a lie a later reader trusts."""
+    missing: list[str] = []
+    for key, entry in sorted(ASSERTION_INVENTORY.items()):
+        if entry.layer.value != "react_dom":
+            continue
+        assert entry.replaced_by, (
+            f"{key} is layer=react_dom but carries no replaced_by pointer"
+        )
+        vitest_file, vitest_test_name = _parse_replacement_pointer(entry.replaced_by)
+        if not vitest_file.endswith((".test.ts", ".test.tsx")):
+            missing.append(f"{key}: pointer {entry.replaced_by!r} does not name a Vitest test file")
+            continue
+        if not vitest_test_name:
+            missing.append(f"{key}: pointer {entry.replaced_by!r} names no test (missing '::name')")
+            continue
+        if not _vitest_test_exists(REPO_ROOT / vitest_file, vitest_test_name):
+            missing.append(
+                f"{key}: pointer names {vitest_file}::{vitest_test_name!r}, which does not "
+                "resolve to a real it()/test() call on disk"
+            )
+    assert not missing, "\n".join(missing)

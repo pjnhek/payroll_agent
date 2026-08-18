@@ -132,6 +132,21 @@ FILE_SCOPE_NOTES: dict[str, str] = {
         ' `_is_text_attribute`) — never as a left operand or comparator of an'
         ' `ast.Compare` node in this file.'
     ),
+    'tests/safety_mutation_registry.py': (
+        'Zero `.text` comparisons: this is the GUARD-02 safety mutation registry.'
+        ' The substring `.text` appears only inside string-literal VALUES (a'
+        ' `PinnedAssertion.assertion_text` field naming `response.text`, and the'
+        ' TypeScript `element.textContent` fragment the `tsx_fragment` resolver'
+        ' searches for) — never as a left operand or comparator of an'
+        ' `ast.Compare` node in this file.'
+    ),
+    'tests/test_safety_mutation_registry.py': (
+        'Zero `.text` comparisons: this is the GUARD-02 registry\'s completeness'
+        ' guard. The substring `.text` appears only inside synthetic TypeScript'
+        ' source strings passed to `resolve_tsx_fragment` (`element.textContent`)'
+        ' and prose describing that fragment — never as a left operand or'
+        ' comparator of an `ast.Compare` node in this file.'
+    ),
     'tests/conftest.py': (
         'Zero `.text` comparisons: `.text` appears only once (line 3120), as a fake-response'
         " test double's own attribute assignment (`self.text = text`) — never as the left"
@@ -280,8 +295,9 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.REACT_DOM,
         replaced_by=(
-            'frontend/src/pages/RunsPage.test.tsx (plan 22-06) -- empty-state copy is pure JSX'
-            ' with no server-side surface after conversion'
+            'frontend/src/pages/RunsPage.test.tsx::given an empty rows array renders the'
+            ' empty-state title and helper sentence, and no table element -- empty-state'
+            ' copy is pure JSX with no server-side surface after conversion'
         ),
     ),
     'test_dashboard:74:11': AssertionEntry(
@@ -293,8 +309,9 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         assertion_class=AssertionClass.PRESENCE,
         layer=AssertionLayer.REACT_DOM,
         replaced_by=(
-            'frontend/src/pages/RunsPage.test.tsx (plan 22-06) -- empty-state copy is pure JSX'
-            ' with no server-side surface after conversion'
+            'frontend/src/pages/RunsPage.test.tsx::given an empty rows array renders the'
+            ' empty-state title and helper sentence, and no table element -- empty-state'
+            ' copy is pure JSX with no server-side surface after conversion'
         ),
     ),
     'test_dashboard:204:11': AssertionEntry(
@@ -973,6 +990,61 @@ ASSERTION_INVENTORY: dict[str, AssertionEntry] = {
         route='/runs/{run_id}',
         assertion_class=AssertionClass.ABSENCE,
         layer=AssertionLayer.UNCONVERTED,
+    ),
+    'test_dashboard:2412:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=2412,
+        col_offset=11,
+        source_text=(
+            '(\n        "Couldn&#39;t start this payroll run. Pyrl&#39;s free hosting'
+            ' sleeps after "\n        "15 idle minutes and can take up to a minute to'
+            ' wake, so a first "\n        "attempt right after arriving can fail. Wait'
+            ' a moment and try again."\n    ) in banner.text'
+        ),
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_dashboard:2437:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=2437,
+        col_offset=11,
+        source_text='\'class="callout callout-error"\' not in hostile_resp.text',
+        route='/runs',
+        assertion_class=AssertionClass.ABSENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_dashboard:2453:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=2453,
+        col_offset=11,
+        source_text=(
+            '(\n        "Couldn&#39;t start this payroll run. Pyrl&#39;s free hosting'
+            ' sleeps after "\n        "15 idle minutes and can take up to a minute to'
+            ' wake, so a first "\n        "attempt right after arriving can fail. Wait'
+            ' a moment and try again."\n    ) in labeled.text'
+        ),
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_dashboard:2469:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=2469,
+        col_offset=11,
+        source_text='\'method="post"\' in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
+    ),
+    'test_dashboard:2473:11': AssertionEntry(
+        file='tests/test_dashboard.py',
+        line=2473,
+        col_offset=11,
+        source_text='\'action="/demo/send-test"\' in response.text',
+        route='/runs',
+        assertion_class=AssertionClass.PRESENCE,
+        layer=AssertionLayer.JINJA_SHELL,
     ),
     'test_demo_fixtures:493:15': AssertionEntry(
         file='tests/test_demo_fixtures.py',
