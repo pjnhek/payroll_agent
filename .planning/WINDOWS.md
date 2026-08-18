@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 2
+open_count: 1
 waived_count: 0
-fixed_count: 0
+fixed_count: 1
 total_count: 2
-last_updated: 2026-08-18T01:10:02.919Z
+last_updated: 2026-08-18T02:15:54.719Z
 ---
 
 # Broken Windows Ledger
@@ -15,7 +15,7 @@ last_updated: 2026-08-18T01:10:02.919Z
 
 | id | phase | kind | file | line | description | status | reason | recorded_at | resolved_at |
 |----|-------|------|------|------|-------------|--------|--------|-------------|-------------|
-| 1 | 22 | unrun-verify | frontend/src/pages/RunsPage.tsx |  | LIST-04 real 375/374/376px narrow-viewport overflow measurement not performed -- no browser reachable from this worktree/sandbox and no Playwright/Puppeteer installed; left open per plan 22-06 instruction rather than claimed | open |  | 2026-08-17T23:45:08.596Z |  |
+| 1 | 22 | unrun-verify | frontend/src/pages/RunsPage.tsx |  | LIST-04 real 375/374/376px narrow-viewport overflow measurement not performed -- no browser reachable from this worktree/sandbox and no Playwright/Puppeteer installed; left open per plan 22-06 instruction rather than claimed | fixed |  | 2026-08-17T23:45:08.596Z | 2026-08-18T02:15:54.719Z |
 | 2 | 22 | deviation | tests/safety_mutation_registry.py |  | SAFETY-03's non-HTML-service-route guarantee could not be pinned: FastAPI 0.138 gives include_router-registered APIRoutes precedence over an interleaved Mount at every position tried, so test_no_html_on_service_routes.py never reds; the registry keeps only the mount-count pin (test_only_mount_is_static). | open |  | 2026-08-18T01:10:02.919Z |  |
 
 ````json
@@ -27,10 +27,10 @@ last_updated: 2026-08-18T01:10:02.919Z
     "file": "frontend/src/pages/RunsPage.tsx",
     "line": null,
     "description": "LIST-04 real 375/374/376px narrow-viewport overflow measurement not performed -- no browser reachable from this worktree/sandbox and no Playwright/Puppeteer installed; left open per plan 22-06 instruction rather than claimed",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-08-17T23:45:08.596Z",
-    "resolved_at": null
+    "resolved_at": "2026-08-18T02:15:54.719Z"
   },
   {
     "id": 2,
