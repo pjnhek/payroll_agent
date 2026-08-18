@@ -4,12 +4,12 @@
 import { createRoot } from "react-dom/client";
 
 import { readInitialData } from "../boot/pageData";
-import { RunsPage, type RunsListPage } from "../pages/RunsPage";
+import { RunsPage } from "../pages/RunsPage";
 
 // Must match app/routes/templating.py's REACT_MOUNT_ID literal exactly.
 const MOUNT_ELEMENT_ID = "react-root";
 
-const data = readInitialData<RunsListPage>();
+const data = readInitialData();
 const mountElement = document.getElementById(MOUNT_ELEMENT_ID);
 if (!mountElement) {
   throw new Error(

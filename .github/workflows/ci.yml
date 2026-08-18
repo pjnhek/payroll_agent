@@ -190,6 +190,21 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # The "Generated DTO staleness" step below needs Python to regenerate the
+      # components-schemas document scripts/generate_openapi_doc.py produces from
+      # app/schemas/'s models. That half of the staleness gate can only run in
+      # this job: the hermetic Python test job below has no Node to run
+      # openapi-typescript, and this job otherwise has no Python runner -- so
+      # Python is set up here rather than skipping the step or splitting it
+      # across a job boundary that would leave one half of the gate unrun.
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2 (v5)
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps (all groups)
+        run: uv sync --locked
+
       # npm ci (never npm install) fails on any lockfile/package.json mismatch
       # rather than silently re-resolving -- a stale lockfile must fail the
       # job, not merge green, matching the Python builder's `uv sync --locked`.
@@ -207,6 +222,15 @@ jobs:
 
       - name: Build
         run: cd frontend && npm run build
+
+      # Regenerates frontend/src/generated/dtos.d.ts in memory from the current
+      # app/schemas/ models and diffs it against the committed file -- a model
+      # field added or renamed in Python and never regenerated fails this step
+      # by name. No conditional gates this step on Node or Python being present:
+      # a silently skipped staleness check is indistinguishable from a passing
+      # one.
+      - name: Generated DTO staleness
+        run: cd frontend && npm run generate:types:check
 
   docker-build:
     name: "Docker image build (proves the deployed-asset parity claim)"

@@ -7,6 +7,7 @@ a repository row key that is neither a declared field nor a named-excluded colum
 raises UnclassifiedColumnError rather than silently reaching the browser.
 """
 from app.schemas._projection import RowProjection, UnclassifiedColumnError
+from app.schemas.run_status import RunStatusPoll
 from app.schemas.runs_list import FailureInfo, RunListRow, RunsListPage
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "FailureInfo",
     "RunListRow",
     "RunsListPage",
+    "RunStatusPoll",
 ]
