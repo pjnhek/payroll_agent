@@ -29,9 +29,8 @@ loop, so it must stay a hermetic sibling run by the existing test job and
 must NOT be added to `.github/workflows/concurrency-proof.yml` (a missing
 DATABASE_URL there silently converts a proof into a skip -- a failure mode
 this project has already been bitten by). The demonstrated-red evidence for
-each registry entry is captured once, by hand, and recorded in this plan's
-SUMMARY.md -- the same convention `docs/DURABILITY-PROOFS.md` documents for
-PROOF-01..04.
+each registry entry is captured once, by hand, and recorded in prose --
+the same convention `docs/DURABILITY-PROOFS.md` documents for PROOF-01..04.
 """
 
 from __future__ import annotations
@@ -68,7 +67,10 @@ def test_dict_entry_resolves_live_module_level_dict() -> None:
         source,
         scope="<module>",
         predicate=SafetyPredicate(
-            kind="dict_entry", target_name="_ESCAPES", dict_key="<", value_path=r"'\\u003c'"
+            kind="dict_entry",
+            target_name="_ESCAPES",
+            dict_keys=("<", ">"),
+            dict_values=(r"'\\u003c'", r"'\\u003e'"),
         ),
     )
     assert result.resolved, "a live, non-docstring module-level dict entry must resolve"
@@ -76,34 +78,74 @@ def test_dict_entry_resolves_live_module_level_dict() -> None:
 
 def test_dict_entry_does_not_resolve_docstring_only_copy() -> None:
     source = (
-        "'''The escapes map maps < to \\\\u003c.'''\n"
+        "'''The escapes map maps < to \\\\u003c and > to \\\\u003e.'''\n"
         "_ESCAPES = {\n"
         "    '<': 'SOMETHING_ELSE',\n"
+        "    '>': 'SOMETHING_ELSE_TOO',\n"
         "}\n"
     )
     result = resolve_safety_predicate(
         source,
         scope="<module>",
         predicate=SafetyPredicate(
-            kind="dict_entry", target_name="_ESCAPES", dict_key="<", value_path=r"'\\u003c'"
+            kind="dict_entry",
+            target_name="_ESCAPES",
+            dict_keys=("<", ">"),
+            dict_values=(r"'\\u003c'", r"'\\u003e'"),
         ),
     )
     assert not result.predicate_satisfied, (
-        "a docstring-only copy of the dict entry must not satisfy the resolver"
+        "a docstring-only copy of the dict entries must not satisfy the resolver"
     )
 
 
 def test_dict_entry_does_not_resolve_comment_only_copy() -> None:
-    source = "# '<': '\\\\u003c' used to live here\n_ESCAPES = {'<': 'SOMETHING_ELSE'}\n"
+    source = (
+        "# '<': '\\\\u003c', '>': '\\\\u003e' used to live here\n"
+        "_ESCAPES = {'<': 'SOMETHING_ELSE', '>': 'SOMETHING_ELSE_TOO'}\n"
+    )
     result = resolve_safety_predicate(
         source,
         scope="<module>",
         predicate=SafetyPredicate(
-            kind="dict_entry", target_name="_ESCAPES", dict_key="<", value_path=r"'\\u003c'"
+            kind="dict_entry",
+            target_name="_ESCAPES",
+            dict_keys=("<", ">"),
+            dict_values=(r"'\\u003c'", r"'\\u003e'"),
         ),
     )
     assert not result.predicate_satisfied, (
-        "a comment-only copy of the dict entry must not satisfy the resolver"
+        "a comment-only copy of the dict entries must not satisfy the resolver"
+    )
+
+
+def test_dict_entry_requires_ALL_named_pairs_present() -> None:
+    """A compound check, not a single-key one: the real SAFETY-01 mutation
+    (see `tests/safety_mutation_registry.py`'s module docstring) demonstrated
+    that removing only ONE of `_JSON_SCRIPT_ESCAPES`'s two script-terminating
+    characters
+    does not red the island-escaping pinning test -- the surviving escape of
+    the OTHER character already breaks its exact-substring assertion. This
+    test pins that the resolver itself requires ALL named pairs, so a partial
+    removal (leaving one of the two present) already fails THIS hermetic
+    check, before the more expensive application-level pinning test would
+    even need to run.
+    """
+    source = "_ESCAPES = {\n    '<': '\\\\u003c',\n}\n"  # '>' removed
+    result = resolve_safety_predicate(
+        source,
+        scope="<module>",
+        predicate=SafetyPredicate(
+            kind="dict_entry",
+            target_name="_ESCAPES",
+            dict_keys=("<", ">"),
+            dict_values=(r"'\\u003c'", r"'\\u003e'"),
+        ),
+    )
+    assert result.scope_found
+    assert not result.predicate_satisfied, (
+        "a partial removal (one of the two required keys missing) must not satisfy "
+        "the compound resolver"
     )
 
 
@@ -112,7 +154,10 @@ def test_dict_entry_missing_scope_says_so_distinctly() -> None:
         "x = 1\n",
         scope="_NO_SUCH_MODULE_LEVEL_NAME",
         predicate=SafetyPredicate(
-            kind="dict_entry", target_name="_ESCAPES", dict_key="<", value_path=r"'\\u003c'"
+            kind="dict_entry",
+            target_name="_ESCAPES",
+            dict_keys=("<", ">"),
+            dict_values=(r"'\\u003c'", r"'\\u003e'"),
         ),
     )
     assert result.scope_found is False
@@ -129,11 +174,11 @@ def test_dict_entry_resolves_against_real_live_templating_source() -> None:
         predicate=SafetyPredicate(
             kind="dict_entry",
             target_name="_JSON_SCRIPT_ESCAPES",
-            dict_key="<",
-            value_path=r'"\\u003c"',
+            dict_keys=("<", ">"),
+            dict_values=(r'"\\u003c"', r'"\\u003e"'),
         ),
     )
-    assert result.resolved, "must resolve the real _JSON_SCRIPT_ESCAPES entry"
+    assert result.resolved, "must resolve both real _JSON_SCRIPT_ESCAPES entries"
 
 
 # --- frozenset_member ----------------------------------------------------
@@ -386,8 +431,8 @@ def test_every_registry_entrys_pinning_test_node_id_is_real() -> None:
             SafetyPredicate(
                 kind="dict_entry",
                 target_name="_JSON_SCRIPT_ESCAPES",
-                dict_key="<",
-                value_path=r'"DEFINITELY_NOT_THE_REAL_ESCAPE"',
+                dict_keys=("<", ">"),
+                dict_values=(r'"DEFINITELY_NOT_THE_REAL_ESCAPE"', r'"\\u003e"'),
             ),
         ),
         (

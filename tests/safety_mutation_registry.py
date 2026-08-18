@@ -7,8 +7,8 @@ What this registry establishes: for each named safety property, a structured
 `SafetyTarget` naming the live source location (file + scope, where "scope" is a
 Python function/class name or the module itself), a `SafetyPredicate` describing
 the SAFE, CURRENT state of that location (not the mutation -- the mutation is a
-temporary, reverted edit performed once by hand and recorded in this plan's
-SUMMARY.md, mirroring `docs/DURABILITY-PROOFS.md`'s convention), and one or more
+temporary, reverted edit performed once by hand, its red transcript captured in
+prose, mirroring `docs/DURABILITY-PROOFS.md`'s convention), and one or more
 `PinnedAssertion`s: a real pytest test whose named assertion text is proven to
 genuinely exist inside it. `tests/test_safety_mutation_registry.py` is this
 registry's own completeness guard -- it never re-executes a mutation (that would
@@ -22,14 +22,29 @@ What this registry does NOT establish: it is not `tests/assertion_inventory.py`
 every absence assertion converted on `/runs` -- only the safety-critical subset
 (PII scrubbing, XSS, the catch-all/no-HTML route-table invariant), mirroring
 PROOF-05's precedent of pinning four durability proofs rather than all 1,400
-tests. See this plan's SUMMARY.md for the full derivation from
-`tests/assertion_inventory.py`'s absence entries and for why two safety concerns
-(the catch-all mount absence and the non-HTML service-route guarantee) are
-recorded as ONE consolidated target rather than two: they share the exact same
-safe-state invariant (`app/main.py` declares exactly one `Mount`, at `/static`),
-and a second entry with the identical (file, scope, predicate) triple would fail
-this module's own no-duplicate-triple guard -- an artificially distinguished
-second predicate would not describe a genuinely different fact.
+tests. The full derivation from `tests/assertion_inventory.py`'s absence
+entries for the safety subset chosen below is recorded in prose alongside the
+demonstrated-red transcripts for each entry.
+
+SAFETY-03's scope was NARROWED during the live detection sweep from the
+initial working assumption (that a catch-all mount would also break the
+non-HTML service-route guarantee). A second `app.mount(...)` call was applied
+at every plausible position (immediately after `/static`, and after every
+`include_router(...)` call) and, in EVERY position, `tests/test_no_html_on_
+service_routes.py::test_service_route_never_answers_html` stayed green:
+FastAPI 0.138's lazy-include mechanism (the same one `tests/test_route_
+shadowing.py`'s own module docstring names) gives every `include_router`-
+registered `APIRoute` precedence over an interleaved `Mount`, regardless of
+registration order -- confirmed empirically, not assumed. `Starlette`'s
+`StaticFiles` also renders a missing-file 404 through the SAME
+`HTTPException(404)` -> FastAPI-JSON-handler path every other route uses, so
+even a hypothetical successful shadow would not, by itself, demonstrate an
+HTML leak. `test_only_mount_is_static` DID red reliably (a mount-count check,
+unaffected by this routing precedence), so SAFETY-03 keeps that one pinning
+test. The non-HTML-service-route guarantee is NOT provably falsified by a
+catch-all-`Mount` mutation given this framework's actual behavior; it is
+recorded here as a genuinely-unpinnable-by-this-mechanism finding rather than
+silently dropped.
 
 Why a new TypeScript/JSX predicate kind exists (`tsx_fragment`): `frontend/src/
 boot/pageData.ts::readInitialData` reads the embedded island via
@@ -50,9 +65,9 @@ Vitest test may be added to pin a `tsx_fragment` entry in `SAFETY_MUTATION_TARGE
 this pass (a `SafetyTarget`'s `pinning_tests` must each name a test that already
 exists on disk, per the registry's own "no stale pointer" discipline, and no such
 Vitest test exists yet). The kind is declared and demonstrated capable, so a
-future phase's genuinely TypeScript-sourced safety target (e.g. Phase 23's
-`MutationForm` `preventDefault()` guard) can be added without a schema change --
-this is a stated, explicit gap, not a silent one.
+future genuinely TypeScript-sourced safety target (e.g. the `MutationForm`
+`preventDefault()` guard a later conversion adds) can be added without a
+schema change -- this is a stated, explicit gap, not a silent one.
 """
 
 from __future__ import annotations
@@ -108,10 +123,19 @@ class SafetyPredicate:
     kind: SafetyPredicateKind
     # dict_entry / frozenset_member share target_name (the assigned variable)
     target_name: str | None = None
-    # dict_entry: a specific key inside the Dict literal bound to target_name,
-    # mapped to a value whose normalized rendering equals value_path
-    dict_key: str | None = None
-    value_path: str | None = None
+    # dict_entry: one or more keys inside the Dict literal bound to
+    # target_name, each mapped (by matching index) to a value whose
+    # normalized rendering equals the corresponding entry in dict_values. ALL
+    # pairs must be present for the predicate to be satisfied -- a compound
+    # check, not a single-key one, because a single escaped character in
+    # `_JSON_SCRIPT_ESCAPES` can be individually removed without the
+    # island-escaping pinning test going red (a surviving escape of the OTHER
+    # script-terminating character already breaks the pinning assertion's
+    # exact substring match); only removing enough of the map to leave the
+    # hostile substring fully unescaped observably breaks it -- demonstrated
+    # by hand and reverted; see the SAFETY-01 entry below.
+    dict_keys: tuple[str, ...] | None = None
+    dict_values: tuple[str, ...] | None = None
     # frozenset_member: a string element inside the frozenset(...) literal
     # bound to target_name
     member: str | None = None
@@ -205,9 +229,13 @@ def _docstring_node(scope: _Scope) -> ast.Constant | None:
 
 def _resolve_dict_entry(scope: _Scope, predicate: SafetyPredicate) -> bool:
     assert predicate.target_name is not None
-    assert predicate.dict_key is not None
-    assert predicate.value_path is not None
-    expected = _normalize_expr(predicate.value_path)
+    assert predicate.dict_keys is not None
+    assert predicate.dict_values is not None
+    assert len(predicate.dict_keys) == len(predicate.dict_values)
+    expected_pairs = {
+        key: _normalize_expr(value)
+        for key, value in zip(predicate.dict_keys, predicate.dict_values, strict=True)
+    }
     docstring_node = _docstring_node(scope)
     for node in ast.walk(scope):
         if node is docstring_node:
@@ -224,13 +252,13 @@ def _resolve_dict_entry(scope: _Scope, predicate: SafetyPredicate) -> bool:
             continue
         if not any(isinstance(t, ast.Name) and t.id == predicate.target_name for t in targets):
             continue
+        found: dict[object, str] = {}
         for key, val in zip(value.keys, value.values, strict=True):
-            if key is None:
+            if key is None or not isinstance(key, ast.Constant):
                 continue
-            if not (isinstance(key, ast.Constant) and key.value == predicate.dict_key):
-                continue
-            if _normalize_ws(ast.unparse(val)) == expected:
-                return True
+            found[key.value] = _normalize_ws(ast.unparse(val))
+        if all(found.get(key) == expected for key, expected in expected_pairs.items()):
+            return True
     return False
 
 
@@ -362,10 +390,9 @@ def resolve_tsx_fragment(source: str, *, scope: str, fragment: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # The populated registry -- derived from tests/assertion_inventory.py's
-# absence entries for the /runs route plus this phase's own STRIDE threat
-# register (T-22-53..T-22-57). See SUMMARY.md for the full derivation,
-# including why the catch-all-mount and non-HTML-service-route concerns are
-# recorded as one target ("SAFETY-03") rather than two.
+# absence entries for the /runs route plus this codebase's own STRIDE-style
+# threat register covering XSS, PII leakage, and the catch-all route absence.
+# See the module docstring above for SAFETY-03's narrowed scope.
 # ---------------------------------------------------------------------------
 
 EXPECTED_SAFETY_IDS: frozenset[str] = frozenset({"SAFETY-01", "SAFETY-02", "SAFETY-03"})
@@ -377,8 +404,8 @@ SAFETY_MUTATION_TARGETS: dict[str, SafetyTarget] = {
         predicate=SafetyPredicate(
             kind="dict_entry",
             target_name="_JSON_SCRIPT_ESCAPES",
-            dict_key="<",
-            value_path=r'"\\u003c"',
+            dict_keys=("<", ">"),
+            dict_values=(r'"\\u003c"', r'"\\u003e"'),
         ),
         pinning_tests=(
             PinnedAssertion(
@@ -417,11 +444,6 @@ SAFETY_MUTATION_TARGETS: dict[str, SafetyTarget] = {
                 test_file="tests/test_route_shadowing.py",
                 test_name="test_only_mount_is_static",
                 assertion_text="[m.path for m in mounts] == ['/static']",
-            ),
-            PinnedAssertion(
-                test_file="tests/test_no_html_on_service_routes.py",
-                test_name="test_service_route_never_answers_html",
-                assertion_text="'text/html' not in content_type",
             ),
         ),
     ),
