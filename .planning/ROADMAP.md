@@ -87,7 +87,7 @@ demonstrated able to fail.
   4. **A pull request is blocked before merge** by each of: a broken TypeScript build, a frontend lint or test failure, a mutation issued via `fetch`/`axios`, a new column in `RUN_COLS` that is neither exposed in a page's response shape nor named internal-only (identified by name), a catch-all route, an HTML response from `POST /webhook/inbound` / `/health/*` / `/internal/pump`, or an edit under `app/pipeline|queue|db|llm|email/`. Each guard is demonstrated red and byte-identically reverted. A developer runs one command for the hot-reloading dev server against uvicorn and one command to typecheck + lint.
   5. **Nothing that already worked is quietly lost.** `/ops` still has no script tag, `setInterval`, or meta-refresh; `/runs` keeps its per-page `<title>`, its single `aria-current="page"` nav match, and the `app/static/style.css` tokens with no color literal outside `:root`; and at 375px the page does not overflow while the wide table scrolls inside its own keyboard-reachable region. The three `js-` poller hooks still resolve — they have zero CSS and look like dead markup, and deleting them would break this phase's own headline feature.
 
-**Plans**: 11/12 plans executed (6 waves)
+**Plans**: 12/12 plans executed (6 waves)
 
 Plans:
 **Wave 1**
@@ -118,7 +118,7 @@ Plans:
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] 22-12-PLAN.md — GUARD-02 safety mutation registry, LIST-03 preservation, inventory backfill (wave 6)
+- [x] 22-12-PLAN.md — GUARD-02 safety mutation registry, LIST-03 preservation, inventory backfill (wave 6)
 
 **UI hint**: yes
 
@@ -229,6 +229,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 27/27 | Complete    | 2026-07-18 |
 | 21. Durability Proofs & Ops View | v4 | 16/16 | Complete    | 2026-07-20 |
-| 22. Frontend Foundation & Runs List | v5 | 11/12 | In Progress|  |
+| 22. Frontend Foundation & Runs List | v5 | 12/12 | In Progress|  |
 | 23. Run Detail — The Operator Gate | v5 | — | Not started | — |
 | 24. Eval View & Preservation Proof | v5 | — | Not started | — |
