@@ -51,28 +51,28 @@ behavior-preservation exercise wearing a frontend-framework costume."
 ### Shell & Toolchain (foundation — Slice 1)
 
 - [x] **SHELL-01**: An operator loads `/runs`, `/runs/{id}`, and `/eval` and the pages are rendered by React from a built bundle, served from the existing `/static` mount, with no catch-all route added to the app.
-- [ ] **SHELL-02**: An operator's browser receives each page's data already present in the HTML response — no post-load fetch is required before payroll data is visible, so a cold-started instance shows content rather than a spinner.
-- [ ] **SHELL-03**: An operator with JavaScript disabled can still read every converted page's server-rendered shell and submit every mutation form on it.
-- [ ] **SHELL-04**: A developer runs one command to start a local dev server with hot reload that proxies to uvicorn, and one command to typecheck and lint the frontend.
-- [ ] **SHELL-05**: A deployed Render build serves the same built assets a local `docker build` serves — the build output cannot be present locally and absent in the deployed image.
-- [ ] **SHELL-06**: A broken TypeScript build, a lint failure, or a failing frontend test blocks a pull request from merging, in the same way `ruff`/`pytest`/`mypy --strict` already do.
-- [ ] **SHELL-07**: A JSON response for a converted page exposes only fields explicitly declared for that page; `/runs` and `/runs/{id}` have separate response shapes rather than one shared shape.
+- [x] **SHELL-02**: An operator's browser receives each page's data already present in the HTML response — no post-load fetch is required before payroll data is visible, so a cold-started instance shows content rather than a spinner.
+- [x] **SHELL-03**: An operator with JavaScript disabled can still read every converted page's server-rendered shell and submit every mutation form on it.
+- [x] **SHELL-04**: A developer runs one command to start a local dev server with hot reload that proxies to uvicorn, and one command to typecheck and lint the frontend.
+- [x] **SHELL-05**: A deployed Render build serves the same built assets a local `docker build` serves — the build output cannot be present locally and absent in the deployed image.
+- [x] **SHELL-06**: A broken TypeScript build, a lint failure, or a failing frontend test blocks a pull request from merging, in the same way `ruff`/`pytest`/`mypy --strict` already do.
+- [x] **SHELL-07**: A JSON response for a converted page exposes only fields explicitly declared for that page; `/runs` and `/runs/{id}` have separate response shapes rather than one shared shape.
 
 ### Test-Suite Integrity (foundation — Slice 1)
 
 - [x] **GUARD-01**: Before any page is converted, every `.text` assertion across all 14 affected test files is attributed to the route it exercises and classified as presence or absence, and that inventory is committed as the migration's baseline.
-- [ ] **GUARD-02**: An engineer can tell, for any absence assertion that still passes after conversion, whether it passes because the guarded content is genuinely absent or because the assertion can no longer see it.
+- [x] **GUARD-02**: An engineer can tell, for any absence assertion that still passes after conversion, whether it passes because the guarded content is genuinely absent or because the assertion can no longer see it.
 - [ ] **GUARD-03**: All five destructive-action confirmation guards are covered by tests, so removing or neutralizing one fails the suite.
-- [ ] **GUARD-04**: Adding a column to `RUN_COLS` without either exposing it in a page's response shape or naming it internal-only fails CI, identifying the column by name.
+- [x] **GUARD-04**: Adding a column to `RUN_COLS` without either exposing it in a page's response shape or naming it internal-only fails CI, identifying the column by name.
 - [x] **GUARD-05**: `POST /webhook/inbound`, `/health/*`, and `/internal/pump` never return HTML, and a change that makes them do so fails CI.
-- [ ] **GUARD-06**: A mutation issued via `fetch` or `axios` from frontend source fails CI, so the native-form-POST decision is enforced rather than trusted.
+- [x] **GUARD-06**: A mutation issued via `fetch` or `axios` from frontend source fails CI, so the native-form-POST decision is enforced rather than trusted.
 
 ### Runs List (Slice 1)
 
-- [ ] **LIST-01**: An operator sees the runs list with every column, badge, and empty state the Jinja page showed, in the same order.
-- [ ] **LIST-02**: An operator watching an in-flight run sees its status, queue, and failure badges update in place without a full page reload, and the polling stops when the run settles.
-- [ ] **LIST-03**: An operator who submits the demo send-test form is redirected to the newly created run, and a queue failure surfaces the existing one-sentence retry message rather than claiming nothing was recorded.
-- [ ] **LIST-04**: An operator reading the list on a 375px-wide viewport sees no horizontal page overflow, and the wide table scrolls inside its own keyboard-reachable region.
+- [x] **LIST-01**: An operator sees the runs list with every column, badge, and empty state the Jinja page showed, in the same order.
+- [x] **LIST-02**: An operator watching an in-flight run sees its status, queue, and failure badges update in place without a full page reload, and the polling stops when the run settles.
+- [x] **LIST-03**: An operator who submits the demo send-test form is redirected to the newly created run, and a queue failure surfaces the existing one-sentence retry message rather than claiming nothing was recorded.
+- [x] **LIST-04**: An operator reading the list on a 375px-wide viewport sees no horizontal page overflow, and the wide table scrolls inside its own keyboard-reachable region.
 
 ### Run Detail (Slice 2)
 
@@ -143,25 +143,25 @@ Populated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SHELL-01 | Phase 22 | Complete |
-| SHELL-02 | Phase 22 | Pending |
-| SHELL-03 | Phase 22 | Pending |
-| SHELL-04 | Phase 22 | Pending |
-| SHELL-05 | Phase 22 | Pending |
-| SHELL-06 | Phase 22 | Pending |
-| SHELL-07 | Phase 22 | Pending |
+| SHELL-02 | Phase 22 | Complete |
+| SHELL-03 | Phase 22 | Complete |
+| SHELL-04 | Phase 22 | Complete |
+| SHELL-05 | Phase 22 | Complete |
+| SHELL-06 | Phase 22 | Complete |
+| SHELL-07 | Phase 22 | Complete |
 | SHELL-08 | Phase 24 | Pending |
 | SHELL-09 | Phase 22 | Complete |
 | SHELL-10 | Phase 22 | Complete |
 | GUARD-01 | Phase 22 | Complete |
-| GUARD-02 | Phase 22 | Pending |
+| GUARD-02 | Phase 22 | Complete |
 | GUARD-03 | Phase 23 | Pending |
-| GUARD-04 | Phase 22 | Pending |
+| GUARD-04 | Phase 22 | Complete |
 | GUARD-05 | Phase 22 | Complete |
-| GUARD-06 | Phase 22 | Pending |
-| LIST-01 | Phase 22 | Pending |
-| LIST-02 | Phase 22 | Pending |
-| LIST-03 | Phase 22 | Pending |
-| LIST-04 | Phase 22 | Pending |
+| GUARD-06 | Phase 22 | Complete |
+| LIST-01 | Phase 22 | Complete |
+| LIST-02 | Phase 22 | Complete |
+| LIST-03 | Phase 22 | Complete |
+| LIST-04 | Phase 22 | Complete |
 | DETAIL-01 | Phase 23 | Pending |
 | DETAIL-02 | Phase 23 | Pending |
 | DETAIL-03 | Phase 23 | Pending |

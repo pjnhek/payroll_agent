@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v5
 milestone_name: React/TypeScript Operator Console
-current_phase: 22
-current_phase_name: frontend-foundation-runs-list
-status: executing
+current_phase: 23
+current_phase_name: Run Detail — The Operator Gate
+status: planning
 stopped_at: Phase 22 context gathered
-last_updated: "2026-08-17T20:48:09.936Z"
+last_updated: "2026-08-18T02:17:10.543Z"
 last_activity: 2026-08-17
 last_activity_desc: Created the v5 roadmap - phases 22-24 as three independently deployable vertical slices, 31/31 requirements mapped
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 12
-  completed_plans: 0
-  percent: 0
+  completed_plans: 12
+  percent: 33
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-07-20 after the v4 — Durable Execution
 
 ## Current Position
 
-Phase: 22 (frontend-foundation-runs-list) — EXECUTING
-Plan: 1 of 12
-Status: Executing Phase 22
-Last activity: 2026-08-17 — Phase 22 execution started
+Phase: 23 — Run Detail — The Operator Gate
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-17 — Phase 22 complete, transitioned to Phase 23
 
 Progress: [#####################---] 23/26 phases (v1.0 + v2 + v3 + v4 complete; v5 phases 22-24 pending)
 
@@ -39,7 +39,7 @@ Progress: [#####################---] 23/26 phases (v1.0 + v2 + v3 + v4 complete;
 
 **Velocity:**
 
-- Total plans completed: 156
+- Total plans completed: 168
 - Average duration: — min
 - Total execution time: 0.0 hours
 
@@ -68,6 +68,7 @@ Progress: [#####################---] 23/26 phases (v1.0 + v2 + v3 + v4 complete;
 | 19 | 12 | - | - |
 | 20 | 27 | - | - |
 | 21 | 16 | - | - |
+| 22 | 12 | - | - |
 
 **Recent Trend:**
 

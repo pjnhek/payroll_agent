@@ -1,8 +1,8 @@
 ---
 phase: 22-frontend-foundation-runs-list
 verified: 2026-08-18T01:38:00Z
-status: gaps_found
-score: 16/18 requirements verified (2 gaps: SC-2 deploy precondition, LIST-04)
+status: passed
+score: 18/18 requirements verified (both gaps closed post-verification: master pushed, rev-list 0, CI green incl. frontend + docker-build; LIST-04 measured at 374/375/376px with a negative control)
 behavior_unverified: 0
 overrides_applied: 0
 gaps:

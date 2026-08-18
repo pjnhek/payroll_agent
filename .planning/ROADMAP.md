@@ -66,7 +66,7 @@ complex page. Size by the table above, not by the traceability tally.
 **Phase Numbering:** v5 continues the global phase sequence from v4 (last phase: 21). Integer phases (22–24)
 are planned milestone work; decimal phases (e.g. 22.1) are reserved for urgent insertions.
 
-- [ ] **Phase 22: Frontend Foundation & Runs List** - The toolchain, Docker node stage, blocking CI job, allowlist DTO pattern, six guards, and the committed test-assertion inventory land together with a React-rendered `/runs` that deploys on its own.
+- [x] **Phase 22: Frontend Foundation & Runs List** - The toolchain, Docker node stage, blocking CI job, allowlist DTO pattern, six guards, and the committed test-assertion inventory land together with a React-rendered `/runs` that deploys on its own. (completed 2026-08-17)
 - [ ] **Phase 23: Run Detail — The Operator Gate** - `/runs/{id}` converts with every decision banner, all three delivery-review states, the conversation thread, the payroll disclosure, and all 14 mutations behaving exactly as before — the ~80% phase.
 - [ ] **Phase 24: Eval View & Preservation Proof** - `/eval` converts, and a closing diff proves the milestone's central claim: no money-moving code was edited.
 
@@ -229,6 +229,6 @@ Captured ideas not yet scheduled into a milestone live in [`backlog.md`](backlog
 | 19. Webhook Cutover & Durable Ingest | v4 | 12/12 | Complete    | 2026-07-17 |
 | 20. Exactly-Once Send | v4 | 27/27 | Complete    | 2026-07-18 |
 | 21. Durability Proofs & Ops View | v4 | 16/16 | Complete    | 2026-07-20 |
-| 22. Frontend Foundation & Runs List | v5 | 12/12 | In Progress|  |
+| 22. Frontend Foundation & Runs List | v5 | 12/12 | Complete    | 2026-08-17 |
 | 23. Run Detail — The Operator Gate | v5 | — | Not started | — |
 | 24. Eval View & Preservation Proof | v5 | — | Not started | — |
