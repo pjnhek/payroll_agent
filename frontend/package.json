@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint .",
     "check": "npm run typecheck && npm run lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate:types": "OPENAPI_TMP=$(mktemp) && uv run python ../scripts/generate_openapi_doc.py > \"$OPENAPI_TMP\" && npx openapi-typescript \"$OPENAPI_TMP\" -o src/generated/dtos.d.ts && rm -f \"$OPENAPI_TMP\"",
+    "generate:types:check": "OPENAPI_TMP=$(mktemp) && DTOS_CHECK=$(mktemp) && uv run python ../scripts/generate_openapi_doc.py > \"$OPENAPI_TMP\" && npx openapi-typescript \"$OPENAPI_TMP\" -o \"$DTOS_CHECK\" && diff -u src/generated/dtos.d.ts \"$DTOS_CHECK\"; STATUS=$?; rm -f \"$OPENAPI_TMP\" \"$DTOS_CHECK\"; exit $STATUS"
   },
   "dependencies": {
     "react": "19.2.8",
