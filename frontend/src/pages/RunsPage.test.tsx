@@ -10,8 +10,8 @@
 // (scroll width, overflow, viewport boundary) -- that proof is manual and recorded
 // in SUMMARY.md, matching this repo's existing precedent for the same property
 // (quick task 260726-ugm).
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FailureSummary, type FailureInfo } from "../components/FailureSummary";
 import { QueueBadge } from "../components/QueueBadge";
@@ -329,5 +329,247 @@ describe("RunsPage scroll region structure", () => {
     render(<RunsPage data={makePage([])} />);
     expect(document.querySelector('[role="region"]')).toBeNull();
     expect(document.querySelector(".table-scroll")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live polling (LIST-02): wires usePoller into one instance per in-flight row,
+// preserving the pre-conversion poller's exact per-row start condition (a row polls
+// only when it is in-flight or carries an open job) and updating badges in place on
+// each tick. Fake timers throughout -- no real sleeps.
+// ---------------------------------------------------------------------------
+
+describe("RunsPage live polling", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function okResponse(payload: unknown) {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+  }
+
+  // A poll tick's state update (usePoller's onUpdate -> RunRow's setVolatile) happens
+  // inside a fake-timer-driven promise chain, outside any event handler React's own
+  // batching would otherwise wrap in act() automatically -- wrapping the advance in
+  // act() here is what makes the resulting re-render actually flush to the DOM before
+  // the next assertion reads it, rather than leaving a stale render committed only in
+  // React's internal fiber tree.
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it("a row that is neither in-flight nor carrying an open job issues no requests at all", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const settledRow = makeRow({ status: "sent", has_open_job: false });
+    render(<RunsPage data={makePage([settledRow])} />);
+
+    await advance(2000 * 3);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a row that is in-flight issues requests, and a row with an open job (but a settled status) issues requests too", async () => {
+    // Typed with an explicit url parameter (unused in the body -- both rows get the
+    // same response shape) so `fetchMock.mock.calls` carries the called url at index 0.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const fetchMock = vi.fn((_url: string) =>
+      okResponse({
+        status: "received",
+        badge_class: "neutral",
+        badge_label: "Received",
+        queue_label: null,
+        queue_badge_class: "neutral",
+        has_open_job: false,
+        failure: NO_FAILURE,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const inFlightRow = makeRow({
+      id: "10000000-0000-0000-0000-000000000001",
+      status: "received",
+    });
+    const openJobRow = makeRow({
+      id: "20000000-0000-0000-0000-000000000002",
+      status: "sent",
+      has_open_job: true,
+    });
+    render(<RunsPage data={makePage([inFlightRow, openJobRow])} />);
+
+    await advance(2000);
+    const calledUrls = fetchMock.mock.calls.map(([url]) => url);
+    expect(calledUrls).toContain(`/runs/${inFlightRow.id}/status`);
+    expect(calledUrls).toContain(`/runs/${openJobRow.id}/status`);
+  });
+
+  it("when a tick returns a new status, the row's status badge text and class change in place with no full re-render of the table (row element identity preserved) -- replaces the deleted test_script_hook_classes_carry_js_prefix_and_stay_out_of_css guard", async () => {
+    const row = makeRow({ status: "received", badge_class: "neutral", badge_label: "Received" });
+    const fetchMock = vi.fn(() =>
+      okResponse({
+        status: "sent",
+        badge_class: "good",
+        badge_label: "Sent",
+        queue_label: null,
+        queue_badge_class: "neutral",
+        has_open_job: false,
+        failure: NO_FAILURE,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RunsPage data={makePage([row])} />);
+
+    const rowElBefore = document.querySelector(`[data-run-id="${row.id}"]`);
+    expect(screen.getByText("Received").className).toBe("badge badge-neutral");
+
+    await advance(2000);
+
+    const rowElAfter = document.querySelector(`[data-run-id="${row.id}"]`);
+    expect(rowElAfter).toBe(rowElBefore);
+    expect(screen.getByText("Sent").className).toBe("badge badge-good");
+    expect(screen.queryByText("Received")).toBeNull();
+  });
+
+  it("when a tick returns an unchanged status, the badge's text and class name stay byte-identical to before and no duplicate badge node exists", async () => {
+    const row = makeRow({ status: "received", badge_class: "neutral", badge_label: "Received" });
+    const fetchMock = vi.fn(() =>
+      okResponse({
+        status: "received",
+        badge_class: "neutral",
+        badge_label: "Received",
+        queue_label: null,
+        queue_badge_class: "neutral",
+        has_open_job: false,
+        failure: NO_FAILURE,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RunsPage data={makePage([row])} />);
+
+    const before = screen.getByText("Received");
+    const classBefore = before.className;
+    const textBefore = before.textContent;
+
+    await advance(2000);
+
+    const badges = screen.getAllByText("Received");
+    expect(badges).toHaveLength(1);
+    expect(badges[0]?.className).toBe(classBefore);
+    expect(badges[0]?.textContent).toBe(textBefore);
+  });
+
+  it("when a tick returns a settled status with no open job, that row stops issuing requests while another still-in-flight row keeps issuing them", async () => {
+    const settlingRow = makeRow({
+      id: "30000000-0000-0000-0000-000000000003",
+      status: "received",
+    });
+    const staysInFlightRow = makeRow({
+      id: "40000000-0000-0000-0000-000000000004",
+      status: "extracting",
+    });
+    const settlingUrl = `/runs/${settlingRow.id}/status`;
+    const staysUrl = `/runs/${staysInFlightRow.id}/status`;
+    const fetchMock = vi.fn((url: string) => {
+      if (url === settlingUrl) {
+        return okResponse({
+          status: "sent",
+          badge_class: "good",
+          badge_label: "Sent",
+          queue_label: null,
+          queue_badge_class: "neutral",
+          has_open_job: false,
+          failure: NO_FAILURE,
+        });
+      }
+      return okResponse({
+        status: "extracting",
+        badge_class: "pending",
+        badge_label: "Extracting",
+        queue_label: "Running",
+        queue_badge_class: "running",
+        has_open_job: true,
+        failure: NO_FAILURE,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RunsPage data={makePage([settlingRow, staysInFlightRow])} />);
+
+    const countFor = (url: string) =>
+      fetchMock.mock.calls.filter(([calledUrl]) => calledUrl === url).length;
+
+    await advance(2000);
+    expect(countFor(settlingUrl)).toBe(1);
+    expect(countFor(staysUrl)).toBe(1);
+
+    await advance(2000 * 2);
+    expect(countFor(settlingUrl)).toBe(1);
+    expect(countFor(staysUrl)).toBeGreaterThan(1);
+  });
+
+  it("a queue label transition updates the queue badge and its hidden state in place", async () => {
+    const row = makeRow({ status: "received", has_open_job: false, queue_label: null });
+    const fetchMock = vi.fn(() =>
+      okResponse({
+        status: "received",
+        badge_class: "neutral",
+        badge_label: "Received",
+        queue_label: "Running",
+        queue_badge_class: "running",
+        has_open_job: true,
+        failure: NO_FAILURE,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RunsPage data={makePage([row])} />);
+
+    const queueBadgeBefore = document.querySelector(".queue-badge") as HTMLElement;
+    expect(queueBadgeBefore.hidden).toBe(true);
+
+    await advance(2000);
+
+    const queueBadgeAfter = document.querySelector(".queue-badge") as HTMLElement;
+    expect(queueBadgeAfter).toBe(queueBadgeBefore);
+    expect(queueBadgeAfter.hidden).toBe(false);
+    expect(queueBadgeAfter.textContent).toBe("Running");
+    expect(queueBadgeAfter.className).toBe("badge badge-running queue-badge");
+  });
+
+  it("a failure appearing on a tick renders the failure summary and secondary badge in place", async () => {
+    const row = makeRow({
+      status: "extracting",
+      failure: NO_FAILURE,
+      summary_gate_reason: null,
+      employee_count: 3,
+    });
+    const fetchMock = vi.fn(() =>
+      okResponse({
+        status: "error",
+        badge_class: "bad",
+        badge_label: "Error",
+        queue_label: null,
+        queue_badge_class: "neutral",
+        has_open_job: false,
+        failure: {
+          secondary_label: "Retries exhausted",
+          stage: "Extraction",
+          reason: "Provider timeout",
+          attempts: "5 of 5 attempts",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RunsPage data={makePage([row])} />);
+
+    expect(screen.queryByText("Retries exhausted")).toBeNull();
+
+    await advance(2000);
+
+    expect(screen.getByText("Retries exhausted")).not.toBeNull();
+    expect(screen.getByText("Extraction · Provider timeout · 5 of 5 attempts")).not.toBeNull();
   });
 });
